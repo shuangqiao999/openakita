@@ -96,7 +96,7 @@ class AgentOrchestrator:
     def __init__(self) -> None:
         self._mailboxes: dict[str, AgentMailbox] = {}
         self._health: dict[str, AgentHealth] = {}
-        self._active_tasks: dict[str, asyncio.Task] = {}
+        self._active_tasks: dict[str, list[asyncio.Task]] = {}
 
         # Lazy-initialised dependencies
         self._profile_store = None  # ProfileStore
@@ -158,11 +158,14 @@ class AgentOrchestrator:
     # Delegation JSONL logging
     # ------------------------------------------------------------------
 
+    _LOG_RETENTION_DAYS = 30
+
     def _log_delegation(self, record: dict[str, Any]) -> None:
         """Append a delegation event to the daily JSONL log file.
 
         File: ``data/delegation_logs/YYYYMMDD.jsonl``
         Each line is a self-contained JSON object for easy grep/tail/analysis.
+        Periodically rotates old log files (older than _LOG_RETENTION_DAYS).
         """
         if self._log_dir is None:
             return
@@ -174,6 +177,31 @@ class AgentOrchestrator:
                 f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
         except Exception:
             logger.debug("[Orchestrator] Failed to write delegation log", exc_info=True)
+
+        # Periodic rotation: check once per day (use file existence as flag)
+        self._maybe_rotate_logs()
+
+    def _maybe_rotate_logs(self) -> None:
+        """Remove delegation log files older than _LOG_RETENTION_DAYS."""
+        if self._log_dir is None or not self._log_dir.exists():
+            return
+        marker = self._log_dir / ".last_rotation"
+        try:
+            if marker.exists():
+                age_hours = (time.time() - marker.stat().st_mtime) / 3600
+                if age_hours < 24:
+                    return
+            cutoff = time.time() - self._LOG_RETENTION_DAYS * 86400
+            for f in self._log_dir.glob("*.jsonl"):
+                try:
+                    if f.stat().st_mtime < cutoff:
+                        f.unlink()
+                        logger.debug(f"[Orchestrator] Rotated old log: {f.name}")
+                except Exception:
+                    pass
+            marker.touch()
+        except Exception:
+            logger.debug("[Orchestrator] Log rotation failed", exc_info=True)
 
     # ------------------------------------------------------------------
     # Mailbox / health helpers
@@ -202,11 +230,16 @@ class AgentOrchestrator:
                 self._health.keys(),
                 key=lambda aid: self._health[aid].last_active,
             )
-            # 淘汰最旧的 25%
             evict_count = max(1, len(sorted_ids) // 4)
             for aid in sorted_ids[:evict_count]:
                 self._health.pop(aid, None)
                 self._mailboxes.pop(aid, None)
+                # Also clean matching _sub_agent_states entries
+                stale_state_keys = [
+                    k for k in self._sub_agent_states if aid in k
+                ]
+                for k in stale_state_keys:
+                    self._sub_agent_states.pop(k, None)
 
     # ------------------------------------------------------------------
     # Main entry point
@@ -232,11 +265,15 @@ class AgentOrchestrator:
                 depth=0,
             )
         )
-        self._active_tasks[sid] = task
+        self._active_tasks.setdefault(sid, []).append(task)
         try:
             return await task
         finally:
-            self._active_tasks.pop(sid, None)
+            tasks = self._active_tasks.get(sid, [])
+            if task in tasks:
+                tasks.remove(task)
+            if not tasks:
+                self._active_tasks.pop(sid, None)
 
     # ------------------------------------------------------------------
     # Dispatch with timeout / fallback / error handling
@@ -257,14 +294,12 @@ class AgentOrchestrator:
         if depth == 0:
             session.context.delegation_chain = []
         elif depth > 0:
-            chain = getattr(session.context, "delegation_chain", [])
-            chain.append({
+            session.context.delegation_chain.append({
                 "from": from_agent or "parent",
                 "to": agent_profile_id,
                 "depth": depth,
                 "timestamp": time.time(),
             })
-            session.context.delegation_chain = chain
 
         health = self._get_health(agent_profile_id)
         health.total_requests += 1
@@ -285,6 +320,7 @@ class AgentOrchestrator:
             result = await self._run_with_progress_timeout(
                 session, message, agent_profile_id,
                 pass_gateway=(depth == 0),
+                depth=depth,
             )
             elapsed_ms = (time.monotonic() - start) * 1000
             health.successful += 1
@@ -361,6 +397,7 @@ class AgentOrchestrator:
         agent_profile_id: str,
         *,
         pass_gateway: bool = False,
+        depth: int = 0,
     ) -> str:
         """Run an agent with progress-aware timeout instead of a hard wall-clock limit.
 
@@ -391,7 +428,7 @@ class AgentOrchestrator:
         gw = self._gateway if pass_gateway else None
 
         task = asyncio.create_task(
-            self._call_agent(agent, session, message, gateway=gw)
+            self._call_agent(agent, session, message, gateway=gw, is_sub_agent=(depth > 0))
         )
 
         start = time.monotonic()
@@ -612,16 +649,19 @@ class AgentOrchestrator:
 
     @staticmethod
     async def _call_agent(
-        agent: Any, session: Any, message: str, *, gateway: Any = None
+        agent: Any, session: Any, message: str, *,
+        gateway: Any = None, is_sub_agent: bool = True,
     ) -> str:
         """Thin wrapper around agent.chat_with_session for use as a task target.
 
-        Sets _is_sub_agent_call so that _finalize_session skips plan
-        auto-close (the plan belongs to the parent agent, not this sub-agent).
-        After completion, persists the sub-agent's work record into the
-        parent session's ``sub_agent_records`` for full traceability.
+        Sets _is_sub_agent_call on sub-agents (depth > 0) so that:
+        1. _finalize_session skips plan auto-close (the plan belongs to the parent)
+        2. AgentToolHandler blocks re-delegation (prevents infinite recursion)
+
+        Top-level agents (depth == 0) keep _is_sub_agent_call = False so they
+        CAN use delegation tools (delegate_to_agent, spawn_agent, etc.).
         """
-        agent._is_sub_agent_call = True
+        agent._is_sub_agent_call = is_sub_agent
         _start = time.time()
         try:
             session_messages = session.context.get_messages()
@@ -753,11 +793,14 @@ class AgentOrchestrator:
 
         # Emit handoff event for SSE stream (session.context.handoff_events)
         if session and hasattr(session, "context") and hasattr(session.context, "handoff_events"):
+            _MAX_HANDOFF_EVENTS = 100
             session.context.handoff_events.append({
                 "from_agent": from_agent,
                 "to_agent": to_agent,
                 "reason": reason or "",
             })
+            if len(session.context.handoff_events) > _MAX_HANDOFF_EVENTS:
+                session.context.handoff_events = session.context.handoff_events[-_MAX_HANDOFF_EVENTS:]
         return await self._dispatch(
             session, message, to_agent, depth + 1, from_agent=from_agent
         )
@@ -771,9 +814,9 @@ class AgentOrchestrator:
         ctx = session.context
         ctx.active_agents = list(set(agent_ids))
         logger.info(
-            f"[Orchestrator] Collaboration started: {agent_ids} in {session.session_key}"
+            f"[Orchestrator] Collaboration started: {ctx.active_agents} in {session.session_key}"
         )
-        return f"✅ Collaboration started with {len(agent_ids)} agents"
+        return f"✅ Collaboration started with {len(ctx.active_agents)} agents"
 
     async def get_active_agents(self, session: Any) -> list[str]:
         """Get currently active agents in a session."""
@@ -788,12 +831,14 @@ class AgentOrchestrator:
     # ------------------------------------------------------------------
 
     def cancel_request(self, session_id: str) -> bool:
-        """Cancel an active request for a session (by session.id UUID)."""
-        task = self._active_tasks.get(session_id)
-        if task and not task.done():
-            task.cancel()
-            return True
-        return False
+        """Cancel all active requests for a session (by session.id UUID)."""
+        tasks = self._active_tasks.get(session_id, [])
+        cancelled = False
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+                cancelled = True
+        return cancelled
 
     # ------------------------------------------------------------------
     # Health / monitoring
@@ -831,9 +876,10 @@ class AgentOrchestrator:
 
     async def shutdown(self) -> None:
         """Clean shutdown: cancel active tasks, release pool, persist states."""
-        for task in self._active_tasks.values():
-            if not task.done():
-                task.cancel()
+        for tasks in self._active_tasks.values():
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
         self._active_tasks.clear()
 
         self._persist_sub_states()
@@ -891,7 +937,10 @@ def _persist_sub_agent_record(
 
     ctx = getattr(session, "context", None)
     if ctx is not None and hasattr(ctx, "sub_agent_records"):
+        _MAX_SUB_AGENT_RECORDS = 50
         ctx.sub_agent_records.append(record)
+        if len(ctx.sub_agent_records) > _MAX_SUB_AGENT_RECORDS:
+            ctx.sub_agent_records = ctx.sub_agent_records[-_MAX_SUB_AGENT_RECORDS:]
         logger.debug(
             f"[Orchestrator] Persisted sub-agent record: "
             f"agent={record['agent_id']}, tools={record['tools_total']}, "

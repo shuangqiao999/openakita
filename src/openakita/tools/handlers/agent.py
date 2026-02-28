@@ -212,7 +212,15 @@ class AgentToolHandler:
                 return display, f"❌ Failed: {e}"
 
         coros = [_run_one(t) for t in resolved_tasks]
-        raw_results = await asyncio.gather(*coros, return_exceptions=True)
+        try:
+            raw_results = await asyncio.gather(*coros, return_exceptions=True)
+        except BaseException:
+            # On unexpected failure, clean up any ephemeral clones we created
+            self._cleanup_ephemeral_ids(ephemeral_ids, store)
+            raise
+
+        # Clean up ephemeral clones that the orchestrator didn't already clean
+        self._cleanup_ephemeral_ids(ephemeral_ids, store)
 
         parts = []
         for i, res in enumerate(raw_results):
@@ -223,6 +231,17 @@ class AgentToolHandler:
                 display_id, result = res
                 parts.append(f"## Agent: {display_id}\n{result}")
         return "\n\n---\n\n".join(parts)
+
+    @staticmethod
+    def _cleanup_ephemeral_ids(ephemeral_ids: list[str], store) -> None:
+        """Remove leftover ephemeral profiles created by delegate_parallel."""
+        if not store or not ephemeral_ids:
+            return
+        for eph_id in ephemeral_ids:
+            try:
+                store.remove_ephemeral(eph_id)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # spawn_agent — 继承已有 Profile 创建临时 Agent 并立即委派
@@ -430,7 +449,9 @@ class AgentToolHandler:
         """Get the shared ProfileStore (same instance as orchestrator's).
 
         Critical for ephemeral profiles — they live in memory only, so
-        we must read/write the same _ephemeral dict that orchestrator uses.
+        we MUST use the same _ephemeral dict as the orchestrator.
+        Never create a separate ProfileStore instance — that would cause
+        ephemeral profiles to be invisible across components.
         """
         try:
             orchestrator = self._get_orchestrator()
@@ -440,18 +461,27 @@ class AgentToolHandler:
                     return orchestrator._profile_store
         except Exception:
             pass
-        try:
-            from ...agents.profile import ProfileStore
-            from ...config import settings
-            return ProfileStore(settings.data_dir / "agents")
-        except Exception:
-            return None
+        logger.warning("[AgentToolHandler] ProfileStore unavailable — orchestrator not initialised")
+        return None
 
     @staticmethod
+    def _tokenize(text: str) -> set[str]:
+        """Tokenizer that handles both English words and Chinese characters/bigrams."""
+        tokens: set[str] = set()
+        for word in text.lower().split():
+            if word:
+                tokens.add(word)
+        cjk = [c for c in text if '\u4e00' <= c <= '\u9fff']
+        tokens.update(cjk)
+        for i in range(len(cjk) - 1):
+            tokens.add(cjk[i] + cjk[i + 1])
+        return tokens
+
+    @classmethod
     def _find_similar_profile(
-        store, skills: list[str], description: str,
+        cls, store, skills: list[str], description: str,
     ):
-        """Return the best-matching existing profile if skill overlap > 70%."""
+        """Return the best-matching existing profile if skill overlap > 50%."""
         if not store:
             return None
 
@@ -461,7 +491,7 @@ class AgentToolHandler:
         if not all_profiles:
             return None
 
-        desc_words = set(description.lower().split())
+        desc_tokens = cls._tokenize(description)
         best_score = 0.0
         best_profile = None
 
@@ -475,11 +505,11 @@ class AgentToolHandler:
                 total = max(len(skills), len(p.skills))
                 score += (overlap / total) * 0.7
 
-            if desc_words and p.description:
-                p_words = set(p.description.lower().split())
-                common = len(desc_words & p_words)
-                total_w = max(len(desc_words), len(p_words))
-                score += (common / total_w) * 0.3 if total_w else 0
+            if desc_tokens and p.description:
+                p_tokens = cls._tokenize(p.description)
+                common = len(desc_tokens & p_tokens)
+                total_t = max(len(desc_tokens), len(p_tokens))
+                score += (common / total_t) * 0.3 if total_t else 0
 
             if score > best_score:
                 best_score = score

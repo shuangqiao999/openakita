@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import threading
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -40,7 +39,7 @@ class AgentFactory:
         agent = Agent(name=profile.get_display_name(), **kwargs)
         agent._agent_profile = profile
 
-        await agent.initialize(start_scheduler=False)
+        await agent.initialize(start_scheduler=False, lightweight=True)
 
         self._apply_skill_filter(agent, profile)
 
@@ -115,7 +114,6 @@ class AgentInstancePool:
         self._idle_timeout = idle_timeout
         # Key: "{session_id}::{profile_id}"
         self._pool: dict[str, _PoolEntry] = {}
-        self._lock = threading.RLock()
         # Per-composite-key locks for concurrent creation
         self._create_locks: dict[str, asyncio.Lock] = {}
         self._reaper_task: asyncio.Task | None = None
@@ -135,8 +133,7 @@ class AgentInstancePool:
                 await self._reaper_task
             except asyncio.CancelledError:
                 pass
-        with self._lock:
-            self._pool.clear()
+        self._pool.clear()
         logger.info("AgentInstancePool stopped")
 
     async def get_or_create(
@@ -145,30 +142,29 @@ class AgentInstancePool:
         """获取已有实例或创建新实例。
 
         Key = session_id::profile_id，同 session 不同 profile 各自独立。
+        All dict operations are safe under asyncio's single-threaded event loop;
+        only the async create_lock is needed to serialize factory.create() calls.
         """
         key = self._make_key(session_id, profile.id)
 
-        with self._lock:
+        entry = self._pool.get(key)
+        if entry:
+            entry.touch()
+            return entry.agent
+
+        if key not in self._create_locks:
+            self._create_locks[key] = asyncio.Lock()
+        create_lock = self._create_locks[key]
+
+        async with create_lock:
             entry = self._pool.get(key)
             if entry:
                 entry.touch()
                 return entry.agent
-            if key not in self._create_locks:
-                self._create_locks[key] = asyncio.Lock()
-            create_lock = self._create_locks[key]
-
-        async with create_lock:
-            with self._lock:
-                entry = self._pool.get(key)
-                if entry:
-                    entry.touch()
-                    return entry.agent
 
             agent = await self._factory.create(profile)
             new_entry = _PoolEntry(agent, profile.id, session_id)
-
-            with self._lock:
-                self._pool[key] = new_entry
+            self._pool[key] = new_entry
 
         logger.info(
             f"Pool created agent: session={session_id}, profile={profile.id}"
@@ -184,42 +180,38 @@ class AgentInstancePool:
         Otherwise returns the first (and typically only) agent for the session
         — used by control endpoints (cancel/skip/insert).
         """
-        with self._lock:
-            if profile_id:
-                key = self._make_key(session_id, profile_id)
-                entry = self._pool.get(key)
-                if entry:
-                    entry.touch()
-                    return entry.agent
-                return None
+        if profile_id:
+            key = self._make_key(session_id, profile_id)
+            entry = self._pool.get(key)
+            if entry:
+                entry.touch()
+                return entry.agent
+            return None
 
-            for entry in self._pool.values():
-                if entry.session_id == session_id:
-                    entry.touch()
-                    return entry.agent
+        for entry in self._pool.values():
+            if entry.session_id == session_id:
+                entry.touch()
+                return entry.agent
         return None
 
     def get_all_for_session(self, session_id: str) -> list[_PoolEntry]:
         """Return all pool entries for a given session."""
-        with self._lock:
-            return [e for e in self._pool.values() if e.session_id == session_id]
+        return [e for e in self._pool.values() if e.session_id == session_id]
 
     def release(self, session_id: str, profile_id: str | None = None) -> None:
         """标记实例进入空闲等待回收。"""
-        with self._lock:
-            if profile_id:
-                key = self._make_key(session_id, profile_id)
-                entry = self._pool.get(key)
-                if entry:
+        if profile_id:
+            key = self._make_key(session_id, profile_id)
+            entry = self._pool.get(key)
+            if entry:
+                entry.touch()
+        else:
+            for entry in self._pool.values():
+                if entry.session_id == session_id:
                     entry.touch()
-            else:
-                for entry in self._pool.values():
-                    if entry.session_id == session_id:
-                        entry.touch()
 
     def get_stats(self) -> dict:
-        with self._lock:
-            entries = list(self._pool.values())
+        entries = list(self._pool.values())
 
         sessions: dict[str, list[dict]] = {}
         for e in entries:
@@ -265,33 +257,29 @@ class AgentInstancePool:
     def _reap_idle(self) -> None:
         reaped_profile_ids: list[str] = []
 
-        with self._lock:
-            stale_locks = [k for k in self._create_locks if k not in self._pool]
-            for k in stale_locks:
-                lock = self._create_locks[k]
-                if not lock.locked():
-                    self._create_locks.pop(k, None)
+        stale_locks = [k for k in self._create_locks if k not in self._pool]
+        for k in stale_locks:
+            lock = self._create_locks[k]
+            if not lock.locked():
+                self._create_locks.pop(k, None)
 
-            to_remove = [
-                key for key, entry in self._pool.items()
-                if entry.idle_seconds > self._idle_timeout
-            ]
-            for key in to_remove:
-                entry = self._pool.pop(key)
-                reaped_profile_ids.append(entry.profile_id)
-                logger.info(
-                    f"Pool reaped idle agent: session={entry.session_id}, "
-                    f"profile={entry.profile_id}, "
-                    f"idle={entry.idle_seconds:.0f}s"
-                )
-                try:
-                    loop = asyncio.get_running_loop()
-                    if hasattr(entry.agent, 'shutdown'):
-                        loop.call_soon_threadsafe(
-                            lambda a=entry.agent: asyncio.ensure_future(a.shutdown())
-                        )
-                except Exception:
-                    pass
+        to_remove = [
+            key for key, entry in self._pool.items()
+            if entry.idle_seconds > self._idle_timeout
+        ]
+        for key in to_remove:
+            entry = self._pool.pop(key)
+            reaped_profile_ids.append(entry.profile_id)
+            logger.info(
+                f"Pool reaped idle agent: session={entry.session_id}, "
+                f"profile={entry.profile_id}, "
+                f"idle={entry.idle_seconds:.0f}s"
+            )
+            try:
+                if hasattr(entry.agent, 'shutdown'):
+                    asyncio.ensure_future(entry.agent.shutdown())
+            except Exception:
+                pass
 
         # Clean up ephemeral profiles for reaped agents (outside lock)
         if reaped_profile_ids:

@@ -223,6 +223,55 @@ class Agent:
         "太慢了",
     }
 
+    # ---- Task-local properties ----
+    # These are backed by per-instance dicts keyed by asyncio.current_task() id,
+    # so concurrent chat_with_session calls on the same Agent instance don't
+    # overwrite each other's session context.
+
+    @staticmethod
+    def _task_key() -> int:
+        task = asyncio.current_task()
+        return id(task) if task else 0
+
+    @property
+    def _current_session(self):
+        return self.__dict__.get("_tls_session", {}).get(self._task_key())
+
+    @_current_session.setter
+    def _current_session(self, value):
+        tls = self.__dict__.setdefault("_tls_session", {})
+        key = self._task_key()
+        if value is None:
+            tls.pop(key, None)
+        else:
+            tls[key] = value
+
+    @property
+    def _current_session_id(self):
+        return self.__dict__.get("_tls_session_id", {}).get(self._task_key())
+
+    @_current_session_id.setter
+    def _current_session_id(self, value):
+        tls = self.__dict__.setdefault("_tls_session_id", {})
+        key = self._task_key()
+        if value is None:
+            tls.pop(key, None)
+        else:
+            tls[key] = value
+
+    @property
+    def _current_conversation_id(self):
+        return self.__dict__.get("_tls_conversation_id", {}).get(self._task_key())
+
+    @_current_conversation_id.setter
+    def _current_conversation_id(self, value):
+        tls = self.__dict__.setdefault("_tls_conversation_id", {})
+        key = self._task_key()
+        if value is None:
+            tls.pop(key, None)
+        else:
+            tls[key] = value
+
     def __init__(
         self,
         name: str | None = None,
@@ -688,12 +737,13 @@ class Agent:
                 delivery_receipts = receipts
         return tool_results, executed_tool_names, delivery_receipts
 
-    async def initialize(self, start_scheduler: bool = True) -> None:
+    async def initialize(self, start_scheduler: bool = True, lightweight: bool = False) -> None:
         """
         初始化 Agent
 
         Args:
             start_scheduler: 是否启动定时任务调度器（定时任务执行时应设为 False）
+            lightweight: 轻量模式（sub-agent），跳过预热、表情包、人格特征等非必要初始化
         """
         if self._initialized:
             return
@@ -708,7 +758,8 @@ class Agent:
         await self._load_installed_skills()
 
         # 加载 MCP 配置
-        await self._load_mcp_servers()
+        if not lightweight:
+            await self._load_mcp_servers()
 
         # 启动记忆会话
         session_id = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + str(uuid.uuid4())[:8]
@@ -724,6 +775,10 @@ class Agent:
         # 设置系统提示词 (包含技能清单、MCP 清单和相关记忆)
         base_prompt = self.identity.get_system_prompt()
         self._context.system = self._build_system_prompt(base_prompt, use_compiled=True)
+
+        if lightweight:
+            self._initialized = True
+            return
 
         # === 启动预热（把昂贵但可复用的初始化提前到启动阶段）===
         # 目标：避免首条用户消息才加载 embedding/向量库、生成清单等，导致 IM 首响应显著变慢。
@@ -3688,12 +3743,16 @@ create_agent(name="名称", description="描述", skills=["技能"], custom_prom
         self.agent_state.current_session = None
         self._current_task_monitor = None
         # 重置任务状态，避免已取消/已完成的任务泄漏到下一次会话
-        _sid = getattr(self, "_current_session_id", None)
+        _sid = self._current_session_id
         _task = (
             self.agent_state.get_task_for_session(_sid) if _sid and self.agent_state else None
         ) or (self.agent_state.current_task if self.agent_state else None)
         if _task and not _task.is_active:
             self.agent_state.reset_task(session_id=_sid)
+
+        # Clean up task-local session references to prevent dict growth
+        self._current_session_id = None
+        self._current_conversation_id = None
 
         # 释放推理引擎中残留的大对象（working_messages / checkpoints），
         # working_messages 可能持有数十 MB 的工具结果（截图 base64、网页内容等）
