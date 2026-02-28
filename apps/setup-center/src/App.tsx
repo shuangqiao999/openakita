@@ -462,6 +462,7 @@ type StepId =
   | "im"
   | "tools"
   | "agent"
+  | "workspace"
   | "advanced";
 
 type Step = {
@@ -1025,7 +1026,7 @@ export function App() {
 
   const [view, setView] = useState<"wizard" | "status" | "chat" | "skills" | "im" | "onboarding" | "modules" | "token_stats" | "mcp" | "scheduler" | "memory" | "dashboard" | "agent_manager">("wizard");
   const [appInitializing, setAppInitializing] = useState(true); // 首次加载检测中，防止闪烁
-  const [configExpanded, setConfigExpanded] = useState(true);
+  const [configExpanded, setConfigExpanded] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [bugReportOpen, setBugReportOpen] = useState(false);
   const [disabledViews, setDisabledViews] = useState<string[]>([]);
@@ -4558,6 +4559,7 @@ export function App() {
     im: <IconIM size={14} />,
     tools: <IconSkills size={14} />,
     agent: <IconBot size={14} />,
+    workspace: <IconBook size={14} />,
     advanced: <IconGear size={14} />,
   };
 
