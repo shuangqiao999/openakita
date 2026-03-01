@@ -418,7 +418,7 @@ class MCPClient:
                 continue
             try:
                 await cm.__aexit__(None, None, None)
-            except Exception:
+            except BaseException:
                 pass
 
     async def _discover_capabilities(self, server_name: str, client: Any) -> None:
@@ -454,23 +454,53 @@ class MCPClient:
                 )
 
     async def disconnect(self, server_name: str) -> None:
-        """断开服务器连接"""
+        """断开服务器连接
+
+        MCP SDK 的 stdio_client 内部使用 anyio cancel scope。如果 disconnect()
+        与 connect() 不在同一个 asyncio task 中执行（例如 connect 在初始化 task，
+        disconnect 在工具执行 task），__aexit__ 会触发:
+            RuntimeError: Attempted to exit cancel scope in a different task
+        该错误会在异步生成器清理阶段传播到事件循环，导致整个后端进程崩溃。
+
+        修复策略:
+        1. 对 stdio 连接先终止子进程，避免管道断裂问题
+        2. 将 CM 清理放到独立后台 task 中执行并隔离异常
+        3. 主调用方只等待有限时间，不会因清理失败而阻塞或崩溃
+        """
         if server_name in self._connections:
             conn = self._connections.pop(server_name)
-            # 逐个关闭，每个独立 try/except 防止一个失败阻塞后续清理
-            for cm_key in ("_client_cm", "_stdio_cm", "_http_cm", "_sse_cm"):
-                cm = conn.get(cm_key)
-                if cm is None:
-                    continue
-                try:
-                    await asyncio.wait_for(
-                        cm.__aexit__(None, None, None), timeout=5,
-                    )
-                except BaseException:
-                    logger.debug(
-                        "MCP %s cleanup failed for %s (ignored)",
-                        cm_key, server_name, exc_info=True,
-                    )
+
+            # 对 stdio 连接，先终止子进程再清理 CM
+            if conn.get("transport") == "stdio":
+                await self._terminate_stdio_subprocess(conn.get("_stdio_cm"))
+
+            # 在独立后台 task 中清理 context managers，
+            # 隔离 anyio cancel scope 跨任务错误
+            task = asyncio.create_task(
+                self._isolated_cm_cleanup(server_name, conn),
+                name=f"mcp-cleanup-{server_name}",
+            )
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=8)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                logger.debug(
+                    "MCP cleanup for %s timed out or was cancelled", server_name,
+                )
+            except BaseException:
+                logger.debug(
+                    "MCP cleanup for %s raised unexpected error (ignored)",
+                    server_name, exc_info=True,
+                )
+            finally:
+                # 确保后台 task 不会泄漏未检索的异常
+                if task.done() and not task.cancelled():
+                    with contextlib.suppress(BaseException):
+                        task.result()
+                elif not task.done():
+                    task.cancel()
+                    with contextlib.suppress(BaseException):
+                        await task
+
             # 清理该服务器的工具/资源/提示词
             self._tools = {
                 k: v for k, v in self._tools.items() if not k.startswith(f"{server_name}:")
@@ -482,6 +512,60 @@ class MCPClient:
                 k: v for k, v in self._prompts.items() if not k.startswith(f"{server_name}:")
             }
             logger.info(f"Disconnected from MCP server: {server_name}")
+
+    @staticmethod
+    async def _terminate_stdio_subprocess(stdio_cm: Any) -> None:
+        """终止 stdio_client 管理的子进程。
+
+        通过 async generator 的 frame locals 访问子进程句柄并直接终止，
+        避免后续 __aexit__ 时因管道断裂导致 Windows ProactorEventLoop 异常。
+        """
+        if stdio_cm is None:
+            return
+        try:
+            frame = getattr(stdio_cm, "ag_frame", None)
+            if frame is None:
+                return
+            proc = frame.f_locals.get("process")
+            if proc is None:
+                return
+            if hasattr(proc, "terminate"):
+                proc.terminate()
+                # 等待子进程退出，超时则强杀
+                if hasattr(proc, "wait"):
+                    try:
+                        wait_coro = proc.wait()
+                        if asyncio.iscoroutine(wait_coro):
+                            await asyncio.wait_for(wait_coro, timeout=2)
+                    except (asyncio.TimeoutError, ProcessLookupError):
+                        with contextlib.suppress(Exception):
+                            if hasattr(proc, "kill"):
+                                proc.kill()
+                    except BaseException:
+                        pass
+        except Exception:
+            pass
+
+    @staticmethod
+    async def _isolated_cm_cleanup(server_name: str, conn: dict) -> None:
+        """在独立 task 中逐个清理 context managers。
+
+        即使 anyio 抛出 RuntimeError（跨任务 cancel scope），
+        也不会传播到主事件循环。
+        """
+        for cm_key in ("_client_cm", "_stdio_cm", "_http_cm", "_sse_cm"):
+            cm = conn.get(cm_key)
+            if cm is None:
+                continue
+            try:
+                await asyncio.wait_for(
+                    cm.__aexit__(None, None, None), timeout=5,
+                )
+            except BaseException:
+                logger.debug(
+                    "MCP %s cleanup failed for %s (ignored)",
+                    cm_key, server_name, exc_info=True,
+                )
 
     async def call_tool(
         self,
