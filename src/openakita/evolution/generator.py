@@ -4,6 +4,7 @@
 使用 LLM 自动生成符合 Agent Skills 规范 (SKILL.md) 的技能。
 """
 
+import json
 import logging
 import re
 from dataclasses import dataclass
@@ -162,6 +163,9 @@ if __name__ == "__main__":
         skill_md_path = skill_dir / "SKILL.md"
         await self.file_tool.write(str(skill_md_path), skill_md_content)
 
+        # 4.5 生成 .openakita-i18n.json（中文翻译）
+        await self._generate_i18n(skill_dir, name, description)
+
         # 5. 生成脚本
         script_content = await self._generate_script(name, description)
         script_path = scripts_dir / "main.py"
@@ -222,6 +226,14 @@ if __name__ == "__main__":
 
         response = await self.brain.think(prompt)
         return response.content.strip()
+
+    async def _generate_i18n(self, skill_dir: Path, name: str, description: str) -> None:
+        """生成 .openakita-i18n.json 中文翻译文件。"""
+        try:
+            from ..skills.i18n import auto_translate_skill
+            await auto_translate_skill(skill_dir, name, description, self.brain)
+        except Exception as e:
+            logger.warning(f"Failed to generate i18n for {name}: {e}")
 
     async def _generate_skill_md(self, name: str, description: str) -> str:
         """生成 SKILL.md 内容"""

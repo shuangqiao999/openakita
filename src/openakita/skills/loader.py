@@ -5,13 +5,14 @@
 从标准目录结构加载 SKILL.md 定义的技能
 """
 
+import json
 import logging
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-from .parser import ParsedSkill, SkillParser
+from .parser import ParsedSkill, SkillMetadata, SkillParser
 from .registry import SkillRegistry
 
 logger = logging.getLogger(__name__)
@@ -203,6 +204,8 @@ class SkillLoader:
         logger.info(f"Loaded {loaded} skills from {directory}")
         return loaded
 
+    I18N_FILENAME = ".openakita-i18n.json"
+
     def load_skill(self, skill_dir: Path) -> ParsedSkill | None:
         """
         加载单个技能
@@ -215,6 +218,9 @@ class SkillLoader:
         """
         try:
             skill = self.parser.parse_directory(skill_dir)
+
+            # 加载 sidecar 翻译文件
+            self._load_i18n(skill_dir, skill.metadata)
 
             # 验证
             errors = self.parser.validate(skill)
@@ -232,6 +238,25 @@ class SkillLoader:
         except Exception as e:
             logger.error(f"Failed to load skill from {skill_dir}: {e}")
             return None
+
+    def _load_i18n(self, skill_dir: Path, metadata: SkillMetadata) -> None:
+        """从 .openakita-i18n.json sidecar 文件加载国际化数据到 metadata。"""
+        i18n_file = skill_dir / self.I18N_FILENAME
+        if not i18n_file.exists():
+            return
+        try:
+            data = json.loads(i18n_file.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return
+            for lang, fields in data.items():
+                if not isinstance(fields, dict):
+                    continue
+                if "name" in fields:
+                    metadata.name_i18n[lang] = str(fields["name"])
+                if "description" in fields:
+                    metadata.description_i18n[lang] = str(fields["description"])
+        except Exception as e:
+            logger.warning(f"Failed to load i18n for {skill_dir.name}: {e}")
 
     def get_skill(self, name: str) -> ParsedSkill | None:
         """获取已加载的技能"""

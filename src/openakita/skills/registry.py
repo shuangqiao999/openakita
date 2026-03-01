@@ -50,8 +50,20 @@ class SkillEntry:
     # 技能路径 (用于延迟加载)
     skill_path: str | None = None
 
+    # 国际化（由 .openakita-i18n.json sidecar 文件注入）
+    name_i18n: dict[str, str] = field(default_factory=dict)
+    description_i18n: dict[str, str] = field(default_factory=dict)
+
     # 完整技能对象引用 (延迟加载)
     _parsed_skill: Optional["ParsedSkill"] = field(default=None, repr=False)
+
+    def get_display_name(self, lang: str = "zh") -> str:
+        """按语言返回显示名称，找不到则回退到 name"""
+        return self.name_i18n.get(lang, self.name)
+
+    def get_display_description(self, lang: str = "zh") -> str:
+        """按语言返回显示描述，找不到则回退到 description"""
+        return self.description_i18n.get(lang, self.description)
 
     @classmethod
     def from_parsed_skill(cls, skill: "ParsedSkill") -> "SkillEntry":
@@ -70,6 +82,8 @@ class SkillEntry:
             tool_name=meta.tool_name,
             category=meta.category,
             skill_path=str(skill.path),
+            name_i18n=dict(meta.name_i18n),
+            description_i18n=dict(meta.description_i18n),
             _parsed_skill=skill,
         )
 

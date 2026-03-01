@@ -293,6 +293,8 @@ export type SkillConfigField = {
 export type SkillInfo = {
   name: string;
   description: string;
+  name_i18n?: Record<string, string> | null;
+  description_i18n?: Record<string, string> | null;
   system: boolean;
   enabled?: boolean;
   toolName?: string | null;

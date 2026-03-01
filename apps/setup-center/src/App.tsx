@@ -1319,7 +1319,7 @@ export function App() {
   >([]);
   const [skillSummary, setSkillSummary] = useState<{ count: number; systemCount: number; externalCount: number } | null>(null);
   const [skillsDetail, setSkillsDetail] = useState<
-    { name: string; description: string; system: boolean; enabled?: boolean; tool_name?: string | null; category?: string | null; path?: string | null }[] | null
+    { name: string; description: string; name_i18n?: Record<string, string> | null; description_i18n?: Record<string, string> | null; system: boolean; enabled?: boolean; tool_name?: string | null; category?: string | null; path?: string | null }[] | null
   >(null);
   const [skillsSelection, setSkillsSelection] = useState<Record<string, boolean>>({});
   const [skillsTouched, setSkillsTouched] = useState(false);
@@ -6327,12 +6327,17 @@ export function App() {
                   {systemSkills.length > 0 && (
                     <div className="help">{t("config.toolsSystemLabel", { count: systemSkills.length })}</div>
                   )}
-                  {systemSkills.map((s) => (
-                    <div key={s.name} className="row" style={{ justifyContent: "space-between", alignItems: "center", padding: "2px 0" }}>
-                      <div style={{ minWidth: 0 }}><b>{s.name}</b> <span className="pill" style={{ fontSize: 11 }}>{t("skills.system")}</span>
-                        <span className="help" style={{ marginLeft: 8 }}>{s.description}</span></div>
-                    </div>
-                  ))}
+                  {systemSkills.map((s) => {
+                    const lang = i18n.language?.startsWith("zh") ? "zh" : i18n.language || "zh";
+                    const dName = s.name_i18n?.[lang] || s.name;
+                    const dDesc = s.description_i18n?.[lang] || s.description;
+                    return (
+                      <div key={s.name} className="row" style={{ justifyContent: "space-between", alignItems: "center", padding: "2px 0" }}>
+                        <div style={{ minWidth: 0 }}><b>{dName}</b>{dName !== s.name && <span style={{ opacity: 0.4, marginLeft: 4, fontSize: 11, fontFamily: "monospace" }}>{s.name}</span>} <span className="pill" style={{ fontSize: 11 }}>{t("skills.system")}</span>
+                          <span className="help" style={{ marginLeft: 8 }}>{dDesc}</span></div>
+                      </div>
+                    );
+                  })}
                   {externalSkills.length > 0 && (
                     <>
                       <div className="divider" />
@@ -6341,10 +6346,13 @@ export function App() {
                   )}
                   {externalSkills.map((s) => {
                     const on = !!skillsSelection[s.name];
+                    const lang = i18n.language?.startsWith("zh") ? "zh" : i18n.language || "zh";
+                    const dName = s.name_i18n?.[lang] || s.name;
+                    const dDesc = s.description_i18n?.[lang] || s.description;
                     return (
                       <div key={s.name} className="row" style={{ justifyContent: "space-between", alignItems: "center", padding: "2px 0" }}>
-                        <div style={{ flex: 1, minWidth: 0 }}><b>{s.name}</b>
-                          <span className="help" style={{ marginLeft: 8 }}>{s.description}</span></div>
+                        <div style={{ flex: 1, minWidth: 0 }}><b>{dName}</b>{dName !== s.name && <span style={{ opacity: 0.4, marginLeft: 4, fontSize: 11, fontFamily: "monospace" }}>{s.name}</span>}
+                          <span className="help" style={{ marginLeft: 8 }}>{dDesc}</span></div>
                         <label className="pill" style={{ cursor: "pointer", userSelect: "none", flexShrink: 0 }}>
                           <input style={{ width: 14, height: 14 }} type="checkbox" checked={on}
                             onChange={(e) => { setSkillsTouched(true); setSkillsSelection((m) => ({ ...m, [s.name]: e.target.checked })); }} />

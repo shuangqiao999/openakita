@@ -57,6 +57,19 @@ class SkillMetadata:
     #            "required": bool, "help": str, "default": Any, "options": list, "min": num, "max": num}
     config: list[dict] = field(default_factory=list)
 
+    # 国际化（由 .openakita-i18n.json sidecar 文件注入，不存储在 frontmatter 中）
+    # key 为语言代码 (如 "zh")，value 为该语言的显示名/描述
+    name_i18n: dict[str, str] = field(default_factory=dict)
+    description_i18n: dict[str, str] = field(default_factory=dict)
+
+    def get_display_name(self, lang: str = "zh") -> str:
+        """按语言返回显示名称，找不到则回退到 name"""
+        return self.name_i18n.get(lang, self.name)
+
+    def get_display_description(self, lang: str = "zh") -> str:
+        """按语言返回显示描述，找不到则回退到 description"""
+        return self.description_i18n.get(lang, self.description)
+
     def __post_init__(self):
         """验证字段"""
         self._validate_name()

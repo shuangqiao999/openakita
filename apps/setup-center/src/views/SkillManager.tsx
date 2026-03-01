@@ -8,6 +8,18 @@ import type { SkillInfo, SkillConfigField, MarketplaceSkill, EnvMap } from "../t
 import { envGet, envSet } from "../utils";
 import { IconGear, IconZap, IconPackage, IconStar, IconCheck, IconX, IconDownload, IconSearch, IconConfig } from "../icons";
 
+// ─── i18n 辅助：按当前语言优先显示中文名/描述 ───
+
+function getSkillDisplayName(skill: SkillInfo, lang: string): string {
+  const key = lang.startsWith("zh") ? "zh" : lang;
+  return skill.name_i18n?.[key] || skill.name;
+}
+
+function getSkillDisplayDesc(skill: SkillInfo, lang: string): string {
+  const key = lang.startsWith("zh") ? "zh" : lang;
+  return skill.description_i18n?.[key] || skill.description;
+}
+
 // ─── 配置表单自动生成 ───
 
 function SkillConfigForm({
@@ -147,7 +159,10 @@ function SkillCard({
     : configComplete
       ? "rgba(16,185,129,1)"
       : "rgba(245,158,11,1)";
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const lang = i18n.language || "zh";
+  const displayName = getSkillDisplayName(skill, lang);
+  const displayDesc = getSkillDisplayDesc(skill, lang);
   const statusText = skill.enabled === false
     ? t("skills.disabled")
     : configComplete
@@ -162,7 +177,10 @@ function SkillCard({
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontWeight: 800, fontSize: 14 }}>{skill.name}</span>
+            <span style={{ fontWeight: 800, fontSize: 14 }}>{displayName}</span>
+            {displayName !== skill.name && (
+              <span style={{ fontSize: 11, opacity: 0.4, fontFamily: "monospace" }}>{skill.name}</span>
+            )}
             <span className="pill" style={{ fontSize: 11, borderColor: statusColor + "33" }}>
               <span style={{ display: "inline-block", width: 6, height: 6, borderRadius: 3, background: statusColor, marginRight: 4 }} />
               {statusText}
@@ -170,7 +188,7 @@ function SkillCard({
             <span style={{ fontSize: 11, opacity: 0.5 }}>{skill.system ? t("skills.system") : t("skills.external")}</span>
           </div>
           <div style={{ fontSize: 12, opacity: 0.6, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {skill.description}
+            {displayDesc}
           </div>
         </div>
         <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
@@ -354,6 +372,8 @@ export function SkillManager({
       const list: SkillInfo[] = (data.skills || []).map((s: Record<string, unknown>) => ({
         name: s.name as string,
         description: s.description as string || "",
+        name_i18n: (s.name_i18n as Record<string, string> | null) || null,
+        description_i18n: (s.description_i18n as Record<string, string> | null) || null,
         system: s.system as boolean || false,
         enabled: s.enabled as boolean | undefined,
         toolName: s.tool_name as string | null,
@@ -399,15 +419,20 @@ export function SkillManager({
     [skills, envDraft, enabledDraft],
   );
 
-  // 已安装技能搜索过滤
+  // 已安装技能搜索过滤（同时匹配原始字段和 i18n 字段）
   const filteredSkills = useMemo(() => {
     const q = installedSearch.trim().toLowerCase();
     if (!q) return skillsWithConfig;
-    return skillsWithConfig.filter((s) =>
-      s.name.toLowerCase().includes(q) ||
-      (s.description && s.description.toLowerCase().includes(q)) ||
-      (s.category && s.category.toLowerCase().includes(q))
-    );
+    return skillsWithConfig.filter((s) => {
+      if (s.name.toLowerCase().includes(q)) return true;
+      if (s.description && s.description.toLowerCase().includes(q)) return true;
+      if (s.category && s.category.toLowerCase().includes(q)) return true;
+      const i18nValues = [
+        ...Object.values(s.name_i18n || {}),
+        ...Object.values(s.description_i18n || {}),
+      ];
+      return i18nValues.some((v) => v.toLowerCase().includes(q));
+    });
   }, [skillsWithConfig, installedSearch]);
 
   // ── 保存技能配置 ──

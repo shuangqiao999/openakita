@@ -85,14 +85,18 @@ class SkillsHandler:
             output += f"**系统技能 ({len(system_skills)})**:\n"
             for skill in system_skills:
                 auto = "自动" if not skill.disable_model_invocation else "手动"
-                output += f"- {skill.name} [{auto}] - {skill.description}\n"
+                zh_name = skill.name_i18n.get("zh", "")
+                name_part = f"{skill.name} ({zh_name})" if zh_name else skill.name
+                output += f"- {name_part} [{auto}] - {skill.description}\n"
             output += "\n"
 
         if external_skills:
             output += f"**外部技能 ({len(external_skills)})**:\n"
             for skill in external_skills:
                 auto = "自动" if not skill.disable_model_invocation else "手动"
-                output += f"- {skill.name} [{auto}]\n"
+                zh_name = skill.name_i18n.get("zh", "")
+                name_part = f"{skill.name} ({zh_name})" if zh_name else skill.name
+                output += f"- {name_part} [{auto}]\n"
                 output += f"  {skill.description}\n\n"
 
         return output

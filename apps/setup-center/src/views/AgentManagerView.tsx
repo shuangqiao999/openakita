@@ -17,6 +17,7 @@ type AgentProfile = {
 type SkillItem = {
   name: string;
   enabled: boolean;
+  name_i18n?: Record<string, string> | null;
 };
 
 const EMPTY_PROFILE: AgentProfile = {
@@ -45,7 +46,7 @@ export function AgentManagerView({
   visible?: boolean;
   multiAgentEnabled?: boolean;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
   const [loading, setLoading] = useState(false);
   const [editorOpen, setEditorOpen] = useState(false);
@@ -546,7 +547,7 @@ export function AgentManagerView({
                         style={{ accentColor: "var(--primary, #3b82f6)", flexShrink: 0, width: 16, height: 16 }}
                       />
                       <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {skill.name}
+                        {skill.name_i18n?.[i18n.language?.startsWith("zh") ? "zh" : i18n.language || "zh"] || skill.name}
                       </span>
                     </label>
                   );

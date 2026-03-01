@@ -11,6 +11,7 @@ Examples:
     init_skill.py custom-skill --path /custom/location
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -256,6 +257,19 @@ def init_skill(skill_name, path):
         example_asset = assets_dir / 'example_asset.txt'
         example_asset.write_text(EXAMPLE_ASSET)
         print("✅ Created assets/example_asset.txt")
+
+        # Create .openakita-i18n.json template for Chinese translation
+        i18n_data = {
+            "zh": {
+                "name": "[TODO: 中文技能名（2-6个字）]",
+                "description": "[TODO: 技能功能的中文描述]"
+            }
+        }
+        i18n_path = skill_dir / '.openakita-i18n.json'
+        i18n_path.write_text(
+            json.dumps(i18n_data, ensure_ascii=False, indent=2) + "\n"
+        )
+        print("✅ Created .openakita-i18n.json (中文翻译模板)")
     except Exception as e:
         print(f"❌ Error creating resource directories: {e}")
         return None
@@ -264,8 +278,9 @@ def init_skill(skill_name, path):
     print(f"\n✅ Skill '{skill_name}' initialized successfully at {skill_dir}")
     print("\nNext steps:")
     print("1. Edit SKILL.md to complete the TODO items and update the description")
-    print("2. Customize or delete the example files in scripts/, references/, and assets/")
-    print("3. Run the validator when ready to check the skill structure")
+    print("2. Edit .openakita-i18n.json to fill in Chinese name and description")
+    print("3. Customize or delete the example files in scripts/, references/, and assets/")
+    print("4. Run the validator when ready to check the skill structure")
 
     return skill_dir
 

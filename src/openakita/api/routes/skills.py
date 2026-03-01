@@ -101,6 +101,43 @@ def _notify_pools_skills_changed(request: Request) -> None:
                 logger.warning(f"Failed to notify pool ({pool_attr}): {e}")
 
 
+async def _auto_translate_new_skills(request: Request, install_url: str) -> None:
+    """安装后为缺少 .openakita-i18n.json 的技能自动生成中文翻译。
+
+    翻译失败不影响安装结果，仅记录日志。
+    """
+    from openakita.core.agent import Agent
+
+    try:
+        agent = getattr(request.app.state, "agent", None)
+        actual_agent = agent
+        if not isinstance(agent, Agent):
+            actual_agent = getattr(agent, "_local_agent", None)
+        if actual_agent is None:
+            return
+
+        brain = getattr(actual_agent, "brain", None)
+        registry = getattr(actual_agent, "skill_registry", None)
+        if not brain or not registry:
+            return
+
+        from openakita.skills.i18n import auto_translate_skill
+
+        for skill in registry.list_all():
+            if skill.name_i18n:
+                continue
+            if not skill.skill_path:
+                continue
+            skill_dir = Path(skill.skill_path).parent
+            if not skill_dir.exists():
+                continue
+            await auto_translate_skill(
+                skill_dir, skill.name, skill.description, brain,
+            )
+    except Exception as e:
+        logger.warning(f"Auto-translate after install failed: {e}")
+
+
 @router.get("/api/skills")
 async def list_skills(request: Request):
     """List all available skills with their config schemas.
@@ -159,6 +196,8 @@ async def list_skills(request: Request):
         skills.append({
             "name": skill.name,
             "description": skill.description,
+            "name_i18n": skill.name_i18n or None,
+            "description_i18n": skill.description_i18n or None,
             "system": is_system,
             "enabled": is_enabled,
             "category": skill.category,
@@ -235,6 +274,9 @@ async def install_skill(request: Request):
                 base_path, _ = _read_external_allowlist()
                 loader.load_all(base_path)
             _apply_allowlist_and_rebuild_catalog(request)
+
+            # 自动翻译：为新安装的技能生成 .openakita-i18n.json
+            await _auto_translate_new_skills(request, url)
     except Exception as e:
         logger.warning(f"Post-install reload failed (skill was installed): {e}")
 
