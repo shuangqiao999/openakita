@@ -2936,13 +2936,14 @@ create_agent(name="名称", description="描述", skills=["技能"], custom_prom
                     if item.get("type") == "text":
                         texts.append(item.get("text", ""))
                     elif item.get("type") == "tool_use":
+                        from .tool_executor import smart_truncate as _st
                         name = item.get("name", "unknown")
                         input_data = item.get("input", {})
                         input_summary = json.dumps(input_data, ensure_ascii=False)
-                        if len(input_summary) > 2000:
-                            input_summary = input_summary[:1500] + "...(省略)..." + input_summary[-400:]
+                        input_summary, _ = _st(input_summary, 3000, save_full=False, label="compress_input")
                         texts.append(f"[调用工具: {name}, 参数: {input_summary}]")
                     elif item.get("type") == "tool_result":
+                        from .tool_executor import smart_truncate as _st
                         raw_content = item.get("content", "")
                         if isinstance(raw_content, list):
                             text_parts = [
@@ -2953,8 +2954,7 @@ create_agent(name="名称", description="描述", skills=["技能"], custom_prom
                             result_text = "\n".join(text_parts)
                         else:
                             result_text = str(raw_content)
-                        if len(result_text) > 8000:
-                            result_text = result_text[:6000] + "...(省略)..." + result_text[-1500:]
+                        result_text, _ = _st(result_text, 10000, save_full=False, label="compress_result")
                         is_error = item.get("is_error", False)
                         status = "错误" if is_error else "成功"
                         texts.append(f"[工具结果({status}): {result_text}]")
@@ -3935,14 +3935,19 @@ create_agent(name="名称", description="描述", skills=["技能"], custom_prom
                     pass
 
             # === 构建 IM 思维链进度回调 ===
+            # 受 im_chain_push 开关控制：默认关闭以减少刷屏，不影响内部 trace 保存
             _progress_cb = None
             if gateway and session:
-                async def _im_chain_progress(text: str) -> None:
-                    try:
-                        await gateway.emit_progress_event(session, text)
-                    except Exception:
-                        pass
-                _progress_cb = _im_chain_progress
+                _chain_push = session.get_metadata("chain_push")
+                if _chain_push is None:
+                    _chain_push = settings.im_chain_push
+                if _chain_push:
+                    async def _im_chain_progress(text: str) -> None:
+                        try:
+                            await gateway.emit_progress_event(session, text)
+                        except Exception:
+                            pass
+                    _progress_cb = _im_chain_progress
 
             # === 核心推理 (同步返回) ===
             response_text = await self._chat_with_tools_and_context(
@@ -4193,14 +4198,13 @@ create_agent(name="名称", description="描述", skills=["技能"], custom_prom
 
         空字符串表示无工具调用。
         """
-        from .tool_executor import save_overflow
+        from .tool_executor import save_overflow, smart_truncate
 
         trace = getattr(self, "_last_finalized_trace", None) or \
             getattr(self.reasoning_engine, "_last_react_trace", None) or []
         if not trace:
             return ""
 
-        # 动态预算：根据工具数量自适应每个工具的结果摘要长度
         TOTAL_RESULT_BUDGET = 4000
         num_tools = sum(len(it.get("tool_calls", [])) for it in trace)
         per_tool_budget = max(150, min(600, TOTAL_RESULT_BUDGET // max(num_tools, 1)))
@@ -4219,10 +4223,13 @@ create_agent(name="名称", description="描述", skills=["技能"], custom_prom
                 tc_input = tc.get("input", {})
                 param_hint = ""
                 if isinstance(tc_input, dict):
-                    kv = {
-                        k: (str(v)[:80] + "..." if len(str(v)) > 80 else str(v))
-                        for k, v in list(tc_input.items())[:3]
-                    }
+                    items = list(tc_input.items())[:6]
+                    param_budget = max(80, per_tool_budget // 2 // max(len(items), 1))
+                    kv = {}
+                    for k, v in items:
+                        val_str = str(v)
+                        val_truncated, _ = smart_truncate(val_str, param_budget, save_full=False, label="param")
+                        kv[k] = val_truncated
                     param_hint = str(kv) if kv else ""
 
                 result_hint = ""
@@ -4522,18 +4529,19 @@ create_agent(name="名称", description="描述", skills=["技能"], custom_prom
                 context_parts.append(f"当前任务: {task_desc}")
             summary = getattr(session.context, "summary", None) if hasattr(session, "context") else None
             if summary:
-                context_parts.append(f"对话摘要: {summary[:300]}")
+                from .tool_executor import smart_truncate as _st
+                summary_trunc, _ = _st(summary, 600, save_full=False, label="topic_summary")
+                context_parts.append(f"对话摘要: {summary_trunc}")
 
-        # Layer 2: 近期对话（取最近 6 轮，每条保留足够内容）
+        from .tool_executor import smart_truncate as _st
         recent = session_messages[-6:]
         dialog_lines: list[str] = []
         for msg in recent:
             role = "用户" if msg.get("role") == "user" else "助手"
             content = msg.get("content", "")
             if isinstance(content, str) and content:
-                preview = content[:300].replace("\n", " ")
-                if len(content) > 300:
-                    preview += "..."
+                preview, _ = _st(content, 500, save_full=False, label="topic_content")
+                preview = preview.replace("\n", " ")
                 dialog_lines.append(f"{role}: {preview}")
         if dialog_lines:
             context_parts.append("近期对话:\n" + "\n".join(dialog_lines))
@@ -4543,11 +4551,12 @@ create_agent(name="名称", description="描述", skills=["技能"], custom_prom
 
         full_context = "\n\n".join(context_parts)
 
+        new_trunc, _ = _st(_new, 800, save_full=False, label="topic_new")
         try:
             response = await self.brain.compiler_think(
                 prompt=(
                     f"{full_context}\n\n"
-                    f"新消息: {_new[:500]}\n\n"
+                    f"新消息: {new_trunc}\n\n"
                     "判断：新消息是延续当前话题(CONTINUE)，还是开启全新话题(NEW)？\n"
                     "只输出一个单词：CONTINUE 或 NEW"
                 ),

@@ -392,10 +392,12 @@ duration 参考:
         if not user_turns:
             return [], []
 
+        from openakita.core.tool_executor import smart_truncate as _st
+
         conv_lines = []
         for t in turns[-30:]:
             role_label = "用户" if t.role == "user" else "助手"
-            content = (t.content or "")[:500]
+            content, _ = _st(t.content or "", 1500, save_full=False, label="mem_conv")
             if content.strip():
                 conv_lines.append(f"[{role_label}]: {content}")
             tool_ctx = self._build_tool_context(t.tool_calls, t.tool_results)
@@ -466,10 +468,12 @@ duration 参考:
         if len(assistant_turns) < 2:
             return []
 
+        from openakita.core.tool_executor import smart_truncate as _st
+
         conv_lines = []
         for t in turns[-30:]:
             role_label = "用户" if t.role == "user" else "助手"
-            content = (t.content or "")[:500]
+            content, _ = _st(t.content or "", 1500, save_full=False, label="mem_conv")
             if content.strip():
                 conv_lines.append(f"[{role_label}]: {content}")
             tool_ctx = self._build_tool_context(t.tool_calls, t.tool_results)
@@ -545,19 +549,24 @@ duration 参考:
             return ""
 
         lines = ["\n工具调用:"]
+        from openakita.core.tool_executor import smart_truncate as _st
+
         for tc in (tool_calls or [])[:5]:
             name = tc.get("name", "unknown")
             inp = tc.get("input", {})
             key_params = {k: v for k, v in inp.items() if k in (
                 "command", "path", "query", "url", "content", "filename"
             )} if isinstance(inp, dict) else {}
-            lines.append(f"  - {name}({json.dumps(key_params, ensure_ascii=False)[:200]})")
+            params_str = json.dumps(key_params, ensure_ascii=False)
+            params_trunc, _ = _st(params_str, 400, save_full=False, label="mem_tool_param")
+            lines.append(f"  - {name}({params_trunc})")
 
         if tool_results:
             for tr in tool_results[:3]:
                 content = tr.get("content", "")
                 is_err = tr.get("is_error", False)
-                summary = content[:150] if isinstance(content, str) else str(content)[:150]
+                raw = content if isinstance(content, str) else str(content)
+                summary, _ = _st(raw, 300, save_full=False, label="mem_tool_result")
                 prefix = "错误" if is_err else "结果"
                 lines.append(f"  {prefix}: {summary}")
 
@@ -579,11 +588,12 @@ duration 参考:
 
         action_nodes = self._extract_action_nodes(turns)
 
-        conv_text = "\n".join(
-            f"[{t.role}]: {(t.content or '')[:300]}"
-            + (f" [调用了 {len(t.tool_calls)} 个工具]" if t.tool_calls else "")
-            for t in turns[-20:]
-        )
+        from openakita.core.tool_executor import smart_truncate as _st
+        def _episode_line(t):
+            c, _ = _st(t.content or "", 600, save_full=False, label="mem_episode")
+            suffix = f" [调用了 {len(t.tool_calls)} 个工具]" if t.tool_calls else ""
+            return f"[{t.role}]: {c}{suffix}"
+        conv_text = "\n".join(_episode_line(t) for t in turns[-20:])
 
         episode = Episode(
             session_id=session_id,
@@ -695,9 +705,11 @@ duration 参考:
                 resp = await self._call_brain(prompt)
                 text = (getattr(resp, "content", None) or str(resp)).strip()
 
+                from openakita.core.tool_executor import smart_truncate as _st
+                sp_content, _ = _st(text, 2000, save_full=False, label="mem_scratchpad")
                 return Scratchpad(
                     user_id=user_id,
-                    content=text[:2000],
+                    content=sp_content,
                     active_projects=self._parse_list_section(text, "当前项目"),
                     current_focus=self._parse_first_item(text, "当前项目"),
                     open_questions=self._parse_list_section(text, "未解决的问题"),
@@ -870,21 +882,25 @@ duration 参考:
 
         memories: list[Memory] = []
 
+        from openakita.core.tool_executor import smart_truncate as _st
+
         if any(k in text for k in ("我喜欢", "我更喜欢", "我习惯", "我偏好", "请以后", "以后请")):
+            pref_content, _ = _st(text, 400, save_full=False, label="mem_pref")
             memories.append(Memory(
                 type=MemoryType.PREFERENCE,
                 priority=MemoryPriority.LONG_TERM,
-                content=text[:200],
+                content=pref_content,
                 source="turn_sync",
                 importance_score=0.7,
                 tags=["preference"],
             ))
 
         if any(k in text for k in ("不要", "必须", "禁止", "永远不要", "务必")):
+            rule_content, _ = _st(text, 400, save_full=False, label="mem_rule")
             memories.append(Memory(
                 type=MemoryType.RULE,
                 priority=MemoryPriority.LONG_TERM,
-                content=text[:200],
+                content=rule_content,
                 source="turn_sync",
                 importance_score=0.8 if "永远不要" in text else 0.7,
                 tags=["rule"],

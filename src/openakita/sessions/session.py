@@ -354,17 +354,21 @@ class Session:
                 if not isinstance(content, str) or not content:
                     continue
 
+                from openakita.core.tool_executor import smart_truncate
+
                 is_rule = any(w in content for w in self._RULE_SIGNAL_WORDS)
                 if is_rule and rules_len < max_rules_len:
-                    snippet = content[:200].replace("\n", " ").strip()
-                    if len(content) > 200:
-                        snippet += "…"
+                    snippet, _ = smart_truncate(
+                        content.replace("\n", " ").strip(), 300,
+                        save_full=False, label="rule_hist",
+                    )
                     rule_snippets.append(snippet)
                     rules_len += len(snippet)
                 else:
-                    preview = content[:40].replace("\n", " ").strip()
-                    if len(content) > 40:
-                        preview += "…"
+                    preview, _ = smart_truncate(
+                        content.replace("\n", " ").strip(), 150,
+                        save_full=False, label="msg_hist",
+                    )
                     keywords.append(preview)
 
             header_parts: list[str] = []

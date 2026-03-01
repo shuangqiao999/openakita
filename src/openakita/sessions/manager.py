@@ -423,10 +423,11 @@ class SessionManager:
                                 ):
                                     block["content"] = "[图片数据已清理，请重新截图]"
                                 else:
-                                    # 其他大型内容，保留前 2000 字符
-                                    block["content"] = (
-                                        result_content[:2000]
-                                        + f"\n...[内容已截断，原长度: {len(result_content)}]"
+                                    from openakita.core.tool_executor import smart_truncate
+                                    block["content"], _ = smart_truncate(
+                                        result_content, 4000,
+                                        label="session_restore",
+                                        save_full=True,
                                     )
 
     # ==================== 通道注册表 ====================

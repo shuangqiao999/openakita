@@ -379,6 +379,7 @@ class TelegramAdapter(ChannelAdapter):
                 BotCommand("restore", "恢复默认模型"),
                 BotCommand("thinking", "深度思考模式 (on/off/auto)"),
                 BotCommand("thinking_depth", "思考深度 (low/medium/high)"),
+                BotCommand("chain", "思维链进度推送 (on/off)"),
                 BotCommand("cancel", "取消当前操作"),
                 BotCommand("restart", "终极重启服务"),
                 BotCommand("cancel_restart", "取消重启"),

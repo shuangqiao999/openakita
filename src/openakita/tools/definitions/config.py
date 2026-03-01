@@ -94,7 +94,7 @@ API Key 存入 .env，JSON 中只引用环境变量名。
                     "type": "string",
                     "description": (
                         "配置分类过滤（discover/get 时可选）。"
-                        "常见分类: Agent, LLM, 日志, 代理, IM/Telegram, IM/飞书, "
+                        "常见分类: Agent, LLM, 日志, 代理, IM/Telegram, IM/飞书, IM/思维链推送, "
                         "会话, 定时任务, 人格, 活人感, 桌面通知, Embedding/记忆搜索, 语音识别 等。"
                         "调用 discover 不带 category 可查看所有分类。"
                     ),

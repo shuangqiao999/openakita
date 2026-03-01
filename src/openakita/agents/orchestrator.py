@@ -1008,11 +1008,13 @@ def _extract_output_files(record: dict) -> list[str]:
 def _build_work_summary(record: dict) -> str:
     """Build a structured work summary from a sub-agent record.
 
-    Returns a concise multi-line text (~200-500 chars) covering:
+    Returns a concise multi-line text covering:
     task, status, tools used, deliverable files, and result brief.
     """
+    from openakita.core.tool_executor import smart_truncate
+
     agent_name = record.get("agent_name", "unknown")
-    task = record.get("task_message", "")[:150]
+    task, _ = smart_truncate(record.get("task_message", ""), 300, save_full=False, label="ws_task")
     elapsed = record.get("elapsed_s", 0)
     tools_total = record.get("tools_total", 0)
 
@@ -1023,12 +1025,13 @@ def _build_work_summary(record: dict) -> str:
 
     result_preview = record.get("result_preview", "")
     _fail_kw = ("❌", "失败", "Failed", "Error", "error", "Traceback")
-    failed = any(kw in result_preview[:300] for kw in _fail_kw)
+    failed = any(kw in result_preview for kw in _fail_kw)
     status = "❌ 失败" if failed else "✅ 完成"
 
-    result_brief = result_preview[:300].replace("\n", " ").strip()
-    if len(result_preview) > 300:
-        result_brief += "..."
+    result_brief, _ = smart_truncate(
+        result_preview.replace("\n", " ").strip(), 600,
+        save_full=False, label="ws_result",
+    )
 
     output_files = record.get("output_files") or []
 
@@ -1058,27 +1061,34 @@ def _persist_sub_agent_record(
     trace_raw = getattr(agent, "_last_finalized_trace", None) or []
     trace_raw = list(trace_raw)
 
+    from openakita.core.tool_executor import smart_truncate
+
     tools_used: list[dict] = []
     for it in trace_raw:
         for tc in it.get("tool_calls", []):
+            inp_str = str(tc.get("input", tc.get("input_preview", "")))
+            inp_trunc, _ = smart_truncate(inp_str, 400, save_full=False, label="sub_tool_input")
             tools_used.append({
                 "name": tc.get("name", ""),
-                "input_preview": str(tc.get("input", tc.get("input_preview", "")))[:200],
+                "input_preview": inp_trunc,
             })
 
     thinking_preview = ""
     for it in trace_raw:
         t = (it.get("thinking") or "").strip()
         if t:
-            thinking_preview = t[:300]
+            thinking_preview, _ = smart_truncate(t, 500, save_full=False, label="sub_thinking")
             break
+
+    task_truncated, _ = smart_truncate(message, 1000, save_full=False, label="sub_task")
+    result_truncated, _ = smart_truncate(result or "", 2000, save_full=False, label="sub_result")
 
     record = {
         "agent_id": profile.id if profile else "unknown",
         "agent_name": profile.get_display_name() if profile and hasattr(profile, "get_display_name") else (profile.name if profile else "unknown"),
         "agent_icon": (profile.icon if profile else "🤖") or "🤖",
-        "task_message": message[:500],
-        "result_preview": (result or "")[:1000],
+        "task_message": task_truncated,
+        "result_preview": result_truncated,
         "result_full": result or "",
         "thinking_preview": thinking_preview,
         "tools_used": tools_used[:20],

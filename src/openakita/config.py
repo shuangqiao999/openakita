@@ -79,6 +79,10 @@ class Settings(BaseSettings):
         default="auto",
         description="Thinking 模式: auto(自动判断), always(始终启用), never(从不启用)",
     )
+    im_chain_push: bool = Field(
+        default=False,
+        description="IM 通道是否推送思维链进度（💭思考过程、工具调用等）给用户，关闭不影响内部保存。默认关闭以减少刷屏",
+    )
     thinking_keywords: list = Field(
         default_factory=lambda: [
             "分析",

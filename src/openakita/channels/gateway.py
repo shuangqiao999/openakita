@@ -468,9 +468,10 @@ class ThinkingCommandHandler:
     支持的命令:
     - /thinking [on|off|auto]: 切换思考模式
     - /thinking_depth [low|medium|high]: 设置思考深度
+    - /chain [on|off]: 开关思维链进度推送（默认关闭）
     """
 
-    THINKING_COMMANDS = {"/thinking", "/thinking_depth"}
+    THINKING_COMMANDS = {"/thinking", "/thinking_depth", "/chain"}
 
     VALID_MODES = {"on", "off", "auto"}
     VALID_DEPTHS = {"low", "medium", "high"}
@@ -509,6 +510,19 @@ class ThinkingCommandHandler:
         text = text.strip()
         text_lower = text.lower()
 
+        # /chain - 查看或设置思维链推送开关
+        if text_lower == "/chain":
+            return self._format_chain_status(session)
+
+        if text_lower.startswith("/chain "):
+            value = text_lower.split(None, 1)[1].strip()
+            if value not in {"on", "off"}:
+                return f"❌ 无效的参数: `{value}`\n可选: `on`（开启推送）| `off`（关闭推送）"
+            enabled = value == "on"
+            session.set_metadata("chain_push", enabled)
+            label = "开启" if enabled else "关闭"
+            return f"✅ 思维链进度推送已 **{label}**"
+
         # /thinking - 查看或设置思考模式
         if text_lower == "/thinking":
             return self._format_thinking_status(session)
@@ -533,6 +547,30 @@ class ThinkingCommandHandler:
             return f"✅ 思考深度已设置为: **{self.DEPTH_LABELS[depth]}**"
 
         return None
+
+    def _format_chain_status(self, session: "Session") -> str:
+        """格式化思维链推送状态"""
+        from openakita.config import settings
+
+        current = session.get_metadata("chain_push")
+        if current is None:
+            current = settings.im_chain_push
+            source = "（跟随全局默认）"
+        else:
+            source = "（会话级设置）"
+
+        label = "开启" if current else "关闭"
+
+        lines = [
+            "📡 **思维链进度推送**\n",
+            f"当前状态: **{label}** {source}\n",
+            "开启后，处理消息时会实时推送思考过程、工具调用进度等中间状态。",
+            "关闭不影响内部推理和数据保存，仅减少消息推送。\n",
+            "**可用命令:**",
+            "`/chain on` — 开启进度推送",
+            "`/chain off` — 关闭进度推送",
+        ]
+        return "\n".join(lines)
 
     def _format_thinking_status(self, session: "Session") -> str:
         """格式化思考模式状态"""
@@ -1056,6 +1094,7 @@ class MessageGateway:
             "  `/new` / `/新话题` — 开启新话题",
             "  `/model` — 模型状态",
             "  `/thinking` — 思考模式",
+            "  `/chain` — 思维链进度推送开关",
         ]
         return "\n".join(lines)
 

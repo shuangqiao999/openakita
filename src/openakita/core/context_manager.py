@@ -641,16 +641,16 @@ class ContextManager:
                     if item.get("type") == "text":
                         texts.append(item.get("text", ""))
                     elif item.get("type") == "tool_use":
+                        from .tool_executor import smart_truncate as _st
                         name = item.get("name", "unknown")
                         input_data = item.get("input", {})
                         input_summary = json.dumps(input_data, ensure_ascii=False)
-                        if len(input_summary) > 2000:
-                            input_summary = input_summary[:1500] + "...(省略)..." + input_summary[-400:]
+                        input_summary, _ = _st(input_summary, 3000, save_full=False, label="compress_input")
                         texts.append(f"[调用工具: {name}, 参数: {input_summary}]")
                     elif item.get("type") == "tool_result":
+                        from .tool_executor import smart_truncate as _st
                         result_text = str(item.get("content", ""))
-                        if len(result_text) > 8000:
-                            result_text = result_text[:6000] + "...(省略)..." + result_text[-1500:]
+                        result_text, _ = _st(result_text, 10000, save_full=False, label="compress_result")
                         is_error = item.get("is_error", False)
                         status = "错误" if is_error else "成功"
                         texts.append(f"[工具结果({status}): {result_text}]")

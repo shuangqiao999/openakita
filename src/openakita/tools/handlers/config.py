@@ -63,6 +63,7 @@ _CATEGORY_RULES: list[tuple[tuple[str, ...], str]] = [
     (("agent_name", "max_iterations", "auto_confirm", "force_tool_call",
       "tool_max_parallel", "allow_parallel", "selfcheck_"), "Agent"),
     (("thinking_",), "Agent/思考模式"),
+    (("im_chain_push",), "IM/思维链推送"),
     (("progress_timeout", "hard_timeout"), "Agent/超时"),
     (("log_",), "日志"),
     (("whisper_",), "语音识别"),
