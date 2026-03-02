@@ -502,6 +502,44 @@ class TestMirrorConsistency:
             "Unix 应兼容 _internal/python 命名差异"
         )
 
+    def test_python_diagnostic_contract_model_in_main_rs(self):
+        """Python 诊断应使用契约化模型（生产级：可扩展/可导出/可修复）"""
+        main_rs_path = (
+            Path(__file__).parent.parent
+            / "apps"
+            / "setup-center"
+            / "src-tauri"
+            / "src"
+            / "main.rs"
+        )
+        if not main_rs_path.exists():
+            pytest.skip("main.rs not found")
+
+        content = main_rs_path.read_text(encoding="utf-8")
+
+        # 新模型核心字段
+        assert "summary: String" in content
+        assert "contracts: Vec<PythonContractResult>" in content
+        assert "repair_plan: Vec<PythonRepairStep>" in content
+        assert "trace_id: String" in content
+        assert "generated_at: String" in content
+
+        # 契约化错误码（最小覆盖）
+        assert '"C1_BUNDLED_RUNTIME"' in content
+        assert '"C2_VENV_HEALTH"' in content
+        assert '"C3_OPENAKITA_IN_VENV"' in content
+        assert '"C4_RUNTIME_LAYOUT_COMPAT"' in content
+        assert '"PY_BUNDLE_MISSING"' in content
+        assert '"PY_VENV_MISSING"' in content
+        assert '"PY_OPENAKITA_IMPORT_FAIL"' in content
+
+        # 已不再依赖 system python 诊断项
+        assert "system_python_ok" not in content
+        assert "system_python_path" not in content
+
+        # 应提供报告导出命令
+        assert "export_python_diagnostic_report" in content
+
     def test_fetch_pypi_versions_has_fallback(self):
         """fetch_pypi_versions 应有多源回退（阿里云不支持 JSON API）"""
         main_rs_path = (

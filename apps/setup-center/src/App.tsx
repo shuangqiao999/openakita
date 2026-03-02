@@ -14,7 +14,7 @@ import { MCPView } from "./views/MCPView";
 import { SchedulerView } from "./views/SchedulerView";
 import { MemoryView } from "./views/MemoryView";
 import { FeedbackModal } from "./views/FeedbackModal";
-import type { EndpointSummary as EndpointSummaryType } from "./types";
+import type { EndpointSummary as EndpointSummaryType, PythonDiagnostic } from "./types";
 import {
   IconChat, IconIM, IconSkills, IconStatus, IconConfig,
   IconRefresh, IconCheck, IconCheckCircle, IconX, IconXCircle,
@@ -1188,13 +1188,7 @@ export function App() {
   const [pypiVersionsLoading, setPypiVersionsLoading] = useState(false);
   const [selectedPypiVersion, setSelectedPypiVersion] = useState<string>(""); // "" = 推荐同版本
   // python diagnostics / repair
-  const [pyDiag, setPyDiag] = useState<{
-    bundledPythonOk: boolean; bundledPythonPath: string | null;
-    venvOk: boolean; venvPath: string | null; venvPythonVersion: string | null;
-    openakitaInstalled: boolean; openakitaVersion: string | null;
-    systemPythonOk: boolean; systemPythonPath: string | null;
-    issues: string[];
-  } | null>(null);
+  const [pyDiag, setPyDiag] = useState<PythonDiagnostic | null>(null);
   const [repairStage, setRepairStage] = useState<string>("");
   const [repairPercent, setRepairPercent] = useState<number>(0);
   const [repairDetail, setRepairDetail] = useState<string>("");
@@ -1898,12 +1892,17 @@ export function App() {
     });
 
     try {
-      const d = await invoke<NonNullable<typeof pyDiag>>("repair_python_env", { venvDir });
+      const forceRebuild = pyDiag?.summary === "healthy"
+        ? confirm(t("adv.repairHealthyConfirm"))
+        : false;
+      if (pyDiag?.summary === "healthy" && !forceRebuild) return;
+      const d = await invoke<NonNullable<typeof pyDiag>>("repair_python_env", { venvDir, forceRebuild });
       setPyDiag(d);
-      if (d && d.issues.length === 0) {
+      if (d && d.summary === "healthy") {
         setNotice(t("config.pyRepairDone"));
         setVenvReady(true);
-        setOpenakitaInstalled(!!d.openakitaInstalled);
+        const openakitaOk = d.contracts.some((c) => c.id === "C3_OPENAKITA_IN_VENV" && c.status === "pass");
+        setOpenakitaInstalled(openakitaOk);
         await persistPythonEnvConfig(venvDir);
         // Re-detect Python candidates
         try {
@@ -1913,7 +1912,8 @@ export function App() {
           setSelectedPythonIdx(firstUsable);
         } catch { /* best-effort */ }
       } else {
-        setError(t("config.pyRepairFail") + (d?.issues?.length ? `: ${d.issues.join("; ")}` : ""));
+        const failed = d?.contracts?.filter((c) => c.status !== "pass").map((c) => `${c.code}`).join("; ");
+        setError(t("config.pyRepairFail") + (failed ? `: ${failed}` : ""));
       }
     } catch (e) {
       setError(t("config.pyRepairFail") + `: ${String(e)}`);
@@ -6576,7 +6576,7 @@ export function App() {
       } catch (e) { setError(String(e)); } finally { setBusy(null); }
     }
 
-    async function runRepair() {
+    async function runRepair(forceRebuild = false) {
       if (!venvDir) return;
       setBusy(t("adv.repairing"));
       setRepairStage(""); setRepairPercent(0); setRepairDetail("");
@@ -6588,11 +6588,24 @@ export function App() {
         if (p.detail) setRepairDetail(String(p.detail));
       });
       try {
-        const d = await invoke<NonNullable<typeof pyDiag>>("repair_python_env", { venvDir });
+        const d = await invoke<NonNullable<typeof pyDiag>>("repair_python_env", { venvDir, forceRebuild });
         setPyDiag(d);
-        if (d && d.issues.length === 0) setNotice(t("adv.repairDone"));
+        if (d && d.summary === "healthy") setNotice(t("adv.repairDone"));
         else if (d) setError(t("adv.repairPartial"));
       } catch (e) { setError(String(e)); } finally { unlisten(); setBusy(null); setRepairStage(""); }
+    }
+
+    async function runExportDiagReport() {
+      if (!venvDir) return;
+      setBusy(t("adv.diagnosing"));
+      try {
+        const reportPath = await invoke<string>("export_python_diagnostic_report", { venvDir });
+        setNotice(t("adv.diagReportExported", { path: reportPath }));
+      } catch (e) {
+        setError(String(e));
+      } finally {
+        setBusy(null);
+      }
     }
 
     async function runReset(removeVenv: boolean, removeEmbedded: boolean) {
@@ -6663,11 +6676,17 @@ export function App() {
       </div>
     );
 
-    const diagItem = (label: string, ok: boolean | undefined, detail?: string | null) => (
+    const diagItem = (label: string, status: "pass" | "warn" | "fail" | undefined, detail?: string | null) => (
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", fontSize: 13 }}>
-        <span style={{ width: 8, height: 8, borderRadius: "50%", flexShrink: 0, background: ok ? "#10b981" : "#ef4444" }} />
+        <span style={{
+          width: 8,
+          height: 8,
+          borderRadius: "50%",
+          flexShrink: 0,
+          background: status === "pass" ? "#10b981" : status === "warn" ? "#f59e0b" : "#ef4444",
+        }} />
         <span style={{ fontWeight: 500, minWidth: 140 }}>{label}</span>
-        <span style={{ color: "var(--muted)", fontSize: 12, wordBreak: "break-all" }}>{detail || (ok ? "OK" : "—")}</span>
+        <span style={{ color: "var(--muted)", fontSize: 12, wordBreak: "break-all" }}>{detail || "—"}</span>
       </div>
     );
 
@@ -6680,12 +6699,22 @@ export function App() {
               <div className="cardHint" style={{ marginBottom: 8 }}>{t("adv.pythonHint")}</div>
               {pyDiag ? (
                 <>
-                  {diagItem(t("adv.pyEmbedded"), pyDiag.bundledPythonOk, pyDiag.bundledPythonPath)}
-                  {diagItem(t("adv.pyVenv"), pyDiag.venvOk, pyDiag.venvPythonVersion ? `${pyDiag.venvPythonVersion} — ${pyDiag.venvPath}` : pyDiag.venvPath)}
-                  {diagItem(t("adv.pyOpenakita"), pyDiag.openakitaInstalled, pyDiag.openakitaVersion)}
-                  {pyDiag.issues.length > 0 && (
+                  <div className="cardHint" style={{ marginBottom: 6 }}>
+                    {t("adv.diagSummary")}:{" "}
+                    <b>{pyDiag.summary === "healthy" ? t("adv.summaryHealthy") : pyDiag.summary === "repairable" ? t("adv.summaryRepairable") : t("adv.summaryBroken")}</b>
+                  </div>
+                  {pyDiag.contracts.map((c) => (
+                    <div key={c.id}>
+                      {diagItem(c.title, c.status, `${c.code}${c.evidence?.[0] ? ` — ${c.evidence[0]}` : ""}`)}
+                    </div>
+                  ))}
+                  {pyDiag.contracts.some((c) => c.status !== "pass") && (
                     <div style={{ marginTop: 8, padding: "8px 12px", background: "rgba(245,158,11,0.12)", border: "1px solid rgba(245,158,11,0.3)", borderRadius: 8, fontSize: 12, color: "var(--warning)" }}>
-                      {pyDiag.issues.map((issue, i) => <div key={i} style={{ padding: "2px 0" }}>⚠ {issue}</div>)}
+                      {pyDiag.contracts.filter((c) => c.status !== "pass").map((c) => (
+                        <div key={c.id} style={{ padding: "2px 0" }}>
+                          ⚠ {c.fixHint || c.code}
+                        </div>
+                      ))}
                     </div>
                   )}
                 </>
@@ -6708,7 +6737,22 @@ export function App() {
               )}
               <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
                 <button className="btnSmall" onClick={runDiagnose} disabled={!!busy}>{t("adv.diagnose")}</button>
-                <button className="btnSmall btnSmallPrimary" onClick={runRepair} disabled={!!busy || !pyDiag?.issues.length}>{t("adv.repair")}</button>
+                <button
+                  className="btnSmall btnSmallPrimary"
+                  onClick={() => {
+                    if (!pyDiag) return;
+                    if (pyDiag.summary === "healthy") {
+                      if (!confirm(t("adv.repairHealthyConfirm"))) return;
+                      runRepair(true);
+                      return;
+                    }
+                    runRepair(false);
+                  }}
+                  disabled={!!busy || !pyDiag}
+                >
+                  {pyDiag?.summary === "healthy" ? t("adv.repairCautious") : t("adv.repair")}
+                </button>
+                <button className="btnSmall" onClick={runExportDiagReport} disabled={!!busy}>{t("adv.exportDiagReport")}</button>
                 <button className="btnSmall btnSmallDanger" onClick={() => {
                   if (confirm(t("adv.resetConfirm"))) runReset(true, true);
                 }} disabled={!!busy}>{t("adv.reset")}</button>

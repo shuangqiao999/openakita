@@ -1984,6 +1984,7 @@ fn main() {
             detect_python,
             diagnose_python_env,
             repair_python_env,
+            export_python_diagnostic_report,
             check_python_for_pip,
             install_bundled_python,
             create_venv,
@@ -3012,159 +3013,398 @@ fn detect_python() -> Vec<PythonCandidate> {
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct PythonDiagnostic {
-    /// Is the bundled Python installed and executable?
-    bundled_python_ok: bool,
+    /// healthy | repairable | broken
+    summary: String,
+    contracts: Vec<PythonContractResult>,
+    environment: PythonEnvironmentSnapshot,
+    repair_plan: Vec<PythonRepairStep>,
+    trace_id: String,
+    generated_at: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct PythonContractResult {
+    id: String,
+    title: String,
+    status: String, // pass | warn | fail
+    code: String,
+    evidence: Vec<String>,
+    auto_fix: bool,
+    fix_hint: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct PythonEnvironmentSnapshot {
+    platform: String,
     bundled_python_path: Option<String>,
-    /// Is the global venv present and its Python executable?
-    venv_ok: bool,
     venv_path: Option<String>,
     venv_python_version: Option<String>,
-    /// Is openakita importable inside the venv?
-    openakita_installed: bool,
     openakita_version: Option<String>,
-    /// Is any Python available via PATH?
-    system_python_ok: bool,
-    system_python_path: Option<String>,
-    /// Summary list of issues found
-    issues: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct PythonRepairStep {
+    id: String,
+    title: String,
+    description: String,
+    destructive: bool,
+    requires_confirmation: bool,
+    enabled: bool,
+}
+
+fn python_diag_trace_id() -> String {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    format!("pydiag-{now_ms}")
+}
+
+fn python_diag_generated_at() -> String {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .to_string()
+}
+
+fn contract_failed(diag: &PythonDiagnostic, id: &str) -> bool {
+    diag.contracts
+        .iter()
+        .find(|c| c.id == id)
+        .map(|c| c.status != "pass")
+        .unwrap_or(true)
+}
+
+fn contract_failed_in(contracts: &[PythonContractResult], id: &str) -> bool {
+    contracts
+        .iter()
+        .find(|c| c.id == id)
+        .map(|c| c.status != "pass")
+        .unwrap_or(true)
 }
 
 /// Run a full diagnostic of the Python environment.
 #[tauri::command]
 fn diagnose_python_env(venv_dir: String) -> PythonDiagnostic {
-    let mut diag = PythonDiagnostic {
-        bundled_python_ok: false,
+    let trace_id = python_diag_trace_id();
+    let mut env = PythonEnvironmentSnapshot {
+        platform: format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
         bundled_python_path: None,
-        venv_ok: false,
-        venv_path: None,
+        venv_path: Some(venv_dir.clone()),
         venv_python_version: None,
-        openakita_installed: false,
         openakita_version: None,
-        system_python_ok: false,
-        system_python_path: None,
-        issues: vec![],
     };
 
-    // 1. Check bundled Python (_internal)
-    if let Some(py) = bundled_internal_python_path() {
-        diag.bundled_python_ok = true;
-        diag.bundled_python_path = Some(py.to_string_lossy().to_string());
-    } else {
-        diag.issues.push("安装包内置 Python 不可用（_internal/python）".into());
-    }
+    let mut contracts: Vec<PythonContractResult> = vec![];
 
-    // 2. Check venv
+    // C1: bundled runtime contract
+    let bundled_dir = bundled_backend_dir();
+    let bundled_candidates: Vec<PathBuf> = if cfg!(windows) {
+        vec![bundled_dir.join("_internal").join("python.exe")]
+    } else {
+        vec![
+            bundled_dir.join("_internal").join("python3"),
+            bundled_dir.join("_internal").join("python"),
+        ]
+    };
+    let existing_bundled: Vec<PathBuf> = bundled_candidates
+        .iter()
+        .filter(|p| p.exists())
+        .cloned()
+        .collect();
+
+    let bundled_contract = if existing_bundled.is_empty() {
+        PythonContractResult {
+            id: "C1_BUNDLED_RUNTIME".into(),
+            title: "Bundled Python runtime".into(),
+            status: "fail".into(),
+            code: "PY_BUNDLE_MISSING".into(),
+            evidence: vec![format!("candidates: {}", bundled_candidates.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "))],
+            auto_fix: false,
+            fix_hint: Some("请重装 OpenAkita 以恢复内置 Python 运行时".into()),
+        }
+    } else {
+        let mut usable_path: Option<PathBuf> = None;
+        let mut errors = vec![];
+        for py in &existing_bundled {
+            let mut c = Command::new(py);
+            c.args(["-m", "pip", "--version"]);
+            apply_no_window(&mut c);
+            match c.output() {
+                Ok(out) if out.status.success() => {
+                    usable_path = Some(py.clone());
+                    break;
+                }
+                Ok(out) => {
+                    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                    errors.push(format!("{} -> exit {} {}", py.display(), out.status.code().unwrap_or(-1), stderr));
+                }
+                Err(e) => errors.push(format!("{} -> spawn error: {}", py.display(), e)),
+            }
+        }
+        if let Some(py) = usable_path {
+            env.bundled_python_path = Some(py.to_string_lossy().to_string());
+            PythonContractResult {
+                id: "C1_BUNDLED_RUNTIME".into(),
+                title: "Bundled Python runtime".into(),
+                status: "pass".into(),
+                code: "PY_OK".into(),
+                evidence: vec![py.to_string_lossy().to_string()],
+                auto_fix: false,
+                fix_hint: None,
+            }
+        } else {
+            PythonContractResult {
+                id: "C1_BUNDLED_RUNTIME".into(),
+                title: "Bundled Python runtime".into(),
+                status: "fail".into(),
+                code: "PY_BUNDLE_PIP_UNUSABLE".into(),
+                evidence: errors,
+                auto_fix: false,
+                fix_hint: Some("内置 Python 不可执行或 pip 不可用，建议重装 OpenAkita".into()),
+            }
+        }
+    };
+    contracts.push(bundled_contract);
+
+    // C2: venv health contract
     let venv = PathBuf::from(&venv_dir);
-    let venv_py = if cfg!(windows) {
-        venv.join("Scripts").join("python.exe")
+    let venv_py = venv_python_path(&venv_dir);
+    let venv_contract = if !venv.exists() {
+        PythonContractResult {
+            id: "C2_VENV_HEALTH".into(),
+            title: "Virtual environment health".into(),
+            status: "fail".into(),
+            code: "PY_VENV_MISSING".into(),
+            evidence: vec![format!("missing: {}", venv.display())],
+            auto_fix: true,
+            fix_hint: Some("可一键修复：使用内置 Python 重建 venv".into()),
+        }
+    } else if !venv_py.exists() {
+        PythonContractResult {
+            id: "C2_VENV_HEALTH".into(),
+            title: "Virtual environment health".into(),
+            status: "fail".into(),
+            code: "PY_VENV_BROKEN".into(),
+            evidence: vec![format!("venv exists but python missing: {}", venv_py.display())],
+            auto_fix: true,
+            fix_hint: Some("可一键修复：删除并重建 venv".into()),
+        }
     } else {
-        venv.join("bin").join("python")
-    };
-    if venv.exists() && venv_py.exists() {
         let mut c = Command::new(&venv_py);
         c.arg("--version");
         apply_no_window(&mut c);
-        if let Ok(out) = c.output() {
-            if out.status.success() {
+        match c.output() {
+            Ok(out) if out.status.success() => {
                 let ver = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                diag.venv_ok = true;
-                diag.venv_path = Some(venv_dir.clone());
-                diag.venv_python_version = Some(ver);
-            } else {
-                diag.issues.push("venv 中的 Python 解释器无法执行".into());
+                env.venv_python_version = Some(ver.clone());
+                PythonContractResult {
+                    id: "C2_VENV_HEALTH".into(),
+                    title: "Virtual environment health".into(),
+                    status: "pass".into(),
+                    code: "PY_OK".into(),
+                    evidence: vec![format!("{} ({})", venv_py.display(), ver)],
+                    auto_fix: false,
+                    fix_hint: None,
+                }
             }
-        } else {
-            diag.issues.push("venv 中的 Python 解释器无法执行".into());
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                PythonContractResult {
+                    id: "C2_VENV_HEALTH".into(),
+                    title: "Virtual environment health".into(),
+                    status: "fail".into(),
+                    code: "PY_VENV_BROKEN".into(),
+                    evidence: vec![format!("{} -> exit {} {}", venv_py.display(), out.status.code().unwrap_or(-1), stderr)],
+                    auto_fix: true,
+                    fix_hint: Some("可一键修复：删除并重建 venv".into()),
+                }
+            }
+            Err(e) => PythonContractResult {
+                id: "C2_VENV_HEALTH".into(),
+                title: "Virtual environment health".into(),
+                status: "fail".into(),
+                code: "PY_VENV_BROKEN".into(),
+                evidence: vec![format!("spawn error: {}", e)],
+                auto_fix: true,
+                fix_hint: Some("可一键修复：删除并重建 venv".into()),
+            },
         }
-    } else if venv.exists() {
-        diag.issues.push("venv 目录存在但缺少 Python 解释器（可能损坏）".into());
-    } else {
-        diag.issues.push("venv 不存在".into());
-    }
+    };
+    let venv_ok = venv_contract.status == "pass";
+    contracts.push(venv_contract);
 
-    // 3. Check openakita installed
-    if diag.venv_ok {
+    // C3: openakita importability in venv
+    let openakita_contract = if venv_ok {
         let mut c = Command::new(&venv_py);
         apply_no_window(&mut c);
         c.env("PYTHONUTF8", "1");
         c.args(["-c", "import openakita; print(getattr(openakita,'__version__','unknown'))"]);
-        if let Ok(out) = c.output() {
-            if out.status.success() {
+        match c.output() {
+            Ok(out) if out.status.success() => {
                 let ver = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                diag.openakita_installed = true;
-                diag.openakita_version = Some(ver);
-            } else {
-                diag.issues.push("openakita 未安装在 venv 中".into());
+                env.openakita_version = Some(ver.clone());
+                PythonContractResult {
+                    id: "C3_OPENAKITA_IN_VENV".into(),
+                    title: "OpenAkita package in venv".into(),
+                    status: "pass".into(),
+                    code: "PY_OK".into(),
+                    evidence: vec![format!("openakita=={}", ver)],
+                    auto_fix: false,
+                    fix_hint: None,
+                }
+            }
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                PythonContractResult {
+                    id: "C3_OPENAKITA_IN_VENV".into(),
+                    title: "OpenAkita package in venv".into(),
+                    status: "fail".into(),
+                    code: "PY_OPENAKITA_IMPORT_FAIL".into(),
+                    evidence: vec![format!("exit {} {}", out.status.code().unwrap_or(-1), stderr)],
+                    auto_fix: true,
+                    fix_hint: Some("可一键修复：在 venv 中重新安装 openakita".into()),
+                }
+            }
+            Err(e) => PythonContractResult {
+                id: "C3_OPENAKITA_IN_VENV".into(),
+                title: "OpenAkita package in venv".into(),
+                status: "fail".into(),
+                code: "PY_OPENAKITA_IMPORT_FAIL".into(),
+                evidence: vec![format!("spawn error: {}", e)],
+                auto_fix: true,
+                fix_hint: Some("可一键修复：在 venv 中重新安装 openakita".into()),
+            },
+        }
+    } else {
+        PythonContractResult {
+            id: "C3_OPENAKITA_IN_VENV".into(),
+            title: "OpenAkita package in venv".into(),
+            status: "fail".into(),
+            code: "PY_OPENAKITA_IMPORT_FAIL".into(),
+            evidence: vec!["skipped because venv is not healthy".into()],
+            auto_fix: true,
+            fix_hint: Some("先修复 venv，再安装 openakita".into()),
+        }
+    };
+    contracts.push(openakita_contract);
+
+    // C4: layout compatibility check (macOS only)
+    let layout_contract = if cfg!(target_os = "macos") {
+        let internal = bundled_dir.join("_internal");
+        let app_in_resources = internal.join("Resources").join("Python.app");
+        let app_in_framework = internal
+            .join("Python.framework")
+            .join("Versions")
+            .join("3.11")
+            .join("Resources")
+            .join("Python.app");
+        if app_in_resources.exists() || app_in_framework.exists() {
+            PythonContractResult {
+                id: "C4_RUNTIME_LAYOUT_COMPAT".into(),
+                title: "Runtime layout compatibility".into(),
+                status: "pass".into(),
+                code: "PY_OK".into(),
+                evidence: vec![
+                    format!("resources layout: {}", app_in_resources.exists()),
+                    format!("framework layout: {}", app_in_framework.exists()),
+                ],
+                auto_fix: false,
+                fix_hint: None,
             }
         } else {
-            diag.issues.push("无法检测 openakita 是否已安装".into());
+            PythonContractResult {
+                id: "C4_RUNTIME_LAYOUT_COMPAT".into(),
+                title: "Runtime layout compatibility".into(),
+                status: "fail".into(),
+                code: "PY_LAYOUT_MISMATCH".into(),
+                evidence: vec![
+                    format!("missing {}", app_in_resources.display()),
+                    format!("missing {}", app_in_framework.display()),
+                ],
+                auto_fix: false,
+                fix_hint: Some("内置运行时布局异常，建议重新安装 OpenAkita".into()),
+            }
         }
-    }
-
-    // 4. Check system Python
-    let candidates: Vec<&str> = if cfg!(windows) {
-        vec!["python", "python3"]
     } else {
-        vec!["python3", "python"]
+        PythonContractResult {
+            id: "C4_RUNTIME_LAYOUT_COMPAT".into(),
+            title: "Runtime layout compatibility".into(),
+            status: "pass".into(),
+            code: "PY_OK".into(),
+            evidence: vec!["not-applicable on non-macOS".into()],
+            auto_fix: false,
+            fix_hint: None,
+        }
     };
-    for name in candidates {
-        if let Some(path) = which_real(name) {
-            let mut c = Command::new(&path);
-            c.arg("--version");
-            apply_no_window(&mut c);
-            if let Ok(out) = c.output() {
-                if out.status.success() {
-                    let ver = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                    if python_version_ok(&ver) {
-                        diag.system_python_ok = true;
-                        diag.system_python_path = Some(path);
-                        break;
-                    }
-                }
-            }
+    contracts.push(layout_contract);
+
+    let failing: Vec<&PythonContractResult> = contracts.iter().filter(|c| c.status != "pass").collect();
+    let summary = if failing.is_empty() {
+        "healthy".to_string()
+    } else if failing.iter().all(|c| c.auto_fix) {
+        "repairable".to_string()
+    } else {
+        "broken".to_string()
+    };
+
+    let mut repair_plan = vec![];
+    if summary == "healthy" {
+        repair_plan.push(PythonRepairStep {
+            id: "force_rebuild_venv".into(),
+            title: "强制重建 venv".into(),
+            description: "当前环境健康。仅在明确需要时执行（会删除并重建 venv）".into(),
+            destructive: true,
+            requires_confirmation: true,
+            enabled: true,
+        });
+    } else {
+        if contract_failed_in(&contracts, "C2_VENV_HEALTH") {
+            repair_plan.push(PythonRepairStep {
+                id: "rebuild_venv".into(),
+                title: "重建 venv".into(),
+                description: "删除损坏 venv 并使用内置 Python 重新创建".into(),
+                destructive: true,
+                requires_confirmation: false,
+                enabled: true,
+            });
+        }
+        if contract_failed_in(&contracts, "C3_OPENAKITA_IN_VENV") {
+            repair_plan.push(PythonRepairStep {
+                id: "reinstall_openakita".into(),
+                title: "重装 openakita".into(),
+                description: "在 venv 中执行 pip install openakita[all]".into(),
+                destructive: false,
+                requires_confirmation: false,
+                enabled: true,
+            });
+        }
+        if contract_failed_in(&contracts, "C1_BUNDLED_RUNTIME")
+            || contract_failed_in(&contracts, "C4_RUNTIME_LAYOUT_COMPAT")
+        {
+            repair_plan.push(PythonRepairStep {
+                id: "reinstall_app".into(),
+                title: "重装应用".into(),
+                description: "内置 Python 运行时异常，建议重装 OpenAkita".into(),
+                destructive: false,
+                requires_confirmation: false,
+                enabled: false,
+            });
         }
     }
-    if !diag.bundled_python_ok {
-        diag.issues.push("请重新安装 OpenAkita 以恢复内置 Python".into());
-    }
 
-    diag
-}
-
-/// which-like helper that verifies Python is actually executable.
-/// Instead of blindly skipping all WindowsApps paths (which blocks valid
-/// Microsoft Store Python), we only skip known redirector stubs and verify
-/// each candidate via `--version`.
-fn which_real(name: &str) -> Option<String> {
-    let mut wc = Command::new(if cfg!(windows) { "where" } else { "which" });
-    wc.arg(name);
-    apply_no_window(&mut wc);
-    if let Ok(output) = wc.output() {
-        if output.status.success() {
-            for line in String::from_utf8_lossy(&output.stdout).lines() {
-                let line = line.trim();
-                if line.is_empty() { continue; }
-                let lower = line.to_lowercase();
-                if lower.contains("appinstallerpythonredirector") {
-                    continue;
-                }
-                let p = PathBuf::from(line);
-                if !p.exists() { continue; }
-                let mut vc = Command::new(&p);
-                vc.arg("--version");
-                apply_no_window(&mut vc);
-                if let Ok(ver) = vc.output() {
-                    if ver.status.success() {
-                        let ver_str = String::from_utf8_lossy(&ver.stdout);
-                        if ver_str.trim().starts_with("Python 3.") {
-                            return Some(line.to_string());
-                        }
-                    }
-                }
-            }
-        }
+    PythonDiagnostic {
+        summary,
+        contracts,
+        environment: env,
+        repair_plan,
+        trace_id,
+        generated_at: python_diag_generated_at(),
     }
-    None
 }
 
 /// One-click repair: diagnose, fix all issues, return final diagnostic.
@@ -3173,8 +3413,10 @@ fn which_real(name: &str) -> Option<String> {
 async fn repair_python_env(
     app: tauri::AppHandle,
     venv_dir: String,
+    force_rebuild: Option<bool>,
 ) -> Result<PythonDiagnostic, String> {
     let venv_dir_clone = venv_dir.clone();
+    let force_rebuild = force_rebuild.unwrap_or(false);
     spawn_blocking_result(move || {
         let emit = |stage: &str, percent: u8, detail: &str| {
             let _ = app.emit("python_repair_event", serde_json::json!({
@@ -3187,16 +3429,16 @@ async fn repair_python_env(
         // Phase 1: Diagnose
         emit("诊断", 5, "检测当前 Python 环境状态...");
         let diag = diagnose_python_env(venv_dir_clone.clone());
-        let need_bundled = !diag.bundled_python_ok;
-        let need_venv = !diag.venv_ok;
-        let need_openakita = !diag.openakita_installed;
+        let need_bundled = contract_failed(&diag, "C1_BUNDLED_RUNTIME");
+        let need_venv = force_rebuild || contract_failed(&diag, "C2_VENV_HEALTH");
+        let need_openakita = need_venv || contract_failed(&diag, "C3_OPENAKITA_IN_VENV");
 
-        if diag.issues.is_empty() {
-            emit("完成", 100, "Python 环境正常，无需修复");
-            return Ok(diag);
+        if diag.summary == "healthy" && !force_rebuild {
+            emit("完成", 100, "当前环境健康，需用户确认后才能执行强制重建");
+            return Err("当前环境健康。若需强制重建 venv，请勾选确认后重试。".into());
         }
 
-        emit("诊断", 10, &format!("发现 {} 个问题，开始修复...", diag.issues.len()));
+        emit("诊断", 10, "已生成修复计划，开始执行...");
 
         // Phase 2: Ensure bundled Python
         let python_path: PathBuf;
@@ -3212,7 +3454,7 @@ async fn repair_python_env(
                     return Err(format!("内置 Python 不可用: {}", e));
                 }
             }
-        } else if let Some(ref p) = diag.bundled_python_path {
+        } else if let Some(ref p) = diag.environment.bundled_python_path {
             python_path = PathBuf::from(p);
             emit("检查", 20, "内置 Python 正常");
         } else {
@@ -3288,14 +3530,26 @@ async fn repair_python_env(
         // Phase 5: Final verification
         emit("验证", 95, "验证修复结果...");
         let final_diag = diagnose_python_env(venv_dir_clone);
-        if final_diag.issues.is_empty() {
+        if final_diag.summary == "healthy" {
             emit("完成", 100, "所有问题已修复，Python 环境正常");
         } else {
-            emit("完成", 100, &format!("修复完成，但仍有 {} 个问题", final_diag.issues.len()));
+            let remains = final_diag.contracts.iter().filter(|c| c.status != "pass").count();
+            emit("完成", 100, &format!("修复完成，但仍有 {} 条契约未通过", remains));
         }
         Ok(final_diag)
     })
     .await
+}
+
+#[tauri::command]
+fn export_python_diagnostic_report(venv_dir: String) -> Result<String, String> {
+    let diag = diagnose_python_env(venv_dir);
+    let report_dir = openakita_root_dir().join("runtime").join("reports");
+    fs::create_dir_all(&report_dir).map_err(|e| format!("创建报告目录失败: {e}"))?;
+    let report_path = report_dir.join(format!("python-diagnostic-{}.json", diag.trace_id));
+    let text = serde_json::to_string_pretty(&diag).map_err(|e| format!("序列化报告失败: {e}"))?;
+    fs::write(&report_path, text).map_err(|e| format!("写入报告失败: {e}"))?;
+    Ok(report_path.to_string_lossy().to_string())
 }
 
 fn runtime_dir() -> PathBuf {
