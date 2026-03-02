@@ -459,13 +459,12 @@ jobs:
                 fi
               done
 
-              # 3) Re-sign the framework bundle itself (non-deep).
-              REAL_FRAMEWORK_DIR="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "${FRAMEWORK_DIR}")"
-              if ! grep -Fqx -- "${REAL_FRAMEWORK_DIR}" "${SIGNED_REALPATHS_FILE}"; then
-                echo "Re-signing Python.framework bundle: ${FRAMEWORK_DIR} -> ${REAL_FRAMEWORK_DIR}"
-                codesign --force --options runtime --timestamp --sign "${IDENTITY}" "${REAL_FRAMEWORK_DIR}"
-                printf '%s\n' "${REAL_FRAMEWORK_DIR}" >> "${SIGNED_REALPATHS_FILE}"
-              fi
+              # 3) Skip signing Python.framework as a bundle.
+              # codesign cannot determine the bundle type of Python.framework
+              # ("bundle format is ambiguous: could be app or framework") because
+              # it contains both Versions/ (framework layout) and Python.app
+              # (app layout).  All executables and sub-bundles are already signed
+              # in steps 1-2; the outer .app signing seals the framework contents.
 
               # 4) Verify all touched framework paths before app-root signing.
               while IFS= read -r signed_path; do
