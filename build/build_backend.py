@@ -69,9 +69,9 @@ def verify_bundled_python_contract(output_dir: Path) -> None:
 def normalize_macos_bundled_python(output_dir: Path) -> None:
     """Normalize macOS bundled python entrypoint to framework interpreter.
 
-    On macOS, the copied `python3` launcher may be a thin wrapper that tries to
-    spawn Python.app and can fail after relocation. We make `_internal/python3`
-    a deterministic symlink to the framework interpreter inside the same bundle.
+    On macOS, ensure a valid fallback entrypoint exists when framework assets are
+    present. Keep the original bundled launcher intact to avoid changing Python's
+    expected startup behavior.
     """
     if sys.platform != "darwin":
         return
@@ -99,13 +99,19 @@ def normalize_macos_bundled_python(output_dir: Path) -> None:
         pass
 
     rel_target = os.path.relpath(target, internal_dir)
+    touched = False
     for entry_name in ("python3", "python"):
         entry = internal_dir / entry_name
+        # Do not overwrite existing launcher binaries; only fill missing entrypoints.
         if entry.exists() or entry.is_symlink():
-            entry.unlink()
+            continue
         entry.symlink_to(rel_target)
+        touched = True
 
-    print(f"  [OK] Normalized macOS bundled python entrypoint -> {target}")
+    if touched:
+        print(f"  [OK] Added fallback macOS bundled python entrypoint -> {target}")
+    else:
+        print("  [OK] Existing macOS bundled python launcher preserved")
 
 
 def check_pyinstaller():
