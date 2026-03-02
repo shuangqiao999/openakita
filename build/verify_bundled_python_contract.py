@@ -23,8 +23,10 @@ def _bundled_python_env(internal_dir: Path) -> dict:
                 "VIRTUAL_ENV", "CONDA_PREFIX", "CONDA_DEFAULT_ENV"):
         env.pop(key, None)
 
-    # Windows onedir python.exe often needs explicit path hints so stdlib bootstrap
-    # modules (runpy/importlib) can be resolved from bundled files.
+    # NOTE: When python3XX._pth exists (created by build_backend.py), Python
+    # ignores PYTHONPATH entirely.  The ._pth file already references
+    # python3XX.zip (stdlib) and base_library.zip.  We still set PYTHONPATH
+    # here as a fallback for environments where ._pth may not yet exist.
     if sys.platform == "win32":
         parts = []
         base_lib = internal_dir / "base_library.zip"

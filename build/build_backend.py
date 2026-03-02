@@ -136,6 +136,56 @@ def verify_bundled_python_contract(output_dir: Path) -> None:
     print(f"  [OK] Bundled Python pip check passed (pip {pip_ver})")
 
 
+def create_stdlib_zip(output_dir: Path) -> Path | None:
+    """Create python3XX.zip containing stdlib for the standalone interpreter.
+
+    PyInstaller stores collected pure-Python modules in a PYZ archive that is
+    only accessible through its own bootloader (openakita-server.exe).  The
+    standalone python.exe in _internal/ cannot read the PYZ, so it has no
+    access to stdlib modules like __future__, pathlib, etc.
+
+    This function follows the same pattern as Python's official Windows
+    embedded distribution: a zip file (python3XX.zip) containing the stdlib,
+    referenced by the ._pth file so the interpreter can import from it.
+    """
+    internal_dir = output_dir / "_internal"
+    ver = f"{sys.version_info.major}{sys.version_info.minor}"
+    zip_name = f"python{ver}.zip"
+    zip_path = internal_dir / zip_name
+
+    if zip_path.exists():
+        print(f"  [OK] {zip_name} already exists, skipping creation")
+        return zip_path
+
+    stdlib_src = Path(os.__file__).parent
+    if not stdlib_src.is_dir():
+        print(f"  [WARN] Cannot locate stdlib source at {stdlib_src}")
+        return None
+
+    import zipfile
+
+    skip_dirs = {
+        "test", "tests", "idlelib", "tkinter", "turtledemo", "turtle",
+        "lib2to3", "ensurepip", "distutils", "pydoc_data",
+        "__pycache__", "site-packages",
+    }
+    count = 0
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for root, dirs, files in os.walk(stdlib_src):
+            dirs[:] = [d for d in dirs if d not in skip_dirs]
+            for fname in files:
+                if not fname.endswith(".py"):
+                    continue
+                full = Path(root) / fname
+                arcname = str(full.relative_to(stdlib_src))
+                zf.write(full, arcname)
+                count += 1
+
+    size_mb = zip_path.stat().st_size / (1024 * 1024)
+    print(f"  [OK] Created {zip_name}: {count} modules, {size_mb:.1f} MB")
+    return zip_path
+
+
 def normalize_macos_bundled_python(output_dir: Path) -> None:
     """Normalize macOS bundled python entrypoint to framework interpreter.
 
@@ -335,6 +385,7 @@ def build_backend(mode: str):
         print(f"  [WARN] Exception during verification: {e}")
 
     normalize_macos_bundled_python(OUTPUT_DIR)
+    create_stdlib_zip(OUTPUT_DIR)
     ensure_bundled_pth_file(OUTPUT_DIR)
     verify_bundled_python_contract(OUTPUT_DIR)
 
