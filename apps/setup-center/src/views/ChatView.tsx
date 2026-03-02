@@ -2653,6 +2653,22 @@ export function ChatView({
               } catch { /* ignore malformed */ }
             }
           }
+          updateMessages((prev) => prev.map((m) =>
+            m.id === assistantMsg.id
+              ? {
+                  ...m,
+                  content: currentContent,
+                  thinking: currentThinking || null,
+                  agentName: currentAgent,
+                  toolCalls: currentToolCalls.length > 0 ? [...currentToolCalls] : null,
+                  plan: currentPlan ? { ...currentPlan } : null,
+                  askUser: currentAsk,
+                  artifacts: currentArtifacts.length > 0 ? [...currentArtifacts] : null,
+                  thinkingChain: chainGroups.length > 0 ? chainGroups.map(g => ({ ...g })) : null,
+                  streaming: false,
+                }
+              : m
+          ));
           break;
         }
 
@@ -3079,7 +3095,13 @@ export function ChatView({
         ));
       } else {
         updateMessages((prev) => prev.map((m) =>
-          m.id === assistantMsg.id ? { ...m, streaming: false } : m
+          m.id === assistantMsg.id
+            ? {
+                ...m,
+                content: m.content || (m.askUser ? "" : "⚠️ 未收到有效回复，请重试。"),
+                streaming: false,
+              }
+            : m
         ));
       }
     } catch (e: unknown) {
