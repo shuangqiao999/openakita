@@ -5,7 +5,7 @@ import {
   IconChevronDown, IconChevronRight, IconGlobe,
   IconZap, IconPlug, IconCalendar,
   IconBug, IconBrain, IconGitHub, IconGitee, IconUsers, IconBot,
-  IconGear, IconBook,
+  IconGear, IconBook, IconStorefront, IconPuzzle,
 } from "../icons";
 import logoUrl from "../assets/logo.png";
 
@@ -113,11 +113,11 @@ export function Sidebar({
           </div>
         )}
         <div style={{ height: 1, background: "var(--line)", margin: "6px 12px" }} />
-        <div className={`navItem ${view === "agent_store" ? "navItemActive" : ""}`} onClick={() => onViewChange("agent_store")} role="button" tabIndex={0} title="Agent Store">
-          <span style={{ fontSize: 14, width: 16, textAlign: "center" }}>🏪</span> {!collapsed && <span>Agent Store</span>}
+        <div className={`navItem ${view === "agent_store" ? "navItemActive" : ""}`} onClick={() => onViewChange("agent_store")} role="button" tabIndex={0} title={t("sidebar.agentStore")}>
+          <IconStorefront size={16} /> {!collapsed && <span>{t("sidebar.agentStore")}</span>}
         </div>
-        <div className={`navItem ${view === "skill_store" ? "navItemActive" : ""}`} onClick={() => onViewChange("skill_store")} role="button" tabIndex={0} title="Skill Store">
-          <span style={{ fontSize: 14, width: 16, textAlign: "center" }}>🧩</span> {!collapsed && <span>Skill Store</span>}
+        <div className={`navItem ${view === "skill_store" ? "navItemActive" : ""}`} onClick={() => onViewChange("skill_store")} role="button" tabIndex={0} title={t("sidebar.skillStore")}>
+          <IconPuzzle size={16} /> {!collapsed && <span>{t("sidebar.skillStore")}</span>}
         </div>
       </div>
 

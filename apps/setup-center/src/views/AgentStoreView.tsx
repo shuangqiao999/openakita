@@ -48,12 +48,12 @@ export function AgentStoreView({ apiBaseUrl, visible }: AgentStoreViewProps) {
       setAgents(data.agents || data.data || []);
       setTotal(data.total || 0);
     } catch (e: any) {
-      setError(e.message || "无法连接到 Agent Store");
+      setError(e.message || t("agentStore.connectFail"));
       setAgents([]);
     } finally {
       setLoading(false);
     }
-  }, [apiBaseUrl, query, category, sort, page]);
+  }, [apiBaseUrl, query, category, sort, page, t]);
 
   useEffect(() => {
     if (visible) fetchAgents();
@@ -80,50 +80,50 @@ export function AgentStoreView({ apiBaseUrl, visible }: AgentStoreViewProps) {
 
   if (!visible) return null;
 
+  const isSuccess = !notice.includes("❌") && !notice.toLowerCase().includes("fail");
+
   return (
     <div>
       <div className="card" style={{ marginBottom: 16 }}>
-        <h2 className="cardTitle" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          🏪 Agent Store
-        </h2>
-        <p style={{ color: "var(--muted)", fontSize: 13, margin: "4px 0 16px" }}>
-          从 OpenAkita 社区发现并安装 Agent（需要网络连接，本地导入导出不受影响）
+        <h2 className="cardTitle">Agent Store</h2>
+        <p style={{ color: "var(--muted)", fontSize: 13, margin: "4px 0 12px" }}>
+          {t("agentStore.subtitle")}
         </p>
 
-        <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
           <input
             type="text"
-            placeholder="搜索 Agent..."
+            placeholder={t("agentStore.searchPlaceholder")}
             value={query}
             onChange={(e) => { setQuery(e.target.value); setPage(1); }}
             onKeyDown={(e) => e.key === "Enter" && fetchAgents()}
-            style={{ flex: 1, minWidth: 200 }}
+            style={{ flex: 1, width: "auto", minWidth: 120, maxWidth: 260 }}
           />
-          <select value={category} onChange={(e) => { setCategory(e.target.value); setPage(1); }}>
-            <option value="">所有分类</option>
-            <option value="customer_service">客服</option>
-            <option value="development">开发</option>
-            <option value="business">商务</option>
-            <option value="creative">创意</option>
-            <option value="education">教育</option>
-            <option value="productivity">效率</option>
-            <option value="general">通用</option>
+          <select value={category} onChange={(e) => { setCategory(e.target.value); setPage(1); }} style={{ width: "auto", minWidth: 0 }}>
+            <option value="">{t("agentStore.allCategories")}</option>
+            <option value="customer_service">{t("agentStore.catCustomerService")}</option>
+            <option value="development">{t("agentStore.catDevelopment")}</option>
+            <option value="business">{t("agentStore.catBusiness")}</option>
+            <option value="creative">{t("agentStore.catCreative")}</option>
+            <option value="education">{t("agentStore.catEducation")}</option>
+            <option value="productivity">{t("agentStore.catProductivity")}</option>
+            <option value="general">{t("agentStore.catGeneral")}</option>
           </select>
-          <select value={sort} onChange={(e) => { setSort(e.target.value); setPage(1); }}>
-            <option value="downloads">按下载量</option>
-            <option value="rating">按评分</option>
-            <option value="newest">最新</option>
+          <select value={sort} onChange={(e) => { setSort(e.target.value); setPage(1); }} style={{ width: "auto", minWidth: 0 }}>
+            <option value="downloads">{t("agentStore.sortDownloads")}</option>
+            <option value="rating">{t("agentStore.sortRating")}</option>
+            <option value="newest">{t("agentStore.sortNewest")}</option>
           </select>
-          <button onClick={fetchAgents} disabled={loading}>
-            {loading ? "搜索中..." : "搜索"}
+          <button onClick={fetchAgents} disabled={loading} style={{ whiteSpace: "nowrap" }}>
+            {loading ? t("agentStore.searching") : t("common.search")}
           </button>
         </div>
 
         {notice && (
           <div style={{
-            padding: "8px 12px", marginBottom: 12, borderRadius: 6,
-            background: notice.startsWith("✅") ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.1)",
-            color: notice.startsWith("✅") ? "#16a34a" : "#dc2626",
+            padding: "8px 12px", marginTop: 10, borderRadius: 6,
+            background: isSuccess ? "rgba(34,197,94,0.12)" : "rgba(239,68,68,0.12)",
+            color: isSuccess ? "var(--success, #16a34a)" : "var(--error, #dc2626)",
             fontSize: 13,
           }}>
             {notice}
@@ -133,23 +133,21 @@ export function AgentStoreView({ apiBaseUrl, visible }: AgentStoreViewProps) {
 
       {error && (
         <div className="card" style={{ textAlign: "center", padding: "24px 16px" }}>
-          <p style={{ color: "#dc2626", marginBottom: 8 }}>⚠️ 无法连接到远程 Agent Store</p>
+          <p style={{ color: "var(--error, #dc2626)", marginBottom: 8 }}>{t("agentStore.connectFail")}</p>
           <p style={{ fontSize: 13, color: "var(--muted)", lineHeight: 1.6 }}>
-            远程市场暂时不可用，这不影响本地功能。<br />
-            你可以在侧栏「Agent 管理」中继续使用本地 Agent 导入导出功能，<br />
-            也可以通过 <code>.akita-agent</code> 文件直接分享和导入 Agent。
+            {t("agentStore.offlineHint")}
           </p>
-          <button onClick={fetchAgents} style={{ marginTop: 12 }}>重试连接</button>
+          <button onClick={fetchAgents} style={{ marginTop: 12 }}>{t("agentStore.retry")}</button>
         </div>
       )}
 
       {!loading && !error && agents.length === 0 && (
         <div className="card" style={{ textAlign: "center", padding: 40 }}>
-          <p style={{ color: "var(--muted)", fontSize: 15 }}>暂无 Agent</p>
+          <p style={{ color: "var(--muted)", fontSize: 15 }}>{t("agentStore.empty")}</p>
         </div>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 12 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12 }}>
         {agents.map((a) => (
           <div key={a.id} className="card" style={{ position: "relative" }}>
             {a.isFeatured && (
@@ -157,16 +155,16 @@ export function AgentStoreView({ apiBaseUrl, visible }: AgentStoreViewProps) {
                 position: "absolute", top: 8, right: 8, fontSize: 10, padding: "2px 6px",
                 background: "var(--accent)", color: "#fff", borderRadius: 4, fontWeight: 600,
               }}>
-                精选
+                {t("agentStore.featured")}
               </span>
             )}
             <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 4 }}>
               {a.name}
             </div>
             <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8, lineHeight: 1.5 }}>
-              {a.description?.slice(0, 120) || "暂无描述"}
+              {a.description?.slice(0, 120) || t("agentStore.noDesc")}
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12, color: "var(--muted)", marginBottom: 8, flexWrap: "wrap" }}>
               <span>{t("agentStore.downloads", { count: a.downloads })}</span>
               {a.avgRating != null && a.avgRating > 0 && <span>{a.avgRating.toFixed(1)}</span>}
               {a.latestVersion && <span>v{a.latestVersion}</span>}
@@ -174,7 +172,7 @@ export function AgentStoreView({ apiBaseUrl, visible }: AgentStoreViewProps) {
               {a.license && (
                 <span style={{
                   fontSize: 10, padding: "1px 5px", borderRadius: 3,
-                  background: "rgba(139,92,246,0.1)", color: "#7c3aed", fontWeight: 500,
+                  background: "rgba(139,92,246,0.12)", color: "var(--accent, #7c3aed)", fontWeight: 500,
                 }}>
                   {a.license}
                 </span>
@@ -185,7 +183,7 @@ export function AgentStoreView({ apiBaseUrl, visible }: AgentStoreViewProps) {
                 {a.tags.slice(0, 4).map((tag) => (
                   <span key={tag} style={{
                     fontSize: 10, padding: "2px 6px", borderRadius: 4,
-                    background: "var(--bg-hover, #f1f5f9)", color: "var(--muted)",
+                    background: "var(--bg-hover, rgba(0,0,0,0.05))", color: "var(--muted)",
                   }}>
                     {tag}
                   </span>
@@ -233,7 +231,7 @@ export function AgentStoreView({ apiBaseUrl, visible }: AgentStoreViewProps) {
             {confirmAgent.license && (
               <p style={{ fontSize: 12, margin: "0 0 8px" }}>
                 <span style={{ fontWeight: 500 }}>{t("agentStore.license")}:</span>{" "}
-                <span style={{ padding: "1px 5px", borderRadius: 3, background: "rgba(139,92,246,0.1)", color: "#7c3aed" }}>
+                <span style={{ padding: "1px 5px", borderRadius: 3, background: "rgba(139,92,246,0.12)", color: "var(--accent, #7c3aed)" }}>
                   {confirmAgent.license}
                 </span>
               </p>

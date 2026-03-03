@@ -22,12 +22,6 @@ interface SkillStoreViewProps {
   visible: boolean;
 }
 
-const TRUST_BADGE: Record<string, { label: string; color: string; bg: string }> = {
-  official: { label: "🏛️ 官方", color: "#1d4ed8", bg: "rgba(59,130,246,0.1)" },
-  certified: { label: "✅ 认证", color: "#15803d", bg: "rgba(34,197,94,0.1)" },
-  community: { label: "🌐 社区", color: "#6b7280", bg: "rgba(107,114,128,0.1)" },
-};
-
 export function SkillStoreView({ apiBaseUrl, visible }: SkillStoreViewProps) {
   const { t } = useTranslation();
   const [skills, setSkills] = useState<Skill[]>([]);
@@ -43,6 +37,17 @@ export function SkillStoreView({ apiBaseUrl, visible }: SkillStoreViewProps) {
   const [notice, setNotice] = useState("");
   const [confirmSkill, setConfirmSkill] = useState<Skill | null>(null);
 
+  const trustBadge = (level: string) => {
+    switch (level) {
+      case "official":
+        return { label: t("skillStore.trustOfficial"), color: "var(--accent, #1d4ed8)", bg: "rgba(59,130,246,0.12)" };
+      case "certified":
+        return { label: t("skillStore.trustCertified"), color: "var(--success, #15803d)", bg: "rgba(34,197,94,0.12)" };
+      default:
+        return { label: t("skillStore.trustCommunity"), color: "var(--muted)", bg: "rgba(107,114,128,0.12)" };
+    }
+  };
+
   const fetchSkills = useCallback(async () => {
     setLoading(true);
     setError("");
@@ -57,12 +62,12 @@ export function SkillStoreView({ apiBaseUrl, visible }: SkillStoreViewProps) {
       setSkills(data.skills || data.data || []);
       setTotal(data.total || 0);
     } catch (e: any) {
-      setError(e.message || "无法连接到 Skill Store");
+      setError(e.message || t("skillStore.connectFail"));
       setSkills([]);
     } finally {
       setLoading(false);
     }
-  }, [apiBaseUrl, query, category, trustLevel, sort, page]);
+  }, [apiBaseUrl, query, category, trustLevel, sort, page, t]);
 
   useEffect(() => {
     if (visible) fetchSkills();
@@ -89,56 +94,56 @@ export function SkillStoreView({ apiBaseUrl, visible }: SkillStoreViewProps) {
 
   if (!visible) return null;
 
+  const isSuccess = !notice.includes("❌") && !notice.toLowerCase().includes("fail");
+
   return (
     <div>
       <div className="card" style={{ marginBottom: 16 }}>
-        <h2 className="cardTitle" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          🧩 Skill Store
-        </h2>
-        <p style={{ color: "var(--muted)", fontSize: 13, margin: "4px 0 16px" }}>
-          从 OpenAkita 社区发现并安装技能（需要网络连接，本地技能管理和 skills.sh 市场不受影响）
+        <h2 className="cardTitle">Skill Store</h2>
+        <p style={{ color: "var(--muted)", fontSize: 13, margin: "4px 0 12px" }}>
+          {t("skillStore.subtitle")}
         </p>
 
-        <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
           <input
             type="text"
-            placeholder="搜索 Skill..."
+            placeholder={t("skillStore.searchPlaceholder")}
             value={query}
             onChange={(e) => { setQuery(e.target.value); setPage(1); }}
             onKeyDown={(e) => e.key === "Enter" && fetchSkills()}
-            style={{ flex: 1, minWidth: 200 }}
+            style={{ flex: 1, width: "auto", minWidth: 120, maxWidth: 220 }}
           />
-          <select value={trustLevel} onChange={(e) => { setTrustLevel(e.target.value); setPage(1); }}>
-            <option value="">所有等级</option>
-            <option value="official">官方</option>
-            <option value="certified">认证</option>
-            <option value="community">社区</option>
+          <select value={trustLevel} onChange={(e) => { setTrustLevel(e.target.value); setPage(1); }} style={{ width: "auto", minWidth: 0 }}>
+            <option value="">{t("skillStore.allTrust")}</option>
+            <option value="official">{t("skillStore.trustOfficial")}</option>
+            <option value="certified">{t("skillStore.trustCertified")}</option>
+            <option value="community">{t("skillStore.trustCommunity")}</option>
           </select>
-          <select value={category} onChange={(e) => { setCategory(e.target.value); setPage(1); }}>
-            <option value="">所有分类</option>
-            <option value="general">通用</option>
-            <option value="development">开发</option>
-            <option value="productivity">效率</option>
-            <option value="data">数据</option>
-            <option value="creative">创意</option>
-            <option value="communication">通信</option>
+          <select value={category} onChange={(e) => { setCategory(e.target.value); setPage(1); }} style={{ width: "auto", minWidth: 0 }}>
+            <option value="">{t("skillStore.allCategories")}</option>
+            <option value="general">{t("skillStore.catGeneral")}</option>
+            <option value="development">{t("skillStore.catDevelopment")}</option>
+            <option value="productivity">{t("skillStore.catProductivity")}</option>
+            <option value="data">{t("skillStore.catData")}</option>
+            <option value="creative">{t("skillStore.catCreative")}</option>
+            <option value="communication">{t("skillStore.catCommunication")}</option>
           </select>
-          <select value={sort} onChange={(e) => { setSort(e.target.value); setPage(1); }}>
-            <option value="installs">按安装量</option>
-            <option value="rating">按评分</option>
-            <option value="newest">最新</option>
-            <option value="stars">GitHub Stars</option>
+          <select value={sort} onChange={(e) => { setSort(e.target.value); setPage(1); }} style={{ width: "auto", minWidth: 0 }}>
+            <option value="installs">{t("skillStore.sortInstalls")}</option>
+            <option value="rating">{t("skillStore.sortRating")}</option>
+            <option value="newest">{t("skillStore.sortNewest")}</option>
+            <option value="stars">{t("skillStore.sortStars")}</option>
           </select>
-          <button onClick={fetchSkills} disabled={loading}>
-            {loading ? "搜索中..." : "搜索"}
+          <button onClick={fetchSkills} disabled={loading} style={{ whiteSpace: "nowrap" }}>
+            {loading ? t("skillStore.searching") : t("common.search")}
           </button>
         </div>
 
         {notice && (
           <div style={{
-            padding: "8px 12px", marginBottom: 12, borderRadius: 6,
-            background: notice.startsWith("✅") ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.1)",
-            color: notice.startsWith("✅") ? "#16a34a" : "#dc2626",
+            padding: "8px 12px", marginTop: 10, borderRadius: 6,
+            background: isSuccess ? "rgba(34,197,94,0.12)" : "rgba(239,68,68,0.12)",
+            color: isSuccess ? "var(--success, #16a34a)" : "var(--error, #dc2626)",
             fontSize: 13,
           }}>
             {notice}
@@ -148,25 +153,23 @@ export function SkillStoreView({ apiBaseUrl, visible }: SkillStoreViewProps) {
 
       {error && (
         <div className="card" style={{ textAlign: "center", padding: "24px 16px" }}>
-          <p style={{ color: "#dc2626", marginBottom: 8 }}>⚠️ 无法连接到远程 Skill Store</p>
+          <p style={{ color: "var(--error, #dc2626)", marginBottom: 8 }}>{t("skillStore.connectFail")}</p>
           <p style={{ fontSize: 13, color: "var(--muted)", lineHeight: 1.6 }}>
-            远程市场暂时不可用，这不影响本地功能。<br />
-            你可以在侧栏「技能管理」中继续管理本地技能，<br />
-            也可以通过「技能管理 → 浏览市场」从 skills.sh 搜索安装社区技能。
+            {t("skillStore.offlineHint")}
           </p>
-          <button onClick={fetchSkills} style={{ marginTop: 12 }}>重试连接</button>
+          <button onClick={fetchSkills} style={{ marginTop: 12 }}>{t("skillStore.retry")}</button>
         </div>
       )}
 
       {!loading && !error && skills.length === 0 && (
         <div className="card" style={{ textAlign: "center", padding: 40 }}>
-          <p style={{ color: "var(--muted)", fontSize: 15 }}>暂无 Skill</p>
+          <p style={{ color: "var(--muted)", fontSize: 15 }}>{t("skillStore.empty")}</p>
         </div>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 12 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12 }}>
         {skills.map((s) => {
-          const badge = TRUST_BADGE[s.trustLevel] || TRUST_BADGE.community;
+          const badge = trustBadge(s.trustLevel);
           return (
             <div key={s.id} className="card" style={{ position: "relative" }}>
               <span style={{
@@ -179,9 +182,9 @@ export function SkillStoreView({ apiBaseUrl, visible }: SkillStoreViewProps) {
                 {s.name}
               </div>
               <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8, lineHeight: 1.5 }}>
-                {s.description?.slice(0, 120) || "暂无描述"}
+                {s.description?.slice(0, 120) || t("skillStore.noDesc")}
               </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 12, color: "var(--muted)", marginBottom: 8, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12, color: "var(--muted)", marginBottom: 8, flexWrap: "wrap" }}>
                 <span>{t("skillStore.installs", { count: s.installCount })}</span>
                 {s.avgRating != null && s.avgRating > 0 && <span>{s.avgRating.toFixed(1)}</span>}
                 {s.githubStars != null && s.githubStars > 0 && <span>{s.githubStars} stars</span>}
@@ -190,7 +193,7 @@ export function SkillStoreView({ apiBaseUrl, visible }: SkillStoreViewProps) {
                 {s.license && (
                   <span style={{
                     fontSize: 10, padding: "1px 5px", borderRadius: 3,
-                    background: "rgba(139,92,246,0.1)", color: "#7c3aed", fontWeight: 500,
+                    background: "rgba(139,92,246,0.12)", color: "var(--accent, #7c3aed)", fontWeight: 500,
                   }}>
                     {s.license}
                   </span>
@@ -250,7 +253,7 @@ export function SkillStoreView({ apiBaseUrl, visible }: SkillStoreViewProps) {
             {confirmSkill.license && (
               <p style={{ fontSize: 12, margin: "0 0 4px" }}>
                 <span style={{ fontWeight: 500 }}>{t("skillStore.license")}:</span>{" "}
-                <span style={{ padding: "1px 5px", borderRadius: 3, background: "rgba(139,92,246,0.1)", color: "#7c3aed" }}>
+                <span style={{ padding: "1px 5px", borderRadius: 3, background: "rgba(139,92,246,0.12)", color: "var(--accent, #7c3aed)" }}>
                   {confirmSkill.license}
                 </span>
               </p>
