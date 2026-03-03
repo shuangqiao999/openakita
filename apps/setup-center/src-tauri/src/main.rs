@@ -2369,20 +2369,34 @@ fn strip_harmful_python_env(cmd: &mut Command) {
     cmd.env_remove("PIP_REQUIRE_VIRTUALENV");
 }
 
-/// 为直接调用 PyInstaller 打包的 `_internal/python.exe` 配置环境。
+/// Configure environment for invoking `_internal/python{3}` directly.
 ///
-/// PyInstaller 将 `encodings`、`codecs` 等 Python 启动必需的核心模块
-/// 打包在 `base_library.zip` 中，裸调用 `python.exe` 时需要将其加入
-/// `sys.path`，否则报 `init_fs_encoding: No module named 'encodings'`。
+/// PyInstaller packs `encodings`, `codecs` and other bootstrap modules into
+/// `base_library.zip`.  When calling the raw Python binary we must make sure
+/// it can find them.
 ///
-/// 采用三层防护：
-/// 1. 确保 `python3XX._pth` 文件存在（最底层，._pth 在 Python 启动最早阶段生效）
-/// 2. 清除外部有害环境变量（Anaconda、用户 PYTHONPATH 等）
-/// 3. 设置 `PYTHONHOME` + `PYTHONPATH` 作为后备（._pth 不存在的旧安装）
+/// Platform-specific behaviour:
+/// - **Windows**: `._pth` files (created by `ensure_bundled_pth_file`) are the
+///   primary mechanism; `PYTHONHOME` + `PYTHONPATH` serve as fallback.
+/// - **macOS / Linux**: `._pth` files are Windows-only and ignored.
+///   Setting `PYTHONHOME` to `_internal/` fails because Python expects
+///   `PYTHONHOME/lib/pythonX.Y/` which does not exist in a PyInstaller layout.
+///   We rely on `PYTHONPATH` alone and suppress user site-packages.
 fn apply_bundled_python_env(cmd: &mut Command, internal_dir: &std::path::Path) {
     ensure_bundled_pth_file(internal_dir);
     strip_harmful_python_env(cmd);
+
+    // PYTHONHOME: Windows only.  On macOS/Linux it breaks stdlib resolution
+    // because _internal/ lacks the expected lib/pythonX.Y/ subdirectory.
+    #[cfg(target_os = "windows")]
     cmd.env("PYTHONHOME", internal_dir);
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        cmd.env_remove("PYTHONHOME");
+        cmd.env("PYTHONNOUSERSITE", "1");
+    }
+
     let mut parts: Vec<PathBuf> = vec![];
     let base_lib = internal_dir.join("base_library.zip");
     if base_lib.exists() {
@@ -3325,105 +3339,165 @@ fn python_diag_generated_at() -> String {
         .to_string()
 }
 
-/// Run a full diagnostic of the Python environment.
+/// Run a full diagnostic.
+///
+/// Strategy:
+///   1. If the backend is running → call GET /api/diagnostics (the backend
+///      self-reports, no fragile _internal/python3 invocation needed).
+///   2. If the backend is NOT running → basic file-existence check on the
+///      bundled openakita-server binary.
 #[tauri::command]
 fn diagnose_python_env(venv_dir: String) -> PythonDiagnostic {
     let _ = venv_dir;
     let trace_id = python_diag_trace_id();
-    let mut env = PythonEnvironmentSnapshot {
-        platform: format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
-        bundled_python_path: None,
-        openakita_version: None,
+
+    // Determine the API port of the current workspace's backend.
+    let port = read_state_file()
+        .current_workspace_id
+        .and_then(|ws| read_workspace_api_port(&ws))
+        .unwrap_or(18900);
+
+    // --- Strategy 1: ask the running backend ---
+    if let Some(diag) = diagnose_via_backend_api(port) {
+        return PythonDiagnostic {
+            summary: diag.summary,
+            contracts: diag.contracts,
+            environment: diag.environment,
+            trace_id,
+            generated_at: python_diag_generated_at(),
+        };
+    }
+
+    // --- Strategy 2: backend not reachable — static file check ---
+    let bundled_dir = bundled_backend_dir();
+    let bundled_exe = if cfg!(windows) {
+        bundled_dir.join("openakita-server.exe")
+    } else {
+        bundled_dir.join("openakita-server")
     };
+    let internal_dir = bundled_dir.join("_internal");
 
     let mut contracts: Vec<PythonContractResult> = vec![];
 
-    // C1: bundled runtime contract
-    let bundled_dir = bundled_backend_dir();
-    let bundled_candidates: Vec<PathBuf> = if cfg!(windows) {
-        vec![bundled_dir.join("_internal").join("python.exe")]
-    } else {
-        vec![
-            bundled_dir.join("_internal").join("python3"),
-            bundled_dir.join("_internal").join("python"),
-        ]
-    };
-    let existing_bundled: Vec<PathBuf> = bundled_candidates
-        .iter()
-        .filter(|p| p.exists())
-        .cloned()
-        .collect();
-
-    let bundled_contract = if existing_bundled.is_empty() {
-        PythonContractResult {
+    if bundled_exe.exists() && internal_dir.exists() {
+        contracts.push(PythonContractResult {
             id: "C1_BUNDLED_RUNTIME".into(),
-            title: "Bundled Python runtime".into(),
-            status: "fail".into(),
-            code: "PY_BUNDLE_MISSING".into(),
-            evidence: vec![format!("candidates: {}", bundled_candidates.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "))],
+            title: "内置运行时".into(),
+            status: "pass".into(),
+            code: "RUNTIME_OK".into(),
+            evidence: vec![format!("binary: {}", bundled_exe.display())],
             auto_fix: false,
-            fix_hint: Some("请重装 OpenAkita 以恢复内置 Python 运行时".into()),
-        }
+            fix_hint: None,
+        });
     } else {
-        let mut usable_path: Option<PathBuf> = None;
-        let mut errors = vec![];
-        let internal_dir = bundled_dir.join("_internal");
-        for py in &existing_bundled {
-            let mut c = Command::new(py);
-            c.args(["-c", "import pip; print(pip.__version__)"]);
-            apply_bundled_python_env(&mut c, &internal_dir);
-            apply_no_window(&mut c);
-            match c.output() {
-                Ok(out) if out.status.success() => {
-                    usable_path = Some(py.clone());
-                    break;
-                }
-                Ok(out) => {
-                    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-                    errors.push(format!("{} -> exit {} {}", py.display(), out.status.code().unwrap_or(-1), stderr));
-                }
-                Err(e) => errors.push(format!("{} -> spawn error: {}", py.display(), e)),
-            }
+        let mut missing = vec![];
+        if !bundled_exe.exists() {
+            missing.push(format!("missing: {}", bundled_exe.display()));
         }
-        if let Some(py) = usable_path {
-            env.bundled_python_path = Some(py.to_string_lossy().to_string());
-            PythonContractResult {
-                id: "C1_BUNDLED_RUNTIME".into(),
-                title: "Bundled Python runtime".into(),
-                status: "pass".into(),
-                code: "PY_OK".into(),
-                evidence: vec![py.to_string_lossy().to_string()],
-                auto_fix: false,
-                fix_hint: None,
-            }
-        } else {
-            PythonContractResult {
-                id: "C1_BUNDLED_RUNTIME".into(),
-                title: "Bundled Python runtime".into(),
-                status: "fail".into(),
-                code: "PY_BUNDLE_PIP_UNUSABLE".into(),
-                evidence: errors,
-                auto_fix: false,
-                fix_hint: Some("内置 Python 不可执行或 pip 不可用，建议重装 OpenAkita".into()),
-            }
+        if !internal_dir.exists() {
+            missing.push(format!("missing: {}", internal_dir.display()));
         }
-    };
-    contracts.push(bundled_contract);
+        contracts.push(PythonContractResult {
+            id: "C1_BUNDLED_RUNTIME".into(),
+            title: "内置运行时".into(),
+            status: "fail".into(),
+            code: "RUNTIME_MISSING".into(),
+            evidence: missing,
+            auto_fix: false,
+            fix_hint: Some("请重装 OpenAkita 以恢复内置运行时".into()),
+        });
+    }
 
-    let failing: Vec<&PythonContractResult> = contracts.iter().filter(|c| c.status != "pass").collect();
-    let summary = if failing.is_empty() {
-        "healthy".to_string()
-    } else {
-        "broken".to_string()
-    };
+    // When backend is not running, we can't verify deeper — add an info note.
+    contracts.push(PythonContractResult {
+        id: "C0_BACKEND_OFFLINE".into(),
+        title: "后端服务".into(),
+        status: "warn".into(),
+        code: "BACKEND_NOT_RUNNING".into(),
+        evidence: vec![format!("port {} unreachable", port)],
+        auto_fix: false,
+        fix_hint: Some("启动后端服务后可获得完整诊断信息".into()),
+    });
+
+    let failing: Vec<&PythonContractResult> = contracts
+        .iter()
+        .filter(|c| c.status == "fail")
+        .collect();
+    let summary = if failing.is_empty() { "healthy" } else { "broken" }.to_string();
 
     PythonDiagnostic {
         summary,
         contracts,
-        environment: env,
+        environment: PythonEnvironmentSnapshot {
+            platform: format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
+            bundled_python_path: None,
+            openakita_version: None,
+        },
         trace_id,
         generated_at: python_diag_generated_at(),
     }
+}
+
+/// Call GET /api/diagnostics on the running backend and map the response
+/// to our diagnostic structures.
+fn diagnose_via_backend_api(port: u16) -> Option<PythonDiagnostic> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .ok()?;
+    let resp = client
+        .get(format!("http://127.0.0.1:{}/api/diagnostics", port))
+        .send()
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let json: serde_json::Value = resp.json().ok()?;
+
+    let summary = json.get("summary")
+        .and_then(|v| v.as_str())
+        .unwrap_or("healthy")
+        .to_string();
+
+    let mut contracts: Vec<PythonContractResult> = vec![];
+    if let Some(checks) = json.get("checks").and_then(|v| v.as_array()) {
+        for c in checks {
+            contracts.push(PythonContractResult {
+                id: c.get("id").and_then(|v| v.as_str()).unwrap_or("").into(),
+                title: c.get("title").and_then(|v| v.as_str()).unwrap_or("").into(),
+                status: c.get("status").and_then(|v| v.as_str()).unwrap_or("pass").into(),
+                code: c.get("code").and_then(|v| v.as_str()).unwrap_or("").into(),
+                evidence: c.get("evidence")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                    .unwrap_or_default(),
+                auto_fix: c.get("autoFix").and_then(|v| v.as_bool()).unwrap_or(false),
+                fix_hint: c.get("fixHint").and_then(|v| v.as_str()).map(String::from),
+            });
+        }
+    }
+
+    let env_obj = json.get("environment");
+    let environment = PythonEnvironmentSnapshot {
+        platform: env_obj
+            .and_then(|e| e.get("platform"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        bundled_python_path: None,
+        openakita_version: env_obj
+            .and_then(|e| e.get("openakitaVersion"))
+            .and_then(|v| v.as_str())
+            .map(String::from),
+    };
+
+    Some(PythonDiagnostic {
+        summary,
+        contracts,
+        environment,
+        trace_id: String::new(),
+        generated_at: String::new(),
+    })
 }
 
 #[tauri::command]

@@ -96,6 +96,96 @@ async def _check_with_timeout(name: str, provider, timeout: float = 30) -> Healt
         )
 
 
+@router.get("/api/diagnostics")
+async def diagnostics():
+    """Self-check: the backend reports its own runtime health.
+
+    Called by the desktop app's environment diagnostic panel instead of
+    trying to invoke _internal/python3 externally.
+    """
+    import os
+    import platform
+    import sys
+
+    from openakita import __version__ as backend_version
+
+    checks: list[dict] = []
+
+    # C1: Runtime
+    runtime_type = "bundled" if getattr(sys, "frozen", False) else "venv"
+    checks.append({
+        "id": "C1_BUNDLED_RUNTIME",
+        "title": "内置运行时",
+        "status": "pass",
+        "code": "RUNTIME_OK",
+        "evidence": [f"Python {platform.python_version()}, {runtime_type}"],
+        "autoFix": False,
+        "fixHint": None,
+    })
+
+    # C2: pip availability
+    try:
+        from importlib.metadata import version as pkg_version
+        pip_ver = pkg_version("pip")
+        checks.append({
+            "id": "C2_PIP",
+            "title": "包管理器",
+            "status": "pass",
+            "code": "PIP_OK",
+            "evidence": [f"pip {pip_ver}"],
+            "autoFix": False,
+            "fixHint": None,
+        })
+    except Exception:
+        checks.append({
+            "id": "C2_PIP",
+            "title": "包管理器",
+            "status": "warn",
+            "code": "PIP_UNAVAILABLE",
+            "evidence": ["pip not importable — optional module installation disabled"],
+            "autoFix": False,
+            "fixHint": None,
+        })
+
+    # C3: Core package integrity
+    try:
+        from openakita.setup_center import bridge  # noqa: F401
+        checks.append({
+            "id": "C3_CORE",
+            "title": "核心引擎",
+            "status": "pass",
+            "code": "CORE_OK",
+            "evidence": [f"openakita {backend_version}"],
+            "autoFix": False,
+            "fixHint": None,
+        })
+    except Exception as exc:
+        checks.append({
+            "id": "C3_CORE",
+            "title": "核心引擎",
+            "status": "fail",
+            "code": "CORE_IMPORT_ERROR",
+            "evidence": [str(exc)[:300]],
+            "autoFix": False,
+            "fixHint": "核心模块损坏，建议重装 OpenAkita",
+        })
+
+    failing = [c for c in checks if c["status"] not in ("pass", "warn")]
+    summary = "broken" if failing else "healthy"
+
+    return {
+        "summary": summary,
+        "checks": checks,
+        "environment": {
+            "platform": f"{sys.platform}-{platform.machine()}",
+            "pythonVersion": platform.python_version(),
+            "runtimeType": runtime_type,
+            "openakitaVersion": backend_version,
+            "pid": os.getpid(),
+        },
+    }
+
+
 @router.post("/api/health/check")
 async def health_check(request: Request, body: HealthCheckRequest):
     """

@@ -6625,6 +6625,9 @@ export function App() {
                   {pyDiag.contracts.map((c) => {
                     const titleMap: Record<string, string> = {
                       C1_BUNDLED_RUNTIME: t("adv.contractBundled"),
+                      C2_PIP: t("adv.contractPip"),
+                      C3_CORE: t("adv.contractCore"),
+                      C0_BACKEND_OFFLINE: t("adv.contractBackendOffline"),
                       C2_VENV_HEALTH: t("adv.contractVenv"),
                       C3_OPENAKITA_IN_VENV: t("adv.contractOpenakita"),
                     };
