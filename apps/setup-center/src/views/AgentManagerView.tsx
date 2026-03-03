@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { IconBot, IconRefresh, IconPlus, IconEdit, IconTrash } from "../icons";
 
@@ -162,6 +162,7 @@ export function AgentManagerView({
   const [addingCategory, setAddingCategory] = useState(false);
   const [newCatLabel, setNewCatLabel] = useState("");
   const [newCatColor, setNewCatColor] = useState("#6b7280");
+  const importInputRef = useRef<HTMLInputElement>(null);
 
   const showToast = useCallback((text: string, type: "ok" | "err" = "ok") => {
     setToastMsg({ text, type });
@@ -222,6 +223,50 @@ export function AgentManagerView({
       /* skills endpoint may not be available */
     }
   }, [apiBaseUrl]);
+
+  const handleExport = useCallback(async (profileId: string) => {
+    try {
+      const res = await fetch(`${apiBaseUrl}/api/agents/package/export`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ profile_id: profileId }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        showToast(data.detail || "导出失败", "err");
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${profileId}.akita-agent`;
+      a.click();
+      URL.revokeObjectURL(url);
+      showToast("Agent 已导出");
+    } catch (e) { showToast(String(e), "err"); }
+  }, [apiBaseUrl, showToast]);
+
+  const handleImportFile = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch(`${apiBaseUrl}/api/agents/package/import`, {
+        method: "POST",
+        body: formData,
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(data.detail || "导入失败", "err");
+        return;
+      }
+      showToast(`Agent「${data.profile?.name || ""}」导入成功`);
+      fetchProfiles();
+    } catch (err) { showToast(String(err), "err"); }
+    if (importInputRef.current) importInputRef.current.value = "";
+  }, [apiBaseUrl, showToast, fetchProfiles]);
 
   useEffect(() => {
     if (visible && multiAgentEnabled) {
@@ -434,6 +479,16 @@ export function AgentManagerView({
           {loading ? t("dashboard.loading") : t("dashboard.refresh")}
         </button>
         <button
+          onClick={() => importInputRef.current?.click()}
+          style={{
+            display: "flex", alignItems: "center", gap: 6,
+            padding: "6px 14px", borderRadius: 8, border: "1px solid var(--line)",
+            background: "var(--panel)", cursor: "pointer", fontSize: 13,
+          }}
+        >
+          📥 {t("agentManager.import") || "导入"}
+        </button>
+        <button
           onClick={openCreateEditor}
           style={{
             display: "flex", alignItems: "center", gap: 6,
@@ -445,6 +500,13 @@ export function AgentManagerView({
           <IconPlus size={14} />
           {t("agentManager.create")}
         </button>
+        <input
+          ref={importInputRef}
+          type="file"
+          accept=".akita-agent"
+          style={{ display: "none" }}
+          onChange={handleImportFile}
+        />
       </div>
 
       {/* Category Tabs */}
@@ -641,6 +703,17 @@ export function AgentManagerView({
                 >
                   <IconEdit size={12} />
                   {t("agentManager.edit")}
+                </button>
+                <button
+                  onClick={() => handleExport(agent.id)}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 4,
+                    padding: "4px 10px", borderRadius: 6, border: "1px solid var(--line)",
+                    background: "transparent", cursor: "pointer", fontSize: 12,
+                  }}
+                  title={t("agentManager.export") || "导出为 .akita-agent"}
+                >
+                  📤 {t("agentManager.export") || "导出"}
                 </button>
                 {!isSystem && (
                   <button

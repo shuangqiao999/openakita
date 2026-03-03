@@ -87,6 +87,9 @@ class AgentProfile:
     # 用户自定义标记：系统预设被用户编辑后置 True，升级时不再覆盖
     user_customized: bool = False
 
+    # Hub 来源（从 Agent Store 安装时记录来源信息）
+    hub_source: dict[str, Any] | None = None
+
     # 临时 Agent 支持
     ephemeral: bool = False
     inherit_from: str | None = None

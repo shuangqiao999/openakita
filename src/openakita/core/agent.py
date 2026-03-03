@@ -61,6 +61,9 @@ from ..tools.handlers.skills import create_handler as create_skills_handler
 from ..tools.handlers.sticker import create_handler as create_sticker_handler
 from ..tools.handlers.system import create_handler as create_system_handler
 from ..tools.handlers.agent import create_handler as create_agent_tool_handler
+from ..tools.handlers.agent_hub import create_handler as create_agent_hub_handler
+from ..tools.handlers.agent_package import create_handler as create_agent_package_handler
+from ..tools.handlers.skill_store import create_handler as create_skill_store_handler
 from ..tools.handlers.web_search import create_handler as create_web_search_handler
 
 # MCP 系统
@@ -1031,6 +1034,27 @@ class Agent:
             "config",
             create_config_handler(self),
             ["system_config"],
+        )
+
+        # Agent 包（导入/导出）
+        self.handler_registry.register(
+            "agent_package",
+            create_agent_package_handler(self),
+            ["export_agent", "import_agent", "list_exportable_agents", "inspect_agent_package"],
+        )
+
+        # Agent Hub（平台 Agent Store 交互）
+        self.handler_registry.register(
+            "agent_hub",
+            create_agent_hub_handler(self),
+            ["search_hub_agents", "install_hub_agent", "publish_agent", "get_hub_agent_detail"],
+        )
+
+        # Skill Store（平台 Skill Store 交互）
+        self.handler_registry.register(
+            "skill_store",
+            create_skill_store_handler(self),
+            ["search_store_skills", "install_store_skill", "get_store_skill_detail", "submit_skill_repo"],
         )
 
         # 桌面工具（仅 Windows 且依赖可用时注册，与 _tools/ToolCatalog 保持一致）

@@ -32,6 +32,7 @@ from .routes import (
     config,
     files,
     health,
+    hub,
     im,
     logs,
     mcp,
@@ -140,6 +141,7 @@ def create_app(
     app.include_router(token_stats.router)
     app.include_router(upload.router)
     app.include_router(workspace_io.router)
+    app.include_router(hub.router)
 
     @app.get("/")
     async def root():

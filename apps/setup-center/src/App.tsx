@@ -16,6 +16,8 @@ import { AgentManagerView } from "./views/AgentManagerView";
 import { FeedbackModal } from "./views/FeedbackModal";
 import { IMConfigView } from "./views/IMConfigView";
 import { AgentSystemView } from "./views/AgentSystemView";
+import { AgentStoreView } from "./views/AgentStoreView";
+import { SkillStoreView } from "./views/SkillStoreView";
 import type {
   EndpointSummary as EndpointSummaryType,
   PlatformInfo, WorkspaceSummary, ProviderInfo, ListedModel,
@@ -5175,7 +5177,7 @@ export function App() {
       }
       setBusy(t("adv.backupExporting"));
       try {
-        const apiPort = serviceStatus?.port || 18900;
+        const apiPort = (serviceStatus && "port" in serviceStatus ? serviceStatus.port : undefined) || 18900;
         const result = await invoke<{ status: string; path?: string; filename?: string; size_bytes?: number }>(
           "export_workspace_backup",
           {
@@ -5201,7 +5203,7 @@ export function App() {
         if (!zipPath) return;
         if (!confirm(t("adv.backupImportConfirm"))) return;
         setBusy(t("adv.backupExporting"));
-        const apiPort = serviceStatus?.port || 18900;
+        const apiPort = (serviceStatus && "port" in serviceStatus ? serviceStatus.port : undefined) || 18900;
         const result = await invoke<{ status: string; restored_count?: number }>(
           "import_workspace_backup",
           { workspaceId: currentWorkspaceId, zipPath, apiPort }
@@ -7219,6 +7221,22 @@ export function App() {
           apiBaseUrl={apiBaseUrl}
           visible={view === "agent_manager"}
           multiAgentEnabled={multiAgentEnabled}
+        />
+      );
+    }
+    if (view === "agent_store") {
+      return (
+        <AgentStoreView
+          apiBaseUrl={apiBaseUrl}
+          visible={view === "agent_store"}
+        />
+      );
+    }
+    if (view === "skill_store") {
+      return (
+        <SkillStoreView
+          apiBaseUrl={apiBaseUrl}
+          visible={view === "skill_store"}
         />
       );
     }

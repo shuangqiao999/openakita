@@ -9,7 +9,7 @@ import {
 } from "../icons";
 import logoUrl from "../assets/logo.png";
 
-type ViewId = "wizard" | "status" | "chat" | "skills" | "im" | "onboarding" | "modules" | "token_stats" | "mcp" | "scheduler" | "memory" | "dashboard" | "agent_manager";
+type ViewId = "wizard" | "status" | "chat" | "skills" | "im" | "onboarding" | "modules" | "token_stats" | "mcp" | "scheduler" | "memory" | "dashboard" | "agent_manager" | "agent_store" | "skill_store";
 
 export type SidebarProps = {
   collapsed: boolean;
@@ -112,6 +112,13 @@ export function Sidebar({
             <IconBot size={16} /> {!collapsed && <span>{t("sidebar.agentManager")}</span>}
           </div>
         )}
+        <div style={{ height: 1, background: "var(--line)", margin: "6px 12px" }} />
+        <div className={`navItem ${view === "agent_store" ? "navItemActive" : ""}`} onClick={() => onViewChange("agent_store")} role="button" tabIndex={0} title="Agent Store">
+          <span style={{ fontSize: 14, width: 16, textAlign: "center" }}>🏪</span> {!collapsed && <span>Agent Store</span>}
+        </div>
+        <div className={`navItem ${view === "skill_store" ? "navItemActive" : ""}`} onClick={() => onViewChange("skill_store")} role="button" tabIndex={0} title="Skill Store">
+          <span style={{ fontSize: 14, width: 16, textAlign: "center" }}>🧩</span> {!collapsed && <span>Skill Store</span>}
+        </div>
       </div>
 
       {/* Collapsible Config section */}

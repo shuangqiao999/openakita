@@ -363,6 +363,12 @@ class Settings(BaseSettings):
         description="Bug report cloud endpoint URL (Cloudflare Worker). Empty = feature disabled.",
     )
 
+    # === OpenAkita Platform (Agent Hub / Skill Store) ===
+    hub_api_url: str = Field(
+        default="https://openakita.ai/api",
+        description="OpenAkita Platform API base URL for Agent Hub and Skill Store",
+    )
+
     # === Harness 配置 ===
     supervisor_enabled: bool = Field(default=True, description="是否启用运行时监督器 (RuntimeSupervisor)")
     task_budget_tokens: int = Field(default=0, description="单次任务最大 token 消耗 (0=不限制)")
