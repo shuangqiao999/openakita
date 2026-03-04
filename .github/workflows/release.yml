@@ -981,7 +981,7 @@ jobs:
           set -euo pipefail
 
           # 安装 ossutil
-          curl -fsSL https://gosspublic.alicdn.com/ossutil/install.sh | bash
+          curl -fsSL https://gosspublic.alicdn.com/ossutil/install.sh | sudo bash
           ossutil config \
             -e "${OSS_ENDPOINT}" \
             -i "${OSS_ACCESS_KEY_ID}" \
