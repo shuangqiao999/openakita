@@ -874,6 +874,23 @@
     "storageLlmDebug": "LLM 调试文件",
     "storageCache": "缓存",
     "storageDb": "数据库",
-    "clean": "清理"
+    "clean": "清理",
+    "opsTitle": "系统运维",
+    "opsPaths": "路径信息",
+    "opsWorkspacePath": "工作区路径",
+    "opsLogsPath": "日志路径",
+    "opsIdentityPath": "身份标识路径",
+    "opsOpenFolder": "打开目录",
+    "opsEnvManage": "环境变量管理",
+    "opsEnvExport": "导出 .env",
+    "opsEnvImport": "导入 .env",
+    "opsEnvExportSuccess": ".env 备份已导出至：{{path}}",
+    "opsEnvImportSuccess": ".env 导入成功",
+    "opsEnvImportConfirm": "导入将覆盖当前的 .env 配置文件，确定继续吗？",
+    "opsLogExport": "诊断日志导出",
+    "opsLogExportBtn": "打包导出",
+    "opsLogExportDesc": "打包导出日志、LLM 调试数据和系统信息，用于问题排查",
+    "opsLogExporting": "正在打包...",
+    "opsLogExportSuccess": "诊断包已导出至：{{path}}"
   }
 }

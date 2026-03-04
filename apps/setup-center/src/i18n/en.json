@@ -874,6 +874,23 @@
     "storageLlmDebug": "LLM Debug Files",
     "storageCache": "Cache",
     "storageDb": "Database",
-    "clean": "Clean"
+    "clean": "Clean",
+    "opsTitle": "System Operations",
+    "opsPaths": "Path Information",
+    "opsWorkspacePath": "Workspace Path",
+    "opsLogsPath": "Logs Path",
+    "opsIdentityPath": "Identity Path",
+    "opsOpenFolder": "Open Folder",
+    "opsEnvManage": "Environment Variable Management",
+    "opsEnvExport": "Export .env",
+    "opsEnvImport": "Import .env",
+    "opsEnvExportSuccess": ".env backup exported to: {{path}}",
+    "opsEnvImportSuccess": ".env imported successfully",
+    "opsEnvImportConfirm": "Importing will overwrite the current .env configuration. Continue?",
+    "opsLogExport": "Diagnostic Log Export",
+    "opsLogExportBtn": "Export Bundle",
+    "opsLogExportDesc": "Bundle and export logs, LLM debug data, and system info for troubleshooting",
+    "opsLogExporting": "Bundling...",
+    "opsLogExportSuccess": "Diagnostic bundle exported to: {{path}}"
   }
 }

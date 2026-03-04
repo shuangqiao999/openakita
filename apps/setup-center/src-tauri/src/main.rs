@@ -1858,6 +1858,8 @@ fn main() {
             download_file,
             show_item_in_folder,
             open_file_with_default,
+            export_env_backup,
+            export_diagnostic_bundle,
             open_external_url,
             openakita_list_processes,
             openakita_stop_all_processes,
@@ -4262,6 +4264,130 @@ fn open_file_with_default(path: String) -> Result<(), String> {
             .map_err(|e| format!("Failed to open file: {e}"))?;
     }
     Ok(())
+}
+
+/// Export the workspace .env file to Downloads as a timestamped backup.
+#[tauri::command]
+fn export_env_backup(workspace_id: String) -> Result<String, String> {
+    let env_path = workspace_dir(&workspace_id).join(".env");
+    if !env_path.exists() {
+        return Err("No .env file found in workspace".to_string());
+    }
+
+    let downloads_dir = dirs_next::download_dir()
+        .or_else(|| dirs_next::home_dir().map(|h| h.join("Downloads")))
+        .ok_or_else(|| "Cannot determine Downloads directory".to_string())?;
+    fs::create_dir_all(&downloads_dir)
+        .map_err(|e| format!("Cannot create Downloads dir: {e}"))?;
+
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let filename = format!("openakita-env-backup-{ts}.env");
+    let mut dest = downloads_dir.join(&filename);
+    let mut counter = 1u32;
+    while dest.exists() {
+        dest = downloads_dir.join(format!("openakita-env-backup-{ts} ({counter}).env"));
+        counter += 1;
+    }
+
+    fs::copy(&env_path, &dest)
+        .map_err(|e| format!("Failed to copy .env: {e}"))?;
+
+    Ok(dest.to_string_lossy().to_string())
+}
+
+/// Export diagnostic bundle (logs, llm_debug, system info) as a zip in Downloads.
+#[tauri::command]
+fn export_diagnostic_bundle(
+    workspace_id: String,
+    system_info_json: Option<String>,
+) -> Result<String, String> {
+    let ws_dir = workspace_dir(&workspace_id);
+    let logs_dir = ws_dir.join("logs");
+    let llm_debug_dir = ws_dir.join("data").join("llm_debug");
+
+    let downloads_dir = dirs_next::download_dir()
+        .or_else(|| dirs_next::home_dir().map(|h| h.join("Downloads")))
+        .ok_or_else(|| "Cannot determine Downloads directory".to_string())?;
+    fs::create_dir_all(&downloads_dir)
+        .map_err(|e| format!("Cannot create Downloads dir: {e}"))?;
+
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let zip_name = format!("openakita-diagnostic-{ts}.zip");
+    let mut dest = downloads_dir.join(&zip_name);
+    let mut counter = 1u32;
+    while dest.exists() {
+        dest = downloads_dir.join(format!("openakita-diagnostic-{ts} ({counter}).zip"));
+        counter += 1;
+    }
+
+    let file = fs::File::create(&dest)
+        .map_err(|e| format!("Failed to create zip file: {e}"))?;
+    let mut zip_writer = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    fn collect_files(dir: &Path) -> Vec<PathBuf> {
+        let mut result = Vec::new();
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    result.extend(collect_files(&path));
+                } else {
+                    result.push(path);
+                }
+            }
+        }
+        result
+    }
+
+    fn add_dir_to_zip(
+        zip_writer: &mut zip::ZipWriter<fs::File>,
+        dir: &Path,
+        prefix: &str,
+        options: zip::write::SimpleFileOptions,
+    ) -> Result<(), String> {
+        if !dir.exists() {
+            return Ok(());
+        }
+        for file_path in collect_files(dir) {
+            if let Ok(rel) = file_path.strip_prefix(dir) {
+                let name = format!("{}/{}", prefix, rel.to_string_lossy().replace('\\', "/"));
+                zip_writer
+                    .start_file(&name, options)
+                    .map_err(|e| format!("zip start error: {e}"))?;
+                let data = fs::read(&file_path).unwrap_or_default();
+                zip_writer
+                    .write_all(&data)
+                    .map_err(|e| format!("zip write error: {e}"))?;
+            }
+        }
+        Ok(())
+    }
+
+    add_dir_to_zip(&mut zip_writer, &logs_dir, "logs", options)?;
+    add_dir_to_zip(&mut zip_writer, &llm_debug_dir, "llm_debug", options)?;
+
+    if let Some(info) = system_info_json {
+        zip_writer
+            .start_file("system-info.json", options)
+            .map_err(|e| format!("zip error: {e}"))?;
+        zip_writer
+            .write_all(info.as_bytes())
+            .map_err(|e| format!("zip write error: {e}"))?;
+    }
+
+    zip_writer
+        .finish()
+        .map_err(|e| format!("zip finish error: {e}"))?;
+
+    Ok(dest.to_string_lossy().to_string())
 }
 
 /// Open an external URL in the OS default browser.

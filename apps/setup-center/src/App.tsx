@@ -1468,6 +1468,7 @@ export function App() {
   // unified env draft (full coverage)
   const [envDraft, setEnvDraft] = useState<EnvMap>({});
   const envLoadedForWs = useRef<string | null>(null);
+  const envImportFileRef = useRef<HTMLInputElement>(null);
 
   const envFieldCtx = useMemo<EnvFieldCtx>(() => ({
     envDraft, setEnvDraft, secretShown, setSecretShown, busy, t,
@@ -6592,6 +6593,127 @@ export function App() {
       </div>
     );
 
+    // ── 系统运维区域 ──
+
+    const opsWs = workspaces.find(w => w.id === (currentWorkspaceId || "default"));
+    const opsWsPath = opsWs?.path || "";
+    const opsLogsPath = opsWsPath ? joinPath(opsWsPath, "logs") : "";
+    const opsIdentityPath = opsWsPath ? joinPath(opsWsPath, "identity") : "";
+
+    const opsPathRows: { label: string; path: string }[] = [
+      { label: t("adv.opsWorkspacePath"), path: opsWsPath },
+      { label: t("adv.opsLogsPath"), path: opsLogsPath },
+      { label: t("adv.opsIdentityPath"), path: opsIdentityPath },
+    ];
+
+    async function opsOpenFolder(p: string) {
+      if (!p) return;
+      try {
+        await invoke("show_item_in_folder", { path: p });
+      } catch {
+        try {
+          await invoke("open_file_with_default", { path: p });
+        } catch {
+          if (opsWsPath && opsWsPath !== p) {
+            try { await invoke("open_file_with_default", { path: opsWsPath }); } catch (e) { setError(String(e)); }
+          }
+        }
+      }
+    }
+
+    async function opsHandleEnvExport() {
+      if (!currentWorkspaceId) return;
+      setBusy(t("adv.opsEnvExport"));
+      try {
+        const dest = await invoke<string>("export_env_backup", { workspaceId: currentWorkspaceId });
+        setNotice(t("adv.opsEnvExportSuccess", { path: dest }));
+        await invoke("show_item_in_folder", { path: dest });
+      } catch (e) { setError(String(e)); } finally { setBusy(null); }
+    }
+
+    function opsHandleEnvImport(e: React.ChangeEvent<HTMLInputElement>) {
+      const file = e.target.files?.[0];
+      if (!file || !currentWorkspaceId) return;
+      e.target.value = "";
+      const wsId = currentWorkspaceId;
+      askConfirm(t("adv.opsEnvImportConfirm"), async () => {
+        setBusy(t("adv.opsEnvImport"));
+        try {
+          const content = await file.text();
+          await invoke("workspace_write_file", {
+            workspaceId: wsId,
+            relativePath: ".env",
+            content,
+          });
+          const parsed = parseEnv(content);
+          setEnvDraft(parsed);
+          envLoadedForWs.current = wsId;
+          setNotice(t("adv.opsEnvImportSuccess"));
+        } catch (err) { setError(String(err)); } finally { setBusy(null); }
+      });
+    }
+
+    async function opsHandleBundleExport() {
+      if (!currentWorkspaceId) return;
+      setBusy(t("adv.opsLogExporting"));
+      try {
+        let sysInfoJson: string | undefined;
+        if (shouldUseHttpApi()) {
+          try {
+            const res = await safeFetch(`${httpApiBase()}/api/system-info`, { signal: AbortSignal.timeout(5_000) });
+            const data = await res.json();
+            sysInfoJson = JSON.stringify(data, null, 2);
+          } catch { /* best-effort: system info is optional */ }
+        }
+        const dest = await invoke<string>("export_diagnostic_bundle", {
+          workspaceId: currentWorkspaceId,
+          systemInfoJson: sysInfoJson ?? null,
+        });
+        setNotice(t("adv.opsLogExportSuccess", { path: dest }));
+        await invoke("show_item_in_folder", { path: dest });
+      } catch (e) { setError(String(e)); } finally { setBusy(null); }
+    }
+
+    const opsCard = () => (
+      <div className="card" style={{ marginTop: 12 }}>
+        {sectionHeader("ops", t("adv.opsTitle"))}
+        <div style={{ paddingLeft: 22 }}>
+          {/* ── 路径信息 ── */}
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontWeight: 500, fontSize: 13, marginBottom: 8, color: "var(--muted)" }}>{t("adv.opsPaths")}</div>
+            <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", gap: "6px 12px", alignItems: "center", fontSize: 13 }}>
+              {opsPathRows.map((row) => (
+                <Fragment key={row.label}>
+                  <span style={{ fontWeight: 500, whiteSpace: "nowrap" }}>{row.label}</span>
+                  <span style={{ wordBreak: "break-all", color: "var(--muted)", fontSize: 12, fontFamily: "monospace" }}>{row.path || "—"}</span>
+                  <button className="btnSmall" onClick={() => opsOpenFolder(row.path)} disabled={!row.path}>{t("adv.opsOpenFolder")}</button>
+                </Fragment>
+              ))}
+            </div>
+          </div>
+
+          {/* ── .env 管理 ── */}
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontWeight: 500, fontSize: 13, marginBottom: 8, color: "var(--muted)" }}>{t("adv.opsEnvManage")}</div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button className="btnSmall" onClick={opsHandleEnvExport} disabled={!!busy || !currentWorkspaceId}>{t("adv.opsEnvExport")}</button>
+              <button className="btnSmall" onClick={() => envImportFileRef.current?.click()} disabled={!!busy || !currentWorkspaceId}>{t("adv.opsEnvImport")}</button>
+              <input type="file" ref={envImportFileRef} accept=".env,text/plain" style={{ display: "none" }} onChange={opsHandleEnvImport} />
+            </div>
+          </div>
+
+          {/* ── 诊断日志导出 ── */}
+          <div>
+            <div style={{ fontWeight: 500, fontSize: 13, marginBottom: 4, color: "var(--muted)" }}>{t("adv.opsLogExport")}</div>
+            <div className="cardHint" style={{ marginBottom: 8 }}>{t("adv.opsLogExportDesc")}</div>
+            <button className="btnSmall" onClick={opsHandleBundleExport} disabled={!!busy || !currentWorkspaceId}>
+              {busy === t("adv.opsLogExporting") ? t("adv.opsLogExporting") : t("adv.opsLogExportBtn")}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+
     return (
       <>
         {/* ── Python 环境诊断 ── */}
@@ -6675,6 +6797,9 @@ export function App() {
               )}
             </div>
         </div>
+
+        {/* ── 系统运维 ── */}
+        {opsCard()}
 
       </>
     );
