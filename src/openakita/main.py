@@ -319,7 +319,7 @@ def _ensure_channel_deps() -> None:
     target_dir = get_channel_deps_dir()
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    # 国内镜像多源回退（与 Rust 端 install_module 行为一致）
+    # 国内镜像多源回退（与 Rust 端 pip_install 行为一致）
     # 尊重用户已配置的 PIP_INDEX_URL 环境变量
     _user_index = os.environ.get("PIP_INDEX_URL", "").strip()
     _mirror_sources: list[tuple[str, str]] = []

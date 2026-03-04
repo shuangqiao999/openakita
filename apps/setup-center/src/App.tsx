@@ -1132,9 +1132,6 @@ export function App() {
   // ── Restart overlay state ──
   const [restartOverlay, setRestartOverlay] = useState<{ phase: "saving" | "restarting" | "waiting" | "done" | "fail" | "notRunning" } | null>(null);
 
-  // ── Module restart prompt ──
-  const [moduleRestartPrompt, setModuleRestartPrompt] = useState<string | null>(null);
-
   // ── Service conflict & version state ──
   const [conflictDialog, setConflictDialog] = useState<{ pid: number; version: string } | null>(null);
   const [pendingStartWsId, setPendingStartWsId] = useState<string | null>(null); // workspace ID waiting for conflict resolution
@@ -1182,7 +1179,7 @@ export function App() {
     [t],
   );
 
-  const [view, setView] = useState<"wizard" | "status" | "chat" | "skills" | "im" | "onboarding" | "modules" | "token_stats" | "mcp" | "scheduler" | "memory">("wizard");
+  const [view, setView] = useState<"wizard" | "status" | "chat" | "skills" | "im" | "onboarding" | "token_stats" | "mcp" | "scheduler" | "memory">("wizard");
   const [appInitializing, setAppInitializing] = useState(true); // 首次加载检测中，防止闪烁
   const [configExpanded, setConfigExpanded] = useState(true);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -1199,14 +1196,8 @@ export function App() {
   const currentStepIdx = currentStepIdxRaw < 0 ? 0 : currentStepIdxRaw;
 
   // ── Onboarding Wizard (首次安装引导) ──
-  type OnboardingStep = "ob-welcome" | "ob-agreement" | "ob-llm" | "ob-im" | "ob-modules" | "ob-cli" | "ob-progress" | "ob-done";
-  type ModuleInfo = { id: string; name: string; description: string; installed: boolean; bundled: boolean; sizeMb: number; category: string };
+  type OnboardingStep = "ob-welcome" | "ob-agreement" | "ob-llm" | "ob-im" | "ob-cli" | "ob-progress" | "ob-done";
   const [obStep, setObStep] = useState<OnboardingStep>("ob-welcome");
-  const [obModules, setObModules] = useState<ModuleInfo[]>([]);
-  const [obSelectedModules, setObSelectedModules] = useState<Set<string>>(new Set());
-  /** 卸载因“拒绝访问”失败时，可先停止后端再卸载的待处理模块 */
-  const [moduleUninstallPending, setModuleUninstallPending] = useState<{ id: string; name: string } | null>(null);
-  const obModulesDefaultsApplied = useRef(false);
   const [obInstallLog, setObInstallLog] = useState<string[]>([]);
   const [obInstalling, setObInstalling] = useState(false);
   const [obEnvCheck, setObEnvCheck] = useState<{
@@ -1783,25 +1774,6 @@ export function App() {
     return () => {
       if (unlisten) unlisten();
     };
-  }, []);
-
-  // module install progress events → feed into detail log
-  useEffect(() => {
-    let unlisten: null | (() => void) = null;
-    (async () => {
-      unlisten = await listen("module-install-progress", (ev) => {
-        const p = ev.payload as any;
-        if (!p || typeof p !== "object") return;
-        const msg = String(p.message || "");
-        const status = String(p.status || "");
-        const moduleId = String(p.moduleId || "");
-        if (msg) {
-          const prefix = status === "retrying" ? "🔄" : status === "error" ? "❌" : status === "done" ? "✅" : status === "warning" ? "⚠️" : status === "restart-hint" ? "🔁" : "📦";
-          setObDetailLog(prev => [...prev, `[${new Date().toLocaleTimeString()}] ${prefix} [${moduleId}] ${msg}`]);
-        }
-      });
-    })();
-    return () => { if (unlisten) unlisten(); };
   }, []);
 
   // tray quit failed: service still running
@@ -7290,19 +7262,6 @@ export function App() {
   }
 
   // ── Onboarding Wizard 渲染 ──
-  async function obLoadModules() {
-    try {
-      const modules = await invoke<ModuleInfo[]>("detect_modules");
-      setObModules(modules);
-      // 外置模块默认不选中，用户按需手动勾选安装
-      if (!obModulesDefaultsApplied.current) {
-        obModulesDefaultsApplied.current = true;
-      }
-    } catch (e) {
-      console.warn("detect_modules failed:", e);
-    }
-  }
-
   async function obLoadEnvCheck() {
     try {
       const check = await invoke<typeof obEnvCheck>("check_environment");
@@ -7310,15 +7269,6 @@ export function App() {
     } catch (e) {
       console.warn("check_environment failed:", e);
     }
-  }
-
-  function obToggleModule(id: string) {
-    setObSelectedModules((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
   }
 
   const [obHasErrors, setObHasErrors] = useState(false);
@@ -7380,13 +7330,6 @@ export function App() {
       { id: "llm-config", label: "保存 LLM 配置", status: savedEndpoints.length > 0 ? "pending" : "skipped" },
       { id: "env-save", label: "保存环境变量", status: "pending" },
     ];
-    // 动态添加模块安装任务
-    if (obSelectedModules.size > 0) {
-      taskDefs.push({ id: "python-check", label: "检查 Python 环境", status: "pending" });
-      for (const moduleId of obSelectedModules) {
-        taskDefs.push({ id: `module-${moduleId}`, label: `安装模块: ${moduleId}`, status: "pending" });
-      }
-    }
     // CLI 注册
     const cliCommands: string[] = [];
     if (obCliOpenakita) cliCommands.push("openakita");
@@ -7492,63 +7435,6 @@ export function App() {
         updateTask("env-save", { status: "error", detail: String(e) });
         logTask("保存环境变量", "error", String(e));
         hasErr = true;
-      }
-
-      // ── STEP: python-check + modules ──
-      if (obSelectedModules.size > 0) {
-        updateTask("python-check", { status: "running" });
-        logTask("检查 Python 环境", "running");
-        let pyReady = false;
-        log("检查 Python 环境...");
-        try {
-          const pyCheck = await invoke<string>("check_python_for_pip");
-          log(`✓ ${pyCheck}`);
-          pyReady = true;
-          updateTask("python-check", { status: "done", detail: pyCheck });
-          logTask("检查 Python 环境", "done", pyCheck);
-        } catch {
-          log("未找到 Python 环境，正在检查内置 Python...");
-          updateTask("python-check", { detail: "正在检查内置 Python..." });
-          logTask("检查 Python 环境", "running", "正在检查内置 Python...");
-            try {
-            await invoke("install_bundled_python", { pythonSeries: "3.11", logPath: obLogPath ?? null });
-            log("✓ 内置 Python 可用");
-            pyReady = true;
-            updateTask("python-check", { status: "done", detail: "内置 Python" });
-            logTask("检查 Python 环境", "done", "内置 Python");
-          } catch (pyErr) {
-            log(`⚠ 内置 Python 不可用: ${String(pyErr)}`);
-            updateTask("python-check", { status: "error", detail: String(pyErr) });
-            logTask("检查 Python 环境", "error", String(pyErr));
-            hasErr = true;
-          }
-        }
-
-        for (const moduleId of obSelectedModules) {
-          const taskId = `module-${moduleId}`;
-          const taskLabel = `安装模块: ${moduleId}`;
-          updateTask(taskId, { status: "running" });
-          logTask(taskLabel, "running");
-          log(t("onboarding.progress.installingModule", { module: moduleId }));
-          if (!pyReady) {
-            updateTask(taskId, { status: "error", detail: "Python 环境不可用" });
-            logTask(taskLabel, "error", "Python 环境不可用");
-            log(`⚠ 跳过 ${moduleId}: Python 环境不可用`);
-            hasErr = true;
-            continue;
-          }
-          try {
-            await invoke("install_module", { moduleId, mirror: null });
-            log(t("onboarding.progress.moduleInstalled", { module: moduleId }));
-            updateTask(taskId, { status: "done" });
-            logTask(taskLabel, "done");
-          } catch (e) {
-            log(t("onboarding.progress.moduleFailed", { module: moduleId, error: String(e) }));
-            updateTask(taskId, { status: "error", detail: String(e).slice(0, 120) });
-            logTask(taskLabel, "error", String(e).slice(0, 200));
-            hasErr = true;
-          }
-        }
       }
 
       // ── STEP: cli ──
@@ -7660,7 +7546,7 @@ export function App() {
 
   function renderOnboarding() {
     // Progress/done are transitional states and should not create extra indicator dots.
-    const obStepDots = ["ob-welcome", "ob-agreement", "ob-llm", "ob-im", "ob-modules", "ob-cli"] as OnboardingStep[];
+    const obStepDots = ["ob-welcome", "ob-agreement", "ob-llm", "ob-im", "ob-cli"] as OnboardingStep[];
     const obCurrentIdxRaw = obStepDots.indexOf(obStep);
     const obCurrentIdx = obCurrentIdxRaw >= 0 ? obCurrentIdxRaw : obStepDots.length - 1;
 
@@ -7877,63 +7763,11 @@ export function App() {
               {stepIndicator}
               <div className="obFooterBtns">
                 <button className="obSkipBtn" onClick={() => setObStep("ob-llm")}>{t("config.prev")}</button>
-                <button className="btnPrimary" onClick={() => { obLoadModules(); setObStep("ob-modules"); }}>
-                  {t("config.next")}
-                </button>
-                <button className="obSkipBtn" onClick={() => { obLoadModules(); setObStep("ob-modules"); }} title={t("onboarding.im.skip")}>
-                  {t("onboarding.im.skipShort") || t("onboarding.im.skip")}
-                </button>
-              </div>
-            </div>
-          </div>
-        );
-
-      case "ob-modules":
-        return (
-          <div className="obPage">
-            <div className="obContent">
-              <h2 className="obStepTitle">{t("onboarding.modules.title")}</h2>
-              <p className="obStepDesc">{t("onboarding.modules.desc")}</p>
-              <p style={{ fontSize: 13, color: "var(--muted)", margin: "0 0 8px", lineHeight: 1.5 }}>
-                已为你推荐常用模块，如不需要可取消勾选。模块安装后也可在设置中管理。
-              </p>
-              <div style={{
-                fontSize: 12, color: "#475569", marginBottom: 12, padding: "10px 14px",
-                background: "#f1f5f9", borderRadius: 8, border: "1px solid #e2e8f0", lineHeight: 1.6,
-              }}>
-                <strong style={{ color: "var(--text)" }}>说明：</strong>上述可选模块包含本地模型与插件资源，体积较大，下载耗时较长（预计最长约 30～60 分钟）。若暂不需要可取消勾选，后续可在左侧栏「模块」中按需安装；安装后可提升记忆、浏览器、语音等能力，建议在网络稳定时下载。
-              </div>
-              <div className="obModuleList">
-                {obModules.map((m) => (
-                  <label key={m.id} className={`obModuleItem ${m.installed || m.bundled ? "obModuleInstalled" : ""}`}
-                    style={obSelectedModules.has(m.id) && !m.installed && !m.bundled ? { borderColor: "var(--brand)", background: "var(--nav-active)" } : {}}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={m.installed || m.bundled || obSelectedModules.has(m.id)}
-                      disabled={m.installed || m.bundled}
-                      onChange={() => obToggleModule(m.id)}
-                    />
-                    <div className="obModuleInfo">
-                      <strong>{m.name}</strong>
-                      <span className="obModuleDesc">{m.description}</span>
-                      <span className="obModuleSize">~{m.sizeMb} MB</span>
-                    </div>
-                    {(m.installed || m.bundled) && <span className="obModuleBadge">{t("onboarding.modules.installed")}</span>}
-                    {m.id === "orchestration" && !m.installed && !m.bundled && (
-                      <span className="obModuleBadge" style={{ background: "#fef3c7", color: "#92400e" }}>Beta</span>
-                    )}
-                  </label>
-                ))}
-                {obModules.length === 0 && <p style={{ color: "#94a3b8" }}>{t("onboarding.modules.loading")}</p>}
-              </div>
-            </div>
-            <div className="obFooter">
-              {stepIndicator}
-              <div className="obFooterBtns">
-                <button className="obSkipBtn" onClick={() => setObStep("ob-im")}>{t("config.prev")}</button>
                 <button className="btnPrimary" onClick={() => setObStep("ob-cli")}>
                   {t("config.next")}
+                </button>
+                <button className="obSkipBtn" onClick={() => setObStep("ob-cli")} title={t("onboarding.im.skip")}>
+                  {t("onboarding.im.skipShort") || t("onboarding.im.skip")}
                 </button>
               </div>
             </div>
@@ -8034,9 +7868,9 @@ export function App() {
             <div className="obFooter">
               {stepIndicator}
               <div className="obFooterBtns">
-                <button className="obSkipBtn" onClick={() => setObStep("ob-modules")}>{t("config.prev")}</button>
+                <button className="obSkipBtn" onClick={() => setObStep("ob-im")}>{t("config.prev")}</button>
                 <button className="btnPrimary" onClick={() => { setObStep("ob-progress"); obRunSetup(); }}>
-                  {t("onboarding.modules.startInstall")}
+                  {t("config.next")}
                 </button>
               </div>
             </div>
@@ -8309,135 +8143,6 @@ export function App() {
         </div>
       );
     }
-    if (view === "modules") {
-      return (
-        <div>
-          {_disableToggle("modules", "模块管理")}
-          {disabledViews.includes("modules") ? (
-            <div className="card" style={{ opacity: 0.5, textAlign: "center", padding: 40 }}>
-              <p style={{ color: "#94a3b8", fontSize: 15 }}>此模块已禁用，点击上方开关启用</p>
-            </div>
-          ) : (
-        <div className="card">
-          <h2 className="cardTitle">{t("modules.title")}</h2>
-          <p style={{ color: "var(--muted)", fontSize: 13, marginBottom: 16 }}>{t("modules.desc")}</p>
-          <div style={{ display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 16, padding: "10px 14px", background: "var(--warn-bg, #fffbeb)", borderRadius: 8, border: "1px solid var(--warn-border, #fde68a)", fontSize: 13, color: "var(--warn, #92400e)", lineHeight: 1.6 }}>
-            <span style={{ fontSize: 16, flexShrink: 0, marginTop: 1 }}>⚠️</span>
-            <span>{t("modules.legacyNotice")}</span>
-          </div>
-          {moduleUninstallPending && currentWorkspaceId && (
-            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12, padding: "10px 12px", background: "#fef2f2", borderRadius: 8, border: "1px solid #fecaca" }}>
-              <span style={{ flex: 1, fontSize: 13 }}>{t("modules.uninstallFailInUse")}</span>
-              <button
-                type="button"
-                className="btnPrimary btnSmall"
-                disabled={!!busy}
-                onClick={async () => {
-                  const { id, name } = moduleUninstallPending;
-                  setBusy(t("status.stopping"));
-                  setError(null);
-                  try {
-                    const ss = await invoke<{ running: boolean; pid: number | null; pidFile: string }>("openakita_service_stop", { workspaceId: currentWorkspaceId });
-                    setServiceStatus(ss);
-                    await new Promise((r) => setTimeout(r, 1500));
-                    await invoke("uninstall_module", { moduleId: id });
-                    setNotice(t("modules.uninstalled", { name }));
-                    setModuleUninstallPending(null);
-                    obLoadModules();
-                  } catch (e) {
-                    setError(String(e));
-                  } finally {
-                    setBusy(null);
-                  }
-                }}
-              >
-                {t("modules.stopAndUninstall")}
-              </button>
-              <button type="button" className="btnSmall" onClick={() => { setModuleUninstallPending(null); setError(null); }}>{t("common.cancel")}</button>
-            </div>
-          )}
-          <div className="obModuleList">
-            {obModules.map((m) => (
-              <div key={m.id} className={`obModuleItem ${m.installed || m.bundled ? "obModuleInstalled" : ""}`}>
-                <div className="obModuleInfo" style={{ flex: 1 }}>
-                  <strong>{m.name}</strong>
-                  <span className="obModuleDesc">{m.description}</span>
-                  <span className="obModuleSize">~{m.sizeMb} MB</span>
-                </div>
-                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  {(m.installed || m.bundled) ? (
-                    <>
-                      <span className="obModuleBadge">{t("modules.installed")}</span>
-                      <button
-                        className="btnSmall"
-                        style={{ color: "#ef4444" }}
-                        onClick={async () => {
-                          const doUninstall = async () => {
-                            await invoke("uninstall_module", { moduleId: m.id });
-                            setNotice(t("modules.uninstalled", { name: m.name }));
-                            obLoadModules();
-                            if (serviceStatus?.running) {
-                              setModuleRestartPrompt(m.name);
-                            }
-                          };
-                          setBusy(t("modules.uninstalling", { name: m.name }));
-                          try {
-                            await doUninstall();
-                          } catch (e) {
-                            const msg = String(e);
-                            const isAccessDenied = /拒绝访问|Access denied|os error 5/i.test(msg);
-                            if (isAccessDenied && serviceStatus?.running && currentWorkspaceId) {
-                              setError(t("modules.uninstallFailInUse"));
-                              setModuleUninstallPending({ id: m.id, name: m.name });
-                              return;
-                            }
-                            setError(msg);
-                          } finally {
-                            setBusy(null);
-                          }
-                        }}
-                        disabled={m.bundled || !!busy}
-                        title={m.bundled ? t("modules.bundledCannotUninstall") : t("modules.uninstall")}
-                      >
-                        {t("modules.uninstall")}
-                      </button>
-                    </>
-                  ) : (
-                    <button
-                      className="btnPrimary btnSmall"
-                      onClick={async () => {
-                        try {
-                          setBusy(t("modules.installing", { name: m.name }));
-                          await invoke("install_module", { moduleId: m.id, mirror: null });
-                          setNotice(t("modules.installSuccess", { name: m.name }));
-                          obLoadModules();
-                          if (serviceStatus?.running) {
-                            setModuleRestartPrompt(m.name);
-                          }
-                        } catch (e) {
-                          setError(String(e));
-                        } finally {
-                          setBusy(null);
-                        }
-                      }}
-                      disabled={!!busy}
-                    >
-                      {t("modules.install")}
-                    </button>
-                  )}
-                </div>
-              </div>
-            ))}
-            {obModules.length === 0 && <p style={{ color: "#94a3b8" }}>{t("modules.loading")}</p>}
-          </div>
-          <button className="btnSmall" style={{ marginTop: 16 }} onClick={obLoadModules} disabled={!!busy}>
-            {t("modules.refresh")}
-          </button>
-        </div>
-          )}
-        </div>
-      );
-    }
     switch (stepId) {
       case "llm":
         return renderLLM();
@@ -8541,9 +8246,6 @@ export function App() {
           </div>
           <div className={`navItem ${view === "memory" ? "navItemActive" : ""}`} onClick={() => setView("memory")} role="button" tabIndex={0} title={t("sidebar.memory")} style={disabledViews.includes("memory") ? { opacity: 0.4 } : undefined}>
             <IconBrain size={16} /> {!sidebarCollapsed && <span>{t("sidebar.memory")} <sup style={{ fontSize: 9, color: "var(--primary, #3b82f6)", fontWeight: 600 }}>Beta</sup></span>}
-          </div>
-          <div className={`navItem ${view === "modules" ? "navItemActive" : ""}`} onClick={() => { setView("modules"); obLoadModules(); }} role="button" tabIndex={0} title={t("sidebar.modules")} style={disabledViews.includes("modules") ? { opacity: 0.4 } : undefined}>
-            <IconGear size={16} /> {!sidebarCollapsed && <span>{t("sidebar.modules")}</span>}
           </div>
           <div className={`navItem ${view === "status" ? "navItemActive" : ""}`} onClick={async () => { setView("status"); try { await refreshStatus(undefined, undefined, true); } catch { /* ignore */ } }} role="button" tabIndex={0} title={t("sidebar.status")}>
             <IconStatus size={16} /> {!sidebarCollapsed && <span>{t("sidebar.status")}</span>}
@@ -8879,25 +8581,6 @@ export function App() {
           </div>
         )}
         <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
-
-        {/* ── Module restart prompt ── */}
-        {moduleRestartPrompt && (
-          <div className="modalOverlay" onClick={() => setModuleRestartPrompt(null)}>
-            <div className="modalContent" style={{ maxWidth: 400, padding: "28px 24px", borderRadius: 16 }} onClick={(e) => e.stopPropagation()}>
-              <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>{t("modules.restartTitle")}</div>
-              <div style={{ fontSize: 13, color: "var(--muted)", marginBottom: 20, lineHeight: 1.6 }}>
-                {t("modules.restartDesc", { name: moduleRestartPrompt })}
-              </div>
-              <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
-                <button className="btnSmall" onClick={() => setModuleRestartPrompt(null)}>{t("modules.restartLater")}</button>
-                <button className="btnPrimary btnSmall" onClick={async () => {
-                  setModuleRestartPrompt(null);
-                  await applyAndRestart([]);
-                }}>{t("modules.restartNow")}</button>
-              </div>
-            </div>
-          </div>
-        )}
 
         {/* ── Service conflict dialog ── */}
         {conflictDialog && (

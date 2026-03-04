@@ -110,7 +110,7 @@ class SkillsWriteRequest(BaseModel):
 
 
 class DisabledViewsRequest(BaseModel):
-    views: list[str]  # e.g. ["skills", "im", "token_stats", "modules"]
+    views: list[str]  # e.g. ["skills", "im", "token_stats"]
 
 
 class ListModelsRequest(BaseModel):
@@ -278,22 +278,6 @@ async def restart_service(request: Request):
         logger.warning("[Config API] Restart requested but no shutdown_event available")
         cfg._restart_requested = False
         return {"status": "error", "message": "restart not available in this mode"}
-
-
-@router.post("/api/modules/refresh")
-async def refresh_module_paths():
-    """运行时重新扫描并注入可选模块路径到 sys.path。
-
-    模块安装/卸载后调用此端点，可在不重启服务的情况下让 Python 发现新模块。
-    注意：某些模块（如依赖 torch 的 whisper）可能仍需完整重启才能正确加载 DLL。
-    """
-    try:
-        from openakita.runtime_env import inject_module_paths_runtime
-        count = inject_module_paths_runtime()
-        return {"status": "ok", "injected": count}
-    except Exception as e:
-        logger.error(f"[Modules API] refresh failed: {e}", exc_info=True)
-        return {"status": "error", "message": str(e)}
 
 
 @router.get("/api/config/skills")

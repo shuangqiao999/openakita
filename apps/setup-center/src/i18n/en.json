@@ -7,7 +7,6 @@
     "chat": "Chat",
     "im": "IM Channels",
     "skills": "Skills",
-    "modules": "Modules",
     "mcp": "MCP",
     "scheduler": "Tasks",
     "memory": "Memory",
@@ -743,15 +742,6 @@
       "skip": "Skip, set up later",
       "skipShort": "Skip"
     },
-    "modules": {
-      "title": "Feature Modules",
-      "desc": "Select optional feature modules to install. Unselected modules can be installed later in settings.",
-      "installed": "Installed",
-      "loading": "Detecting modules...",
-      "installAndContinue": "Install & Continue",
-      "skipAndContinue": "Skip, start now",
-      "startInstall": "Start Installation"
-    },
     "system": {
       "title": "CLI & System Settings",
       "desc": "Register command-line tools and configure system options like auto-start."
@@ -771,9 +761,6 @@
       "workspaceExists": "✓ Workspace already exists",
       "llmConfigSaved": "✓ LLM configuration saved",
       "envSaved": "✓ Environment variables saved",
-      "installingModule": "Installing module: {{module}}...",
-      "moduleInstalled": "✓ {{module}} installed",
-      "moduleFailed": "✗ {{module}} installation failed: {{error}}",
       "startingService": "Starting backend service...",
       "serviceStarted": "✓ Backend service started",
       "serviceStartFailed": "⚠ Service start failed: {{error}} (can start manually later)",
@@ -786,7 +773,7 @@
       "desc": "OpenAkita is ready. Begin your AI journey.",
       "enter": "Enter OpenAkita",
       "someErrors": "Some issues occurred",
-      "errorsHint": "You can reinstall failed modules in settings."
+      "errorsHint": "Some operations did not succeed. You can retry later in settings."
     },
     "installLogSaved": "Install log saved to: {{path}}",
     "agreement": {
@@ -799,27 +786,6 @@
       "errorMismatch": "Input does not match. Please type \"I ACKNOWLEDGE\" exactly.",
       "proceed": "Confirm & Continue"
     }
-  },
-  "modules": {
-    "title": "Module Management",
-    "desc": "Manage optional feature module installation and removal. Restart backend service after changes.",
-    "installed": "Installed",
-    "install": "Install",
-    "uninstall": "Uninstall",
-    "installing": "Installing {{name}}...",
-    "uninstalling": "Uninstalling {{name}}...",
-    "installSuccess": "{{name}} installed successfully",
-    "uninstalled": "{{name}} uninstalled",
-    "bundledCannotUninstall": "Bundled modules cannot be uninstalled",
-    "loading": "Loading module list...",
-    "refresh": "Refresh",
-    "restartTitle": "Restart Required",
-    "restartDesc": "Module \"{{name}}\" changes are complete. A backend restart is needed for changes to take effect. Restart now?",
-    "restartNow": "Restart Now",
-    "restartLater": "Later",
-    "uninstallFailInUse": "Uninstall failed: module files may be in use by the backend. Stop the backend service first, then try again.",
-    "stopAndUninstall": "Stop backend and uninstall",
-    "legacyNotice": "The modules below are carried over from previous versions. You don't need to install them unless you have specific requirements. These modules will be phased out in upcoming releases, with their functionality provided natively in a more lightweight manner."
   },
   "feedback": {
     "trigger": "Feedback",
