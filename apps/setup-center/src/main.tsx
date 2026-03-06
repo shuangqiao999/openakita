@@ -114,7 +114,7 @@ function wireBootButtons() {
 wireBootButtons();
 window.addEventListener("openakita_app_ready", () => hideBoot(true));
 // Failsafe: if something went wrong, don't leave it forever.
-setTimeout(() => hideBoot(true), 20000);
+setTimeout(() => hideBoot(true), 8000);
 
 // ── Desktop app hardening ──
 

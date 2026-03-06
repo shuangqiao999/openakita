@@ -175,7 +175,7 @@ export async function login(
   try {
     const fetchOpts: RequestInit = {
       method: "POST",
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(IS_CAPACITOR ? 5_000 : 10_000),
     };
     if (IS_CAPACITOR) {
       fetchOpts.headers = { "Content-Type": "application/x-www-form-urlencoded" };
@@ -255,7 +255,8 @@ export function installFetchInterceptor(): void {
 // ---------------------------------------------------------------------------
 
 export async function checkAuth(apiBase = ""): Promise<boolean> {
-  const maxAttempts = 3;
+  const maxAttempts = IS_CAPACITOR ? 1 : 3;
+  const timeoutMs = IS_CAPACITOR ? 3_000 : 5_000;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       const token = getAccessToken();
@@ -263,7 +264,7 @@ export async function checkAuth(apiBase = ""): Promise<boolean> {
       if (token) headers["Authorization"] = `Bearer ${token}`;
       const fetchOpts: RequestInit = {
         headers,
-        signal: AbortSignal.timeout(5_000),
+        signal: AbortSignal.timeout(timeoutMs),
       };
       if (!IS_CAPACITOR) fetchOpts.credentials = "include";
       const res = await fetch(`${apiBase}/api/auth/check`, fetchOpts);
