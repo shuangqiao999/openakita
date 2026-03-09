@@ -142,6 +142,7 @@ class OrgMessenger:
                 cycles = self.check_deadlock()
                 if cycles:
                     logger.warning(f"[Messenger] Deadlock detected: {cycles}")
+                    self._break_cycles(cycles)
                     if self._on_deadlock:
                         try:
                             result = self._on_deadlock(cycles)
@@ -151,6 +152,26 @@ class OrgMessenger:
                             logger.error(f"[Messenger] Deadlock handler error: {e}")
         except asyncio.CancelledError:
             pass
+
+    def _break_cycles(self, cycles: list[list[str]]) -> None:
+        """Break detected deadlock cycles by removing edges from the wait graph.
+
+        Strategy: for each cycle, remove the edge from the last node back to the
+        first (the "closing" edge) to break the circular wait.
+        """
+        for cycle in cycles:
+            if len(cycle) < 2:
+                continue
+            breaker = cycle[-2]
+            target = cycle[-1]
+            if breaker in self._wait_graph:
+                removed = target in self._wait_graph[breaker]
+                self._wait_graph[breaker].discard(target)
+                if removed:
+                    logger.info(
+                        f"[Messenger] Broke deadlock: removed {breaker} -> {target} "
+                        f"from wait graph (cycle: {cycle})"
+                    )
 
     async def _ttl_loop(self) -> None:
         """Expire messages that have exceeded their TTL."""

@@ -773,6 +773,8 @@ class OrgToolHandler:
     async def _handle_org_request_meeting(
         self, args: dict, org_id: str, node_id: str
     ) -> str:
+        import asyncio
+
         org = self._runtime.get_org(org_id)
         if not org:
             return "组织未找到"
@@ -788,33 +790,64 @@ class OrgToolHandler:
         if len(valid) < 2:
             return "有效参与者不足 2 人"
 
-        messenger = self._runtime.get_messenger(org_id)
-        if not messenger:
-            return "组织未运行"
-
         meeting_record: list[str] = [f"## 会议主题: {topic}\n"]
         meeting_record.append(f"主持人: {node_id}")
         meeting_record.append(f"参与者: {', '.join(participants)}\n")
 
+        await self._runtime._broadcast_ws("org:meeting_started", {
+            "org_id": org_id, "topic": topic,
+            "host": node_id, "participants": participants, "rounds": max_rounds,
+        })
+
+        prev_round_summary = ""
         for round_num in range(1, max_rounds + 1):
             meeting_record.append(f"\n### 第 {round_num} 轮\n")
-            for pid in valid:
+
+            await self._runtime._broadcast_ws("org:meeting_round", {
+                "org_id": org_id, "round": round_num, "total_rounds": max_rounds,
+            })
+
+            async def _get_opinion(
+                pid: str,
+                _round: int = round_num,
+                _prev: str = prev_round_summary,
+            ) -> tuple[str, str]:
                 node_obj = org.get_node(pid)
                 if not node_obj or node_obj.status in (NodeStatus.FROZEN, NodeStatus.OFFLINE):
-                    meeting_record.append(f"- **{pid}**: (缺席)")
-                    continue
-                prompt = (
-                    f"你正在参加一个关于「{topic}」的会议（第 {round_num}/{max_rounds} 轮）。"
-                    f"请发表你的观点，简洁回复。"
-                )
-                result = await self._runtime._activate_and_run(org, node_obj, prompt)
-                response = result.get("result", "(无响应)")[:500]
-                meeting_record.append(f"- **{node_obj.role_title}**: {response}")
+                    return pid, "(缺席)"
+                try:
+                    response = await self._lightweight_meeting_speak(
+                        org, node_obj, topic, _round, max_rounds, _prev,
+                    )
+                    return pid, response
+                except Exception as e:
+                    logger.error(f"[Meeting] {pid} speak error: {e}")
+                    return pid, "(发言异常)"
+
+            results = await asyncio.gather(*[_get_opinion(pid) for pid in valid])
+
+            round_opinions = []
+            for pid, response in results:
+                node_obj = org.get_node(pid)
+                title = node_obj.role_title if node_obj else pid
+                meeting_record.append(f"- **{title}**: {response}")
+                round_opinions.append(f"{title}: {response}")
+                await self._runtime._broadcast_ws("org:meeting_speak", {
+                    "org_id": org_id, "node_id": pid, "role_title": title,
+                    "round": round_num, "content": response[:200],
+                })
+
+            prev_round_summary = "\n".join(round_opinions)
+
+        conclusion = await self._meeting_summarize(org_id, topic, meeting_record)
+        if conclusion:
+            meeting_record.append(f"\n### 会议结论\n\n{conclusion}")
 
         bb = self._runtime.get_blackboard(org_id)
         if bb:
+            summary_text = conclusion or meeting_record[-1][:200]
             bb.write_org(
-                content=f"会议结论 — {topic}: " + meeting_record[-1][:200],
+                content=f"会议结论 — {topic}: {summary_text}",
                 source_node=node_id,
                 memory_type=MemoryType.DECISION,
                 tags=["meeting"],
@@ -825,7 +858,83 @@ class OrgToolHandler:
             {"topic": topic, "participants": participants, "rounds": max_rounds},
         )
 
+        await self._runtime._broadcast_ws("org:meeting_completed", {
+            "org_id": org_id, "topic": topic,
+        })
+
         return "\n".join(meeting_record)
+
+    async def _lightweight_meeting_speak(
+        self,
+        org: Any,
+        node: Any,
+        topic: str,
+        round_num: int,
+        max_rounds: int,
+        prev_round_summary: str,
+    ) -> str:
+        """轻量会议发言：直接 LLM 单次调用，不走完整 Agent/ReAct 循环。"""
+        from openakita.llm.client import chat as llm_chat
+
+        identity = self._runtime._get_identity(org.id)
+        role_prompt = ""
+        if identity:
+            try:
+                resolved = identity.resolve(node, org)
+                role_prompt = (resolved.role or "")[:400]
+            except Exception:
+                pass
+
+        context_parts = [
+            f"你是「{org.name}」的 {node.role_title}（{node.department or ''}）。",
+        ]
+        if node.responsibilities:
+            context_parts.append(f"你的职责: {', '.join(node.responsibilities[:3])}")
+        if role_prompt:
+            context_parts.append(role_prompt)
+
+        system_prompt = "\n".join(context_parts)
+
+        user_parts = [
+            f"你正在参加一个关于「{topic}」的组织内部会议（第 {round_num}/{max_rounds} 轮）。",
+        ]
+        if prev_round_summary:
+            user_parts.append(f"\n上一轮发言摘要:\n{prev_round_summary[:800]}\n")
+        user_parts.append(
+            "请基于你的职责和专业领域，发表简洁的观点（100-200字）。"
+            "直接表达核心观点，不要客套寒暄。"
+        )
+
+        messages = [{"role": "user", "content": "\n".join(user_parts)}]
+        try:
+            resp = await llm_chat(messages, system=system_prompt, max_tokens=400)
+            text = resp.text or "(无内容)"
+            return text[:500]
+        except Exception as e:
+            logger.error(f"[Meeting] LLM call failed for {node.id}: {e}")
+            return f"(发言失败: {e})"
+
+    async def _meeting_summarize(
+        self, org_id: str, topic: str, meeting_record: list[str],
+    ) -> str:
+        """用 LLM 生成会议结论。"""
+        from openakita.llm.client import chat as llm_chat
+
+        full_record = "\n".join(meeting_record)
+        if len(full_record) > 3000:
+            full_record = full_record[:3000] + "\n...(已截断)"
+
+        messages = [{"role": "user", "content": (
+            f"以下是关于「{topic}」的会议讨论记录:\n\n{full_record}\n\n"
+            "请总结会议结论，包括: 1) 达成的共识 2) 待决事项 3) 行动计划。"
+            "用 150-300 字简洁总结。"
+        )}]
+        try:
+            resp = await llm_chat(messages, system="你是一位专业的会议记录员。", max_tokens=500)
+            return (resp.text or "")[:600]
+        except Exception as e:
+            logger.error(f"[Meeting] Summary LLM failed: {e}")
+            return ""
 
     # ------------------------------------------------------------------
     # Schedule tools
