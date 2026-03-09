@@ -37,7 +37,9 @@ async def _hot_register_bot(request: Request, bot: dict) -> None:
             channel_name=channel_name, bot_id=bot_id, agent_profile_id=agent_id,
         )
         if adapter:
-            await gateway.register_adapter(adapter)
+            from openakita.core.engine_bridge import to_engine
+
+            await to_engine(gateway.register_adapter(adapter))
             logger.info(f"[Agents API] Hot-registered adapter: {channel_name}")
     except Exception as e:
         logger.warning(f"[Agents API] Hot-register failed (will activate on restart): {e}")
@@ -53,7 +55,9 @@ async def _hot_unregister_bot(request: Request, bot: dict) -> None:
     adapter = adapters.pop(channel_name, None)
     if adapter:
         try:
-            await adapter.stop()
+            from openakita.core.engine_bridge import to_engine
+
+            await to_engine(adapter.stop())
             logger.info(f"[Agents API] Hot-unregistered adapter: {channel_name}")
         except Exception as e:
             logger.warning(f"[Agents API] Failed to stop adapter {channel_name}: {e}")

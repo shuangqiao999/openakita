@@ -12,6 +12,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from openakita.core.engine_bridge import to_engine
+
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/orgs", tags=["组织编排"])
 
@@ -308,7 +310,7 @@ async def update_node_mcp(request: Request, org_id: str, node_id: str):
 async def start_org(request: Request, org_id: str):
     rt = _get_runtime(request)
     try:
-        org = await rt.start_org(org_id)
+        org = await to_engine(rt.start_org(org_id))
         return org.to_dict()
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -318,7 +320,7 @@ async def start_org(request: Request, org_id: str):
 async def stop_org(request: Request, org_id: str):
     rt = _get_runtime(request)
     try:
-        org = await rt.stop_org(org_id)
+        org = await to_engine(rt.stop_org(org_id))
         return org.to_dict()
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -328,7 +330,7 @@ async def stop_org(request: Request, org_id: str):
 async def pause_org(request: Request, org_id: str):
     rt = _get_runtime(request)
     try:
-        org = await rt.pause_org(org_id)
+        org = await to_engine(rt.pause_org(org_id))
         return org.to_dict()
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -338,7 +340,7 @@ async def pause_org(request: Request, org_id: str):
 async def resume_org(request: Request, org_id: str):
     rt = _get_runtime(request)
     try:
-        org = await rt.resume_org(org_id)
+        org = await to_engine(rt.resume_org(org_id))
         return org.to_dict()
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -348,7 +350,7 @@ async def resume_org(request: Request, org_id: str):
 async def reset_org(request: Request, org_id: str):
     rt = _get_runtime(request)
     try:
-        org = await rt.reset_org(org_id)
+        org = await to_engine(rt.reset_org(org_id))
         return org.to_dict()
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -365,7 +367,7 @@ async def send_command(request: Request, org_id: str):
     if not content:
         raise HTTPException(400, "content is required")
     try:
-        result = await rt.send_command(org_id, target_node, content)
+        result = await to_engine(rt.send_command(org_id, target_node, content))
         return result
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -378,11 +380,11 @@ async def broadcast_to_org(request: Request, org_id: str):
     content = body.get("content", "")
     if not content:
         raise HTTPException(400, "content is required")
-    result = await rt.handle_org_tool(
+    result = await to_engine(rt.handle_org_tool(
         "org_broadcast",
         {"content": content, "scope": "organization"},
         org_id, "user",
-    )
+    ))
     return {"result": result}
 
 
@@ -514,20 +516,20 @@ async def preview_node_prompt(request: Request, org_id: str, node_id: str):
 async def freeze_node(request: Request, org_id: str, node_id: str):
     rt = _get_runtime(request)
     body = await request.json() if request.headers.get("content-length", "0") != "0" else {}
-    result = await rt.handle_org_tool(
+    result = await to_engine(rt.handle_org_tool(
         "org_freeze_node",
         {"node_id": node_id, "reason": body.get("reason", "用户操作")},
         org_id, "user",
-    )
+    ))
     return {"result": result}
 
 
 @router.post("/{org_id}/nodes/{node_id}/unfreeze")
 async def unfreeze_node(request: Request, org_id: str, node_id: str):
     rt = _get_runtime(request)
-    result = await rt.handle_org_tool(
+    result = await to_engine(rt.handle_org_tool(
         "org_unfreeze_node", {"node_id": node_id}, org_id, "user",
-    )
+    ))
     return {"result": result}
 
 

@@ -249,7 +249,9 @@ async def trigger_task(request: Request, task_id: str):
     if scheduler is None:
         return {"error": "Agent not initialized"}
 
-    execution = await scheduler.trigger_now(task_id)
+    from openakita.core.engine_bridge import to_engine
+
+    execution = await to_engine(scheduler.trigger_now(task_id))
     if execution is None:
         return {"error": "Task not found or trigger failed"}
 

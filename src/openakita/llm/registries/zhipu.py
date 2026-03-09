@@ -13,10 +13,8 @@ API 文档:
   国际: https://docs.z.ai/
 """
 
-import httpx
-
 from ..capabilities import infer_capabilities
-from .base import ModelInfo, ProviderInfo, ProviderRegistry
+from .base import ModelInfo, ProviderInfo, ProviderRegistry, get_registry_client
 
 
 class ZhipuChinaRegistry(ProviderRegistry):
@@ -39,49 +37,44 @@ class ZhipuChinaRegistry(ProviderRegistry):
         智谱兼容 OpenAI /models 接口。
         如果 API 调用失败，返回预置的常用模型列表。
         """
-        async with httpx.AsyncClient(timeout=30) as client:
-            try:
-                resp = await client.get(
-                    f"{self.info.default_base_url}/models",
-                    headers={"Authorization": f"Bearer {api_key}"},
-                )
-                resp.raise_for_status()
-                data = resp.json()
+        client = get_registry_client()
+        try:
+            resp = await client.get(
+                f"{self.info.default_base_url}/models",
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
 
-                models: list[ModelInfo] = []
-                seen: set[str] = set()
-                for m in data.get("data", []) or []:
-                    if not isinstance(m, dict):
-                        continue
-                    mid = (m.get("id") or "").strip()
-                    if not mid or mid in seen:
-                        continue
-                    seen.add(mid)
-                    models.append(
-                        ModelInfo(
-                            id=mid,
-                            name=mid,
-                            capabilities=infer_capabilities(mid, provider_slug="zhipu"),
-                        )
+            models: list[ModelInfo] = []
+            seen: set[str] = set()
+            for m in data.get("data", []) or []:
+                if not isinstance(m, dict):
+                    continue
+                mid = (m.get("id") or "").strip()
+                if not mid or mid in seen:
+                    continue
+                seen.add(mid)
+                models.append(
+                    ModelInfo(
+                        id=mid,
+                        name=mid,
+                        capabilities=infer_capabilities(mid, provider_slug="zhipu"),
                     )
-                return sorted(models, key=lambda x: x.id)
+                )
+            return sorted(models, key=lambda x: x.id)
 
-            except httpx.HTTPError:
-                return self._get_preset_models()
+        except Exception:
+            return self._get_preset_models()
 
     def _get_preset_models(self) -> list[ModelInfo]:
         """返回预置模型列表"""
         preset = [
-            # GLM-5 系列（最新旗舰）
             "glm-5",
             "glm-5-plus",
-            # GLM-4.7 系列
             "glm-4.7",
-            # GLM-4.6 系列
             "glm-4.6v",
-            # GLM-4.5 系列
             "glm-4.5v",
-            # GLM-4 系列
             "glm-4",
             "glm-4-plus",
             "glm-4-air",
@@ -89,10 +82,8 @@ class ZhipuChinaRegistry(ProviderRegistry):
             "glm-4-long",
             "glm-4-flash",
             "glm-4-flashx",
-            # 视觉模型
             "glm-4v",
             "glm-4v-plus",
-            # 工具/Agent 模型
             "autoglm-phone",
         ]
         return [
@@ -119,40 +110,36 @@ class ZhipuInternationalRegistry(ProviderRegistry):
     )
 
     async def list_models(self, api_key: str) -> list[ModelInfo]:
-        """
-        获取智谱 AI 国际区模型列表。
+        """获取智谱 AI 国际区模型列表。"""
+        client = get_registry_client()
+        try:
+            resp = await client.get(
+                f"{self.info.default_base_url}/models",
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
 
-        国际区 API 与国内区完全兼容。
-        """
-        async with httpx.AsyncClient(timeout=30) as client:
-            try:
-                resp = await client.get(
-                    f"{self.info.default_base_url}/models",
-                    headers={"Authorization": f"Bearer {api_key}"},
-                )
-                resp.raise_for_status()
-                data = resp.json()
-
-                models: list[ModelInfo] = []
-                seen: set[str] = set()
-                for m in data.get("data", []) or []:
-                    if not isinstance(m, dict):
-                        continue
-                    mid = (m.get("id") or "").strip()
-                    if not mid or mid in seen:
-                        continue
-                    seen.add(mid)
-                    models.append(
-                        ModelInfo(
-                            id=mid,
-                            name=mid,
-                            capabilities=infer_capabilities(mid, provider_slug="zhipu"),
-                        )
+            models: list[ModelInfo] = []
+            seen: set[str] = set()
+            for m in data.get("data", []) or []:
+                if not isinstance(m, dict):
+                    continue
+                mid = (m.get("id") or "").strip()
+                if not mid or mid in seen:
+                    continue
+                seen.add(mid)
+                models.append(
+                    ModelInfo(
+                        id=mid,
+                        name=mid,
+                        capabilities=infer_capabilities(mid, provider_slug="zhipu"),
                     )
-                return sorted(models, key=lambda x: x.id)
+                )
+            return sorted(models, key=lambda x: x.id)
 
-            except httpx.HTTPError:
-                return self._get_preset_models()
+        except Exception:
+            return self._get_preset_models()
 
     def _get_preset_models(self) -> list[ModelInfo]:
         """返回预置模型列表（与国内区共享模型）"""

@@ -5,10 +5,8 @@ DeepSeek 官方提供 OpenAI 兼容协议，通常支持 `/v1/models`。
 如果 API 拉取失败，则回退到预置模型列表（用于离线/网络受限/权限不足场景）。
 """
 
-import httpx
-
 from ..capabilities import infer_capabilities
-from .base import ModelInfo, ProviderInfo, ProviderRegistry
+from .base import ModelInfo, ProviderInfo, ProviderRegistry, get_registry_client
 
 
 class DeepSeekRegistry(ProviderRegistry):
@@ -25,16 +23,16 @@ class DeepSeekRegistry(ProviderRegistry):
     )
 
     async def list_models(self, api_key: str) -> list[ModelInfo]:
-        async with httpx.AsyncClient(timeout=30) as client:
-            try:
-                resp = await client.get(
-                    f"{self.info.default_base_url}/models",
-                    headers={"Authorization": f"Bearer {api_key}"},
-                )
-                resp.raise_for_status()
-                data = resp.json()
-            except httpx.HTTPError:
-                return self._get_preset_models()
+        client = get_registry_client()
+        try:
+            resp = await client.get(
+                f"{self.info.default_base_url}/models",
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception:
+            return self._get_preset_models()
 
         models: list[ModelInfo] = []
         seen: set[str] = set()

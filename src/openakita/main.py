@@ -1817,11 +1817,11 @@ def serve(
                 else:
                     console.print("\n[yellow]正在停止服务...[/yellow]")
                 try:
-                    # 停止 HTTP API 服务器
+                    # 停止 HTTP API 服务器（proxy task → sets server.should_exit）
                     if api_task is not None:
                         api_task.cancel()
                         try:
-                            await asyncio.wait_for(api_task, timeout=2.0)
+                            await asyncio.wait_for(api_task, timeout=5.0)
                         except (asyncio.CancelledError, TimeoutError):
                             pass
                     await asyncio.wait_for(
@@ -1833,6 +1833,12 @@ def serve(
                 except Exception as e:
                     # 忽略停止过程中的异常（常见于 Windows asyncio）
                     logger.debug(f"Exception during shutdown (ignored): {e}")
+                finally:
+                    try:
+                        from openakita.core.engine_bridge import shutdown as _bridge_shutdown
+                        _bridge_shutdown()
+                    except Exception:
+                        pass
 
                 if is_restart:
                     console.print("[cyan]✓[/cyan] 服务已停止，准备重启...")

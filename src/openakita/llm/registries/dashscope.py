@@ -8,10 +8,8 @@
 - 国际区: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
 """
 
-import httpx
-
 from ..capabilities import infer_capabilities
-from .base import ModelInfo, ProviderInfo, ProviderRegistry
+from .base import ModelInfo, ProviderInfo, ProviderRegistry, get_registry_client
 
 # 预置模型列表（国内/国际共用）
 _PRESET_MODELS = [
@@ -46,37 +44,36 @@ class _DashScopeBase(ProviderRegistry):
         2. 从预置能力表查找每个模型的能力
         3. 如果预置表没有该模型，使用智能推断
         """
-        async with httpx.AsyncClient(timeout=30) as client:
-            try:
-                resp = await client.get(
-                    f"{self.info.default_base_url}/models",
-                    headers={"Authorization": f"Bearer {api_key}"},
-                )
-                resp.raise_for_status()
-                data = resp.json()
+        client = get_registry_client()
+        try:
+            resp = await client.get(
+                f"{self.info.default_base_url}/models",
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
 
-                models: list[ModelInfo] = []
-                seen: set[str] = set()
-                for m in data.get("data", []) or []:
-                    if not isinstance(m, dict):
-                        continue
-                    mid = (m.get("id") or "").strip()
-                    if not mid or mid in seen:
-                        continue
-                    seen.add(mid)
-                    models.append(
-                        ModelInfo(
-                            id=mid,
-                            name=mid,
-                            capabilities=infer_capabilities(mid, provider_slug="dashscope"),
-                        )
+            models: list[ModelInfo] = []
+            seen: set[str] = set()
+            for m in data.get("data", []) or []:
+                if not isinstance(m, dict):
+                    continue
+                mid = (m.get("id") or "").strip()
+                if not mid or mid in seen:
+                    continue
+                seen.add(mid)
+                models.append(
+                    ModelInfo(
+                        id=mid,
+                        name=mid,
+                        capabilities=infer_capabilities(mid, provider_slug="dashscope"),
                     )
+                )
 
-                return sorted(models, key=lambda x: x.id)
+            return sorted(models, key=lambda x: x.id)
 
-            except httpx.HTTPError:
-                # API 调用失败，返回预置模型列表
-                return self._get_preset_models()
+        except Exception:
+            return self._get_preset_models()
 
     def get_model_capabilities(self, model_id: str) -> dict:
         """获取模型能力"""

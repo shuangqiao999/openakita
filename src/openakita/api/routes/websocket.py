@@ -152,5 +152,21 @@ async def ws_events(ws: WebSocket):
 
 
 async def broadcast_event(event: str, data: Any = None) -> None:
-    """Convenience function to broadcast events from anywhere in the codebase."""
+    """Convenience function to broadcast events from anywhere in the codebase.
+
+    Cross-loop safe: when called from the engine loop (e.g. OrgRuntime),
+    the actual WebSocket send is scheduled in the API loop where the
+    connections live.
+    """
+    from openakita.core.engine_bridge import fire_in_api, get_api_loop
+
+    if get_api_loop() is not None:
+        try:
+            current = asyncio.get_running_loop()
+        except RuntimeError:
+            current = None
+        if current is not get_api_loop():
+            fire_in_api(manager.broadcast(event, data))
+            return
+
     await manager.broadcast(event, data)

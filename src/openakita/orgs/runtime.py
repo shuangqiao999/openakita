@@ -103,7 +103,19 @@ class OrgRuntime:
         self.max_concurrent_per_node: int = 2
         self._idle_tasks: dict[str, asyncio.Task] = {}
 
+        # 组织级并发控制：限制每个组织同时激活的节点数
+        self.max_concurrent_nodes_per_org: int = 5
+        self._org_semaphores: dict[str, asyncio.Semaphore] = {}
+
         self._started = False
+
+    def _get_org_semaphore(self, org_id: str) -> asyncio.Semaphore:
+        """获取组织级并发信号量（限制同时激活的节点数）。"""
+        sem = self._org_semaphores.get(org_id)
+        if sem is None:
+            sem = asyncio.Semaphore(self.max_concurrent_nodes_per_org)
+            self._org_semaphores[org_id] = sem
+        return sem
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -440,7 +452,20 @@ class OrgRuntime:
     async def _activate_and_run(
         self, org: Organization, node: OrgNode, prompt: str
     ) -> dict:
-        """Activate a node agent and run a task."""
+        """Activate a node agent and run a task (with org-level concurrency limit)."""
+        if node.status == NodeStatus.FROZEN:
+            return {"error": f"{node.role_title} 已被冻结，无法执行任务"}
+        if node.status == NodeStatus.OFFLINE:
+            return {"error": f"{node.role_title} 已下线"}
+
+        sem = self._get_org_semaphore(org.id)
+        async with sem:
+            return await self._activate_and_run_inner(org, node, prompt)
+
+    async def _activate_and_run_inner(
+        self, org: Organization, node: OrgNode, prompt: str
+    ) -> dict:
+        """_activate_and_run 的内部实现（已在 org semaphore 保护下）。"""
         if node.status == NodeStatus.FROZEN:
             return {"error": f"{node.role_title} 已被冻结，无法执行任务"}
         if node.status == NodeStatus.OFFLINE:

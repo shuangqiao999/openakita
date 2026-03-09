@@ -4,9 +4,7 @@ OpenRouter 服务商注册表
 OpenRouter 的 API 返回完整的能力信息，是最理想的情况。
 """
 
-import httpx
-
-from .base import ModelInfo, ProviderInfo, ProviderRegistry
+from .base import ModelInfo, ProviderInfo, ProviderRegistry, get_registry_client
 
 
 class OpenRouterRegistry(ProviderRegistry):
@@ -24,40 +22,35 @@ class OpenRouterRegistry(ProviderRegistry):
 
     async def list_models(self, api_key: str) -> list[ModelInfo]:
         """获取 OpenRouter 模型列表"""
-        async with httpx.AsyncClient(timeout=30) as client:
-            try:
-                resp = await client.get(
-                    f"{self.info.default_base_url}/models",
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                    },
-                )
-                resp.raise_for_status()
-                data = resp.json()
+        client = get_registry_client()
+        try:
+            resp = await client.get(
+                f"{self.info.default_base_url}/models",
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
 
-                models = []
-                for m in data.get("data", []):
-                    model_id = m.get("id", "")
-                    architecture = m.get("architecture", {})
-
-                    models.append(
-                        ModelInfo(
-                            id=model_id,
-                            name=m.get("name", model_id),
-                            capabilities=self._parse_capabilities(architecture, model_id),
-                            context_window=m.get("context_length"),
-                            max_output_tokens=m.get("top_provider", {}).get(
-                                "max_completion_tokens"
-                            ),
-                            pricing=m.get("pricing"),
-                        )
+            models = []
+            for m in data.get("data", []):
+                model_id = m.get("id", "")
+                architecture = m.get("architecture", {})
+                models.append(
+                    ModelInfo(
+                        id=model_id,
+                        name=m.get("name", model_id),
+                        capabilities=self._parse_capabilities(architecture, model_id),
+                        context_window=m.get("context_length"),
+                        max_output_tokens=m.get("top_provider", {}).get(
+                            "max_completion_tokens"
+                        ),
+                        pricing=m.get("pricing"),
                     )
+                )
+            return sorted(models, key=lambda x: x.name)
 
-                return sorted(models, key=lambda x: x.name)
-
-            except httpx.HTTPError:
-                # API 调用失败，返回空列表
-                return []
+        except Exception:
+            return []
 
     def _parse_capabilities(self, architecture: dict, model_id: str) -> dict:
         """从 OpenRouter 架构信息解析能力"""

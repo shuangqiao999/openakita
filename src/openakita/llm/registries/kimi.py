@@ -6,10 +6,8 @@ Kimi（月之暗面 / Moonshot）服务商注册表（OpenAI 兼容）
 - 国际区常见：api.moonshot.ai
 """
 
-import httpx
-
 from ..capabilities import infer_capabilities
-from .base import ModelInfo, ProviderInfo, ProviderRegistry
+from .base import ModelInfo, ProviderInfo, ProviderRegistry, get_registry_client
 
 
 class KimiChinaRegistry(ProviderRegistry):
@@ -24,20 +22,23 @@ class KimiChinaRegistry(ProviderRegistry):
     )
 
     async def list_models(self, api_key: str) -> list[ModelInfo]:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(
-                f"{self.info.default_base_url}/models",
-                headers={"Authorization": f"Bearer {api_key}"},
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        client = get_registry_client()
+        resp = await client.get(
+            f"{self.info.default_base_url}/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+        resp.raise_for_status()
+        data = resp.json()
 
         out: list[ModelInfo] = []
         for m in data.get("data", []) or []:
             mid = (m.get("id") or "").strip()
             if not mid:
                 continue
-            out.append(ModelInfo(id=mid, name=mid, capabilities=infer_capabilities(mid, provider_slug="kimi")))
+            out.append(ModelInfo(
+                id=mid, name=mid,
+                capabilities=infer_capabilities(mid, provider_slug="kimi"),
+            ))
         return sorted(out, key=lambda x: x.id)
 
 
@@ -53,19 +54,22 @@ class KimiInternationalRegistry(ProviderRegistry):
     )
 
     async def list_models(self, api_key: str) -> list[ModelInfo]:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(
-                f"{self.info.default_base_url}/models",
-                headers={"Authorization": f"Bearer {api_key}"},
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        client = get_registry_client()
+        resp = await client.get(
+            f"{self.info.default_base_url}/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+        resp.raise_for_status()
+        data = resp.json()
 
         out: list[ModelInfo] = []
         for m in data.get("data", []) or []:
             mid = (m.get("id") or "").strip()
             if not mid:
                 continue
-            out.append(ModelInfo(id=mid, name=mid, capabilities=infer_capabilities(mid, provider_slug="kimi")))
+            out.append(ModelInfo(
+                id=mid, name=mid,
+                capabilities=infer_capabilities(mid, provider_slug="kimi"),
+            ))
         return sorted(out, key=lambda x: x.id)
 
