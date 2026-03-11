@@ -293,6 +293,10 @@ class Settings(BaseSettings):
         default=False,
         description="流式回复中使用 msg_item 发送图片（当前企业微信版本可能不渲染，默认关闭）",
     )
+    wework_ws_webhook_url: str = Field(
+        default="",
+        description="企业微信群机器人 Webhook URL（用于 WS 模式下发送图片/语音/文件）",
+    )
 
     # 钉钉
     dingtalk_enabled: bool = Field(default=False, description="是否启用钉钉")

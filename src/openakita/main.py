@@ -512,6 +512,7 @@ def _create_bot_adapter(bot_type: str, creds: dict, *, channel_name: str, bot_id
             secret=creds.get("secret", ""),
             ws_url=creds.get("ws_url", "wss://openws.work.weixin.qq.com"),
             channel_name=channel_name, bot_id_alias=bot_id, agent_profile_id=agent_profile_id,
+            webhook_url=creds.get("webhook_url", ""),
         )
     elif bot_type == "onebot":
         from .channels.adapters import OneBotAdapter
@@ -731,6 +732,7 @@ async def start_im_channels(agent_or_master):
                 wework_ws = WeWorkWsAdapter(
                     bot_id=settings.wework_ws_bot_id,
                     secret=settings.wework_ws_secret,
+                    webhook_url=settings.wework_ws_webhook_url,
                 )
                 await _message_gateway.register_adapter(wework_ws)
                 adapters_started.append("wework_ws")

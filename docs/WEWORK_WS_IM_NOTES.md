@@ -27,6 +27,9 @@
 | 图片回复 | `_prepare_image_items()` | base64 编码，仅在 `finish=true` 时附加，最多 10 张 |
 | 主动推送 (Markdown) | `_send_active_message()` | `cmd: "aibot_send_msg"`，自己生成 `req_id` |
 | response_url 回退 | `_response_url_fallback()` | WS 回复失败时通过 HTTP POST 回退 |
+| Webhook 图片发送 | `_WebhookSender.send_image()` | base64+md5 直发，需配置 `wework_ws_webhook_url` |
+| Webhook 语音发送 | `_WebhookSender.send_voice()` | 非 AMR 先转 AMR → upload_media → 发送 |
+| Webhook 文件发送 | `_WebhookSender.send_file()` | upload_media → 发送 |
 
 ### 3. 文件处理
 
@@ -169,6 +172,10 @@
 WEWORK_WS_ENABLED=true
 WEWORK_WS_BOT_ID=your_bot_id
 WEWORK_WS_SECRET=your_bot_secret
+
+# 可选：群机器人 Webhook URL（用于发送图片/语音/文件）
+# 在企业微信群设置 → 群机器人 → 添加机器人 → 获取 Webhook 地址
+WEWORK_WS_WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx
 ```
 
 ### im_bots JSON 配置（多 Bot 模式）
@@ -178,7 +185,8 @@ WEWORK_WS_SECRET=your_bot_secret
   "type": "wework_ws",
   "bot_id": "your_bot_id",
   "secret": "your_bot_secret",
-  "ws_url": "wss://openws.work.weixin.qq.com"
+  "ws_url": "wss://openws.work.weixin.qq.com",
+  "webhook_url": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx"
 }
 ```
 
@@ -260,7 +268,7 @@ start()
 | 4 | 低 | 流式回复中断无恢复 | 连接断开时进行中的 stream 直接标记失败，尝试 response_url 回退 |
 | 5 | 低 | response_url 缓存无 TTL | 仅按数量清理（200 条），未按时间清理过期 URL |
 | 6 | 低 | 引用消息 (quote) 未解析 | 消息体中的 `quote` 字段已在 raw 中保留，但未映射到 `reply_to` |
-| 7 | 低 | 语音消息只取转文字结果 | `voice.content` 是企业微信自动转写的文字，原始音频不可获取 |
+| 7 | 低 | ~~语音消息只取转文字结果~~ (已优化) | `voice.content` 是企业微信自动转写的文字，原始音频不可获取。已统一 WS/Bot 输出格式：转写成功→直接用文本（无前缀），失败→`[语音消息，平台未能识别，请重新发送或改用文字]` |
 
 ---
 
@@ -277,6 +285,9 @@ start()
 - [ ] 心跳超时判定是否在发送前检查？
 - [ ] `_reject_all_pending` 是否在断开/重连时调用？
 - [ ] `is_mentioned` 是否保持为 True（平台已预过滤）？
+- [ ] 语音输出格式是否与 `wework_bot.py` 保持一致（转写成功→直接文本，失败→统一提示）？
+- [ ] `_WebhookSender` 是否在 `stop()` 时关闭 httpx 客户端？
+- [ ] 新增的媒体发送方法是否优先尝试 webhook 通道？
 
 ---
 

@@ -143,6 +143,157 @@ def _decrypt_file(encrypted: bytes, aes_key_b64: str) -> bytes:
 
 
 # ---------------------------------------------------------------------------
+# Webhook 辅助发送器（图片/语音/文件）
+# ---------------------------------------------------------------------------
+class _WebhookSender:
+    """通过企微群机器人 Webhook URL 发送富媒体消息（图片/语音/文件）。
+
+    WS 长连接的 aibot_respond_msg 只支持文本 stream + msg_item 图片，
+    且 msg_item 在当前版本不一定渲染。此类通过群 Webhook 实现可靠的
+    图片/语音/文件发送，作为辅助通道。
+
+    Webhook API 参考:
+    https://developer.work.weixin.qq.com/document/path/91770
+    """
+
+    def __init__(self, webhook_url: str):
+        from urllib.parse import parse_qs, urlparse
+
+        self._send_url = webhook_url
+        parsed = urlparse(webhook_url)
+        self._key = parse_qs(parsed.query).get("key", [""])[0]
+        self._upload_url = (
+            "https://qyapi.weixin.qq.com/cgi-bin/webhook/upload_media"
+            f"?key={self._key}&type={{media_type}}"
+        )
+        self._client: Any = None
+
+    async def _ensure_client(self):
+        if self._client is None or self._client.is_closed:
+            _import_httpx()
+            self._client = httpx.AsyncClient(timeout=httpx.Timeout(30.0))
+        return self._client
+
+    async def send_image(self, image_path: str) -> bool:
+        """发送图片（base64 + md5，无需上传）。"""
+        try:
+            path = Path(image_path)
+            if not path.exists():
+                logger.warning(f"[WebhookSender] Image not found: {image_path}")
+                return False
+            data = path.read_bytes()
+            b64 = base64.b64encode(data).decode("ascii")
+            md5 = hashlib.md5(data).hexdigest()
+            payload = {
+                "msgtype": "image",
+                "image": {"base64": b64, "md5": md5},
+            }
+            return await self._post(payload)
+        except Exception as e:
+            logger.error(f"[WebhookSender] send_image failed: {e}")
+            return False
+
+    async def send_voice(self, voice_path: str) -> bool:
+        """发送语音（需先转 AMR 再 upload_media 获取 media_id）。"""
+        try:
+            amr_path = await self._ensure_amr(voice_path)
+            media_id = await self._upload_media(amr_path, "voice")
+            if not media_id:
+                return False
+            payload = {
+                "msgtype": "voice",
+                "voice": {"media_id": media_id},
+            }
+            return await self._post(payload)
+        except Exception as e:
+            logger.error(f"[WebhookSender] send_voice failed: {e}")
+            return False
+
+    async def send_file(self, file_path: str) -> bool:
+        """发送文件（upload_media 获取 media_id）。"""
+        try:
+            media_id = await self._upload_media(file_path, "file")
+            if not media_id:
+                return False
+            payload = {
+                "msgtype": "file",
+                "file": {"media_id": media_id},
+            }
+            return await self._post(payload)
+        except Exception as e:
+            logger.error(f"[WebhookSender] send_file failed: {e}")
+            return False
+
+    async def _upload_media(self, file_path: str, media_type: str) -> str | None:
+        """上传媒体文件到企微获取 media_id。"""
+        client = await self._ensure_client()
+        url = self._upload_url.format(media_type=media_type)
+        path = Path(file_path)
+        try:
+            files = {"media": (path.name, path.read_bytes())}
+            resp = await client.post(url, files=files)
+            result = resp.json()
+            if result.get("errcode", 0) != 0:
+                logger.error(
+                    f"[WebhookSender] upload_media failed: "
+                    f"{result.get('errcode')} {result.get('errmsg')}"
+                )
+                return None
+            media_id = result.get("media_id", "")
+            logger.info(f"[WebhookSender] Uploaded {media_type}: {path.name} → {media_id[:20]}...")
+            return media_id
+        except Exception as e:
+            logger.error(f"[WebhookSender] upload_media error: {e}")
+            return None
+
+    async def _ensure_amr(self, voice_path: str) -> str:
+        """确保语音文件为 AMR 格式（Webhook voice 要求 AMR）。"""
+        path = Path(voice_path)
+        if path.suffix.lower() == ".amr":
+            return voice_path
+
+        amr_path = str(path.with_suffix(".amr"))
+        if Path(amr_path).exists() and Path(amr_path).stat().st_size > 0:
+            return amr_path
+
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-i", voice_path,
+            "-ar", "8000", "-ac", "1", "-ab", "12.2k",
+            "-y", amr_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+        if proc.returncode != 0:
+            logger.error(f"[WebhookSender] AMR conversion failed: {stderr[:300]}")
+            raise RuntimeError(f"AMR conversion failed for {path.name}")
+        logger.info(f"[WebhookSender] Converted to AMR: {path.name}")
+        return amr_path
+
+    async def _post(self, payload: dict) -> bool:
+        """发送 Webhook 请求。"""
+        client = await self._ensure_client()
+        try:
+            resp = await client.post(self._send_url, json=payload)
+            result = resp.json()
+            if result.get("errcode", 0) != 0:
+                logger.error(
+                    f"[WebhookSender] Post failed: "
+                    f"{result.get('errcode')} {result.get('errmsg')}"
+                )
+                return False
+            return True
+        except Exception as e:
+            logger.error(f"[WebhookSender] Post error: {e}")
+            return False
+
+    async def close(self) -> None:
+        if self._client and not self._client.is_closed:
+            await self._client.aclose()
+            self._client = None
+
+
+# ---------------------------------------------------------------------------
 # 适配器
 # ---------------------------------------------------------------------------
 class WeWorkWsAdapter(ChannelAdapter):
@@ -169,6 +320,7 @@ class WeWorkWsAdapter(ChannelAdapter):
         channel_name: str | None = None,
         bot_id_alias: str | None = None,
         agent_profile_id: str = "default",
+        webhook_url: str = "",
     ):
         super().__init__(
             channel_name=channel_name,
@@ -179,6 +331,11 @@ class WeWorkWsAdapter(ChannelAdapter):
         self.config = WeWorkWsConfig(bot_id=bot_id, secret=secret, ws_url=ws_url)
         self.media_dir = Path(media_dir) if media_dir else Path("data/media/wework_ws")
         self.media_dir.mkdir(parents=True, exist_ok=True)
+
+        # Webhook 辅助发送器（用于发送图片/语音/文件）
+        self._webhook: _WebhookSender | None = (
+            _WebhookSender(webhook_url) if webhook_url else None
+        )
 
         # WebSocket state
         self._ws: Any = None
@@ -236,6 +393,8 @@ class WeWorkWsAdapter(ChannelAdapter):
         if self._ws:
             await self._ws.close()
             self._ws = None
+        if self._webhook:
+            await self._webhook.close()
         self._reject_all_pending("adapter stopped")
         logger.info("WeWork WS adapter stopped")
 
@@ -533,8 +692,17 @@ class WeWorkWsAdapter(ChannelAdapter):
 
         if msgtype == "voice":
             voice_data = body.get("voice", {})
+            platform_text = voice_data.get("content", "").strip()
+            if platform_text:
+                return (MessageContent(text=platform_text), media_list)
+            logger.warning(
+                "[WeWorkWS] Voice transcription empty, msgid=%s",
+                body.get("msgid"),
+            )
             return (
-                MessageContent(text=voice_data.get("content", "[语音消息]")),
+                MessageContent(
+                    text="[语音消息，平台未能识别，请重新发送或改用文字]"
+                ),
                 media_list,
             )
 
@@ -637,8 +805,15 @@ class WeWorkWsAdapter(ChannelAdapter):
         reply_to: str | None = None,
         **kwargs,
     ) -> str:
-        """Queue image for the next stream reply (if req_id and msg_item enabled),
-        else markdown fallback."""
+        """Send image: prefer webhook, fallback to msg_item or markdown hint."""
+        # 1. Webhook 通道（最可靠）
+        if self._webhook:
+            ok = await self._webhook.send_image(image_path)
+            if ok:
+                logger.info(f"[send_image] Sent via webhook: {Path(image_path).name}")
+                return "webhook:image_sent"
+
+        # 2. msg_item 内联（stream reply 中）
         from openakita.config import settings
 
         req_id = (kwargs.get("metadata") or {}).get("req_id", "")
@@ -660,6 +835,8 @@ class WeWorkWsAdapter(ChannelAdapter):
                 f"compressed={len(data)}, b64={len(b64)}"
             )
             return f"queued:{req_id}"
+
+        # 3. Markdown hint fallback
         path = Path(image_path)
         label = caption or path.name
         if req_id:
@@ -718,7 +895,14 @@ class WeWorkWsAdapter(ChannelAdapter):
         caption: str | None = None,
         **kwargs,
     ) -> str:
-        """Send a file. In reply context, silently skip (agent text reply suffices)."""
+        """Send a file: prefer webhook, fallback to markdown hint."""
+        # Webhook 通道
+        if self._webhook:
+            ok = await self._webhook.send_file(file_path)
+            if ok:
+                logger.info(f"[send_file] Sent via webhook: {Path(file_path).name}")
+                return "webhook:file_sent"
+
         req_id = (kwargs.get("metadata") or {}).get("req_id", "")
         if req_id:
             logger.info(
@@ -740,6 +924,25 @@ class WeWorkWsAdapter(ChannelAdapter):
         desc = f"> 📎 **{label}**{size_part}\n> （企业微信长连接暂不支持发送文件）"
         logger.debug(f"WS long-connection does not support file, sending hint: {path.name}")
         return await self._send_active_message(chat_id, desc)
+
+    async def send_voice(
+        self,
+        chat_id: str,
+        voice_path: str,
+        caption: str | None = None,
+        reply_to: str | None = None,
+        **kwargs,
+    ) -> str:
+        """Send voice: only available via webhook."""
+        if self._webhook:
+            ok = await self._webhook.send_voice(voice_path)
+            if ok:
+                logger.info(f"[send_voice] Sent via webhook: {Path(voice_path).name}")
+                return "webhook:voice_sent"
+            logger.warning(f"[send_voice] Webhook send_voice failed: {Path(voice_path).name}")
+        raise NotImplementedError(
+            "WeWork WS adapter requires wework_ws_webhook_url to send voice messages"
+        )
 
     async def _send_stream_reply(
         self, req_id: str, text: str, message: OutgoingMessage

@@ -88,12 +88,45 @@ def _silk_to_wav_pilk(silk_path: str, wav_path: str) -> bool:
             pass
 
 
+def _ffmpeg_to_wav(src_path: str, wav_path: str) -> bool:
+    """通过 ffmpeg 将非标准音频格式转换为 16kHz mono WAV。"""
+    import shutil
+    import subprocess
+
+    if not shutil.which("ffmpeg"):
+        logger.warning("ffmpeg not available for audio conversion")
+        return False
+
+    cmd = [
+        "ffmpeg", "-i", src_path,
+        "-ar", "16000", "-ac", "1", "-sample_fmt", "s16",
+        "-y", wav_path,
+    ]
+    try:
+        extra: dict = {}
+        if os.name == "nt":
+            extra["creationflags"] = subprocess.CREATE_NO_WINDOW
+        subprocess.run(cmd, capture_output=True, timeout=30, check=True, **extra)
+        logger.info(f"Audio converted via ffmpeg: {Path(src_path).name} → {Path(wav_path).name}")
+        return True
+    except subprocess.TimeoutExpired:
+        logger.error(f"ffmpeg conversion timed out for {Path(src_path).name}")
+        return False
+    except subprocess.CalledProcessError as e:
+        logger.error(f"ffmpeg conversion failed for {Path(src_path).name}: {e.stderr[:300] if e.stderr else e}")
+        return False
+    except Exception as e:
+        logger.error(f"ffmpeg conversion error: {e}")
+        return False
+
+
 def ensure_whisper_compatible(audio_path: str) -> str:
     """
     确保音频文件可被 Whisper (ffmpeg) 处理。
 
-    - 如果是 SILK 格式，自动转换为 WAV 并返回 WAV 路径
-    - 如果不是 SILK 格式，原样返回
+    - SILK 格式 → pilk 转换为 WAV
+    - opus/ogg/amr/webm/wma/aac → ffmpeg 转换为 WAV
+    - wav/mp3/flac 等标准格式 → 原样返回
 
     Args:
         audio_path: 原始音频文件路径
@@ -101,28 +134,43 @@ def ensure_whisper_compatible(audio_path: str) -> str:
     Returns:
         可被 Whisper 处理的音频文件路径（可能是转换后的 WAV）
     """
-    if not is_silk_file(audio_path):
+    # 1. SILK 格式特殊处理（pilk 转换）
+    if is_silk_file(audio_path):
+        logger.info(f"Detected SILK format: {Path(audio_path).name}, converting to WAV...")
+
+        src = Path(audio_path)
+        wav_path = str(src.with_suffix(".wav"))
+
+        if os.path.exists(wav_path) and os.path.getsize(wav_path) > 0:
+            logger.info(f"Using cached WAV: {wav_path}")
+            return wav_path
+
+        if _silk_to_wav_pilk(str(src), wav_path):
+            return wav_path
+
+        logger.warning(
+            f"SILK conversion failed for {src.name}. "
+            "Falling back to original file (may fail with ffmpeg)."
+        )
         return audio_path
 
-    logger.info(f"Detected SILK format: {Path(audio_path).name}, converting to WAV...")
-
-    # 生成 WAV 输出路径（与源文件同目录，避免跨盘）
+    # 2. 非标准格式 → ffmpeg 转 WAV（飞书 Opus、钉钉 OGG 等）
     src = Path(audio_path)
-    wav_path = str(src.with_suffix(".wav"))
+    suffix = src.suffix.lower()
+    need_convert = {".opus", ".ogg", ".amr", ".webm", ".wma", ".aac"}
+    if suffix in need_convert:
+        wav_path = str(src.with_suffix(".wav"))
+        if os.path.exists(wav_path) and os.path.getsize(wav_path) > 0:
+            logger.info(f"Using cached WAV: {wav_path}")
+            return wav_path
 
-    # 如果已转换过且文件存在，直接返回
-    if os.path.exists(wav_path) and os.path.getsize(wav_path) > 0:
-        logger.info(f"Using cached WAV: {wav_path}")
-        return wav_path
+        if _ffmpeg_to_wav(str(src), wav_path):
+            return wav_path
 
-    if _silk_to_wav_pilk(str(src), wav_path):
-        return wav_path
+        logger.warning(f"ffmpeg conversion failed for {src.name}, returning original")
+        return audio_path
 
-    # 转换失败，返回原路径（让 Whisper/ffmpeg 尝试，虽然大概率还是会失败）
-    logger.warning(
-        f"SILK conversion failed for {src.name}. "
-        "Falling back to original file (may fail with ffmpeg)."
-    )
+    # 3. wav/mp3/flac 等标准格式原样返回
     return audio_path
 
 

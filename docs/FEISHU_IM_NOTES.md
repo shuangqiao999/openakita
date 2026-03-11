@@ -146,6 +146,7 @@
 | 20 | `send_message` 媒体 fallthrough | voices/files/videos 无委托逻辑，掉入空文本分支 | 入口处 early return 委托给 send_voice/send_file | feishu.py |
 | 21 | INSERT 路径消息丢失 | `pending_user_inserts` 仅在工具执行间隙消费，无工具调用时滞留 | 任务完成后 `_rescue_pending_inserts` 回收到中断队列 | gateway.py |
 | 22 | 系统重启后消息被重复回复 | 飞书 WS 断连后重投递旧消息，`_seen_message_ids` 内存字典在重启时清空 | 增加 `create_time` 时间窗口防护：消息创建超过 120 秒的重投递直接丢弃（WebSocket 和 Webhook 路径均覆盖） | feishu.py |
+| 23 | 飞书语音消息处理卡死 | 飞书语音为 Opus 格式（`.opus`），`ensure_whisper_compatible` 只处理 SILK，Opus 直传 Whisper 导致 ffmpeg 内部长时间无输出；Gateway 无超时保护 | (a) `ensure_whisper_compatible` 新增 `.opus/.ogg/.amr/.webm/.wma/.aac` → WAV 的 ffmpeg 转换（30s 超时）(b) Gateway `_process_voice` 增加 60s 下载超时 + 120s 转写超时 (c) `asyncio.gather` 改为 `return_exceptions=True` 避免单个失败拖垮全部 | audio_utils.py, gateway.py |
 
 ---
 

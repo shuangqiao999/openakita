@@ -2316,20 +2316,27 @@ class MessageGateway:
             try:
                 async with sem:
                     if not voice.local_path:
-                        local_path = await adapter.download_media(voice)
+                        local_path = await asyncio.wait_for(
+                            adapter.download_media(voice), timeout=60
+                        )
                         voice.local_path = str(local_path)
                         logger.info(f"Voice downloaded: {voice.local_path}")
 
-                # 转写放在 download 之后；转写内部已使用线程池，不阻塞事件循环
                 if voice.local_path and not voice.transcription:
-                    transcription = await self._transcribe_voice_local(voice.local_path)
+                    transcription = await asyncio.wait_for(
+                        self._transcribe_voice_local(voice.local_path), timeout=120
+                    )
                     if transcription:
                         voice.transcription = transcription
                         logger.info(f"Voice transcribed: {transcription}")
                     else:
                         voice.transcription = "[语音识别失败]"
+            except TimeoutError:
+                logger.error(f"Voice processing timed out: {voice.filename}")
+                voice.transcription = "[语音处理超时]"
             except Exception as e:
                 logger.error(f"Failed to process voice: {e}")
+                voice.transcription = "[语音处理失败]"
 
         async def _process_image(img) -> None:
             try:
@@ -2375,7 +2382,7 @@ class MessageGateway:
             tasks.append(_process_file(fil))
 
         if tasks:
-            await asyncio.gather(*tasks, return_exceptions=False)
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _transcribe_voice_local(self, audio_path: str) -> str | None:
         """

@@ -991,13 +991,15 @@ class WeWorkBotAdapter(ChannelAdapter):
         企业微信已自动将语音转为文字。
         """
         voice_data = msg_data.get("voice", {})
-        transcription = voice_data.get("content", "")
+        transcription = voice_data.get("content", "").strip()
 
-        # 语音已自动转文字，作为文本消息处理
         if transcription:
-            content = MessageContent(text=f"[语音转文字] {transcription}")
+            content = MessageContent(text=transcription)
         else:
-            content = MessageContent(text="[语音消息，无法识别]")
+            logger.warning("[WeWorkBot] Voice transcription empty, msgid=%s", msgid)
+            content = MessageContent(
+                text="[语音消息，平台未能识别，请重新发送或改用文字]"
+            )
 
         is_direct_message = chat_type == "private"
         # 智能机器人 HTTP 回调只在群聊被 @时投递，故群语音消息 is_mentioned=True
