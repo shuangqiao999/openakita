@@ -32,7 +32,7 @@ export function AgentStoreView({ apiBaseUrl, visible }: AgentStoreViewProps) {
   const [sort, setSort] = useState("downloads");
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
-  const [installing, setInstalling] = useState<string | null>(null);
+  const [installingSet, setInstallingSet] = useState<Set<string>>(new Set());
   const [notice, setNotice] = useState("");
   const [confirmAgent, setConfirmAgent] = useState<Agent | null>(null);
 
@@ -60,8 +60,7 @@ export function AgentStoreView({ apiBaseUrl, visible }: AgentStoreViewProps) {
   }, [visible, fetchAgents]);
 
   const doInstall = async (agentId: string) => {
-    setInstalling(agentId);
-    setNotice("");
+    setInstallingSet(prev => { const next = new Set(prev); next.add(agentId); return next; });
     try {
       const resp = await safeFetch(`${apiBaseUrl}/api/hub/agents/${agentId}/install`, { method: "POST" });
       const data = await resp.json();
@@ -70,7 +69,7 @@ export function AgentStoreView({ apiBaseUrl, visible }: AgentStoreViewProps) {
     } catch (e: any) {
       setNotice(t("agentStore.installFail", { msg: e.message }));
     } finally {
-      setInstalling(null);
+      setInstallingSet(prev => { const next = new Set(prev); next.delete(agentId); return next; });
     }
   };
 
@@ -188,10 +187,10 @@ export function AgentStoreView({ apiBaseUrl, visible }: AgentStoreViewProps) {
             )}
             <button
               onClick={() => setConfirmAgent(a)}
-              disabled={installing === a.id}
+              disabled={installingSet.has(a.id)}
               style={{ width: "100%", marginTop: 4 }}
             >
-              {installing === a.id ? t("agentStore.installing") : t("agentStore.install")}
+              {installingSet.has(a.id) ? t("agentStore.installing") : t("agentStore.install")}
             </button>
           </div>
         ))}

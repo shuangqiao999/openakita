@@ -34,7 +34,7 @@ export function SkillStoreView({ apiBaseUrl, visible }: SkillStoreViewProps) {
   const [sort, setSort] = useState("installs");
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
-  const [installing, setInstalling] = useState<string | null>(null);
+  const [installingSet, setInstallingSet] = useState<Set<string>>(new Set());
   const [notice, setNotice] = useState("");
   const [confirmSkill, setConfirmSkill] = useState<Skill | null>(null);
 
@@ -74,8 +74,7 @@ export function SkillStoreView({ apiBaseUrl, visible }: SkillStoreViewProps) {
   }, [visible, fetchSkills]);
 
   const doInstall = async (skillId: string) => {
-    setInstalling(skillId);
-    setNotice("");
+    setInstallingSet(prev => { const next = new Set(prev); next.add(skillId); return next; });
     try {
       const resp = await safeFetch(`${apiBaseUrl}/api/hub/skills/${skillId}/install`, { method: "POST" });
       const data = await resp.json();
@@ -84,7 +83,7 @@ export function SkillStoreView({ apiBaseUrl, visible }: SkillStoreViewProps) {
     } catch (e: any) {
       setNotice(t("skillStore.installFail", { msg: e.message }));
     } finally {
-      setInstalling(null);
+      setInstallingSet(prev => { const next = new Set(prev); next.delete(skillId); return next; });
     }
   };
 
@@ -209,10 +208,10 @@ export function SkillStoreView({ apiBaseUrl, visible }: SkillStoreViewProps) {
               )}
               <button
                 onClick={() => setConfirmSkill(s)}
-                disabled={installing === s.id}
+                disabled={installingSet.has(s.id)}
                 style={{ width: "100%", marginTop: 4 }}
               >
-                {installing === s.id ? t("skillStore.installing") : t("skillStore.install")}
+                {installingSet.has(s.id) ? t("skillStore.installing") : t("skillStore.install")}
               </button>
             </div>
           );
