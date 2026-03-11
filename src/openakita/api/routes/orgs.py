@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import time
 import uuid
@@ -16,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse
 
 from openakita.core.engine_bridge import to_engine
 
@@ -144,6 +146,64 @@ async def create_from_template(request: Request):
     return org.to_dict()
 
 
+@router.post("/import", status_code=201)
+async def import_org(request: Request, file: UploadFile = File(...)):
+    """Import an organization from .json / .akita-org file with name dedup."""
+    mgr = _get_manager(request)
+
+    content = await file.read()
+    try:
+        data = json.loads(content)
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        raise HTTPException(400, f"无效的文件格式: {e}")
+
+    org_data = data.get("organization")
+    if not org_data or not isinstance(org_data, dict):
+        raise HTTPException(400, "文件缺少 organization 字段")
+
+    org_data.pop("id", None)
+    org_data["status"] = "dormant"
+    org_data["total_tasks_completed"] = 0
+    org_data["total_messages_exchanged"] = 0
+
+    existing_names = {o["name"] for o in mgr.list_orgs()}
+    orig_name = org_data.get("name", "")
+    if orig_name in existing_names:
+        suffix = 2
+        while f"{orig_name} ({suffix})" in existing_names:
+            suffix += 1
+        org_data["name"] = f"{orig_name} ({suffix})"
+
+    try:
+        org = mgr.create(org_data)
+    except Exception as e:
+        raise HTTPException(400, f"导入失败: {e}")
+
+    files_data: dict = data.get("files", {})
+    if files_data:
+        org_dir = mgr._org_dir(org.id)
+        for rel_path, file_content in files_data.items():
+            if ".." in rel_path:
+                continue
+            target = org_dir / rel_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                target.write_text(file_content, encoding="utf-8")
+            except Exception:
+                pass
+
+    renamed = org_data["name"] != orig_name
+    msg = f"组织「{org_data['name']}」导入成功"
+    if renamed:
+        msg += f"（原名「{orig_name}」已存在，已重命名）"
+
+    return {
+        "message": msg,
+        "organization": org.to_dict(),
+        "renamed": renamed,
+    }
+
+
 @router.get("/{org_id}")
 async def get_org(request: Request, org_id: str):
     mgr = _get_manager(request)
@@ -215,12 +275,25 @@ async def save_as_template(request: Request, org_id: str):
 
 @router.post("/{org_id}/export")
 async def export_org(request: Request, org_id: str):
+    """Export org as JSON. If body has output_path, write to that path."""
     mgr = _get_manager(request)
     org = mgr.get(org_id)
     if org is None:
         raise HTTPException(404, f"Organization not found: {org_id}")
+
+    body: dict = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+
     org_dir = mgr._org_dir(org_id)
-    export_data: dict[str, Any] = {"organization": org.to_dict(), "files": {}}
+    export_data: dict[str, Any] = {
+        "format": "akita-org",
+        "version": "1.0",
+        "organization": org.to_dict(),
+        "files": {},
+    }
     for sub in ("memory", "events", "logs", "reports", "policies"):
         sub_dir = org_dir / sub
         if sub_dir.is_dir():
@@ -231,7 +304,18 @@ async def export_org(request: Request, org_id: str):
                         export_data["files"][rel] = f.read_text(encoding="utf-8")[:50000]
                     except Exception:
                         pass
-    return export_data
+
+    output_path = body.get("output_path", "")
+    if output_path:
+        out = Path(output_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(
+            json.dumps(export_data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        return {"ok": True, "path": str(out)}
+
+    return JSONResponse(content=export_data)
+
 
 
 # ---- Node Schedules ----

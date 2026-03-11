@@ -54,13 +54,14 @@ import {
   IconMenu,
   IconSitemap,
   IconAlertCircle,
+  IconDownload,
+  IconUpload,
 } from "../icons";
 import { safeFetch } from "../providers";
-import { openPopupWindow, canOpenPopupWindow, IS_CAPACITOR } from "../platform";
+import { openPopupWindow, canOpenPopupWindow, IS_CAPACITOR, saveFileDialog, IS_TAURI } from "../platform";
 import { OrgInboxSidebar } from "../components/OrgInboxSidebar";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { OrgAvatar, AVATAR_PRESETS, AVATAR_MAP } from "../components/OrgAvatars";
-import { OrgChatPanel } from "../components/OrgChatPanel";
 import { OrgDashboard } from "../components/OrgDashboard";
 import { OrgProjectBoard } from "../components/OrgProjectBoard";
 
@@ -573,9 +574,11 @@ const nodeTypes: NodeTypes = {
 export function OrgEditorView({
   apiBaseUrl = "http://127.0.0.1:18900",
   visible = true,
+  onOpenOrgChat,
 }: {
   apiBaseUrl?: string;
   visible?: boolean;
+  onOpenOrgChat?: (orgId: string, nodeId?: string | null) => void;
 }) {
   useTranslation();
 
@@ -929,6 +932,63 @@ export function OrgEditorView({
       setLiveMode(false);
     } catch (e) { console.error("Failed to stop org:", e); }
   }, [currentOrg, apiBaseUrl]);
+
+  // ── Org export/import ──
+  const orgImportRef = useRef<HTMLInputElement>(null);
+
+  const handleExportOrg = useCallback(async () => {
+    if (!currentOrg) return;
+    try {
+      const safeName = currentOrg.name.replace(/\s+/g, "_").replace(/[/\\]/g, "_").slice(0, 30);
+      const defaultName = `${safeName}.json`;
+
+      if (IS_TAURI) {
+        const savePath = await saveFileDialog({
+          title: "导出组织配置",
+          defaultPath: defaultName,
+          filters: [{ name: "JSON", extensions: ["json"] }],
+        });
+        if (!savePath) return;
+        await safeFetch(`${apiBaseUrl}/api/orgs/${currentOrg.id}/export`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ output_path: savePath }),
+        });
+        showToast(`组织已导出到: ${savePath}`);
+      } else {
+        const res = await safeFetch(`${apiBaseUrl}/api/orgs/${currentOrg.id}/export`, { method: "POST" });
+        const data = await res.json();
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = defaultName;
+        a.click();
+        URL.revokeObjectURL(url);
+        showToast(`组织「${currentOrg.name}」已导出为 ${defaultName}`);
+      }
+    } catch (e) { showToast(String(e), "error"); }
+  }, [currentOrg, apiBaseUrl, showToast]);
+
+  const handleImportOrg = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await safeFetch(`${apiBaseUrl}/api/orgs/import`, {
+        method: "POST",
+        body: formData,
+      });
+      const data = await res.json();
+      showToast(data.message || `组织「${data.organization?.name || ""}」导入成功`);
+      fetchOrgList();
+      if (data.organization?.id) {
+        setSelectedOrgId(data.organization.id);
+      }
+    } catch (err) { showToast(String(err), "error"); }
+    if (orgImportRef.current) orgImportRef.current.value = "";
+  }, [apiBaseUrl, showToast, fetchOrgList]);
 
   const [confirmReset, setConfirmReset] = useState(false);
   const handleResetOrg = useCallback(async () => {
@@ -1390,6 +1450,10 @@ export function OrgEditorView({
             >
               <IconSitemap size={12} /> {!isMobile && "布局"}
             </button>
+            <div style={{ width: 1, height: 20, background: "var(--line)" }} />
+            <button className="btnSmall" onClick={handleExportOrg} title="导出组织配置">
+              <IconDownload size={12} /> {!isMobile && "导出"}
+            </button>
             <button
               className="btnSmall"
               onClick={() => setViewMode(viewMode === "canvas" ? "dashboard" : viewMode === "dashboard" ? "projects" : "canvas")}
@@ -1478,8 +1542,8 @@ export function OrgEditorView({
                     }} />
                     <span title="完成任务数">✓ {orgStats.total_tasks_completed ?? 0}</span>
                     <span title="消息数">✉ {orgStats.total_messages_exchanged ?? 0}</span>
-                    {orgStats.pending_messages > 0 && <span title="待处理" style={{ color: "#f59e0b" }}>⏳ {orgStats.pending_messages}</span>}
-                    {orgStats.anomalies?.length > 0 && <span title="告警数" style={{ color: "#ef4444", fontWeight: 600 }}>⚠ {orgStats.anomalies.length}</span>}
+                    {orgStats.pending_messages > 0 && <span title="待处理" style={{ color: "#f59e0b" }}>▪ {orgStats.pending_messages}</span>}
+                    {orgStats.anomalies?.length > 0 && <span title="告警数" style={{ color: "#ef4444", fontWeight: 600 }}>! {orgStats.anomalies.length}</span>}
                     {orgStats.uptime_s > 0 && (
                       <span title="运行时间">
                         {orgStats.uptime_s >= 3600
@@ -1565,6 +1629,16 @@ export function OrgEditorView({
             <button className="btnSmall" onClick={handleCreateOrg} title="新建空白组织">
               <IconPlus size={12} />
             </button>
+            <button className="btnSmall" onClick={() => orgImportRef.current?.click()} title="导入组织">
+              <IconUpload size={12} />
+            </button>
+            <input
+              ref={orgImportRef}
+              type="file"
+              accept=".json,.akita-org"
+              style={{ display: "none" }}
+              onChange={handleImportOrg}
+            />
             {isMobile && (
               <button className="btnSmall" onClick={() => setShowLeftPanel(false)} title="关闭" style={{ minWidth: 36, minHeight: 36 }}>
                 <IconX size={16} />
@@ -1893,10 +1967,10 @@ export function OrgEditorView({
                     icon = "✔"; color = "#22c55e";
                     text = `会议结束：${ev.data.topic?.slice(0, 40) || ""}`;
                   } else if (ev.event === "org:task_timeout") {
-                    icon = "⏱"; color = "#f97316";
+                    icon = "⌛"; color = "#f97316";
                     text = `${nodeLabel(ev.data.node_id)} 任务超时 (${ev.data.timeout_s || ""}s)`;
                   } else if (ev.event === "org:node_status" && ev.data.status === "busy") {
-                    icon = "⚡"; color = "var(--primary)";
+                    icon = "▶"; color = "var(--primary)";
                     text = `${nodeLabel(ev.data.node_id)} 开始执行`;
                   } else if (ev.event === "org:node_status" && ev.data.status === "error") {
                     icon = "✖"; color = "var(--danger)";
@@ -1915,10 +1989,29 @@ export function OrgEditorView({
               </div>
               )}
 
-              {/* Chat tab */}
+              {/* Chat tab — shortcut to main ChatView with org pre-selected */}
               {bottomTab === "chat" && selectedOrgId && (
-                <div style={{ flex: 1, overflow: "hidden" }}>
-                  <OrgChatPanel orgId={selectedOrgId} apiBaseUrl={apiBaseUrl} compact />
+                <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, padding: 16 }}>
+                  <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="var(--muted, #64748b)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.5 }}>
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                  </svg>
+                  <span style={{ fontSize: 12, color: "var(--muted)", textAlign: "center", maxWidth: 200 }}>
+                    在主聊天中与组织对话，拥有完整的会话记录和上下文
+                  </span>
+                  <button
+                    onClick={() => onOpenOrgChat?.(selectedOrgId)}
+                    style={{
+                      padding: "8px 20px", fontSize: 13, fontWeight: 600,
+                      background: "linear-gradient(135deg, #3b82f6, #6366f1)",
+                      color: "#fff", border: "none", borderRadius: 8, cursor: "pointer",
+                      display: "flex", alignItems: "center", gap: 6,
+                    }}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                    </svg>
+                    打开组织聊天
+                  </button>
                 </div>
               )}
               {bottomTab === "chat" && !selectedOrgId && (
@@ -1928,6 +2021,44 @@ export function OrgEditorView({
               )}
             </div>
           )}
+
+          {/* ═══ Floating Chat FAB — navigates to main ChatView with org pre-selected ═══ */}
+          {liveMode && selectedOrgId && (
+            <button
+              onClick={() => onOpenOrgChat?.(selectedOrgId)}
+              className="org-chat-fab"
+              title="打开组织聊天"
+            >
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+              </svg>
+              <span className="org-chat-fab-label">组织聊天</span>
+            </button>
+          )}
+
+          <style>{`
+            .org-chat-fab {
+              position: absolute; bottom: 20px; right: 20px; z-index: 40;
+              display: flex; align-items: center; gap: 8px;
+              padding: 12px 20px; border: none; border-radius: 16px;
+              background: linear-gradient(135deg, #3b82f6, #6366f1);
+              color: #fff; cursor: pointer; font-size: 13px; font-weight: 600;
+              box-shadow: 0 4px 20px rgba(99,102,241,0.4), 0 0 40px rgba(99,102,241,0.15);
+              transition: all 0.3s cubic-bezier(0.4,0,0.2,1);
+              animation: org-fab-in 0.4s cubic-bezier(0.34,1.56,0.64,1);
+            }
+            @keyframes org-fab-in {
+              from { transform: scale(0.5) translateY(20px); opacity: 0; }
+              to { transform: scale(1) translateY(0); opacity: 1; }
+            }
+            .org-chat-fab:hover {
+              transform: translateY(-2px) scale(1.02);
+              box-shadow: 0 6px 28px rgba(99,102,241,0.5), 0 0 60px rgba(99,102,241,0.2);
+            }
+            .org-chat-fab:active { transform: scale(0.97); }
+            .org-chat-fab-label { letter-spacing: 0.5px; }
+
+          `}</style>
           </>
         ) : (
           <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--muted)" }}
@@ -1975,9 +2106,27 @@ export function OrgEditorView({
               <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>{selectedNode.role_title}</div>
               <div style={{ fontSize: 11, color: "var(--muted)" }}>{selectedNode.department || "未分配部门"}</div>
             </div>
-            {isMobile && (
-              <button className="btnSmall" onClick={() => setSelectedNodeId(null)} style={{ minWidth: 36, minHeight: 36 }}><IconX size={14} /></button>
-            )}
+            <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+              {liveMode && selectedOrgId && (
+                <button
+                  className="btnSmall"
+                  onClick={() => onOpenOrgChat?.(selectedOrgId, selectedNodeId)}
+                  style={{
+                    minWidth: 36, minHeight: 36, fontSize: 12,
+                    background: "linear-gradient(135deg, #3b82f6, #6366f1)",
+                    color: "#fff", border: "none", borderRadius: 8,
+                  }}
+                  title="与该节点对话"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                  </svg>
+                </button>
+              )}
+              {isMobile && (
+                <button className="btnSmall" onClick={() => setSelectedNodeId(null)} style={{ minWidth: 36, minHeight: 36 }}><IconX size={14} /></button>
+              )}
+            </div>
           </div>
 
           {/* Tabs */}
@@ -3262,13 +3411,27 @@ export function OrgEditorView({
             )}
 
             {propsTab === "chat" && liveMode && selectedOrgId && (
-              <div style={{ height: 360 }}>
-                <OrgChatPanel
-                  orgId={selectedOrgId}
-                  nodeId={selectedNodeId}
-                  apiBaseUrl={apiBaseUrl}
-                  compact
-                />
+              <div style={{ height: 360, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, padding: 16 }}>
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--muted, #64748b)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.5 }}>
+                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                </svg>
+                <span style={{ fontSize: 12, color: "var(--muted)", textAlign: "center" }}>
+                  在主聊天中对话，拥有完整上下文和历史
+                </span>
+                <button
+                  onClick={() => onOpenOrgChat?.(selectedOrgId, selectedNodeId)}
+                  style={{
+                    padding: "6px 16px", fontSize: 12, fontWeight: 600,
+                    background: "linear-gradient(135deg, #3b82f6, #6366f1)",
+                    color: "#fff", border: "none", borderRadius: 8, cursor: "pointer",
+                    display: "flex", alignItems: "center", gap: 5,
+                  }}
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                  </svg>
+                  与 {(nodes.find(n => n.id === selectedNodeId)?.data as any)?.role_title || "节点"} 对话
+                </button>
               </div>
             )}
           </div>

@@ -270,6 +270,26 @@ export async function openFileDialog(options?: {
   return typeof selected === "string" ? selected : (selected as any)?.path ?? null;
 }
 
+/**
+ * Show a native "Save File" dialog (Tauri only).
+ * Returns the chosen path or null if cancelled.
+ * On web, returns null — callers should fall back to browser download.
+ */
+export async function saveFileDialog(options?: {
+  title?: string;
+  defaultPath?: string;
+  filters?: { name: string; extensions: string[] }[];
+}): Promise<string | null> {
+  if (!IS_TAURI) return null;
+  const { save } = await import("@tauri-apps/plugin-dialog");
+  const selected = await save({
+    title: options?.title,
+    defaultPath: options?.defaultPath,
+    filters: options?.filters,
+  });
+  return selected ?? null;
+}
+
 // ---------------------------------------------------------------------------
 // Tauri updater & process
 // ---------------------------------------------------------------------------

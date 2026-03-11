@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { IconBot, IconRefresh, IconPlus, IconEdit, IconTrash, IconDownload, IconUpload } from "../icons";
 import { safeFetch } from "../providers";
-import { logger } from "../platform";
+import { logger, saveFileDialog, IS_TAURI } from "../platform";
 
 type AgentProfile = {
   id: string;
@@ -175,6 +175,7 @@ export function AgentManagerView({
   const [addingCategory, setAddingCategory] = useState(false);
   const [newCatLabel, setNewCatLabel] = useState("");
   const [newCatColor, setNewCatColor] = useState("#6b7280");
+  const [batchSelected, setBatchSelected] = useState<Set<string>>(new Set());
   const importInputRef = useRef<HTMLInputElement>(null);
 
   const showToast = useCallback((text: string, type: "ok" | "err" = "ok") => {
@@ -241,23 +242,45 @@ export function AgentManagerView({
     }
   }, [apiBaseUrl]);
 
+  const browserDownloadJson = useCallback((data: unknown, filename: string) => {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, []);
+
   const handleExport = useCallback(async (profileId: string) => {
     try {
-      const res = await safeFetch(`${apiBaseUrl}/api/agents/package/export`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ profile_id: profileId }),
-      });
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${profileId}.akita-agent`;
-      a.click();
-      URL.revokeObjectURL(url);
-      showToast("Agent 已导出");
+      const defaultName = `${profileId}.json`;
+
+      if (IS_TAURI) {
+        const savePath = await saveFileDialog({
+          title: "导出 Agent",
+          defaultPath: defaultName,
+          filters: [{ name: "JSON", extensions: ["json"] }],
+        });
+        if (!savePath) return;
+        await safeFetch(`${apiBaseUrl}/api/agents/package/export-json`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ profile_id: profileId, output_path: savePath }),
+        });
+        showToast(`已导出到: ${savePath}`);
+      } else {
+        const res = await safeFetch(`${apiBaseUrl}/api/agents/package/export-json`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ profile_id: profileId }),
+        });
+        const data = await res.json();
+        browserDownloadJson(data, defaultName);
+        showToast(`Agent 已导出为 ${defaultName}`);
+      }
     } catch (e) { showToast(String(e), "err"); }
-  }, [apiBaseUrl, showToast]);
+  }, [apiBaseUrl, showToast, browserDownloadJson]);
 
   const handleImportFile = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -270,11 +293,55 @@ export function AgentManagerView({
         body: formData,
       });
       const data = await res.json();
-      showToast(`Agent「${data.profile?.name || ""}」导入成功`);
+      showToast(data.message || `Agent「${data.profile?.name || ""}」导入成功`);
       fetchProfiles();
     } catch (err) { showToast(String(err), "err"); }
     if (importInputRef.current) importInputRef.current.value = "";
   }, [apiBaseUrl, showToast, fetchProfiles]);
+
+  const toggleBatchSelect = useCallback((id: string) => {
+    setBatchSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const handleBatchExport = useCallback(async () => {
+    if (batchSelected.size === 0) {
+      showToast(t("agentManager.batchExportNone"), "err");
+      return;
+    }
+    try {
+      const ids = Array.from(batchSelected);
+      const defaultName = ids.length === 1 ? `${ids[0]}.json` : `agents_batch_${ids.length}.json`;
+
+      if (IS_TAURI) {
+        const savePath = await saveFileDialog({
+          title: "批量导出 Agent",
+          defaultPath: defaultName,
+          filters: [{ name: "JSON", extensions: ["json"] }],
+        });
+        if (!savePath) return;
+        await safeFetch(`${apiBaseUrl}/api/agents/package/batch-export-json`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ profile_ids: ids, output_path: savePath }),
+        });
+        showToast(`已导出 ${ids.length} 个 Agent 到: ${savePath}`);
+      } else {
+        const res = await safeFetch(`${apiBaseUrl}/api/agents/package/batch-export-json`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ profile_ids: ids }),
+        });
+        const data = await res.json();
+        browserDownloadJson(data, defaultName);
+        showToast(t("agentManager.batchExportDone", { count: ids.length }));
+      }
+      setBatchSelected(new Set());
+    } catch (e) { showToast(String(e), "err"); }
+  }, [batchSelected, apiBaseUrl, showToast, t, browserDownloadJson]);
 
   useEffect(() => {
     if (visible && multiAgentEnabled) {
@@ -466,6 +533,20 @@ export function AgentManagerView({
             <IconRefresh size={14} />
             {loading ? t("dashboard.loading") : t("dashboard.refresh")}
           </button>
+          {batchSelected.size > 0 && (
+            <button
+              onClick={handleBatchExport}
+              style={{
+                display: "flex", alignItems: "center", gap: 4,
+                padding: "5px 10px", borderRadius: 8, border: "1px solid var(--primary, #3b82f6)",
+                background: "rgba(59,130,246,0.08)", cursor: "pointer", fontSize: 12,
+                color: "var(--primary, #3b82f6)", fontWeight: 600,
+              }}
+            >
+              <IconDownload size={14} />
+              {t("agentManager.batchExport", { count: batchSelected.size })}
+            </button>
+          )}
           <button
             onClick={() => importInputRef.current?.click()}
             style={{
@@ -493,7 +574,7 @@ export function AgentManagerView({
         <input
           ref={importInputRef}
           type="file"
-          accept=".akita-agent"
+          accept=".akita-agent,.json"
           style={{ display: "none" }}
           onChange={handleImportFile}
         />
@@ -627,6 +708,32 @@ export function AgentManagerView({
             >
               {/* Color bar */}
               <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 3, background: agent.color || "var(--brand)" }} />
+
+              {/* Batch select checkbox */}
+              <label
+                title={t("agentManager.selectForBatch")}
+                onClick={(e) => e.stopPropagation()}
+                style={{
+                  position: "absolute", top: 8, left: 8, zIndex: 2,
+                  width: 15, height: 15, borderRadius: 3, cursor: "pointer",
+                  border: batchSelected.has(agent.id) ? "none" : "1.5px solid #94a3b8",
+                  background: batchSelected.has(agent.id) ? "var(--primary, #3b82f6)" : "#fff",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  transition: "all 0.15s",
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={batchSelected.has(agent.id)}
+                  onChange={() => toggleBatchSelect(agent.id)}
+                  style={{ display: "none" }}
+                />
+                {batchSelected.has(agent.id) && (
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                )}
+              </label>
 
               {/* Badges */}
               <div style={{ position: "absolute", top: 8, right: 8, display: "flex", gap: 4 }}>

@@ -1843,6 +1843,18 @@ export function ChatView({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [orgMenuOpen]);
 
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const { orgId, nodeId } = (e as CustomEvent).detail ?? {};
+      if (!orgId) return;
+      setOrgMode(true);
+      setSelectedOrgId(orgId);
+      setSelectedOrgNodeId(nodeId ?? null);
+    };
+    window.addEventListener("openakita_activate_org", handler);
+    return () => window.removeEventListener("openakita_activate_org", handler);
+  }, []);
+
   type SubAgentEntry = { agentId: string; status: "delegating" | "done" | "error"; reason?: string; startTime: number };
   const [displayActiveSubAgents, setDisplayActiveSubAgents] = useState<SubAgentEntry[]>([]);
 
@@ -4610,7 +4622,20 @@ export function ChatView({
                 display: "flex", alignItems: "center", gap: 6,
               }}>
                 <IconBuilding size={12} />
-                正在与「{orgList.find(o => o.id === selectedOrgId)?.name}」对话
+                正在与「{orgList.find(o => o.id === selectedOrgId)?.name}」{selectedOrgNodeId ? ` / ${selectedOrgNodeId}` : ""}对话
+                {selectedOrgNodeId && (
+                  <button
+                    onClick={() => setSelectedOrgNodeId(null)}
+                    style={{
+                      background: "none", border: "none", cursor: "pointer",
+                      color: "var(--muted)", fontSize: 10, padding: "0 2px",
+                      display: "flex", alignItems: "center",
+                    }}
+                    title="取消节点指定，改为与整个组织对话"
+                  >
+                    <IconX size={10} />
+                  </button>
+                )}
                 {orgCommandPending && <span style={{ opacity: 0.6 }}> — 组织协调中，进度实时显示 ↓</span>}
               </div>
             )}
@@ -4622,7 +4647,7 @@ export function ChatView({
               onChange={handleInputChange}
               onKeyDown={handleInputKeyDown}
               onPaste={handlePaste}
-              placeholder={orgCommandPending ? "组织正在处理中..." : orgMode ? "输入指令发送给组织..." : isCurrentConvStreaming ? t("chat.queueHint") : planMode ? `Plan ${t("chat.planMode")}` : t("chat.placeholder")}
+              placeholder={orgCommandPending ? "组织正在处理中..." : orgMode ? (selectedOrgNodeId ? `输入指令发送给 ${selectedOrgNodeId}...` : "输入指令发送给组织...") : isCurrentConvStreaming ? t("chat.queueHint") : planMode ? `Plan ${t("chat.planMode")}` : t("chat.placeholder")}
               rows={1}
               className="chatInputTextarea"
               onInput={(e) => {
