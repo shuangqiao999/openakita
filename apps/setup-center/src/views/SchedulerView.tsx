@@ -576,7 +576,7 @@ export function SchedulerView({ serviceRunning }: { serviceRunning: boolean }) {
                 style={{ flex: 1 }}
               />
               <select
-                style={{ ...selectStyle, minWidth: 80 }}
+                style={{ ...selectStyle, width: "auto", minWidth: 80 }}
                 value={form.intervalUnit}
                 onChange={e => setForm(f => ({ ...f, intervalUnit: e.target.value as any }))}
               >
