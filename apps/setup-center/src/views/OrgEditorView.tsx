@@ -620,6 +620,15 @@ export function OrgEditorView({
   const [viewMode, setViewMode] = useState<"canvas" | "dashboard" | "projects">("canvas");
   const [chatPanelOpen, setChatPanelOpen] = useState(false);
   const [chatPanelNode, setChatPanelNode] = useState<string | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; type: "node" | "edge" | "pane"; id: string | null } | null>(null);
+  const [clipboardNode, setClipboardNode] = useState<any>(null);
+  useEffect(() => {
+    if (!contextMenu) return;
+    const dismiss = () => setContextMenu(null);
+    window.addEventListener("click", dismiss);
+    window.addEventListener("scroll", dismiss, true);
+    return () => { window.removeEventListener("click", dismiss); window.removeEventListener("scroll", dismiss, true); };
+  }, [contextMenu]);
   const activityFeedRef = useRef<HTMLDivElement>(null);
   const [edgeAnimations, setEdgeAnimations] = useState<Record<string, { color: string; ts: number }>>({});
   const [edgeFlowCounts, setEdgeFlowCounts] = useState<Record<string, number>>({});
@@ -1204,6 +1213,7 @@ export function OrgEditorView({
   const onPaneClick = useCallback(() => {
     setSelectedNodeId(null);
     setSelectedEdgeId(null);
+    setContextMenu(null);
   }, []);
 
   // ── Fetch node detail when selected in live mode ──
@@ -1333,6 +1343,67 @@ export function OrgEditorView({
     setSelectedEdgeId(null);
   }, [selectedEdgeId, setEdges]);
 
+  const ctxCopyNode = useCallback((nodeId: string) => {
+    const n = nodes.find((n) => n.id === nodeId);
+    if (n) setClipboardNode(structuredClone(n));
+    setContextMenu(null);
+  }, [nodes]);
+
+  const ctxDeleteNode = useCallback((nodeId: string) => {
+    setNodes((prev) => prev.filter((n) => n.id !== nodeId));
+    setEdges((prev) => prev.filter((e) => e.source !== nodeId && e.target !== nodeId));
+    if (selectedNodeId === nodeId) setSelectedNodeId(null);
+    setContextMenu(null);
+  }, [selectedNodeId, setNodes, setEdges]);
+
+  const ctxDeleteEdge = useCallback((edgeId: string) => {
+    setEdges((prev) => prev.filter((e) => e.id !== edgeId));
+    if (selectedEdgeId === edgeId) setSelectedEdgeId(null);
+    setContextMenu(null);
+  }, [selectedEdgeId, setEdges]);
+
+  const ctxReverseEdge = useCallback((edgeId: string) => {
+    setEdges((prev) => prev.map((e) => {
+      if (e.id !== edgeId) return e;
+      return { ...e, source: e.target, target: e.source };
+    }));
+    setContextMenu(null);
+  }, [setEdges]);
+
+  const ctxPasteNode = useCallback(() => {
+    if (!clipboardNode) return;
+    const offset = 60;
+    const newId = `node_${Date.now().toString(36)}`;
+    const pasted = {
+      ...structuredClone(clipboardNode),
+      id: newId,
+      position: { x: (clipboardNode.position?.x ?? 200) + offset, y: (clipboardNode.position?.y ?? 200) + offset },
+      data: { ...clipboardNode.data, id: newId, role_title: `${clipboardNode.data?.role_title || "节点"} (副本)` },
+      selected: false,
+    };
+    setNodes((prev) => [...prev, pasted]);
+    setContextMenu(null);
+  }, [clipboardNode, setNodes]);
+
+  const ctxAddNodeAt = useCallback(() => {
+    const newId = `node_${Date.now().toString(36)}`;
+    const maxX = nodes.reduce((m, n) => Math.max(m, n.position?.x ?? 0), 0);
+    const maxY = nodes.reduce((m, n) => Math.max(m, n.position?.y ?? 0), 0);
+    const pos = { x: maxX + 40 + Math.random() * 60, y: maxY + 40 + Math.random() * 60 };
+    const newNode: OrgNodeData = {
+      id: newId, role_title: "新节点", role_goal: "", role_backstory: "",
+      agent_source: "local", agent_profile_id: null, position: pos, level: 0,
+      department: "", custom_prompt: "", identity_dir: null, mcp_servers: [], skills: [],
+      skills_mode: "all", preferred_endpoint: null, max_concurrent_tasks: 1, timeout_s: 0,
+      can_delegate: true, can_escalate: true, can_request_scaling: true, is_clone: false,
+      clone_source: null, external_tools: [], ephemeral: false, frozen_by: null,
+      frozen_reason: null, frozen_at: null, avatar: null, status: "idle",
+    };
+    setNodes((prev) => [...prev, orgNodeToFlowNode(newNode)]);
+    setSelectedNodeId(newId);
+    setContextMenu(null);
+  }, [nodes, setNodes]);
+
   // ── Render ──
 
   if (!visible) return null;
@@ -1392,183 +1463,180 @@ export function OrgEditorView({
             </span>
           </div>
 
-          <div style={{ display: "flex", gap: isMobile ? 4 : 6, alignItems: "center", flexShrink: 1 }}>
-            <button
-              className="btnSmall"
-              onClick={() => setShowNewNodeForm(true)}
-              title="添加节点"
-              style={{ minHeight: 36, whiteSpace: "nowrap" }}
-            >
-              <IconPlus size={12} /> {!isMobile && "添加节点"}
-            </button>
-            {selectedNodeId && (
-              <button className="btnSmall" onClick={handleDeleteNode} title="删除选中节点" style={{ color: "var(--danger)", minHeight: 36 }}>
-                <IconTrash size={12} /> {!isMobile && "删除节点"}
+          <div style={{ display: "flex", alignItems: "center", gap: 2, flexShrink: 1, overflow: "hidden" }}>
+
+            {/* ── 编辑区 ── */}
+            <div className="org-tb-group" data-label="编辑">
+              <button className="btnSmall" onClick={() => setShowNewNodeForm(true)} title="添加节点" style={{ minHeight: 36, whiteSpace: "nowrap" }}>
+                <IconPlus size={12} /> {!isMobile && "节点"}
               </button>
-            )}
-            <div style={{ width: 1, height: 20, background: "var(--line)" }} />
-            {currentOrg.status === "archived" ? (
-              <span style={{ fontSize: 11, color: "var(--muted)", padding: "4px 8px" }}>已归档</span>
-            ) : currentOrg.status === "dormant" ? (
-              <button className="btnSmall" onClick={handleStartOrg} style={{ color: "var(--ok)" }}>
-                <IconPlay size={12} /> 启动
-              </button>
-            ) : (
-              <button className="btnSmall" onClick={handleStopOrg} style={{ color: "var(--danger)" }}>
-                <IconStop size={12} /> 停止
-              </button>
-            )}
-            <button className="btnSmall" onClick={() => setConfirmReset(true)} title="重置组织：清空所有运行数据，恢复为初始状态">
-              <IconRefresh size={12} /> {!isMobile && "重置"}
-            </button>
-            <button
-              className="btnSmall"
-              onClick={() => setLiveMode(!liveMode)}
-              style={{
-                fontWeight: liveMode ? 600 : 400,
-                color: liveMode ? "var(--primary)" : undefined,
-                background: liveMode ? "rgba(14,165,233,0.1)" : undefined,
-              }}
-            >
-              <IconRadar size={12} /> {!isMobile && "实况"}
-            </button>
-            <div style={{ width: 1, height: 20, background: "var(--line)" }} />
-            <button
-              className="btnSmall"
-              onClick={handleSave}
-              disabled={saving}
-              style={{ fontWeight: 600 }}
-            >
-              <IconSave size={12} /> {saving ? "保存中..." : (!isMobile && "保存")}
-            </button>
-            <button
-              className="btnSmall"
-              title="自动布局"
-              onClick={() => {
-                const laid = computeTreeLayout(nodes, edges);
-                setNodes(laid);
-              }}
-            >
-              <IconSitemap size={12} /> {!isMobile && "布局"}
-            </button>
-            <div style={{ width: 1, height: 20, background: "var(--line)" }} />
-            <button className="btnSmall" onClick={handleExportOrg} title="导出组织配置">
-              <IconDownload size={12} /> {!isMobile && "导出"}
-            </button>
-            <button
-              className="btnSmall"
-              onClick={() => setViewMode(viewMode === "canvas" ? "dashboard" : viewMode === "dashboard" ? "projects" : "canvas")}
-              style={{
-                fontWeight: viewMode !== "canvas" ? 600 : 400,
-                color: viewMode === "dashboard" ? "#8b5cf6" : viewMode === "projects" ? "#f59e0b" : undefined,
-                background: viewMode === "dashboard" ? "rgba(139,92,246,0.1)" : viewMode === "projects" ? "rgba(245,158,11,0.1)" : undefined,
-              }}
-              title={viewMode === "canvas" ? "运营看板" : viewMode === "dashboard" ? "项目看板" : "画布视图"}
-            >
-              <IconClipboard size={12} /> {!isMobile && (viewMode === "canvas" ? "看板" : viewMode === "dashboard" ? "项目" : "画布")}
-            </button>
-            {currentOrg && (
-              <>
-                <div style={{ width: 1, height: 20, background: "var(--line)" }} />
-                <button
-                  className="btnSmall"
-                  onClick={async () => {
-                    try {
-                      const resp = await safeFetch(`${apiBaseUrl}/api/orgs/${currentOrg.id}/heartbeat/trigger`, { method: "POST" });
-                      if (!resp.ok) console.error("heartbeat trigger failed:", resp.status);
-                    } catch (e) { console.error("heartbeat trigger error:", e); }
-                  }}
-                  title="手动触发心跳"
-                >
-                  <IconHeartPulse size={12} /> {!isMobile && "心跳"}
+              {selectedNodeId && (
+                <button className="btnSmall" onClick={handleDeleteNode} title="删除选中节点" style={{ color: "var(--danger)", minHeight: 36 }}>
+                  <IconTrash size={12} />
                 </button>
-                <button
-                  className="btnSmall"
-                  onClick={async () => {
-                    try {
-                      const resp = await safeFetch(`${apiBaseUrl}/api/orgs/${currentOrg.id}/standup/trigger`, { method: "POST" });
-                      if (!resp.ok) console.error("standup trigger failed:", resp.status);
-                    } catch (e) { console.error("standup trigger error:", e); }
-                  }}
-                  title="手动触发晨会"
-                >
-                  <IconSun size={12} /> {!isMobile && "晨会"}
-                </button>
-              </>
-            )}
-            <div style={{ width: 1, height: 20, background: "var(--line)" }} />
-            <button
-              className="btnSmall"
-              onClick={() => setInboxOpen(!inboxOpen)}
-              style={{
-                fontWeight: inboxOpen ? 600 : 400,
-                color: inboxOpen ? "var(--primary)" : undefined,
-                background: inboxOpen ? "rgba(14,165,233,0.1)" : undefined,
-              }}
-            >
-              <IconInbox size={12} /> {!isMobile && "消息"}
-            </button>
-            <button
-              className="btnSmall"
-              onClick={() => setShowActivityFeed(!showActivityFeed)}
-              style={{
-                fontWeight: showActivityFeed ? 600 : 400,
-                color: showActivityFeed ? "var(--ok)" : undefined,
-                background: showActivityFeed ? "rgba(34,197,94,0.1)" : undefined,
-                position: "relative",
-              }}
-            >
-              <IconRadar size={12} /> {!isMobile && "动态"}
-              {activityFeed.length > 0 && !showActivityFeed && (
-                <span style={{
-                  position: "absolute", top: -2, right: -2,
-                  width: 6, height: 6, borderRadius: "50%",
-                  background: "var(--ok)", animation: "orgDotPulse 1.5s ease-in-out infinite",
-                }} />
               )}
-            </button>
-            {liveMode && (
-              <>
-                {orgStats && !isMobile && (
-                  <div style={{
-                    display: "flex", gap: 8, alignItems: "center",
-                    fontSize: 10, color: "#6b7280", marginLeft: 4,
-                    padding: "2px 8px", borderRadius: 4,
-                    background: "var(--bg-secondary)",
-                  }}>
-                    <span title="组织健康度" style={{
-                      width: 7, height: 7, borderRadius: "50%",
-                      background: orgStats.health === "critical" ? "#ef4444" : orgStats.health === "warning" ? "#f59e0b" : orgStats.health === "attention" ? "#3b82f6" : "#22c55e",
-                      animation: orgStats.health !== "healthy" ? "orgDotPulse 1.5s ease-in-out infinite" : undefined,
-                    }} />
-                    <span title="完成任务数">✓ {orgStats.total_tasks_completed ?? 0}</span>
-                    <span title="消息数">✉ {orgStats.total_messages_exchanged ?? 0}</span>
-                    {orgStats.pending_messages > 0 && <span title="待处理" style={{ color: "#f59e0b" }}>▪ {orgStats.pending_messages}</span>}
-                    {orgStats.anomalies?.length > 0 && <span title="告警数" style={{ color: "#ef4444", fontWeight: 600 }}>! {orgStats.anomalies.length}</span>}
-                    {orgStats.uptime_s > 0 && (
-                      <span title="运行时间">
-                        {orgStats.uptime_s >= 3600
-                          ? `${Math.floor(orgStats.uptime_s / 3600)}h${Math.floor((orgStats.uptime_s % 3600) / 60)}m`
-                          : `${Math.floor(orgStats.uptime_s / 60)}m`}
-                      </span>
-                    )}
-                  </div>
-                )}
-              </>
-            )}
-            {!isMobile && (
+              <button className="btnSmall" onClick={handleSave} disabled={saving} style={{ fontWeight: 600 }}>
+                <IconSave size={12} /> {saving ? "..." : (!isMobile && "保存")}
+              </button>
+              <button className="btnSmall" title="自动布局" onClick={() => { setNodes(computeTreeLayout(nodes, edges)); }}>
+                <IconSitemap size={12} /> {!isMobile && "布局"}
+              </button>
+              <button className="btnSmall" onClick={handleExportOrg} title="导出组织配置">
+                <IconDownload size={12} />
+              </button>
+            </div>
+
+            <div className="org-tb-sep" />
+
+            {/* ── 运行控制区 ── */}
+            <div className="org-tb-group" data-label="运行">
+              {currentOrg.status === "archived" ? (
+                <span style={{ fontSize: 11, color: "var(--muted)", padding: "4px 8px" }}>已归档</span>
+              ) : currentOrg.status === "dormant" ? (
+                <button className="btnSmall" onClick={handleStartOrg} style={{ color: "var(--ok)" }}>
+                  <IconPlay size={12} /> 启动
+                </button>
+              ) : (
+                <button className="btnSmall" onClick={handleStopOrg} style={{ color: "var(--danger)" }}>
+                  <IconStop size={12} /> 停止
+                </button>
+              )}
+              <button className="btnSmall" onClick={() => setConfirmReset(true)} title="重置组织">
+                <IconRefresh size={12} />
+              </button>
               <button
                 className="btnSmall"
-                onClick={() => setShowRightPanel(!showRightPanel)}
-                title={showRightPanel ? "收起设置面板" : "展开设置面板"}
+                onClick={() => setLiveMode(!liveMode)}
                 style={{
-                  fontWeight: showRightPanel ? 600 : 400,
-                  color: showRightPanel ? "var(--primary)" : undefined,
-                  background: showRightPanel ? "rgba(14,165,233,0.1)" : undefined,
+                  fontWeight: liveMode ? 600 : 400,
+                  color: liveMode ? "var(--primary)" : undefined,
+                  background: liveMode ? "rgba(14,165,233,0.1)" : undefined,
                 }}
               >
-                <IconLayoutGrid size={12} /> {selectedNode || selectedEdge ? "属性" : "设置"}
+                <IconRadar size={12} /> {!isMobile && "实况"}
               </button>
+            </div>
+
+            <div className="org-tb-sep" />
+
+            {/* ── 视图区 ── */}
+            <div className="org-tb-group" data-label="视图">
+              <button
+                className="btnSmall"
+                onClick={() => setViewMode(viewMode === "canvas" ? "dashboard" : viewMode === "dashboard" ? "projects" : "canvas")}
+                style={{
+                  fontWeight: viewMode !== "canvas" ? 600 : 400,
+                  color: viewMode === "dashboard" ? "#8b5cf6" : viewMode === "projects" ? "#f59e0b" : undefined,
+                  background: viewMode === "dashboard" ? "rgba(139,92,246,0.1)" : viewMode === "projects" ? "rgba(245,158,11,0.1)" : undefined,
+                }}
+                title={viewMode === "canvas" ? "运营看板" : viewMode === "dashboard" ? "项目看板" : "画布视图"}
+              >
+                <IconClipboard size={12} /> {!isMobile && (viewMode === "canvas" ? "看板" : viewMode === "dashboard" ? "项目" : "画布")}
+              </button>
+              <button
+                className="btnSmall"
+                onClick={() => setShowActivityFeed(!showActivityFeed)}
+                style={{
+                  fontWeight: showActivityFeed ? 600 : 400,
+                  color: showActivityFeed ? "var(--ok)" : undefined,
+                  background: showActivityFeed ? "rgba(34,197,94,0.1)" : undefined,
+                  position: "relative",
+                }}
+              >
+                <IconRadar size={12} /> {!isMobile && "动态"}
+                {activityFeed.length > 0 && !showActivityFeed && (
+                  <span style={{
+                    position: "absolute", top: -2, right: -2,
+                    width: 6, height: 6, borderRadius: "50%",
+                    background: "var(--ok)", animation: "orgDotPulse 1.5s ease-in-out infinite",
+                  }} />
+                )}
+              </button>
+              <button
+                className="btnSmall"
+                onClick={() => setInboxOpen(!inboxOpen)}
+                style={{
+                  fontWeight: inboxOpen ? 600 : 400,
+                  color: inboxOpen ? "var(--primary)" : undefined,
+                  background: inboxOpen ? "rgba(14,165,233,0.1)" : undefined,
+                }}
+              >
+                <IconInbox size={12} /> {!isMobile && "消息"}
+              </button>
+              {!isMobile && (
+                <button
+                  className="btnSmall"
+                  onClick={() => setShowRightPanel(!showRightPanel)}
+                  title={showRightPanel ? "收起设置面板" : "展开设置面板"}
+                  style={{
+                    fontWeight: showRightPanel ? 600 : 400,
+                    color: showRightPanel ? "var(--primary)" : undefined,
+                    background: showRightPanel ? "rgba(14,165,233,0.1)" : undefined,
+                  }}
+                >
+                  <IconLayoutGrid size={12} /> {selectedNode || selectedEdge ? "属性" : "设置"}
+                </button>
+              )}
+            </div>
+
+            {/* ── 快捷操作区 (仅 liveMode) ── */}
+            {liveMode && currentOrg && (
+              <>
+                <div className="org-tb-sep" />
+                <div className="org-tb-group" data-label="快捷">
+                  <button
+                    className="btnSmall"
+                    onClick={async () => {
+                      try {
+                        const resp = await safeFetch(`${apiBaseUrl}/api/orgs/${currentOrg.id}/heartbeat/trigger`, { method: "POST" });
+                        if (!resp.ok) console.error("heartbeat trigger failed:", resp.status);
+                      } catch (e) { console.error("heartbeat trigger error:", e); }
+                    }}
+                    title="手动触发心跳"
+                  >
+                    <IconHeartPulse size={12} /> {!isMobile && "心跳"}
+                  </button>
+                  <button
+                    className="btnSmall"
+                    onClick={async () => {
+                      try {
+                        const resp = await safeFetch(`${apiBaseUrl}/api/orgs/${currentOrg.id}/standup/trigger`, { method: "POST" });
+                        if (!resp.ok) console.error("standup trigger failed:", resp.status);
+                      } catch (e) { console.error("standup trigger error:", e); }
+                    }}
+                    title="手动触发晨会"
+                  >
+                    <IconSun size={12} /> {!isMobile && "晨会"}
+                  </button>
+                </div>
+              </>
+            )}
+
+            {/* ── 右端：统计 + 独立窗口 ── */}
+            {liveMode && orgStats && !isMobile && (
+              <div style={{
+                display: "flex", gap: 8, alignItems: "center",
+                fontSize: 10, color: "#6b7280", marginLeft: 6,
+                padding: "2px 8px", borderRadius: 4,
+                background: "var(--bg-secondary)",
+              }}>
+                <span title="组织健康度" style={{
+                  width: 7, height: 7, borderRadius: "50%",
+                  background: orgStats.health === "critical" ? "#ef4444" : orgStats.health === "warning" ? "#f59e0b" : orgStats.health === "attention" ? "#3b82f6" : "#22c55e",
+                  animation: orgStats.health !== "healthy" ? "orgDotPulse 1.5s ease-in-out infinite" : undefined,
+                }} />
+                <span title="完成任务数">✓ {orgStats.total_tasks_completed ?? 0}</span>
+                <span title="消息数">✉ {orgStats.total_messages_exchanged ?? 0}</span>
+                {orgStats.pending_messages > 0 && <span title="待处理" style={{ color: "#f59e0b" }}>▪ {orgStats.pending_messages}</span>}
+                {orgStats.anomalies?.length > 0 && <span title="告警数" style={{ color: "#ef4444", fontWeight: 600 }}>! {orgStats.anomalies.length}</span>}
+                {orgStats.uptime_s > 0 && (
+                  <span title="运行时间">
+                    {orgStats.uptime_s >= 3600
+                      ? `${Math.floor(orgStats.uptime_s / 3600)}h${Math.floor((orgStats.uptime_s % 3600) / 60)}m`
+                      : `${Math.floor(orgStats.uptime_s / 60)}m`}
+                  </span>
+                )}
+              </div>
             )}
             {canOpenPopupWindow() && (
             <button
@@ -1838,7 +1906,12 @@ export function OrgEditorView({
               onNodeClick={onNodeClick}
               onEdgeClick={onEdgeClick}
               onPaneClick={onPaneClick}
+              onNodeContextMenu={(e, node) => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, type: "node", id: node.id }); }}
+              onEdgeContextMenu={(e, edge) => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, type: "edge", id: edge.id }); }}
+              onPaneContextMenu={(e) => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, type: "pane", id: null }); }}
               nodeTypes={nodeTypes}
+              connectOnClick
+              connectionLineStyle={{ stroke: "var(--primary)", strokeWidth: 2, strokeDasharray: "6 3" }}
               fitView
               snapToGrid
               snapGrid={[20, 20]}
@@ -1873,6 +1946,50 @@ export function OrgEditorView({
                   </div>
                 </div>
               </Panel>
+              )}
+
+              {/* ── Context menu ── */}
+              {contextMenu && (
+                <div
+                  className="org-ctx-menu"
+                  style={{ position: "fixed", left: contextMenu.x, top: contextMenu.y, zIndex: 1000 }}
+                  onClick={() => setContextMenu(null)}
+                >
+                  {contextMenu.type === "node" && contextMenu.id && (<>
+                    {liveMode && selectedOrgId && (
+                      <button onClick={() => { setChatPanelNode(contextMenu.id); setChatPanelOpen(true); setContextMenu(null); }}>
+                        <span className="org-ctx-icon">💬</span>与该节点对话
+                      </button>
+                    )}
+                    <button onClick={() => ctxCopyNode(contextMenu.id!)}>
+                      <span className="org-ctx-icon">📋</span>复制节点
+                    </button>
+                    <button onClick={() => ctxDeleteNode(contextMenu.id!)}>
+                      <span className="org-ctx-icon" style={{ color: "#ef4444" }}>🗑</span>删除节点
+                    </button>
+                  </>)}
+                  {contextMenu.type === "edge" && contextMenu.id && (<>
+                    <button onClick={() => ctxReverseEdge(contextMenu.id!)}>
+                      <span className="org-ctx-icon">🔄</span>反转方向
+                    </button>
+                    <button onClick={() => ctxDeleteEdge(contextMenu.id!)}>
+                      <span className="org-ctx-icon" style={{ color: "#ef4444" }}>🗑</span>删除连线
+                    </button>
+                  </>)}
+                  {contextMenu.type === "pane" && (<>
+                    <button onClick={() => ctxAddNodeAt()}>
+                      <span className="org-ctx-icon">➕</span>添加节点
+                    </button>
+                    {clipboardNode && (
+                      <button onClick={() => ctxPasteNode()}>
+                        <span className="org-ctx-icon">📌</span>粘贴节点
+                      </button>
+                    )}
+                    <button onClick={() => { setNodes(computeTreeLayout(nodes, edges)); setContextMenu(null); }}>
+                      <span className="org-ctx-icon">🔀</span>自动布局
+                    </button>
+                  </>)}
+                </div>
               )}
             </ReactFlow>
           </div>
@@ -2081,6 +2198,38 @@ export function OrgEditorView({
               animation: org-slide-in 0.3s cubic-bezier(0.4,0,0.2,1);
             }
             @keyframes org-slide-in { from { transform: translateX(100%); } to { transform: translateX(0); } }
+
+            .org-ctx-menu {
+              min-width: 160px;
+              background: var(--card-bg, #1e293b);
+              border: 1px solid var(--line, rgba(51,65,85,0.6));
+              border-radius: 10px;
+              padding: 4px;
+              box-shadow: 0 8px 30px rgba(0,0,0,0.35), 0 0 1px rgba(255,255,255,0.1);
+              backdrop-filter: blur(12px);
+              animation: org-ctx-in 0.15s ease;
+            }
+            @keyframes org-ctx-in { from { opacity: 0; transform: scale(0.92); } to { opacity: 1; transform: scale(1); } }
+            .org-ctx-menu button {
+              display: flex; align-items: center; gap: 8px; width: 100%;
+              padding: 8px 12px; border: none; border-radius: 7px;
+              background: transparent; color: var(--text, #e2e8f0);
+              font-size: 13px; cursor: pointer; text-align: left;
+              transition: background 0.15s;
+            }
+            .org-ctx-menu button:hover { background: var(--hover-bg, rgba(99,102,241,0.15)); }
+            .org-ctx-icon { width: 18px; text-align: center; flex-shrink: 0; font-size: 14px; }
+
+            .org-tb-group {
+              display: flex; align-items: center; gap: 4px;
+              padding: 2px 4px; border-radius: 6px;
+              background: var(--bg-secondary, rgba(30,41,59,0.4));
+              position: relative;
+            }
+            .org-tb-sep {
+              width: 1px; height: 22px; background: var(--line);
+              flex-shrink: 0; margin: 0 2px;
+            }
           `}</style>
           </>
         ) : (
