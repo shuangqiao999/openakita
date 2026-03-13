@@ -243,7 +243,7 @@ export function Topbar({
             </Button>
           )
         ) : serviceRunning ? (
-          <Button variant="destructive" size="xs" onClick={onDisconnect} disabled={!!busy} title={t("topbar.disconnect")}>
+          <Button variant="secondary" size="xs" onClick={onDisconnect} disabled={!!busy} title={t("topbar.disconnect")}>
             <IconX size={13} />
             <span>{t("topbar.disconnect")}</span>
           </Button>
