@@ -1,3 +1,10 @@
+---
+name: publish-agent
+description: Publish a local Agent to the OpenAkita Platform Agent Store. Package and prepare a local Agent for publishing to the community hub.
+version: 1.0.0
+author: OpenAkita
+---
+
 # publish-agent
 
 Publish a local Agent to the OpenAkita Platform Agent Store.
