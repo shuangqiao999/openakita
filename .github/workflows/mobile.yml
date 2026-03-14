@@ -12,6 +12,7 @@ on:
       - 'v*'
 
 env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   RELEASE_TAG: ${{ (github.event_name == 'workflow_dispatch' && inputs.tag != '' && inputs.tag) || github.ref_name }}
 
 jobs:
@@ -24,9 +25,9 @@ jobs:
       run:
         working-directory: apps/setup-center
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
@@ -99,7 +100,7 @@ jobs:
           echo "Found APK: $APK"
 
       - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: android-apk
           path: apps/setup-center/${{ steps.find_apk.outputs.apk_path }}
@@ -123,9 +124,9 @@ jobs:
       run:
         working-directory: apps/setup-center
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
@@ -291,7 +292,7 @@ jobs:
 
       - name: Upload IPA artifact
         if: steps.ios_signing.outputs.has_signing == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ios-ipa
           path: ${{ runner.temp }}/ipa/*.ipa
