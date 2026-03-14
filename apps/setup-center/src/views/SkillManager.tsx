@@ -266,7 +266,7 @@ function SkillCard({
               title={t("skills.uninstall")}
               className="text-muted-foreground hover:text-destructive"
             >
-              {uninstalling ? <span className="text-[10px]">...</span> : <IconTrash size={14} />}
+              {uninstalling ? <Loader2 className="animate-spin" size={14} /> : <IconTrash size={14} />}
             </Button>
           )}
           <Label className="flex items-center gap-1.5 cursor-pointer text-xs font-normal ml-1">
@@ -298,7 +298,8 @@ function SkillCard({
             size="sm"
             className="mt-2.5"
           >
-            {saving ? t("skills.saving") : t("skills.saveConfig")}
+            {saving && <Loader2 className="animate-spin" />}
+            {t("skills.saveConfig")}
           </Button>
         </div>
       )}
@@ -477,7 +478,7 @@ function SkillDetailModal({
                   disabled={uninstalling || savingContent}
                   className="text-destructive border-destructive/30 hover:bg-destructive/10 hover:text-destructive"
                 >
-                  <IconTrash size={12} /> {uninstalling ? t("skills.uninstalling") : t("skills.uninstall")}
+                  {uninstalling ? <Loader2 className="animate-spin" size={12} /> : <IconTrash size={12} />} {t("skills.uninstall")}
                 </Button>
               )}
               <div style={{ flex: 1 }} />
@@ -487,7 +488,8 @@ function SkillDetailModal({
                     {t("skills.cancelEdit")}
                   </Button>
                   <Button size="sm" onClick={onSave} disabled={savingContent || editContent === content}>
-                    {savingContent ? t("skills.saving") : t("skills.saveAndReload")}
+                    {savingContent && <Loader2 className="animate-spin" />}
+                    {t("skills.saveAndReload")}
                   </Button>
                 </>
               ) : (
@@ -554,7 +556,8 @@ function MarketplaceSkillCard({
           onClick={onInstall}
           disabled={skill.installed || installing}
         >
-          {installing ? t("common.loading") : skill.installed ? t("skills.installed") : t("skills.install")}
+          {installing && <Loader2 className="animate-spin" />}
+          {skill.installed ? t("skills.installed") : t("skills.install")}
         </Button>
       </div>
     </div>
@@ -598,7 +601,7 @@ export function SkillManager({
   const [enabledDirty, setEnabledDirty] = useState(false);
   const [savingEnabled, setSavingEnabled] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [discarding, setDiscarding] = useState(false);
+  
   const [installedSearch, setInstalledSearch] = useState("");
   const [aiOrganizing, setAiOrganizing] = useState(false);
   const [localImporting, setLocalImporting] = useState(false);
@@ -811,6 +814,8 @@ export function SkillManager({
       setSavingEnabled(false);
     }
   }, [skills, enabledDraft, serviceRunning, apiBaseUrl, dataMode, currentWorkspaceId, loadSkills]);
+
+  const handleDiscard = useCallback(() => { loadSkills(); }, [loadSkills]);
 
   // ── AI 整理技能 ──
   const handleAiOrganize = useCallback(async () => {
@@ -1373,8 +1378,8 @@ export function SkillManager({
                     disabled={localImporting}
                     title={t("skills.importLocalTitle")}
                   >
-                    <IconFolderOpen size={14} />
-                    {localImporting ? t("skills.importLocalImporting") : t("skills.importLocal")}
+                    {localImporting ? <Loader2 className="animate-spin" size={14} /> : <IconFolderOpen size={14} />}
+                    {t("skills.importLocal")}
                   </Button>
                 )}
                 {serviceRunning && (
@@ -1384,8 +1389,8 @@ export function SkillManager({
                     disabled={aiOrganizing}
                     title={t("skills.aiOrganizeHint")}
                   >
-                    <IconZap size={14} />
-                    {aiOrganizing ? t("common.loading") : t("skills.aiOrganize")}
+                    {aiOrganizing ? <Loader2 className="animate-spin" size={14} /> : <IconZap size={14} />}
+                    {t("skills.aiOrganize")}
                   </Button>
                 )}
               </div>
@@ -1405,8 +1410,8 @@ export function SkillManager({
                     disabled={localImporting}
                     className="mt-3"
                   >
-                    <IconFolderOpen size={13} />
-                    {localImporting ? t("skills.importLocalImporting") : t("skills.importLocal")}
+                    {localImporting ? <Loader2 className="animate-spin" size={13} /> : <IconFolderOpen size={13} />}
+                    {t("skills.importLocal")}
                   </Button>
                 )}
               </div>
@@ -1437,49 +1442,7 @@ export function SkillManager({
         </>
       )}
 
-      {/* 保存启用/禁用状态 — fixed 定位浮动栏，不依赖父容器布局 */}
-      {enabledDirty && (
-        <div style={{
-          position: "fixed",
-          bottom: 24,
-          left: "50%",
-          transform: "translateX(-50%)",
-          width: "min(560px, 90vw)",
-          padding: "12px 20px",
-          background: "var(--panel)",
-          border: "1px solid var(--line)",
-          borderRadius: 14,
-          boxShadow: "0 4px 24px rgba(0,0,0,0.12)",
-          display: "flex",
-          alignItems: "center",
-          gap: 12,
-          zIndex: 1000,
-          boxSizing: "border-box",
-        }}>
-          <span style={{ fontSize: 13, opacity: 0.7, flex: 1, minWidth: 0 }}>
-            {t("skills.unsavedChanges")}
-          </span>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={async () => {
-              if (discarding || savingEnabled) return;
-              setDiscarding(true);
-              try { await loadSkills(); } finally { setDiscarding(false); }
-            }}
-            disabled={savingEnabled || discarding}
-          >
-            {discarding ? t("common.loading") : t("skills.discardChanges")}
-          </Button>
-          <Button
-            size="sm"
-            onClick={handleSaveEnabledState}
-            disabled={savingEnabled || discarding}
-          >
-            {savingEnabled ? t("skills.saving") : t("skills.saveEnabledState")}
-          </Button>
-        </div>
-      )}
+      
 
       {/* 技能市场 */}
       {tab === "marketplace" && (
@@ -1518,7 +1481,8 @@ export function SkillManager({
                 onClick={handleManualInstall}
                 disabled={!manualUrl.trim() || manualInstalling}
               >
-                {manualInstalling ? t("common.loading") : t("skills.install")}
+                {manualInstalling && <Loader2 className="animate-spin" />}
+                {t("skills.install")}
               </Button>
             </div>
             <div style={{ fontSize: 11, opacity: 0.4, marginTop: 6 }}>
@@ -1611,6 +1575,26 @@ export function SkillManager({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* 未保存更改提示栏 */}
+      {enabledDirty && (
+        <div className="fixed bottom-6 left-1/2 z-[9999] -translate-x-1/2">
+          <div className="flex items-center gap-3 rounded-xl border border-border bg-background px-5 py-3 shadow-lg"
+            style={{ width: "min(560px, 90vw)" }}
+          >
+            <span className="text-sm text-foreground/70 flex-1 min-w-0">
+              {t("skills.unsavedChanges")}
+            </span>
+            <Button variant="outline" size="sm" onClick={handleDiscard}>
+              {t("skills.discardChanges")}
+            </Button>
+            <Button size="sm" disabled={savingEnabled} onClick={handleSaveEnabledState}>
+              {savingEnabled && <Loader2 className="animate-spin mr-1" size={14} />}
+              {t("skills.saveEnabledState")}
+            </Button>
+          </div>
+        </div>
+      )}
     </>
   );
 }
