@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import {
   IconLink,
-  IconChevronDown, IconChevronRight, IconInfo,
+  IconChevronDown, IconChevronRight,
   DotGreen, DotGray, DotYellow,
 } from "../icons";
 import { safeFetch } from "../providers";
@@ -496,11 +496,8 @@ export function MCPView({ serviceRunning, apiBaseUrl = "http://127.0.0.1:18900" 
                   {/* Instructions */}
                   {s.has_instructions && instructions[s.name] && (
                     <details style={{ marginTop: 12 }}>
-                      <summary style={{ cursor: "pointer", fontSize: 13, fontWeight: 600, color: "var(--primary, #3b82f6)" }}>
-                        <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                          <IconInfo size={13} />
-                          {t("mcp.instructions")}
-                        </span>
+                      <summary style={{ cursor: "pointer", fontSize: 13, fontWeight: 600, color: "var(--primary, #3b82f6)", lineHeight: "20px" }}>
+                        {t("mcp.instructions")}
                       </summary>
                       <pre style={{
                         marginTop: 8, padding: 12, background: "var(--bg-subtle, #f8fafc)",

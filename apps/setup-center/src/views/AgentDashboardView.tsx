@@ -78,8 +78,16 @@ const _rgbCache = new Map<string, [number, number, number]>();
 function hexToRgb(hex: string): [number, number, number] {
   const cached = _rgbCache.get(hex);
   if (cached) return cached;
-  const h = hex.replace("#", "");
-  const rgb: [number, number, number] = [parseInt(h.substring(0, 2), 16), parseInt(h.substring(2, 4), 16), parseInt(h.substring(4, 6), 16)];
+  let h = hex.replace("#", "");
+  if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+  const r = parseInt(h.substring(0, 2), 16);
+  const g = parseInt(h.substring(2, 4), 16);
+  const b = parseInt(h.substring(4, 6), 16);
+  const rgb: [number, number, number] = [
+    Number.isFinite(r) ? r : 107,
+    Number.isFinite(g) ? g : 114,
+    Number.isFinite(b) ? b : 128,
+  ];
   _rgbCache.set(hex, rgb);
   return rgb;
 }
@@ -1183,7 +1191,7 @@ export function AgentDashboardView({
           )}
         </div>
         <button className="neural-hud-btn" onClick={fetchTopo} title={t("dashboard.refresh")}>
-          <IconRefresh size={13} />
+          <IconRefresh size={14} />
         </button>
       </div>
 
@@ -1375,13 +1383,15 @@ function NeuralStyles() {
       }
       [data-theme="light"] .neural-hud-stats,
       :root:not([data-theme="dark"]) .neural-hud-stats {
-        background: rgba(255,255,255,0.6);
+        background: rgba(255,255,255,0.75);
         color: rgba(0,0,0,0.7);
+        box-shadow: 0 1px 4px rgba(0,0,0,0.08), 0 0 0 1px rgba(0,0,0,0.06);
       }
       .neural-hud-sep { opacity: 0.3; }
-      .neural-hud-btn {
+      button.neural-hud-btn {
         pointer-events: all;
-        width: 30px; height: 30px;
+        width: 32px; height: 32px;
+        padding: 0;
         border-radius: 50%;
         border: none;
         background: rgba(0,0,0,0.3);
@@ -1393,16 +1403,19 @@ function NeuralStyles() {
         align-items: center;
         justify-content: center;
         transition: background 0.2s;
+        letter-spacing: normal;
       }
-      .neural-hud-btn:hover { background: rgba(0,0,0,0.5); }
-      [data-theme="light"] .neural-hud-btn,
-      :root:not([data-theme="dark"]) .neural-hud-btn {
-        background: rgba(255,255,255,0.6);
-        color: rgba(0,0,0,0.6);
+      button.neural-hud-btn:hover { background: rgba(0,0,0,0.5); }
+      [data-theme="light"] button.neural-hud-btn,
+      :root:not([data-theme="dark"]) button.neural-hud-btn {
+        background: rgba(255,255,255,0.75);
+        color: rgba(0,0,0,0.55);
+        box-shadow: 0 1px 4px rgba(0,0,0,0.08), 0 0 0 1px rgba(0,0,0,0.06);
       }
-      [data-theme="light"] .neural-hud-btn:hover,
-      :root:not([data-theme="dark"]) .neural-hud-btn:hover {
-        background: rgba(255,255,255,0.85);
+      [data-theme="light"] button.neural-hud-btn:hover,
+      :root:not([data-theme="dark"]) button.neural-hud-btn:hover {
+        background: rgba(255,255,255,0.92);
+        color: rgba(0,0,0,0.75);
       }
 
       /* Empty state */

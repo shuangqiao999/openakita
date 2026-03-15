@@ -488,7 +488,14 @@ async def get_topology(request: Request):
         sp = stored_profiles.get(p.id)
         if sp and getattr(sp, "hidden", False):
             hidden_profile_ids.add(p.id)
-        profile_map[p.id] = {"name": p.name, "icon": p.icon or "🤖", "color": p.color or "#6b7280"}
+        if sp:
+            profile_map[p.id] = {
+                "name": getattr(sp, "name", None) or p.name,
+                "icon": getattr(sp, "icon", None) or p.icon or "🤖",
+                "color": getattr(sp, "color", None) or p.color or "#6b7280",
+            }
+        else:
+            profile_map[p.id] = {"name": p.name, "icon": p.icon or "🤖", "color": p.color or "#6b7280"}
     for pid, p in stored_profiles.items():
         if getattr(p, "hidden", False):
             hidden_profile_ids.add(pid)
