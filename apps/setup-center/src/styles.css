@@ -4197,3 +4197,15 @@ button:not([data-slot]):disabled {
   .agentOrbitIcon { font-size: 13px; }
 }
 
+/* ── CAPTCHA popup: force above Radix Dialog (z-50, modal pointer-events:none) ── */
+body > div[id*="captcha" i],
+body > div[class*="captcha" i],
+body > div[id*="Captcha"],
+body > div[class*="Captcha"],
+body > div[class*="slidetounlock" i],
+body > div[id*="nc-" i],
+body > div[id*="sm-" i] {
+  z-index: 2147483647 !important;
+  pointer-events: auto !important;
+}
+
