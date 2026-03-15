@@ -17,6 +17,8 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ...agents.lock_manager import LockManager
+
 if TYPE_CHECKING:
     from ...core.agent import Agent
 
@@ -24,6 +26,28 @@ logger = logging.getLogger(__name__)
 
 _IMAGE_MAX_PIXELS = 1024 * 1024  # 缩放阈值（宽×高），大于此值会缩放
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+
+# Cross-agent browser lock — shared by all BrowserHandler instances in this
+# process.  In single-agent mode the lock is never contended (zero overhead).
+# In multi-agent mode it serialises page-mutating operations so agents do not
+# overwrite each other's page navigation.
+_browser_lock_manager = LockManager()
+_BROWSER_LOCK_TIMEOUT = 300.0  # seconds
+
+# Operations that mutate page state or are long-running.
+# Read-only helpers (get_content, screenshot, status, list_tabs, wait) are
+# intentionally excluded to avoid blocking while browser_task runs.
+_LOCKED_BROWSER_OPS = frozenset({
+    "browser_task",
+    "browser_navigate",
+    "browser_click",
+    "browser_type",
+    "browser_scroll",
+    "browser_execute_js",
+    "browser_new_tab",
+    "browser_switch_tab",
+    "browser_close",
+})
 
 
 class BrowserHandler:
@@ -77,7 +101,7 @@ class BrowserHandler:
             if match:
                 actual_tool_name = match.group(1)
 
-        result = await self._dispatch(actual_tool_name, params)
+        result = await self._dispatch_with_lock(actual_tool_name, params)
 
         if result.get("success"):
             output = f"✅ {result.get('result', 'OK')}"
@@ -94,6 +118,31 @@ class BrowserHandler:
                 return multimodal
 
         return output
+
+    async def _dispatch_with_lock(self, tool_name: str, params: dict[str, Any]) -> dict:
+        """Acquire the cross-agent browser lock for page-mutating operations."""
+        if tool_name not in _LOCKED_BROWSER_OPS:
+            return await self._dispatch(tool_name, params)
+
+        holder = getattr(self.agent, "name", "") or "agent"
+        try:
+            async with _browser_lock_manager.lock(
+                "tool:browser", holder=holder, timeout=_BROWSER_LOCK_TIMEOUT,
+            ):
+                return await self._dispatch(tool_name, params)
+        except TimeoutError:
+            current_holder = await _browser_lock_manager.get_holder("tool:browser")
+            logger.warning(
+                f"[Browser] Lock timeout for {tool_name} "
+                f"(holder={current_holder}, waiter={holder})"
+            )
+            return {
+                "success": False,
+                "error": (
+                    f"浏览器被其他 Agent 占用（{current_holder or '未知'}），"
+                    f"等待 {int(_BROWSER_LOCK_TIMEOUT)}秒后超时。请稍后重试。"
+                ),
+            }
 
     async def _dispatch(self, tool_name: str, params: dict[str, Any]) -> dict:
         """将工具调用路由到对应的组件。"""

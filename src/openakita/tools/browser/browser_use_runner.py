@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -126,6 +127,7 @@ class BrowserUseRunner:
             )
 
             _task_timeout = max_steps * 60
+            t_start = time.monotonic()
             try:
                 history = await asyncio.wait_for(agent.run(), timeout=_task_timeout)
             except TimeoutError:
@@ -143,6 +145,8 @@ class BrowserUseRunner:
                     "error": f"浏览器任务执行超时 ({_task_timeout}秒)。任务: {task}",
                 }
 
+            t_elapsed = time.monotonic() - t_start
+
             final_result = (
                 history.final_result() if hasattr(history, "final_result") else str(history)
             )
@@ -150,7 +154,6 @@ class BrowserUseRunner:
             if not cdp_url:
                 await bu_browser.close()
 
-            # 检测页面是否发生变化
             post_url, post_title = "", ""
             try:
                 page = self._manager.page
@@ -161,6 +164,31 @@ class BrowserUseRunner:
                 pass
 
             steps_taken = len(history.history) if hasattr(history, "history") else 0
+
+            # ------ Failure detection ------
+            # browser-use completes without raising, but final_result=None with
+            # steps attempted means every step's output validation failed.
+            task_failed = final_result is None and steps_taken > 0
+
+            if task_failed:
+                diagnosis = self._diagnose_failure(steps_taken, t_elapsed)
+                logger.error(
+                    f"[BrowserTask] Task failed ({steps_taken} steps, "
+                    f"{t_elapsed:.1f}s): {task}"
+                )
+                return {
+                    "success": False,
+                    "error": diagnosis,
+                    "result": {
+                        "task": task,
+                        "steps_taken": steps_taken,
+                        "elapsed_seconds": round(t_elapsed, 1),
+                        "page_url": post_url,
+                        "page_title": post_title,
+                    },
+                }
+
+            # ------ Success path ------
             logger.info(f"[BrowserTask] Task completed: {task}")
 
             result_data: dict[str, Any] = {
@@ -201,6 +229,28 @@ class BrowserUseRunner:
         except Exception as e:
             logger.error(f"[BrowserTask] Error: {e}")
             return {"success": False, "error": f"任务执行失败: {str(e)}"}
+
+    @staticmethod
+    def _diagnose_failure(steps_taken: int, elapsed: float) -> str:
+        """Produce a human-readable diagnosis for a fully-failed browser task."""
+        avg = elapsed / steps_taken if steps_taken else 0
+        if avg < 2.0:
+            return (
+                f"browser_task 失败：执行了 {steps_taken} 步，"
+                f"每步平均仅 {avg:.1f}秒（正常应 5-30 秒），"
+                "LLM 端点可能不可用（限流 / 认证失败 / 返回格式异常），"
+                "browser-use 无法获取有效的操作指令。\n"
+                "建议：1. 检查 LLM 端点状态（是否触发限流或 API Key 失效）  "
+                "2. 等待限流恢复后重试  "
+                "3. 切换到其他可用端点"
+            )
+        return (
+            f"browser_task 失败：执行了 {steps_taken} 步（共 {elapsed:.0f}秒）"
+            "但未能完成任务。\n"
+            "建议：1. 使用 browser_screenshot + view_image 查看当前页面  "
+            "2. 将任务拆解为更小的步骤  "
+            "3. 改用 browser_navigate + browser_click 等工具手动操作"
+        )
 
     def _resolve_llm(self) -> Any | None:
         """三级回退获取 LLM 实例：注入配置 → 环境变量 → ChatBrowserUse。"""
