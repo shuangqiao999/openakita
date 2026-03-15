@@ -69,33 +69,6 @@ export type BundledPythonInstallResult = {
   tag: string;
 };
 
-export type PythonContractStatus = "pass" | "warn" | "fail";
-export type PythonSummaryStatus = "healthy" | "repairable" | "broken";
-
-export type PythonContractResult = {
-  id: string;
-  title: string;
-  status: PythonContractStatus;
-  code: string;
-  evidence: string[];
-  autoFix: boolean;
-  fixHint?: string | null;
-};
-
-export type PythonEnvironmentSnapshot = {
-  platform: string;
-  bundledPythonPath?: string | null;
-  openakitaVersion?: string | null;
-};
-
-export type PythonDiagnostic = {
-  summary: PythonSummaryStatus;
-  contracts: PythonContractResult[];
-  environment: PythonEnvironmentSnapshot;
-  traceId: string;
-  generatedAt: string;
-};
-
 export type InstallSource = "pypi" | "github" | "local";
 
 export type EnvMap = Record<string, string>;

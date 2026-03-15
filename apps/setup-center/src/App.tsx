@@ -24,7 +24,7 @@ import type {
   EndpointSummary as EndpointSummaryType,
   PlatformInfo, WorkspaceSummary, ProviderInfo, ListedModel,
   EndpointDraft, PythonCandidate, BundledPythonInstallResult, InstallSource,
-  EnvMap, StepId, Step, PythonDiagnostic,
+  EnvMap, StepId, Step,
 } from "./types";
 import {
   IconRefresh, IconCheck, IconCheckCircle, IconX, IconXCircle,
@@ -464,12 +464,6 @@ export function App() {
   const [pypiVersions, setPypiVersions] = useState<string[]>([]);
   const [pypiVersionsLoading, setPypiVersionsLoading] = useState(false);
   const [selectedPypiVersion, setSelectedPypiVersion] = useState<string>(""); // "" = 推荐同版本
-  // python diagnostics / repair
-  const [pyDiag, setPyDiag] = useState<PythonDiagnostic | null>(null);
-  const [repairStage, setRepairStage] = useState<string>("");
-  const [repairPercent, setRepairPercent] = useState<number>(0);
-  const [repairDetail, setRepairDetail] = useState<string>("");
-
   // advanced panel state
   const [advSysInfo, setAdvSysInfo] = useState<Record<string, string> | null>(null);
   const [advLoading, setAdvLoading] = useState<Record<string, boolean>>({});
@@ -1239,68 +1233,6 @@ export function App() {
     } finally {
       dismissLoading(_busyId);
     }
-  }
-
-  async function doDiagnosePython() {
-    const _busyId = notifyLoading(t("config.pyDiagnoseRunning"));
-    setPyDiag(null);
-    try {
-      const d = await invoke<NonNullable<typeof pyDiag>>("diagnose_python_env", { venvDir });
-      setPyDiag(d);
-    } catch (e) {
-      notifyError(String(e));
-    } finally {
-      dismissLoading(_busyId);
-    }
-  }
-
-  async function executeRepairPython(forceRebuild: boolean) {
-    setRepairStage("");
-    setRepairPercent(0);
-    setRepairDetail("");
-    const _busyId = notifyLoading(t("config.pyRepairRunning"));
-
-    const unlisten = await listen("python_repair_event", (ev) => {
-      const p = ev.payload as any;
-      if (!p || typeof p !== "object") return;
-      if (p.stage) setRepairStage(String(p.stage));
-      if (typeof p.percent === "number") setRepairPercent(p.percent);
-      if (p.detail) setRepairDetail(String(p.detail));
-    });
-
-    try {
-      const d = await invoke<NonNullable<typeof pyDiag>>("repair_python_env", { venvDir, forceRebuild });
-      setPyDiag(d);
-      if (d && d.summary === "healthy") {
-        notifySuccess(t("config.pyRepairDone"));
-        setVenvReady(true);
-        const openakitaOk = d.contracts.some((c) => c.id === "C3_OPENAKITA_IN_VENV" && c.status === "pass");
-        setOpenakitaInstalled(openakitaOk);
-        await persistPythonEnvConfig(venvDir);
-        try {
-          const cands = await invoke<PythonCandidate[]>("detect_python");
-          setPythonCandidates(cands);
-          const firstUsable = cands.findIndex((c: PythonCandidate) => c.isUsable);
-          setSelectedPythonIdx(firstUsable);
-        } catch { /* best-effort */ }
-      } else {
-        const failed = d?.contracts?.filter((c) => c.status !== "pass").map((c) => `${c.code}`).join("; ");
-        notifyError(t("config.pyRepairFail") + (failed ? `: ${failed}` : ""));
-      }
-    } catch (e) {
-      notifyError(t("config.pyRepairFail") + `: ${String(e)}`);
-    } finally {
-      unlisten();
-      dismissLoading(_busyId);
-    }
-  }
-
-  function doRepairPython() {
-    if (pyDiag?.summary === "healthy") {
-      askConfirm(t("adv.repairHealthyConfirm"), () => executeRepairPython(true));
-      return;
-    }
-    executeRepairPython(false);
   }
 
   async function doFetchPypiVersions() {
@@ -5523,56 +5455,6 @@ export function App() {
 
   function renderAdvanced() {
 
-    async function runDiagnose() {
-      if (!venvDir) return;
-      const _b = notifyLoading(t("adv.diagnosing"));
-      try {
-        const d = await invoke<NonNullable<typeof pyDiag>>("diagnose_python_env", { venvDir });
-        setPyDiag(d);
-      } catch (e) { notifyError(String(e)); } finally { dismissLoading(_b); }
-    }
-
-    async function runRepair(forceRebuild = false) {
-      if (!venvDir) return;
-      const _b = notifyLoading(t("adv.repairing"));
-      setRepairStage(""); setRepairPercent(0); setRepairDetail("");
-      const unlisten = await listen("python_repair_event", (ev) => {
-        const p = ev.payload as any;
-        if (!p || typeof p !== "object") return;
-        if (p.stage) setRepairStage(String(p.stage));
-        if (typeof p.percent === "number") setRepairPercent(p.percent);
-        if (p.detail) setRepairDetail(String(p.detail));
-      });
-      try {
-        const d = await invoke<NonNullable<typeof pyDiag>>("repair_python_env", { venvDir, forceRebuild });
-        setPyDiag(d);
-        if (d && d.summary === "healthy") notifySuccess(t("adv.repairDone"));
-        else if (d) notifyError(t("adv.repairPartial"));
-      } catch (e) { notifyError(String(e)); } finally { unlisten(); dismissLoading(_b); setRepairStage(""); }
-    }
-
-    async function runExportDiagReport() {
-      if (!venvDir) return;
-      const _b = notifyLoading(t("adv.diagnosing"));
-      try {
-        const reportPath = await invoke<string>("export_python_diagnostic_report", { venvDir });
-        notifySuccess(t("adv.diagReportExported", { path: reportPath }));
-      } catch (e) {
-        notifyError(String(e));
-      } finally {
-        dismissLoading(_b);
-      }
-    }
-
-    async function runReset(removeVenv: boolean, removeEmbedded: boolean) {
-      const _b = notifyLoading(t("adv.resetting"));
-      try {
-        await invoke<string>("remove_openakita_runtime", { removeVenv: removeVenv, removeEmbeddedPython: removeEmbedded });
-        setPyDiag(null);
-        notifySuccess(t("adv.resetDone"));
-      } catch (e) { notifyError(String(e)); } finally { dismissLoading(_b); }
-    }
-
     async function fetchSystemInfo() {
       const url = shouldUseHttpApi() ? httpApiBase() : null;
       if (!url) { notifyError(t("adv.needService")); return; }
@@ -5815,20 +5697,6 @@ export function App() {
       </div>
     );
 
-    const diagItem = (label: string, status: "pass" | "warn" | "fail" | undefined, detail?: string | null) => (
-      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", fontSize: 13 }}>
-        <span style={{
-          width: 8,
-          height: 8,
-          borderRadius: "50%",
-          flexShrink: 0,
-          background: status === "pass" ? "#10b981" : status === "warn" ? "#f59e0b" : "#ef4444",
-        }} />
-        <span style={{ fontWeight: 500, minWidth: 140 }}>{label}</span>
-        <span style={{ color: "var(--muted)", fontSize: 12, wordBreak: "break-all" }}>{detail || "—"}</span>
-      </div>
-    );
-
     return (
       <>
         {/* ── 系统配置（桌面通知 / 会话 / 日志） ── */}
@@ -5871,55 +5739,6 @@ export function App() {
               {FB({ k: "LOG_TO_FILE", label: t("config.agentLogFile") })}
             </div>
           </Section>
-        </div>
-
-        {/* ── Python 环境诊断 (desktop only) ── */}
-        <div className="card" style={IS_WEB ? { display: "none", marginTop: 12 } : { marginTop: 12 }}>
-          {sectionHeader("python", t("adv.pythonTitle"))}
-            <div style={{ paddingLeft: 22 }}>
-              {pyDiag ? (
-                <>
-                  <div className="cardHint" style={{ marginBottom: 6 }}>
-                    {t("adv.diagSummary")}:{" "}
-                    <b>{{ healthy: t("adv.summaryHealthy"), repairable: t("adv.summaryRepairable"), broken: t("adv.summaryBroken") }[pyDiag.summary]}</b>
-                  </div>
-                  {pyDiag.contracts.map((c) => (
-                    <div key={c.id}>
-                      {diagItem(c.title, c.status, `${c.code}${c.evidence?.[0] ? ` — ${c.evidence[0]}` : ""}`)}
-                    </div>
-                  ))}
-                  {pyDiag.contracts.some((c) => c.status !== "pass") && (
-                    <div style={{ marginTop: 8, padding: "8px 12px", background: "rgba(245,158,11,0.12)", border: "1px solid rgba(245,158,11,0.3)", borderRadius: 8, fontSize: 12, color: "var(--warning)" }}>
-                      {pyDiag.contracts.filter((c) => c.status !== "pass").map((c) => (
-                        <div key={c.id} style={{ padding: "2px 0" }}>
-                          ⚠ {c.fixHint || c.code}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </>
-              ) : advLoading.python ? (
-                <div className="cardHint" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <span className="spinner" style={{ width: 14, height: 14 }} />
-                  {t("adv.diagnosing")}
-                </div>
-              ) : (
-                <div className="cardHint">{t("adv.pyNoDiag")}</div>
-              )}
-              {repairStage && (
-                <div style={{ marginTop: 10, padding: "8px 12px", background: "rgba(37,99,235,0.1)", borderRadius: 8, fontSize: 12 }}>
-                  <div style={{ fontWeight: 600, marginBottom: 4 }}>{repairStage}</div>
-                  <div style={{ width: "100%", height: 6, background: "var(--line)", borderRadius: 3, overflow: "hidden" }}>
-                    <div style={{ width: `${repairPercent}%`, height: "100%", background: "var(--brand, #2563eb)", borderRadius: 3, transition: "width 0.3s" }} />
-                  </div>
-                  {repairDetail && <div style={{ marginTop: 4, color: "var(--muted)" }}>{repairDetail}</div>}
-                </div>
-              )}
-              <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
-                <button className="btnSmall" onClick={runDiagnose} disabled={!!busy}>{t("adv.diagnose")}</button>
-                <button className="btnSmall" onClick={runExportDiagReport} disabled={!!busy}>{t("adv.exportDiagReport")}</button>
-              </div>
-            </div>
         </div>
 
         {/* ── 系统信息 ── */}
