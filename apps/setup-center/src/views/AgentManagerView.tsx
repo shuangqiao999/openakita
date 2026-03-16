@@ -526,7 +526,7 @@ export function AgentManagerView({
             transition: "all 0.15s",
           }}
         >
-          {t("agentManager.categoryAll")}
+          {t("agentManager.categoryAll")} ({visibleProfiles.length})
         </button>
         {categories.map((cat) => (
           <button
@@ -541,7 +541,7 @@ export function AgentManagerView({
               display: "inline-flex", alignItems: "center", gap: 4,
             }}
           >
-            {cat.label}
+            {cat.label} ({cat.agent_count ?? 0})
             {!cat.builtin && (
               <span
                 onClick={async (e) => {
@@ -622,6 +622,27 @@ export function AgentManagerView({
           </button>
         )}
       </div>
+
+      {/* Filter indicator */}
+      {activeCategory && (
+        <div style={{
+          display: "flex", alignItems: "center", gap: 8, marginBottom: 12,
+          padding: "6px 12px", borderRadius: 8,
+          background: "var(--panel)", border: "1px solid var(--line)",
+          fontSize: 12, opacity: 0.8,
+        }}>
+          <span>{t("agentManager.filterHint", { shown: filteredProfiles.length, total: visibleProfiles.length })}</span>
+          <button
+            onClick={() => setActiveCategory("")}
+            style={{
+              padding: "2px 8px", borderRadius: 12, border: "1px solid var(--line)",
+              background: "transparent", cursor: "pointer", fontSize: 11,
+            }}
+          >
+            {t("agentManager.showAll")}
+          </button>
+        </div>
+      )}
 
       {/* Agent Grid */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 14 }}>

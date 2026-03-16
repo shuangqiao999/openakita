@@ -1129,6 +1129,8 @@
     "categoryProductivity": "生活效率",
     "categoryDevops": "开发运维",
     "addCategory": "添加分类",
+    "filterHint": "当前分类下 {{shown}} 个 Agent（共 {{total}} 个）",
+    "showAll": "显示全部",
     "hide": "隐藏",
     "restore": "恢复",
     "hiddenSection": "已隐藏的 Agent",

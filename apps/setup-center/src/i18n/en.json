@@ -1129,6 +1129,8 @@
     "categoryProductivity": "Productivity",
     "categoryDevops": "DevOps",
     "addCategory": "Add Category",
+    "filterHint": "{{shown}} agent(s) in this category ({{total}} total)",
+    "showAll": "Show All",
     "hide": "Hide",
     "restore": "Restore",
     "hiddenSection": "Hidden Agents",

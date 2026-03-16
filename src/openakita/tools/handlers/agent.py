@@ -431,7 +431,7 @@ class AgentToolHandler:
             id=profile_id,
             name=name,
             description=description,
-            type=AgentType.DYNAMIC,
+            type=AgentType.DYNAMIC if is_ephemeral else AgentType.CUSTOM,
             skills=skills,
             skills_mode=SkillsMode.INCLUSIVE if skills else SkillsMode.ALL,
             custom_prompt=custom_prompt,

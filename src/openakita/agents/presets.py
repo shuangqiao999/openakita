@@ -663,57 +663,9 @@ def get_preset_by_id(profile_id: str) -> AgentProfile | None:
     return next((p for p in SYSTEM_PRESETS if p.id == profile_id), None)
 
 
-def cleanup_stale_dynamic_agents(agents_dir: str | Path, max_age_days: int = 7) -> int:
-    """
-    清理过期的 DYNAMIC 类型 Agent Profile 文件。
-
-    启动时调用，删除 created_at 超过 max_age_days 的 dynamic_* profile 文件。
-    不清理 SYSTEM 和 CUSTOM 类型。
-
-    Returns:
-        清理的 Profile 数量
-    """
-    import json
-    from datetime import datetime, timezone
-    from pathlib import Path as _Path
-
-    profiles_dir = _Path(agents_dir) / "profiles"
-    if not profiles_dir.exists():
-        return 0
-
-    cutoff = datetime.now(timezone.utc).timestamp() - (max_age_days * 86400)
-    cleaned = 0
-
-    for fp in profiles_dir.glob("*.json"):
-        try:
-            data = json.loads(fp.read_text(encoding="utf-8"))
-            if data.get("type") != "dynamic":
-                continue
-
-            created_at = data.get("created_at", "")
-            if not created_at:
-                continue
-
-            created_ts = datetime.fromisoformat(created_at).timestamp()
-            if created_ts < cutoff:
-                fp.unlink()
-                cleaned += 1
-                logger.info(
-                    f"Cleaned up stale dynamic agent: {fp.stem} "
-                    f"(created_at={created_at})"
-                )
-        except Exception as e:
-            logger.warning(f"Failed to check/clean dynamic agent {fp.name}: {e}")
-
-    if cleaned:
-        logger.info(f"Cleaned up {cleaned} stale dynamic agent profile(s)")
-    return cleaned
-
-
 def ensure_presets_on_mode_enable(agents_dir: str | Path) -> None:
     """
     多Agent模式首次开启时调用，确保预置 Profile 已部署。
-    同时清理过期的 DYNAMIC Agent。
 
     Args:
         agents_dir: data/agents/ 目录路径
@@ -726,10 +678,4 @@ def ensure_presets_on_mode_enable(agents_dir: str | Path) -> None:
     if deployed:
         logger.info(
             f"Multi-agent mode enabled: deployed {deployed} preset(s) to {agents_dir}"
-        )
-
-    cleaned = cleanup_stale_dynamic_agents(agents_dir)
-    if cleaned:
-        logger.info(
-            f"Multi-agent mode startup: cleaned {cleaned} stale dynamic profile(s)"
         )
