@@ -5,7 +5,11 @@ File System 工具定义
 - run_shell: 执行 Shell 命令
 - write_file: 写入文件
 - read_file: 读取文件
+- edit_file: 精确字符串替换编辑
 - list_directory: 列出目录
+- grep: 内容搜索
+- glob: 文件名模式搜索
+- delete_file: 删除文件
 """
 
 FILESYSTEM_TOOLS = [
@@ -105,9 +109,51 @@ FILESYSTEM_TOOLS = [
         },
     },
     {
+        "name": "edit_file",
+        "category": "File System",
+        "description": "Edit file by exact string replacement. Finds old_string in the file and replaces it with new_string. The old_string must uniquely match one location unless replace_all=true. ALWAYS prefer this over write_file when modifying existing files — it's safer and more token-efficient.",
+        "detail": """精确字符串替换式编辑文件。
+
+**适用场景**:
+- 修改现有文件中的代码或文本
+- 替换配置值
+- 批量重命名变量（使用 replace_all=true）
+
+**使用方法**:
+1. 先用 read_file 查看文件内容
+2. 提供要替换的原文本 (old_string) 和新文本 (new_string)
+3. old_string 必须精确匹配文件中的内容（包括缩进和空格）
+4. 如果 old_string 匹配到多处且未设 replace_all=true，会报错并提示提供更多上下文
+
+**注意事项**:
+- old_string 和 new_string 不能相同
+- 自动兼容 Windows CRLF 和 Unix LF 换行符
+- 修改前请确保已 read_file 确认文件当前内容""",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "文件路径"},
+                "old_string": {
+                    "type": "string",
+                    "description": "要替换的原文本（须精确匹配文件中的内容）",
+                },
+                "new_string": {
+                    "type": "string",
+                    "description": "替换后的新文本",
+                },
+                "replace_all": {
+                    "type": "boolean",
+                    "description": "是否替换所有匹配项，默认 false（仅替换第一处，要求唯一匹配）",
+                    "default": False,
+                },
+            },
+            "required": ["path", "old_string", "new_string"],
+        },
+    },
+    {
         "name": "list_directory",
         "category": "File System",
-        "description": "List directory contents including files and subdirectories. When you need to: (1) Explore directory structure, (2) Find specific files, (3) Check what exists in a folder. Default returns up to 200 items.",
+        "description": "List directory contents including files and subdirectories. When you need to: (1) Explore directory structure, (2) Find specific files, (3) Check what exists in a folder. Default returns up to 200 items. Supports optional pattern filtering and recursive listing.",
         "detail": """列出目录内容，包括文件和子目录。
 
 **适用场景**:
@@ -122,15 +168,148 @@ FILESYSTEM_TOOLS = [
 
 **注意事项**:
 - 默认最多返回 200 条目
-- 超出限制时会提示，可用 run_shell 获取完整列表""",
+- 超出限制时会提示，可用 run_shell 获取完整列表
+- 使用 pattern 过滤特定类型文件（如 "*.py"）
+- 使用 recursive=true 递归列出子目录""",
         "input_schema": {
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "目录路径"},
+                "pattern": {
+                    "type": "string",
+                    "description": "文件名过滤模式（如 '*.py'、'*.ts'），默认 '*'",
+                    "default": "*",
+                },
+                "recursive": {
+                    "type": "boolean",
+                    "description": "是否递归列出子目录内容，默认 false",
+                    "default": False,
+                },
                 "max_items": {
                     "type": "integer",
                     "description": "最大返回条目数，默认 200",
                     "default": 200,
+                },
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "grep",
+        "category": "File System",
+        "description": "Search file contents using regex pattern. Cross-platform (no external tools needed). When you need to: (1) Find code patterns, (2) Search for string usage across files, (3) Locate function/class definitions. Returns matching lines with file paths and line numbers.",
+        "detail": """跨平台内容搜索工具（纯 Python 实现，无需 ripgrep/grep/findstr）。
+
+**适用场景**:
+- 在代码库中搜索特定模式
+- 查找函数/类定义
+- 定位字符串用法
+- 搜索 TODO/FIXME 等标记
+
+**参数说明**:
+- pattern: 正则表达式（如 "def test_"、"class.*Error"、"TODO"）
+- path: 搜索目录，默认当前目录
+- include: 文件名 glob 过滤（如 "*.py" 只搜 Python 文件）
+- context_lines: 显示匹配行前后的上下文行数
+- max_results: 最大返回匹配数，默认 50
+- case_insensitive: 是否忽略大小写
+
+**注意事项**:
+- 自动跳过 .git、node_modules、__pycache__、.venv 等目录
+- 自动跳过二进制文件
+- 返回格式: file:line_number:content""",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "正则表达式搜索模式",
+                },
+                "path": {
+                    "type": "string",
+                    "description": "搜索目录，默认当前工作目录",
+                    "default": ".",
+                },
+                "include": {
+                    "type": "string",
+                    "description": "文件名 glob 过滤（如 '*.py'、'*.ts'），不填则搜索所有文本文件",
+                },
+                "context_lines": {
+                    "type": "integer",
+                    "description": "匹配行前后的上下文行数，默认 0",
+                    "default": 0,
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "最大返回匹配数，默认 50",
+                    "default": 50,
+                },
+                "case_insensitive": {
+                    "type": "boolean",
+                    "description": "是否忽略大小写，默认 false",
+                    "default": False,
+                },
+            },
+            "required": ["pattern"],
+        },
+    },
+    {
+        "name": "glob",
+        "category": "File System",
+        "description": "Find files by glob pattern recursively. When you need to: (1) Find files by name pattern (e.g. '*.py'), (2) Locate specific files across directories, (3) Check file existence by pattern. Results sorted by modification time (newest first).",
+        "detail": """按文件名模式递归搜索文件。
+
+**适用场景**:
+- 按扩展名查找文件（如 "*.py"、"*.ts"）
+- 按名称模式查找（如 "test_*.py"、"*config*"）
+- 跨目录定位文件
+
+**模式说明**:
+- "*.py" → 自动变为 "**/*.py"（递归搜索）
+- "**/*.test.ts" → 递归搜索所有 .test.ts 文件
+- "*config*" → 自动变为 "**/*config*"
+
+**注意事项**:
+- 自动跳过 .git、node_modules、__pycache__ 等目录
+- 结果按修改时间降序排序（最新的在前）
+- 返回相对路径列表""",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Glob 模式（如 '*.py'、'**/test_*.ts'、'*config*'）",
+                },
+                "path": {
+                    "type": "string",
+                    "description": "搜索根目录，默认当前工作目录",
+                    "default": ".",
+                },
+            },
+            "required": ["pattern"],
+        },
+    },
+    {
+        "name": "delete_file",
+        "category": "File System",
+        "description": "Delete a file or empty directory. When you need to: (1) Remove generated files, (2) Clean up temporary files, (3) Delete empty directories. Non-empty directories are rejected for safety — use run_shell for recursive deletion.",
+        "detail": """删除文件或空目录。
+
+**适用场景**:
+- 删除生成的文件
+- 清理临时文件
+- 删除空目录
+
+**注意事项**:
+- 仅删除文件或空目录
+- 非空目录会被拒绝，需使用 run_shell 执行 rm -rf 等命令
+- 路径受安全策略保护""",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "要删除的文件或空目录路径",
                 },
             },
             "required": ["path"],

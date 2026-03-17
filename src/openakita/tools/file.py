@@ -3,6 +3,7 @@ File 工具 - 文件操作
 """
 
 import logging
+import re
 import shutil
 from pathlib import Path
 
@@ -10,6 +11,13 @@ import aiofiles
 import aiofiles.os
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_IGNORE_DIRS = {
+    ".git", "node_modules", "__pycache__", ".venv", "venv",
+    ".mypy_cache", ".pytest_cache", ".ruff_cache", "dist",
+    "build", ".next", ".nuxt", "coverage", ".tox", ".eggs",
+    ".cache", ".parcel-cache", "egg-info",
+}
 
 
 class FileTool:
@@ -143,6 +151,172 @@ class FileTool:
 
         async with aiofiles.open(file_path, mode="a", encoding=encoding) as f:
             await f.write(content)
+
+    async def _read_preserving_newlines(self, path: str) -> str:
+        """读取文件内容，保留原始换行符（不做 CRLF→LF 转换）。
+
+        普通 ``read()`` 使用 text mode 会将 ``\\r\\n`` 转为 ``\\n``，
+        导致写回时丢失原有换行风格。本方法使用 ``newline=''``
+        保留原始字节级换行符。
+        """
+        file_path = self._resolve_path(path)
+        suffix = file_path.suffix.lower()
+        if suffix in self.BINARY_EXTENSIONS:
+            raise ValueError(f"Cannot edit binary file: {file_path.name}")
+        try:
+            async with aiofiles.open(
+                file_path, encoding="utf-8", newline=""
+            ) as f:
+                return await f.read()
+        except UnicodeDecodeError as e:
+            raise ValueError(
+                f"Cannot decode file (non-UTF-8): {file_path.name}"
+            ) from e
+
+    async def _write_preserving_newlines(self, path: str, content: str) -> None:
+        """写入文件内容，保留原始换行符（不做 LF→CRLF 转换）。"""
+        file_path = self._resolve_path(path)
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        async with aiofiles.open(
+            file_path, mode="w", encoding="utf-8", newline=""
+        ) as f:
+            await f.write(content)
+
+    async def edit(
+        self,
+        path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
+    ) -> dict:
+        """精确字符串替换式编辑（兼容 CRLF/LF）。
+
+        使用 ``newline=''`` 读写，保留文件原始换行风格。LLM 产生的
+        old_string 换行符始终是 ``\\n``，但 Windows 文件可能使用
+        ``\\r\\n``。本方法先尝试原始匹配，失败后自动将 old_string 中的
+        ``\\n`` 适配为 ``\\r\\n`` 重试，写回时保留文件原有换行风格。
+
+        Returns:
+            dict with keys: replaced (int), path (str)
+        Raises:
+            FileNotFoundError, ValueError
+        """
+        file_path = self._resolve_path(path)
+        if not file_path.is_file():
+            raise FileNotFoundError(f"File not found: {file_path}")
+
+        raw = await self._read_preserving_newlines(path)
+
+        # Phase 1: 直接匹配（文件本身就是 LF，或 old_string 已包含 CRLF）
+        count = raw.count(old_string)
+
+        if count == 0:
+            # Phase 2: LLM 给的 \n，文件是 \r\n → 适配后重试
+            if "\r\n" in raw and "\n" in old_string:
+                adapted_old = old_string.replace("\n", "\r\n")
+                count = raw.count(adapted_old)
+                if count == 0:
+                    raise ValueError(
+                        "old_string not found in file (tried both LF and CRLF matching)"
+                    )
+                if count > 1 and not replace_all:
+                    raise ValueError(
+                        f"old_string found {count} times in file, "
+                        "set replace_all=true or provide more surrounding context"
+                    )
+                adapted_new = new_string.replace("\n", "\r\n")
+                limit = -1 if replace_all else 1
+                result = raw.replace(adapted_old, adapted_new, limit)
+            else:
+                raise ValueError("old_string not found in file")
+        else:
+            if count > 1 and not replace_all:
+                raise ValueError(
+                    f"old_string found {count} times in file, "
+                    "set replace_all=true or provide more surrounding context"
+                )
+            limit = -1 if replace_all else 1
+            result = raw.replace(old_string, new_string, limit)
+
+        replaced = count if replace_all else 1
+        await self._write_preserving_newlines(path, result)
+        return {"replaced": replaced, "path": str(file_path)}
+
+    async def grep(
+        self,
+        pattern: str,
+        path: str = ".",
+        *,
+        include: str | None = None,
+        context_lines: int = 0,
+        max_results: int = 50,
+        case_insensitive: bool = False,
+    ) -> list[dict]:
+        """纯 Python 内容搜索（跨平台，无需外部工具）。
+
+        Returns:
+            list of dicts: {file, line, text, context_before, context_after}
+        """
+        flags = re.IGNORECASE if case_insensitive else 0
+        try:
+            regex = re.compile(pattern, flags)
+        except re.error as e:
+            raise ValueError(f"Invalid regex pattern: {e}") from e
+
+        dir_path = self._resolve_path(path)
+        if not dir_path.is_dir():
+            raise FileNotFoundError(f"Directory not found: {dir_path}")
+
+        file_glob = include or "*"
+        results: list[dict] = []
+
+        for file_path in dir_path.rglob(file_glob):
+            if len(results) >= max_results:
+                break
+
+            if not file_path.is_file():
+                continue
+
+            # 跳过忽略目录
+            parts = file_path.relative_to(dir_path).parts
+            if any(p in DEFAULT_IGNORE_DIRS for p in parts):
+                continue
+            # 跳过 .xxx 隐藏目录（除 .github 等常用目录）
+            if any(
+                p.startswith(".") and p not in (".github", ".vscode", ".cursor")
+                for p in parts[:-1]
+            ):
+                continue
+
+            # 跳过二进制文件
+            if file_path.suffix.lower() in self.BINARY_EXTENSIONS:
+                continue
+
+            try:
+                text = file_path.read_text(encoding="utf-8", errors="replace")
+            except (OSError, PermissionError):
+                continue
+
+            lines = text.splitlines()
+            rel = str(file_path.relative_to(dir_path))
+
+            for i, line in enumerate(lines):
+                if len(results) >= max_results:
+                    break
+                if regex.search(line):
+                    entry: dict = {
+                        "file": rel,
+                        "line": i + 1,
+                        "text": line,
+                    }
+                    if context_lines > 0:
+                        start = max(0, i - context_lines)
+                        end = min(len(lines), i + context_lines + 1)
+                        entry["context_before"] = lines[start:i]
+                        entry["context_after"] = lines[i + 1:end]
+                    results.append(entry)
+
+        return results
 
     async def delete(self, path: str) -> bool:
         """

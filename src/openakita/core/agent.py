@@ -129,8 +129,8 @@ logger = logging.getLogger(__name__)
 
 # 小上下文窗口模型的核心工具白名单（仅保留最基本的执行能力）
 SMALL_CTX_CORE_TOOLS = {
-    "run_shell", "read_file", "write_file", "list_directory",
-    "ask_user", "get_tool_info",
+    "run_shell", "read_file", "write_file", "edit_file", "list_directory",
+    "grep", "ask_user", "get_tool_info",
 }
 # 中等上下文窗口模型额外包含的工具
 MEDIUM_CTX_EXTRA_TOOLS = {
@@ -139,6 +139,7 @@ MEDIUM_CTX_EXTRA_TOOLS = {
     "web_search", "browser_navigate",
     "call_mcp_tool", "list_mcp_tools",
     "enable_thinking",
+    "glob", "delete_file",
 }
 
 # Prompt Compiler 系统提示词（两段式 Prompt 第一阶段）
@@ -923,7 +924,8 @@ class Agent:
         self.handler_registry.register(
             "filesystem",
             create_filesystem_handler(self),
-            ["run_shell", "write_file", "read_file", "list_directory"],
+            ["run_shell", "write_file", "read_file", "edit_file",
+             "list_directory", "grep", "glob", "delete_file"],
         )
 
         # 记忆系统

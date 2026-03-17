@@ -5,7 +5,11 @@
 - run_shell: 执行 Shell 命令
 - write_file: 写入文件
 - read_file: 读取文件
+- edit_file: 精确字符串替换编辑
 - list_directory: 列出目录
+- grep: 内容搜索
+- glob: 文件名模式搜索
+- delete_file: 删除文件
 """
 
 import logging
@@ -31,7 +35,11 @@ class FilesystemHandler:
         "run_shell",
         "write_file",
         "read_file",
+        "edit_file",
         "list_directory",
+        "grep",
+        "glob",
+        "delete_file",
     ]
 
     def __init__(self, agent: "Agent"):
@@ -88,8 +96,16 @@ class FilesystemHandler:
             return await self._write_file(params)
         elif tool_name == "read_file":
             return await self._read_file(params)
+        elif tool_name == "edit_file":
+            return await self._edit_file(params)
         elif tool_name == "list_directory":
             return await self._list_directory(params)
+        elif tool_name == "grep":
+            return await self._grep(params)
+        elif tool_name == "glob":
+            return await self._glob(params)
+        elif tool_name == "delete_file":
+            return await self._delete_file(params)
         else:
             return f"❌ Unknown filesystem tool: {tool_name}"
 
@@ -370,8 +386,50 @@ class FilesystemHandler:
     # list_directory 默认最大条目数
     LIST_DIR_DEFAULT_MAX = 200
 
+    async def _edit_file(self, params: dict) -> str:
+        """精确字符串替换编辑"""
+        path = params.get("path", "")
+        old_string = params.get("old_string")
+        new_string = params.get("new_string")
+
+        if not path:
+            return "❌ edit_file 缺少必要参数 'path'。"
+        if old_string is None:
+            return "❌ edit_file 缺少必要参数 'old_string'。"
+        if new_string is None:
+            return "❌ edit_file 缺少必要参数 'new_string'。"
+        if old_string == new_string:
+            return "❌ old_string 和 new_string 相同，无需替换。"
+
+        policy = self._get_fix_policy()
+        if policy:
+            target = self._resolve_to_abs(path)
+            write_roots = policy.get("write_roots") or []
+            if not self._is_under_any_root(target, write_roots):
+                msg = (
+                    "❌ 自检自动修复护栏：禁止编辑该路径。"
+                    f"\n目标: {target}"
+                )
+                logger.warning(msg)
+                return msg
+
+        replace_all = params.get("replace_all", False)
+
+        try:
+            result = await self.agent.file_tool.edit(
+                path, old_string, new_string, replace_all=replace_all,
+            )
+            replaced = result["replaced"]
+            if replace_all and replaced > 1:
+                return f"文件已编辑: {path}（替换了 {replaced} 处匹配）"
+            return f"文件已编辑: {path}"
+        except FileNotFoundError:
+            return f"❌ 文件不存在: {path}"
+        except ValueError as e:
+            return f"❌ edit_file 失败: {e}"
+
     async def _list_directory(self, params: dict) -> str:
-        """列出目录（支持 max_items 限制）"""
+        """列出目录（支持 pattern/recursive/max_items）"""
         path = params.get("path", "")
         if not path:
             return "❌ list_directory 缺少必要参数 'path'。"
@@ -385,7 +443,12 @@ class FilesystemHandler:
                 logger.warning(msg)
                 return msg
 
-        files = await self.agent.file_tool.list_dir(path)
+        pattern = params.get("pattern", "*")
+        recursive = params.get("recursive", False)
+        files = await self.agent.file_tool.list_dir(
+            path, pattern=pattern, recursive=recursive,
+        )
+
         max_items = params.get("max_items", self.LIST_DIR_DEFAULT_MAX)
         try:
             max_items = max(1, int(max_items))
@@ -404,6 +467,171 @@ class FilesystemHandler:
             f"或缩小查询范围。"
         )
         return result
+
+    # grep 最大结果条目数
+    GREP_MAX_RESULTS = 200
+
+    async def _grep(self, params: dict) -> str:
+        """内容搜索"""
+        pattern = params.get("pattern", "")
+        if not pattern:
+            return "❌ grep 缺少必要参数 'pattern'。"
+
+        path = params.get("path", ".")
+        include = params.get("include")
+        context_lines = params.get("context_lines", 0)
+        max_results = params.get("max_results", 50)
+        case_insensitive = params.get("case_insensitive", False)
+
+        try:
+            context_lines = max(0, int(context_lines))
+        except (TypeError, ValueError):
+            context_lines = 0
+        try:
+            max_results = max(1, min(int(max_results), self.GREP_MAX_RESULTS))
+        except (TypeError, ValueError):
+            max_results = 50
+
+        try:
+            results = await self.agent.file_tool.grep(
+                pattern, path,
+                include=include,
+                context_lines=context_lines,
+                max_results=max_results,
+                case_insensitive=case_insensitive,
+            )
+        except FileNotFoundError as e:
+            return f"❌ {e}"
+        except ValueError as e:
+            return f"❌ 正则表达式错误: {e}"
+
+        if not results:
+            return f"未找到匹配 '{pattern}' 的内容。"
+
+        lines: list[str] = []
+        for m in results:
+            if context_lines > 0 and "context_before" in m:
+                for ctx_line in m["context_before"]:
+                    lines.append(f"{m['file']}-{ctx_line}")
+            lines.append(f"{m['file']}:{m['line']}:{m['text']}")
+            if context_lines > 0 and "context_after" in m:
+                for ctx_line in m["context_after"]:
+                    lines.append(f"{m['file']}-{ctx_line}")
+                lines.append("")
+
+        total = len(results)
+        header = f"找到 {total} 条匹配"
+        if total >= max_results:
+            header += f"（已达上限 {max_results}，可能还有更多）"
+        header += ":\n"
+
+        output = header + "\n".join(lines)
+
+        if len(output.split("\n")) > self.SHELL_MAX_LINES:
+            from ...core.tool_executor import save_overflow
+            overflow_path = save_overflow("grep", output)
+            truncated = "\n".join(output.split("\n")[:self.SHELL_MAX_LINES])
+            truncated += (
+                f"\n\n[OUTPUT_TRUNCATED] 完整结果已保存到: {overflow_path}\n"
+                f'使用 read_file(path="{overflow_path}", offset={self.SHELL_MAX_LINES + 1}) '
+                f"查看后续内容。"
+            )
+            return truncated
+
+        return output
+
+    async def _glob(self, params: dict) -> str:
+        """文件名模式搜索"""
+        pattern = params.get("pattern", "")
+        if not pattern:
+            return "❌ glob 缺少必要参数 'pattern'。"
+
+        path = params.get("path", ".")
+
+        # 不以 **/ 开头的 pattern 自动加 **/ 前缀，使其递归搜索
+        if not pattern.startswith("**/"):
+            pattern = f"**/{pattern}"
+
+        dir_path = self.agent.file_tool._resolve_path(path)
+        if not dir_path.is_dir():
+            return f"❌ 目录不存在: {path}"
+
+        from ..file import DEFAULT_IGNORE_DIRS
+
+        results: list[tuple[str, float]] = []
+        glob_pattern = pattern[3:] if pattern.startswith("**/") else pattern
+        for p in dir_path.rglob(glob_pattern):
+            if not p.is_file():
+                continue
+            parts = p.relative_to(dir_path).parts
+            if any(part in DEFAULT_IGNORE_DIRS for part in parts):
+                continue
+            if any(
+                part.startswith(".") and part not in (".github", ".vscode", ".cursor")
+                for part in parts[:-1]
+            ):
+                continue
+            try:
+                mtime = p.stat().st_mtime
+            except OSError:
+                mtime = 0
+            results.append((str(p.relative_to(dir_path)), mtime))
+
+        # 按修改时间降序排序
+        results.sort(key=lambda x: x[1], reverse=True)
+
+        if not results:
+            return f"未找到匹配 '{pattern}' 的文件。"
+
+        total = len(results)
+        max_show = self.LIST_DIR_DEFAULT_MAX
+        file_list = [r[0] for r in results[:max_show]]
+        output = f"找到 {total} 个文件（按修改时间排序）:\n" + "\n".join(file_list)
+
+        if total > max_show:
+            output += (
+                f"\n\n[OUTPUT_TRUNCATED] 共 {total} 个文件，已显示前 {max_show} 个。"
+            )
+
+        return output
+
+    async def _delete_file(self, params: dict) -> str:
+        """删除文件或空目录"""
+        path = params.get("path", "")
+        if not path:
+            return "❌ delete_file 缺少必要参数 'path'。"
+
+        policy = self._get_fix_policy()
+        if policy:
+            target = self._resolve_to_abs(path)
+            write_roots = policy.get("write_roots") or []
+            if not self._is_under_any_root(target, write_roots):
+                msg = f"❌ 自检自动修复护栏：禁止删除该路径。\n目标: {target}"
+                logger.warning(msg)
+                return msg
+
+        file_path = self.agent.file_tool._resolve_path(path)
+
+        if not file_path.exists():
+            return f"❌ 路径不存在: {path}"
+
+        if file_path.is_dir():
+            # 安全限制：只删除空目录
+            try:
+                children = list(file_path.iterdir())
+            except PermissionError:
+                return f"❌ 没有权限访问目录: {path}"
+            if children:
+                return (
+                    f"❌ 目录非空 ({len(children)} 个项目)，拒绝删除。"
+                    f"如需递归删除，请使用 run_shell 执行删除命令。"
+                )
+
+        success = await self.agent.file_tool.delete(path)
+        if success:
+            kind = "目录" if file_path.is_dir() else "文件"
+            return f"{kind}已删除: {path}"
+        return f"❌ 删除失败: {path}"
 
 
 def create_handler(agent: "Agent"):
