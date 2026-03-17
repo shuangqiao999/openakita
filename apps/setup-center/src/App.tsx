@@ -5333,7 +5333,7 @@ export function App() {
             </div>
           </label>
         </div>
-        <IMConfigView {..._configViewProps} />
+        <IMConfigView {..._configViewProps} venvDir={venvDir} />
       </>
     );
   }
@@ -7840,7 +7840,7 @@ export function App() {
           <p style={{ color: "#94a3b8", fontSize: 15 }}>此模块已禁用，请在「配置 → IM 通道」中启用</p>
         </div>
       ) : (
-        <IMView serviceRunning={serviceStatus?.running ?? false} multiAgentEnabled={multiAgentEnabled} apiBaseUrl={apiBaseUrl} onRequestRestart={restartService} />
+        <IMView serviceRunning={serviceStatus?.running ?? false} multiAgentEnabled={multiAgentEnabled} apiBaseUrl={apiBaseUrl} onRequestRestart={restartService} venvDir={venvDir} />
       );
     }
     if (view === "token_stats") {
@@ -8398,7 +8398,7 @@ export function App() {
             <div className="modalContent" style={{ maxWidth: 360, padding: "32px 28px", textAlign: "center", borderRadius: 16 }}>
               {(restartOverlay.phase === "saving" || restartOverlay.phase === "restarting" || restartOverlay.phase === "waiting") && (
                 <>
-                  <div style={{ marginBottom: 16 }}>
+                  <div style={{ marginBottom: 16, display: "flex", justifyContent: "center", paddingLeft: 0, paddingRight: 0 }}>
                     <svg width="40" height="40" viewBox="0 0 40 40" style={{ animation: "spin 1s linear infinite" }}>
                       <circle cx="20" cy="20" r="16" fill="none" stroke="#2563eb" strokeWidth="3" strokeDasharray="80" strokeDashoffset="20" strokeLinecap="round" />
                     </svg>

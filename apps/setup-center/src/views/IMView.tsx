@@ -11,6 +11,7 @@ import { safeFetch } from "../providers";
 import { ModalOverlay } from "../components/ModalOverlay";
 import { logger } from "../platform";
 import { IS_WEB, onWsEvent } from "../platform";
+import { FeishuQRModal } from "../components/FeishuQRModal";
 
 // ─── Types ──────────────────────────────────────────────────────────────
 
@@ -140,11 +141,13 @@ export function IMView({
   multiAgentEnabled = false,
   apiBaseUrl,
   onRequestRestart,
+  venvDir,
 }: {
   serviceRunning: boolean;
   multiAgentEnabled?: boolean;
   apiBaseUrl?: string;
   onRequestRestart?: () => void;
+  venvDir?: string;
 }) {
   const { t } = useTranslation();
   const api = apiBaseUrl ?? DEFAULT_API;
@@ -285,7 +288,7 @@ export function IMView({
         {tab === "messages" ? (
           <MessagesTab serviceRunning={serviceRunning} apiBase={api} />
         ) : (
-          <BotConfigTab apiBase={api} multiAgentEnabled={multiAgentEnabled} onRequestRestart={onRequestRestart} />
+          <BotConfigTab apiBase={api} multiAgentEnabled={multiAgentEnabled} onRequestRestart={onRequestRestart} venvDir={venvDir} apiBaseUrl={apiBaseUrl} />
         )}
       </div>
     </div>
@@ -475,7 +478,7 @@ function MessagesTab({ serviceRunning, apiBase }: { serviceRunning: boolean; api
 
 // ─── Bot Configuration Tab ──────────────────────────────────────────────
 
-function BotConfigTab({ apiBase, multiAgentEnabled, onRequestRestart }: { apiBase: string; multiAgentEnabled: boolean; onRequestRestart?: () => void }) {
+function BotConfigTab({ apiBase, multiAgentEnabled, onRequestRestart, venvDir, apiBaseUrl }: { apiBase: string; multiAgentEnabled: boolean; onRequestRestart?: () => void; venvDir?: string; apiBaseUrl?: string }) {
   const { t } = useTranslation();
   const [bots, setBots] = useState<IMBot[]>([]);
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
@@ -487,6 +490,7 @@ function BotConfigTab({ apiBase, multiAgentEnabled, onRequestRestart }: { apiBas
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [toastMsg, setToastMsg] = useState<{ text: string; type: "ok" | "err" } | null>(null);
   const [revealedSecrets, setRevealedSecrets] = useState<Set<string>>(new Set());
+  const [showFeishuQR, setShowFeishuQR] = useState(false);
 
   const showToast = useCallback((text: string, type: "ok" | "err" = "ok") => {
     setToastMsg({ text, type });
@@ -1110,6 +1114,98 @@ function BotConfigTab({ apiBase, multiAgentEnabled, onRequestRestart }: { apiBas
                 </div>
               </>
             )}
+
+            {/* ── Feishu: QR onboard + streaming + group mode ── */}
+            {editingBot.type === "feishu" && (
+              <>
+                {venvDir && (
+                  <button
+                    type="button"
+                    style={{
+                      width: "100%", padding: "10px 0", marginBottom: 12,
+                      borderRadius: 8, border: "1.5px dashed var(--accent, #3b82f6)",
+                      background: "var(--accent-bg, rgba(59,130,246,0.06))",
+                      color: "var(--accent, #3b82f6)", fontWeight: 600, fontSize: 13,
+                      cursor: "pointer", transition: "all 0.15s",
+                    }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = "var(--accent-bg, rgba(59,130,246,0.12))"; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = "var(--accent-bg, rgba(59,130,246,0.06))"; }}
+                    onClick={() => setShowFeishuQR(true)}
+                  >{t("feishu.qrScanCreate")}</button>
+                )}
+                <div className="divider" style={{ margin: "10px 0" }} />
+                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>{t("feishu.streaming")}</div>
+                <div
+                  onClick={() => {
+                    const next = !(editingBot.credentials.streaming_enabled === "true" || editingBot.credentials.streaming_enabled === true);
+                    updateCredential("streaming_enabled", next ? "true" : "false");
+                  }}
+                  style={{
+                    display: "flex", alignItems: "center", justifyContent: "space-between",
+                    padding: "8px 12px", borderRadius: 8, cursor: "pointer",
+                    background: "var(--bg2, #f8fafc)", border: "1px solid var(--line)",
+                    marginBottom: 8, transition: "background 0.15s",
+                  }}
+                >
+                  <span style={{ fontSize: 13 }}>{t("feishu.streaming")}</span>
+                  <div style={{
+                    width: 40, height: 22, borderRadius: 11, position: "relative",
+                    background: (editingBot.credentials.streaming_enabled === "true" || editingBot.credentials.streaming_enabled === true) ? "var(--ok, #10b981)" : "var(--line)",
+                    transition: "background 0.2s",
+                  }}>
+                    <div style={{
+                      width: 18, height: 18, borderRadius: 9, background: "#fff",
+                      position: "absolute", top: 2, boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+                      left: (editingBot.credentials.streaming_enabled === "true" || editingBot.credentials.streaming_enabled === true) ? 20 : 2,
+                      transition: "left 0.2s",
+                    }} />
+                  </div>
+                </div>
+                {(editingBot.credentials.streaming_enabled === "true" || editingBot.credentials.streaming_enabled === true) && (
+                  <div
+                    onClick={() => {
+                      const next = !(editingBot.credentials.group_streaming === "true" || editingBot.credentials.group_streaming === true);
+                      updateCredential("group_streaming", next ? "true" : "false");
+                    }}
+                    style={{
+                      display: "flex", alignItems: "center", justifyContent: "space-between",
+                      padding: "8px 12px", borderRadius: 8, cursor: "pointer",
+                      background: "var(--bg2, #f8fafc)", border: "1px solid var(--line)",
+                      marginBottom: 8, marginLeft: 12, transition: "background 0.15s",
+                    }}
+                  >
+                    <span style={{ fontSize: 13 }}>{t("feishu.groupStreaming")}</span>
+                    <div style={{
+                      width: 40, height: 22, borderRadius: 11, position: "relative",
+                      background: (editingBot.credentials.group_streaming === "true" || editingBot.credentials.group_streaming === true) ? "var(--ok, #10b981)" : "var(--line)",
+                      transition: "background 0.2s",
+                    }}>
+                      <div style={{
+                        width: 18, height: 18, borderRadius: 9, background: "#fff",
+                        position: "absolute", top: 2, boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+                        left: (editingBot.credentials.group_streaming === "true" || editingBot.credentials.group_streaming === true) ? 20 : 2,
+                        transition: "left 0.2s",
+                      }} />
+                    </div>
+                  </div>
+                )}
+                <div style={{ marginTop: 8, marginBottom: 12 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>{t("feishu.groupMode")}</div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    {(["mention_only", "smart", "always"] as const).map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        className={(editingBot.credentials.group_response_mode || "mention_only") === m ? "capChipActive" : "capChip"}
+                        onClick={() => updateCredential("group_response_mode", m)}
+                      >
+                        {t(`feishu.groupMode_${m}`)}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
           </div>
 
           {/* Editor footer */}
@@ -1154,6 +1250,19 @@ function BotConfigTab({ apiBase, multiAgentEnabled, onRequestRestart }: { apiBas
           </div>
         </div>
         </ModalOverlay>
+      )}
+
+      {showFeishuQR && venvDir && (
+        <FeishuQRModal
+          venvDir={venvDir}
+          apiBaseUrl={apiBaseUrl}
+          onClose={() => setShowFeishuQR(false)}
+          onSuccess={(appId, appSecret) => {
+            updateCredential("app_id", appId);
+            updateCredential("app_secret", appSecret);
+            setShowFeishuQR(false);
+          }}
+        />
       )}
     </div>
   );

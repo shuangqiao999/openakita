@@ -14,6 +14,7 @@ import asyncio
 import base64
 import contextlib
 import logging
+import os
 import random
 import sys
 from collections.abc import Awaitable, Callable
@@ -852,6 +853,7 @@ class MessageGateway:
         """
         self.session_manager = session_manager
         self.agent_handler = agent_handler
+        self.agent_handler_stream = None  # set by main.py for streaming IM support
         self.stt_client = stt_client
 
         # 注册的适配器 {channel_name: adapter}
@@ -893,6 +895,11 @@ class MessageGateway:
         # 正在处理的会话 {session_key: bool}
         self._processing_sessions: dict[str, bool] = {}
 
+        # 并发会话控制
+        _max_concurrent = int(os.environ.get("MAX_CONCURRENT_SESSIONS", "5"))
+        self._concurrency_sem = asyncio.Semaphore(_max_concurrent)
+        self._session_tasks: dict[str, asyncio.Task] = {}
+
         # 中断锁（防止并发修改）
         self._interrupt_lock = asyncio.Lock()
 
@@ -920,6 +927,40 @@ class MessageGateway:
 
         # ==================== 群聊响应策略 ====================
         self._smart_throttle = SmartModeThrottle()
+
+    async def _handle_feishu_command(self, cmd: str, message: "UnifiedMessage") -> str | None:
+        """Handle ``/feishu start|auth|help``."""
+        parts = cmd.split()
+        sub = parts[1] if len(parts) > 1 else ""
+
+        adapter = self._adapters.get(message.channel)
+
+        if sub == "start":
+            if adapter and hasattr(adapter, "get_status_info"):
+                info = adapter.get_status_info()
+                lines = [
+                    f"OpenAkita Feishu Adapter v{info['version']}",
+                    f"App ID: {info['app_id']}",
+                    f"Connected: {'Yes' if info['connected'] else 'No'}",
+                    f"Streaming: {'ON' if info['streaming_enabled'] else 'OFF'}"
+                    + (f" (group: {'ON' if info['group_streaming'] else 'OFF'})" if info['streaming_enabled'] else ""),
+                    f"Group mode: {info['group_response_mode']}",
+                ]
+                return "\n".join(lines)
+            return "Feishu adapter not available"
+
+        if sub == "auth":
+            if adapter and hasattr(adapter, "get_auth_url"):
+                url = adapter.get_auth_url()
+                return f"请在浏览器中打开以下链接完成飞书用户授权：\n{url}"
+            return "Feishu adapter not available"
+
+        # /feishu 或 /feishu help
+        return (
+            "/feishu start — 查看适配器状态与版本\n"
+            "/feishu auth  — 获取飞书用户授权链接\n"
+            "/feishu help  — 显示本帮助"
+        )
 
     async def _handle_mode_command(self, user_text: str) -> str:
         """
@@ -1231,6 +1272,13 @@ class MessageGateway:
 
     def _get_group_response_mode(self, channel: str) -> GroupResponseMode:
         """获取群聊响应模式（Per-Bot 配置 > 全局配置 > 默认值）"""
+        adapter = self._adapters.get(channel)
+        per_bot = getattr(adapter, "_group_response_mode", None)
+        if per_bot:
+            try:
+                return GroupResponseMode(per_bot)
+            except ValueError:
+                pass
         from ..config import settings
         raw = settings.group_response_mode
         try:
@@ -1667,6 +1715,12 @@ class MessageGateway:
             return
         # ==================== /终极重启指令拦截 ====================
 
+        # ==================== 中断快路径（无锁检测） ====================
+        # 在获取 interrupt_lock 之前做低成本文本检测，减少锁竞争
+        if self._processing_sessions.get(session_key, False) and self._is_abort_text(_raw_text):
+            await self._cancel_session(session_key, message, _raw_text)
+            return
+
         async with self._interrupt_lock:
             if self._processing_sessions.get(session_key, False):
                 # 会话正在处理中
@@ -1729,6 +1783,28 @@ class MessageGateway:
                             f"[Interrupt] SKIP handled directly (not queued) for {session_key}: {user_text}"
                         )
                     else:
+                        # 补录到 session 历史（INSERT 路径原本不写历史，
+                        # 导致桌面端 IM 界面看不到这条消息）
+                        _ins_session = self.session_manager.get_session(
+                            channel=message.channel,
+                            chat_id=message.chat_id,
+                            user_id=message.user_id,
+                            thread_id=message.thread_id,
+                        )
+                        if _ins_session:
+                            _ins_session.add_message(
+                                role="user",
+                                content=user_text,
+                                message_id=message.id,
+                                channel_message_id=message.channel_message_id,
+                                is_interrupt=True,
+                            )
+                            self.session_manager.mark_dirty()
+                            _notify_im_event(
+                                "im:new_message",
+                                {"channel": message.channel, "role": "user"},
+                            )
+
                         try:
                             ok = await self.agent_handler.insert_user_message(
                                 user_text, session_id=_resolved_sid,
@@ -1761,6 +1837,54 @@ class MessageGateway:
 
         # 正常入队
         await self._message_queue.put(message)
+
+    # ==================== 中断快路径 ====================
+
+    _ABORT_TRIGGERS = frozenset({
+        "停止", "停", "stop", "停止执行", "取消", "取消任务",
+        "算了", "不用了", "别做了", "停下", "halt", "abort", "cancel",
+        "やめて", "중지",
+    })
+
+    @classmethod
+    def _normalize_abort_text(cls, text: str) -> str:
+        """Strip @mentions and whitespace for abort detection"""
+        import re
+        return re.sub(r"@\S+\s*", "", text).strip().lower()
+
+    @classmethod
+    def _is_abort_text(cls, raw_text: str) -> bool:
+        """Low-cost check: is this text an abort trigger?"""
+        normalized = cls._normalize_abort_text(raw_text)
+        return normalized in cls._ABORT_TRIGGERS
+
+    async def _cancel_session(
+        self, session_key: str, message: UnifiedMessage, user_text: str,
+    ) -> None:
+        """Fast-path: cancel the running task for a session and send feedback"""
+        _agent_ref = getattr(self.agent_handler, "_agent_ref", None) if self.agent_handler else None
+        _resolved_sid = self._resolve_task_session_id(session_key, _agent_ref)
+
+        if self.agent_handler:
+            if _resolved_sid:
+                self.agent_handler.cancel_current_task(
+                    f"用户发送停止指令(fast-path): {user_text}",
+                    session_id=_resolved_sid,
+                )
+            else:
+                self.agent_handler.cancel_current_task(
+                    f"用户发送停止指令(fast-path): {user_text}",
+                )
+
+        # Cancel the asyncio task if it exists
+        task = self._session_tasks.get(session_key)
+        if task and not task.done():
+            task.cancel()
+
+        logger.info(
+            f"[Abort-FastPath] Session {session_key} cancelled: {user_text}"
+        )
+        await self._send_feedback(message, "✅ 收到，正在停止当前任务…")
 
     # ==================== 中断机制 ====================
 
@@ -1921,21 +2045,38 @@ class MessageGateway:
         logger.debug(f"[Interrupt] Registered callback for {session_key}")
 
     async def _process_loop(self) -> None:
-        """消息处理循环"""
+        """消息处理循环（per-session-key 并发调度）
+
+        不同 session_key 的消息并发处理（受 MAX_CONCURRENT_SESSIONS 限制），
+        同一 session_key 内的消息由中断机制保证顺序。
+        """
         while self._running:
             try:
-                # 从队列获取消息
                 message = await asyncio.wait_for(self._message_queue.get(), timeout=1.0)
+                session_key = self._get_session_key(message)
 
-                # 处理消息
-                await self._handle_message(message)
+                # 清理已完成的 session task
+                old_task = self._session_tasks.get(session_key)
+                if old_task and old_task.done():
+                    del self._session_tasks[session_key]
+
+                task = asyncio.create_task(self._session_dispatch(message))
+                self._session_tasks[session_key] = task
 
             except TimeoutError:
                 continue
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Error processing message: {e}", exc_info=True)
+                logger.error(f"Error in process_loop dispatch: {e}", exc_info=True)
+
+    async def _session_dispatch(self, message: UnifiedMessage) -> None:
+        """带并发控制的单条消息处理"""
+        async with self._concurrency_sem:
+            try:
+                await self._handle_message(message)
+            except Exception as e:
+                logger.error(f"Error handling message: {e}", exc_info=True)
 
     async def _handle_message(self, message: UnifiedMessage) -> None:
         """
@@ -2009,6 +2150,13 @@ class MessageGateway:
                 response_text = await self._handle_mode_command(user_text)
                 await self._send_response(message, response_text)
                 return
+
+            # /feishu 命令族（仅飞书渠道生效）
+            if _cmd_lower.startswith("/feishu") and message.channel.split(":")[0] == "feishu":
+                feishu_resp = await self._handle_feishu_command(_cmd_lower, message)
+                if feishu_resp is not None:
+                    await self._send_response(message, feishu_resp)
+                    return
 
             # 检查是否是多Agent相关命令（/切换 /switch /help /帮助 /状态 /status /重置 /agent_reset）
             if self._is_agent_command(user_text):
@@ -2180,8 +2328,8 @@ class MessageGateway:
             self.session_manager.mark_dirty()  # 触发保存
             _notify_im_event("im:new_message", {"channel": message.channel, "role": "user"})
 
-            # 6. 调用 Agent 处理（支持中断检查）
-            response_text = await self._call_agent(session, message)
+            # 6. 调用 Agent 处理（支持中断检查 + 流式输出）
+            response_text, streamed_ok = await self._call_agent(session, message)
 
             # 7. 后处理钩子
             for hook in self._post_process_hooks:
@@ -2195,6 +2343,7 @@ class MessageGateway:
                     f"raw={response_text!r}"
                 )
                 response_text = "⚠️ 处理完成，但未生成有效回复。请重试。"
+                streamed_ok = False
 
             # 8. 记录响应到会话（含思维链摘要 + 工具执行摘要）
             _chain_summary = None
@@ -2222,12 +2371,14 @@ class MessageGateway:
             self.session_manager.flush()
             _notify_im_event("im:new_message", {"channel": message.channel, "role": "assistant"})
 
-            # 9. 发送响应
+            # 9. 发送响应（流式已通过卡片 PATCH 送达则跳过）
             logger.info(
                 f"[IM] >>> 回复完成: channel={message.channel}, user={message.user_id}, "
-                f"len={len(response_text)}, preview=\"{response_text[:80]}\""
+                f"len={len(response_text)}, streamed={streamed_ok}, "
+                f"preview=\"{response_text[:80]}\""
             )
-            await self._send_response(message, response_text)
+            if not streamed_ok:
+                await self._send_response(message, response_text)
 
             # 10. 处理剩余的中断消息
             await self._process_pending_interrupts(session_key, session)
@@ -2294,8 +2445,10 @@ class MessageGateway:
                 )
                 self.session_manager.mark_dirty()  # 触发保存
 
-                # 调用 Agent 处理（typing 由外层 typing_task 覆盖）
-                response_text = await self._call_agent(session, interrupt_msg)
+                # 调用 Agent 处理（typing 由外层 typing_task 覆盖，中断不走流式）
+                response_text, _ = await self._call_agent(
+                    session, interrupt_msg, allow_streaming=False,
+                )
 
                 # 后处理钩子
                 for hook in self._post_process_hooks:
@@ -2498,21 +2651,15 @@ class MessageGateway:
             except Exception as e:
                 logger.warning(f"[Feedback] Failed to send feedback to {message.channel}: {e}")
 
-    async def _call_agent_with_typing(self, session: Session, message: UnifiedMessage) -> str:
-        """
-        调用 Agent 处理消息，期间持续发送 typing 状态
-        """
+    async def _call_agent_with_typing(self, session: Session, message: UnifiedMessage) -> tuple[str, bool]:
+        """调用 Agent 处理消息，期间持续发送 typing 状态"""
         import asyncio
 
-        # 创建 typing 状态持续发送的任务
         typing_task = asyncio.create_task(self._keep_typing(message))
 
         try:
-            # 调用 Agent
-            response_text = await self._call_agent(session, message)
-            return response_text
+            return await self._call_agent(session, message)
         finally:
-            # 停止 typing 状态发送
             typing_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await typing_task
@@ -2525,14 +2672,18 @@ class MessageGateway:
             await self._send_typing(message)
             await asyncio.sleep(4)  # Telegram typing 状态持续约 5 秒
 
-    async def _call_agent(self, session: Session, message: UnifiedMessage) -> str:
+    async def _call_agent(
+        self, session: Session, message: UnifiedMessage, *, allow_streaming: bool = True,
+    ) -> tuple[str, bool]:
         """
         调用 Agent 处理消息（支持多模态：图片、语音）
 
-        支持中断机制：将 gateway 引用存入 session.metadata，供 Agent 检查中断
+        Returns:
+            (response_text, streamed_ok) — streamed_ok=True 表示已通过流式卡片
+            发送给用户，调用方应跳过 _send_response。
         """
         if not self.agent_handler:
-            return "Agent handler not configured"
+            return ("Agent handler not configured", False)
 
         try:
             # 构建输入（文本 + 图片 + 语音）
@@ -2704,8 +2855,26 @@ class MessageGateway:
             session.set_metadata("_session_key", session_key)
             session.set_metadata("_current_message", message)
 
-            # 调用 Agent
-            response = await self.agent_handler(session, input_text)
+            # === 流式 / 非流式分支 ===
+            adapter = self._adapters.get(message.channel)
+            is_group = message.chat_type == "group"
+            from ..config import settings as _cfg
+            use_streaming = (
+                allow_streaming
+                and adapter is not None
+                and hasattr(adapter, "is_streaming_enabled")
+                and adapter.is_streaming_enabled(is_group)
+                and self.agent_handler_stream is not None
+                and not (_cfg.multi_agent_enabled and getattr(self, "_orchestrator_ref", None) is not None)
+            )
+
+            streamed_ok = False
+            if use_streaming:
+                response, streamed_ok = await self._call_agent_streaming(
+                    session, input_text, message, adapter,
+                )
+            else:
+                response = await self.agent_handler(session, input_text)
 
             # 清除临时数据
             session.set_metadata("pending_images", None)
@@ -2717,11 +2886,76 @@ class MessageGateway:
             session.set_metadata("_session_key", None)
             session.set_metadata("_current_message", None)
 
-            return response
+            return (response, streamed_ok)
 
         except Exception as e:
             logger.error(f"Agent error: {e}", exc_info=True)
-            return f"处理出错: {str(e)}"
+            return (f"处理出错: {str(e)}", False)
+
+    async def _call_agent_streaming(
+        self, session: Session, input_text: str,
+        message: UnifiedMessage, adapter,
+    ) -> tuple[str, bool]:
+        """Consume agent_handler_stream, pipe tokens to adapter.stream_token,
+        then finalize.  Returns (full_reply, streamed_ok)."""
+        reply_text = ""
+        is_group = message.chat_type == "group"
+
+        chain_push = session.get_metadata("chain_push")
+        if chain_push is None:
+            from ..config import settings as _s
+            chain_push = _s.im_chain_push
+        can_stream_thinking = (
+            chain_push
+            and hasattr(adapter, "stream_thinking")
+        )
+
+        try:
+            async for event in self.agent_handler_stream(session, input_text):
+                etype = event.get("type")
+                if etype == "text_delta":
+                    delta = event.get("content", "")
+                    reply_text += delta
+                    await adapter.stream_token(
+                        message.chat_id, delta,
+                        thread_id=message.thread_id,
+                        is_group=is_group,
+                    )
+                elif etype == "thinking_delta" and can_stream_thinking:
+                    thinking_content = event.get("content", "")
+                    if thinking_content:
+                        await adapter.stream_thinking(
+                            message.chat_id, thinking_content,
+                            thread_id=message.thread_id,
+                            is_group=is_group,
+                        )
+                elif etype == "thinking_end" and can_stream_thinking:
+                    dur_ms = event.get("duration_ms", 0)
+                    if dur_ms and hasattr(adapter, "stream_thinking"):
+                        sk = adapter._make_session_key(message.chat_id, message.thread_id) if hasattr(adapter, "_make_session_key") else ""
+                        if sk and hasattr(adapter, "_streaming_thinking_ms"):
+                            adapter._streaming_thinking_ms[sk] = dur_ms
+                elif etype == "ask_user":
+                    if not reply_text:
+                        reply_text = event.get("question", "")
+                elif etype == "error":
+                    err_msg = event.get("message", "")
+                    if not reply_text:
+                        reply_text = f"处理出错: {err_msg}"
+                elif etype == "done":
+                    break
+        except Exception as e:
+            logger.error(f"[IM] Streaming agent error: {e}", exc_info=True)
+            if not reply_text:
+                reply_text = f"处理出错: {str(e)}"
+
+        if not reply_text or not reply_text.strip():
+            return (reply_text, False)
+
+        ok = await adapter.finalize_stream(
+            message.chat_id, reply_text, thread_id=message.thread_id,
+        )
+        return (reply_text, ok)
 
     # 各渠道单条消息最大字符数（留余量）
     # - telegram: API 硬限制 4096，留余量 → 4000
@@ -2796,7 +3030,7 @@ class MessageGateway:
             return
 
         channel = original.channel
-        base_channel = channel.split("_")[0] if "_" in channel else channel
+        base_channel = channel.split(":")[0].split("_")[0]
 
         max_length = self._CHANNEL_MAX_LENGTH.get(
             base_channel, self._DEFAULT_MAX_LENGTH

@@ -1443,5 +1443,27 @@
     "saveError": "Failed to save file",
     "reloadSuccess": "Identity reloaded",
     "reloadError": "Reload failed"
+  },
+  "feishu": {
+    "qrScanCreate": "Scan QR to create bot",
+    "qrTitle": "Feishu QR Authorization",
+    "qrSubtitle": "Scan with Feishu/Lark app to create a bot application",
+    "qrLoading": "Initializing...",
+    "qrScanHint": "Scan the QR code above with Feishu/Lark app",
+    "qrSuccess": "Authorized! Credentials filled automatically",
+    "qrRetry": "Retry",
+    "qrTimeout": "QR code timed out, please retry",
+    "qrExpired": "QR code expired, please retry",
+    "qrDenied": "Authorization denied",
+    "qrInitFailed": "Initialization failed, check network",
+    "streaming": "Streaming card output",
+    "groupStreaming": "Enable streaming in group chats",
+    "groupMode": "Group reply mode",
+    "groupMode_mention_only": "Mention only",
+    "groupMode_smart": "Smart",
+    "groupMode_always": "Always reply",
+    "groupModeHint_mention_only": "Only reply when @mentioned, safest option",
+    "groupModeHint_smart": "AI decides whether to reply",
+    "groupModeHint_always": "Reply to all messages in group (use with caution)"
   }
 }

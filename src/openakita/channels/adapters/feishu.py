@@ -18,6 +18,7 @@ import contextlib
 import importlib.util
 import json
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -101,6 +102,10 @@ class FeishuAdapter(ChannelAdapter):
         channel_name: str | None = None,
         bot_id: str | None = None,
         agent_profile_id: str = "default",
+        streaming_enabled: bool | None = None,
+        group_streaming: bool | None = None,
+        streaming_throttle_ms: int | None = None,
+        group_response_mode: str | None = None,
     ):
         """
         Args:
@@ -139,10 +144,37 @@ class FeishuAdapter(ChannelAdapter):
         self._seen_message_ids: collections.OrderedDict[str, None] = collections.OrderedDict()
         self._seen_message_ids_max = 500
 
-        # "思考中..."占位卡片：chat_id → 卡片 message_id
+        # "思考中..."占位卡片：session_key → 卡片 message_id
+        # session_key = chat_id 或 chat_id:thread_id（话题模式）
         self._thinking_cards: dict[str, str] = {}
-        # 最近一条用户消息 ID：chat_id → user_msg_id（供 send_typing 回复定位）
+        # 最近一条用户消息 ID：session_key → user_msg_id（供 send_typing 回复定位）
         self._last_user_msg: dict[str, str] = {}
+
+        # 流式输出状态（构造参数优先，None 时 fallback 到 env）
+        self._streaming_enabled = streaming_enabled if streaming_enabled is not None else (
+            os.environ.get("FEISHU_STREAMING_ENABLED", "false").lower() in ("true", "1", "yes")
+        )
+        self._group_streaming = group_streaming if group_streaming is not None else (
+            os.environ.get("FEISHU_GROUP_STREAMING", "false").lower() in ("true", "1", "yes")
+        )
+        self._streaming_throttle_ms = streaming_throttle_ms if streaming_throttle_ms is not None else (
+            int(os.environ.get("FEISHU_STREAMING_THROTTLE_MS", "800"))
+        )
+        # session_key → 已累积的流式文本
+        self._streaming_buffers: dict[str, str] = {}
+        # session_key → 上次 PATCH 时间戳(秒)
+        self._streaming_last_patch: dict[str, float] = {}
+        # session_key → 是否已 finalize
+        self._streaming_finalized: set[str] = set()
+        # session_key → 思考内容（流式期间暂存，finalize 后清理）
+        self._streaming_thinking: dict[str, str] = {}
+        # session_key → 思考耗时(ms)
+        self._streaming_thinking_ms: dict[str, int] = {}
+
+        # Per-bot 群聊响应模式（构造参数 > 环境变量 > 全局配置）
+        self._group_response_mode: str | None = group_response_mode or (
+            os.environ.get("FEISHU_GROUP_RESPONSE_MODE") or None
+        )
 
         # 关键事件缓冲（per-chat_id，上限 _MAX_EVENTS_PER_CHAT 条）
         self._important_events: dict[str, list[dict]] = {}
@@ -252,20 +284,12 @@ class FeishuAdapter(ChannelAdapter):
         """探测飞书适配器已实现方法对应的权限是否可用
 
         通过调用 API 并检查响应码判断权限：
-        - 权限不足：响应消息通常包含 "permission"/"tenant_access_token"
+        - 权限不足：响应消息通常包含 "permission"/"access denied"/"scope" 等
         - 参数无效/资源不存在：说明权限本身是通过的
         """
         self._capabilities = ["发消息", "发文件", "回复消息"]
         if not self._client:
             return
-
-        _PERMISSION_KEYWORDS = ("permission", "tenant_access_token", "app_access_token", "forbidden")
-
-        def _is_permission_error(resp: Any) -> bool:
-            if resp.success():
-                return False
-            msg = (getattr(resp, "msg", "") or "").lower()
-            return any(kw in msg for kw in _PERMISSION_KEYWORDS)
 
         try:
             import lark_oapi.api.im.v1 as im_v1
@@ -278,7 +302,7 @@ class FeishuAdapter(ChannelAdapter):
             req = im_v1.GetChatRequest.builder().chat_id("probe_test").build()
             resp = await asyncio.get_running_loop().run_in_executor(
                 None, lambda: self._client.im.v1.chat.get(req))
-            if not _is_permission_error(resp):
+            if not self._is_token_error(resp):
                 self._capabilities.append("获取群信息")
         except Exception:
             pass
@@ -287,7 +311,7 @@ class FeishuAdapter(ChannelAdapter):
             req = contact_v3.GetUserRequest.builder().user_id("probe_test").user_id_type("open_id").build()
             resp = await asyncio.get_running_loop().run_in_executor(
                 None, lambda: self._client.contact.v3.user.get(req))
-            if not _is_permission_error(resp):
+            if not self._is_token_error(resp):
                 self._capabilities.append("获取用户信息")
         except Exception:
             pass
@@ -296,7 +320,7 @@ class FeishuAdapter(ChannelAdapter):
             req = im_v1.GetChatMembersRequest.builder().chat_id("probe_test").member_id_type("open_id").build()
             resp = await asyncio.get_running_loop().run_in_executor(
                 None, lambda: self._client.im.v1.chat_members.get(req))
-            if not _is_permission_error(resp):
+            if not self._is_token_error(resp):
                 self._capabilities.append("获取群成员")
         except Exception:
             pass
@@ -305,8 +329,32 @@ class FeishuAdapter(ChannelAdapter):
             req = im_v1.ListMessageRequest.builder().container_id_type("chat").container_id("probe_test").page_size(1).build()
             resp = await asyncio.get_running_loop().run_in_executor(
                 None, lambda: self._client.im.v1.message.list(req))
-            if not _is_permission_error(resp):
+            if not self._is_token_error(resp):
                 self._capabilities.append("获取消息历史")
+        except Exception:
+            pass
+
+        # 探测图片上传权限 (im:resource:upload)
+        # 发送一个无效 PNG header，不会在飞书侧创建任何资源：
+        # - 权限 OK → 返回「图片格式不支持」（非权限错误）
+        # - 缺权限 → 返回 "Access denied...scope"
+        try:
+            import io
+            req = im_v1.CreateImageRequest.builder().request_body(
+                im_v1.CreateImageRequestBody.builder()
+                .image_type("message")
+                .image(io.BytesIO(b"\x89PNG\r\n"))
+                .build()
+            ).build()
+            resp = await asyncio.get_running_loop().run_in_executor(
+                None, lambda: self._client.im.v1.image.create(req))
+            if not self._is_token_error(resp):
+                self._capabilities.append("上传图片")
+            else:
+                logger.warning(
+                    "Feishu: 缺少 im:resource:upload 权限，图片/表情包发送将不可用。"
+                    "请在飞书开放平台为机器人开通此权限。"
+                )
         except Exception:
             pass
 
@@ -571,6 +619,33 @@ class FeishuAdapter(ChannelAdapter):
         with self._events_lock:
             return self._important_events.pop(chat_id, [])
 
+    # ==================== Token / 权限辅助 ====================
+
+    @staticmethod
+    def _is_token_error(resp: Any) -> bool:
+        """判断 API 响应是否为 token/权限类错误"""
+        if resp.success():
+            return False
+        msg = (getattr(resp, "msg", "") or "").lower()
+        return any(kw in msg for kw in (
+            "permission", "tenant_access_token", "app_access_token",
+            "forbidden", "access denied", "scope",
+        ))
+
+    def _invalidate_token_cache(self) -> None:
+        """将缓存的 tenant_access_token 标记过期，迫使下次请求重新获取。
+
+        lark-oapi SDK 的 ICache 没有 delete 方法，但 set(key, "", 0) 等效：
+        expire=0 < time.time()，下次 get 会判定过期并返回空，触发重新请求 token。
+        """
+        try:
+            from lark_oapi.core.token.manager import TokenManager
+            cache_key = f"self_tenant_token:{self.config.app_id}"
+            TokenManager.cache.set(cache_key, "", 0)
+            logger.info(f"Feishu: token cache invalidated ({cache_key})")
+        except Exception as e:
+            logger.debug(f"Feishu: failed to invalidate token cache: {e}")
+
     async def add_reaction(self, message_id: str, emoji_type: str = "Get") -> None:
         """给消息添加表情回复，用作「已读」回执替代。默认用 [了解] 表示正在处理。"""
         if not self._client:
@@ -596,6 +671,13 @@ class FeishuAdapter(ChannelAdapter):
         except Exception as e:
             logger.debug(f"Feishu: add_reaction failed (non-critical): {e}")
 
+    # ==================== 会话级 key 辅助 ====================
+
+    @staticmethod
+    def _make_session_key(chat_id: str, thread_id: str | None = None) -> str:
+        """生成 session 级 key，用于 _thinking_cards / _last_user_msg / streaming 等 dict"""
+        return f"{chat_id}:{thread_id}" if thread_id else chat_id
+
     # ==================== 思考状态指示器 ====================
 
     async def send_typing(self, chat_id: str, thread_id: str | None = None) -> None:
@@ -603,14 +685,18 @@ class FeishuAdapter(ChannelAdapter):
 
         Gateway 的 _keep_typing 每 4 秒调用一次，仅第一次生成卡片。
         """
-        if chat_id in self._thinking_cards:
+        sk = self._make_session_key(chat_id, thread_id)
+        self._streaming_finalized.discard(sk)
+        self._streaming_thinking.pop(sk, None)
+        self._streaming_thinking_ms.pop(sk, None)
+        if sk in self._thinking_cards:
             return
         if not self._client:
             return
-        reply_to = self._last_user_msg.pop(chat_id, None) or thread_id
+        reply_to = self._last_user_msg.pop(sk, None) or thread_id
         card_msg_id = await self._send_thinking_card(chat_id, reply_to=reply_to)
         if card_msg_id:
-            self._thinking_cards[chat_id] = card_msg_id
+            self._thinking_cards[sk] = card_msg_id
 
     async def _send_thinking_card(
         self, chat_id: str, reply_to: str | None = None,
@@ -706,6 +792,168 @@ class FeishuAdapter(ChannelAdapter):
         except Exception as e:
             logger.debug(f"Feishu: delete message failed (non-critical): {e}")
 
+    # ==================== 流式卡片输出 ====================
+
+    def is_streaming_enabled(self, is_group: bool = False) -> bool:
+        """检查当前是否启用流式输出"""
+        if not self._streaming_enabled:
+            return False
+        if is_group and not self._group_streaming:
+            return False
+        return True
+
+    async def stream_thinking(
+        self,
+        chat_id: str,
+        thinking_text: str,
+        *,
+        thread_id: str | None = None,
+        is_group: bool = False,
+        duration_ms: int = 0,
+    ) -> None:
+        """接收思考内容，PATCH 到卡片显示思考过程。"""
+        if not self.is_streaming_enabled(is_group):
+            return
+
+        sk = self._make_session_key(chat_id, thread_id)
+        self._streaming_thinking[sk] = thinking_text
+        if duration_ms:
+            self._streaming_thinking_ms[sk] = duration_ms
+
+        card_id = self._thinking_cards.get(sk)
+        if not card_id:
+            return
+
+        display = self._compose_thinking_display(sk)
+        try:
+            await self._patch_card_content(card_id, display)
+            self._streaming_last_patch[sk] = time.time()
+        except Exception as e:
+            logger.debug(f"Feishu: stream_thinking patch failed (non-fatal): {e}")
+
+    def _compose_thinking_display(self, sk: str) -> str:
+        """根据当前 thinking + reply buffer 构建卡片显示内容"""
+        thinking = self._streaming_thinking.get(sk, "")
+        reply = self._streaming_buffers.get(sk, "")
+        dur_ms = self._streaming_thinking_ms.get(sk, 0)
+
+        parts = []
+        if thinking:
+            dur_str = f" ({dur_ms / 1000:.1f}s)" if dur_ms else ""
+            preview = thinking.strip()
+            if len(preview) > 600:
+                preview = preview[:600] + "..."
+            parts.append(f"💭 **思考过程**{dur_str}\n> {preview.replace(chr(10), chr(10) + '> ')}")
+            if reply:
+                parts.append("---")
+
+        if reply:
+            parts.append(reply + " ▍")
+        elif not thinking:
+            parts.append("思考中...")
+
+        return "\n".join(parts)
+
+    async def stream_token(
+        self,
+        chat_id: str,
+        token: str,
+        *,
+        thread_id: str | None = None,
+        is_group: bool = False,
+    ) -> None:
+        """接收一个流式 token，累积并节流 PATCH 更新卡片
+
+        如果没有 thinking card 或流式未启用，静默忽略。
+        """
+        if not self.is_streaming_enabled(is_group):
+            return
+
+        sk = self._make_session_key(chat_id, thread_id)
+
+        buf = self._streaming_buffers.get(sk, "")
+        buf += token
+        self._streaming_buffers[sk] = buf
+
+        card_id = self._thinking_cards.get(sk)
+        if not card_id:
+            return
+
+        now = time.time()
+        last_t = self._streaming_last_patch.get(sk, 0.0)
+        throttle_s = self._streaming_throttle_ms / 1000.0
+
+        if now - last_t >= throttle_s:
+            has_thinking = sk in self._streaming_thinking
+            display_text = self._compose_thinking_display(sk) if has_thinking else (buf + " ▍")
+            try:
+                await self._patch_card_content(card_id, display_text)
+                self._streaming_last_patch[sk] = now
+            except Exception as e:
+                logger.debug(f"Feishu: streaming patch failed (non-fatal): {e}")
+
+    async def finalize_stream(
+        self,
+        chat_id: str,
+        final_text: str,
+        *,
+        thread_id: str | None = None,
+    ) -> bool:
+        """流式结束：用完整文本做最终 PATCH
+
+        Returns:
+            True 表示 PATCH 成功（send_message 应跳过重复发送），
+            False 表示失败（send_message 走正常发送路径）。
+        """
+        sk = self._make_session_key(chat_id, thread_id)
+        card_id = self._thinking_cards.get(sk)
+
+        self._streaming_buffers.pop(sk, None)
+        self._streaming_last_patch.pop(sk, None)
+        self._streaming_thinking.pop(sk, None)
+        self._streaming_thinking_ms.pop(sk, None)
+
+        if not card_id:
+            return False
+
+        try:
+            success = await self._patch_card_content(card_id, final_text)
+            if success:
+                self._streaming_finalized.add(sk)
+                self._thinking_cards.pop(sk, None)
+                return True
+        except Exception as e:
+            logger.warning(f"Feishu: finalize_stream patch failed: {e}")
+
+        # PATCH 失败回退：删除占位卡片，让 send_message 走正常路径
+        with contextlib.suppress(Exception):
+            await self._delete_feishu_message(card_id)
+        self._thinking_cards.pop(sk, None)
+        return False
+
+    # ── /feishu command helpers ─────────────────────────────────────────
+
+    def get_status_info(self) -> dict:
+        """Return adapter status dict for ``/feishu start``."""
+        try:
+            from openakita import __version__
+        except Exception:
+            __version__ = "unknown"
+        return {
+            "version": __version__,
+            "app_id": self.config.app_id,
+            "connected": self._client is not None,
+            "streaming_enabled": self._streaming_enabled,
+            "group_streaming": self._group_streaming,
+            "group_response_mode": self._group_response_mode or "global",
+        }
+
+    def get_auth_url(self, redirect_uri: str = "") -> str:
+        """Build Feishu OAuth2 user authorization URL."""
+        base = "https://open.feishu.cn/open-apis/authen/v1/authorize"
+        redir = redirect_uri or "https://open.feishu.cn/open-apis/authen/v1/index"
+        return f"{base}?app_id={self.config.app_id}&redirect_uri={redir}&response_type=code"
+
     _STALE_MESSAGE_THRESHOLD = 120  # 超过此秒数的重投递消息视为陈旧
 
     async def _handle_message_async(self, msg_dict: dict, sender_dict: dict) -> None:
@@ -742,10 +990,12 @@ class FeishuAdapter(ChannelAdapter):
             if msg_id:
                 asyncio.create_task(self.add_reaction(msg_id))
 
-            # 记录最近用户消息 ID，供 send_typing 回复定位
+            # 记录最近用户消息 ID，供 send_typing 回复定位（session_key 级别）
             chat_id = msg_dict.get("chat_id")
+            root_id = msg_dict.get("root_id")
             if chat_id and msg_id:
-                self._last_user_msg[chat_id] = msg_id
+                sk = self._make_session_key(chat_id, root_id or None)
+                self._last_user_msg[sk] = msg_id
 
             unified = await self._convert_message(msg_dict, sender_dict)
             self._log_message(unified)
@@ -846,6 +1096,12 @@ class FeishuAdapter(ChannelAdapter):
             if msg_id:
                 asyncio.create_task(self.add_reaction(msg_id))
 
+            chat_id = message.get("chat_id")
+            root_id = message.get("root_id")
+            if chat_id and msg_id:
+                sk = self._make_session_key(chat_id, root_id or None)
+                self._last_user_msg[sk] = msg_id
+
             unified = await self._convert_message(message, sender)
             self._log_message(unified)
             await self._emit_message(unified)
@@ -923,8 +1179,11 @@ class FeishuAdapter(ChannelAdapter):
                 content.images.append(media)
 
         elif msg_type == "post":
-            # 富文本
-            content.text = self._parse_post_content(msg_content)
+            # 富文本（同时提取图片/视频 MediaFile）
+            msg_id = message.get("message_id", "")
+            content.text = self._parse_post_content_with_media(
+                msg_content, content, msg_id,
+            )
 
         else:
             # 未知类型
@@ -1029,12 +1288,33 @@ class FeishuAdapter(ChannelAdapter):
         )
 
     def _parse_post_content(self, post: dict) -> str:
-        """解析富文本内容
+        """解析富文本内容（纯文本，不提取 MediaFile）
 
         飞书 post 消息的 content JSON 格式为：
         {"post": {"zh_cn": {"title": "...", "content": [[...]]}}}
         需要先提取语言层再解析具体内容。
         """
+        body = self._extract_post_body(post)
+        if not isinstance(body, dict):
+            return str(body) if body else ""
+        return self._render_post_body(body)
+
+    def _parse_post_content_with_media(
+        self, post: dict, content: MessageContent, message_id: str = "",
+    ) -> str:
+        """解析富文本内容，同时提取图片/视频为 MediaFile。
+
+        与 _parse_post_content 相比，遇到 img/media 标签时会创建 MediaFile
+        并 append 到 content.images / content.videos，确保多模态数据不丢失。
+        """
+        body = self._extract_post_body(post)
+        if not isinstance(body, dict):
+            return str(body) if body else ""
+        return self._render_post_body(body, content=content, message_id=message_id)
+
+    @staticmethod
+    def _extract_post_body(post: dict) -> dict | str:
+        """从 post JSON 中提取语言层 body（zh_cn / en_us / 首个可用语言）。"""
         body = post
         if "post" in post:
             lang_map = post["post"]
@@ -1046,18 +1326,23 @@ class FeishuAdapter(ChannelAdapter):
                 if isinstance(v, dict) and ("title" in v or "content" in v):
                     body = v
                     break
+        return body
 
-        if not isinstance(body, dict):
-            return str(body) if body else ""
-
-        result = []
+    @staticmethod
+    def _render_post_body(
+        body: dict,
+        content: MessageContent | None = None,
+        message_id: str = "",
+    ) -> str:
+        """将 post body 渲染为纯文本，可选同时提取媒体到 content。"""
+        result: list[str] = []
 
         title = body.get("title", "")
         if title:
             result.append(title)
 
         for paragraph in body.get("content", []):
-            line_parts = []
+            line_parts: list[str] = []
             for item in paragraph:
                 tag = item.get("tag", "")
                 if tag == "text":
@@ -1069,8 +1354,25 @@ class FeishuAdapter(ChannelAdapter):
                 elif tag == "img":
                     image_key = item.get("image_key", "")
                     line_parts.append(f"[图片:{image_key}]" if image_key else "[图片]")
+                    if image_key and content is not None:
+                        media = MediaFile.create(
+                            filename=f"{image_key}.png",
+                            mime_type="image/png",
+                            file_id=image_key,
+                        )
+                        media.extra["message_id"] = message_id
+                        content.images.append(media)
                 elif tag == "media":
-                    line_parts.append(f"[视频:{item.get('file_key', '')}]")
+                    file_key = item.get("file_key", "")
+                    line_parts.append(f"[视频:{file_key}]")
+                    if file_key and content is not None:
+                        media = MediaFile.create(
+                            filename=f"{file_key}.mp4",
+                            mime_type="video/mp4",
+                            file_id=file_key,
+                        )
+                        media.extra["message_id"] = message_id
+                        content.videos.append(media)
                 elif tag == "emotion":
                     line_parts.append(item.get("emoji_type", ""))
             if line_parts:
@@ -1084,7 +1386,16 @@ class FeishuAdapter(ChannelAdapter):
             raise RuntimeError("Feishu client not started")
 
         # ---- 思考卡片处理：尝试 PATCH 占位卡片为最终回复 ----
-        thinking_card_id = self._thinking_cards.pop(message.chat_id, None)
+        sk = self._make_session_key(message.chat_id, message.thread_id)
+        # 如果流式已经完成了 finalize，不再重复 PATCH
+        if sk in self._streaming_finalized:
+            card_id = self._thinking_cards.get(sk)
+            self._streaming_finalized.discard(sk)
+            self._thinking_cards.pop(sk, None)
+            self._streaming_buffers.pop(sk, None)
+            self._streaming_last_patch.pop(sk, None)
+            return card_id or sk
+        thinking_card_id = self._thinking_cards.pop(sk, None)
         if thinking_card_id:
             text = message.content.text or ""
             if text and not message.content.has_media:
@@ -1342,27 +1653,41 @@ class FeishuAdapter(ChannelAdapter):
         return any(re.search(pattern, text, re.MULTILINE) for pattern in patterns)
 
     async def _upload_image(self, path: str) -> str:
-        """上传图片"""
-        with open(path, "rb") as f:
-            request = (
-                lark_oapi.api.im.v1.CreateImageRequest.builder()
-                .request_body(
-                    lark_oapi.api.im.v1.CreateImageRequestBody.builder()
-                    .image_type("message")
-                    .image(f)
+        """上传图片（含 token 过期自动重试）
+
+        lark-oapi SDK 不会在 401/权限错误时自动刷新 token，
+        因此在首次失败且判定为 token/权限类错误时，主动清缓存并重试一次。
+        每次重试需重新 open 文件，因为上次请求已消耗文件句柄。
+        """
+        for attempt in range(2):
+            with open(path, "rb") as f:
+                request = (
+                    lark_oapi.api.im.v1.CreateImageRequest.builder()
+                    .request_body(
+                        lark_oapi.api.im.v1.CreateImageRequestBody.builder()
+                        .image_type("message")
+                        .image(f)
+                        .build()
+                    )
                     .build()
                 )
-                .build()
-            )
+                response = await asyncio.get_running_loop().run_in_executor(
+                    None, lambda: self._client.im.v1.image.create(request)
+                )
 
-            response = await asyncio.get_running_loop().run_in_executor(
-                None, lambda: self._client.im.v1.image.create(request)
-            )
+            if response.success():
+                return response.data.image_key
 
-            if not response.success():
-                raise RuntimeError(f"Failed to upload image: {response.msg}")
+            if attempt == 0 and self._is_token_error(response):
+                logger.warning(
+                    f"Feishu: image upload permission error ({response.msg}), "
+                    "invalidating token cache and retrying..."
+                )
+                self._invalidate_token_cache()
+                await asyncio.sleep(1)
+                continue
 
-            return response.data.image_key
+            raise RuntimeError(f"Failed to upload image: {response.msg}")
 
     async def download_media(self, media: MediaFile) -> Path:
         """下载媒体文件"""
@@ -1763,30 +2088,39 @@ class FeishuAdapter(ChannelAdapter):
         return response.data.message_id
 
     async def _upload_file(self, path: str) -> str:
-        """上传文件到飞书"""
+        """上传文件到飞书（含 token 过期自动重试）"""
         file_name = Path(path).name
 
-        with open(path, "rb") as f:
-            request = (
-                lark_oapi.api.im.v1.CreateFileRequest.builder()
-                .request_body(
-                    lark_oapi.api.im.v1.CreateFileRequestBody.builder()
-                    .file_type("stream")
-                    .file_name(file_name)
-                    .file(f)
+        for attempt in range(2):
+            with open(path, "rb") as f:
+                request = (
+                    lark_oapi.api.im.v1.CreateFileRequest.builder()
+                    .request_body(
+                        lark_oapi.api.im.v1.CreateFileRequestBody.builder()
+                        .file_type("stream")
+                        .file_name(file_name)
+                        .file(f)
+                        .build()
+                    )
                     .build()
                 )
-                .build()
-            )
+                response = await asyncio.get_running_loop().run_in_executor(
+                    None, lambda: self._client.im.v1.file.create(request)
+                )
 
-            response = await asyncio.get_running_loop().run_in_executor(
-                None, lambda: self._client.im.v1.file.create(request)
-            )
+            if response.success():
+                return response.data.file_key
 
-            if not response.success():
-                raise RuntimeError(f"Failed to upload file: {response.msg}")
+            if attempt == 0 and self._is_token_error(response):
+                logger.warning(
+                    f"Feishu: file upload permission error ({response.msg}), "
+                    "invalidating token cache and retrying..."
+                )
+                self._invalidate_token_cache()
+                await asyncio.sleep(1)
+                continue
 
-            return response.data.file_key
+            raise RuntimeError(f"Failed to upload file: {response.msg}")
 
     def build_simple_card(
         self,

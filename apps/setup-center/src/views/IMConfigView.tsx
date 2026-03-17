@@ -1,6 +1,8 @@
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { FieldText, FieldBool, TelegramPairingCodeHint } from "../components/EnvFields";
+import { FeishuQRModal } from "../components/FeishuQRModal";
 import { IconBook, IconClipboard, LogoTelegram, LogoFeishu, LogoWework, LogoDingtalk, LogoQQ } from "../icons";
 import type { EnvMap } from "../types";
 import { envGet, envSet } from "../utils";
@@ -11,11 +13,13 @@ type IMConfigViewProps = {
   setEnvDraft: (updater: (prev: EnvMap) => EnvMap) => void;
   busy?: string | null;
   currentWorkspaceId: string | null;
+  venvDir?: string;
 };
 
 export function IMConfigView(props: IMConfigViewProps) {
-  const { envDraft, setEnvDraft, busy = null, currentWorkspaceId } = props;
+  const { envDraft, setEnvDraft, busy = null, currentWorkspaceId, venvDir = "" } = props;
   const { t } = useTranslation();
+  const [showFeishuQR, setShowFeishuQR] = useState(false);
 
   const _envBase = { envDraft, onEnvChange: setEnvDraft, busy };
   const FT = (p: { k: string; label: string; placeholder?: string; help?: string; type?: "text" | "password" }) =>
@@ -51,8 +55,32 @@ export function IMConfigView(props: IMConfigViewProps) {
       needPublicIp: false,
       body: (
         <>
+          {venvDir && (
+            <button className="btnSmall" style={{ marginBottom: 8 }}
+              onClick={() => setShowFeishuQR(true)}
+            >{t("feishu.qrScanCreate")}</button>
+          )}
           {FT({ k: "FEISHU_APP_ID", label: "App ID" })}
           {FT({ k: "FEISHU_APP_SECRET", label: "App Secret", type: "password" })}
+          <div className="divider" style={{ margin: "8px 0" }} />
+          {FB({ k: "FEISHU_STREAMING_ENABLED", label: t("feishu.streaming"), defaultValue: true })}
+          {envGet(envDraft, "FEISHU_STREAMING_ENABLED", "true").toLowerCase() === "true" && (
+            FB({ k: "FEISHU_GROUP_STREAMING", label: t("feishu.groupStreaming"), defaultValue: true })
+          )}
+          <div style={{ marginTop: 8 }}>
+            <div className="label">{t("feishu.groupMode")}</div>
+            <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+              {(["mention_only", "smart", "always"] as const).map((m) => (
+                <button key={m}
+                  className={envGet(envDraft, "FEISHU_GROUP_RESPONSE_MODE", "mention_only") === m ? "capChipActive" : "capChip"}
+                  onClick={() => setEnvDraft((d) => envSet(d, "FEISHU_GROUP_RESPONSE_MODE", m))}
+                >{t(`feishu.groupMode_${m}`)}</button>
+              ))}
+            </div>
+            <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
+              {t(`feishu.groupModeHint_${envGet(envDraft, "FEISHU_GROUP_RESPONSE_MODE", "mention_only")}`)}
+            </div>
+          </div>
         </>
       ),
     },
@@ -204,6 +232,17 @@ export function IMConfigView(props: IMConfigViewProps) {
 
   return (
     <>
+      {showFeishuQR && (
+        <FeishuQRModal
+          venvDir={venvDir}
+          onClose={() => setShowFeishuQR(false)}
+          onSuccess={(appId, appSecret) => {
+            setEnvDraft((d) => envSet(envSet(d, "FEISHU_APP_ID", appId), "FEISHU_APP_SECRET", appSecret));
+            setShowFeishuQR(false);
+            toast.success(t("feishu.qrSuccess"));
+          }}
+        />
+      )}
       <div className="card">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div className="cardTitle">{t("config.imTitle")}</div>

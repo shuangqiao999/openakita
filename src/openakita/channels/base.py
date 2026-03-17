@@ -290,11 +290,10 @@ class ChannelAdapter(ABC):
 
     def _log_message(self, message: UnifiedMessage) -> None:
         """记录消息日志"""
+        text_preview = message.text[:80] if message.text else f"({message.message_type.value})"
         logger.info(
             f"{self.channel_name}: received message from {message.channel_user_id} "
-            f"in {message.chat_id}: {message.text}"
-            if message.text
-            else f"{self.channel_name}: received {message.message_type.value}"
+            f"in {message.chat_id}: {text_preview}"
         )
 
 

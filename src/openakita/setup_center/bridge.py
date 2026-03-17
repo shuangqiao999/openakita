@@ -872,6 +872,39 @@ def ensure_channel_deps(workspace_dir: str) -> None:
     })
 
 
+async def feishu_onboard_start(domain: str) -> None:
+    """启动飞书 Device Flow：init 握手 + begin 获取 device_code 和 QR URL"""
+    from openakita.setup.feishu_onboard import FeishuOnboard
+
+    ob = FeishuOnboard(domain=domain)
+    await ob.init()
+    begin_data = await ob.begin()
+    result = {
+        "device_code": begin_data.get("device_code", ""),
+        "verification_uri": begin_data.get("verification_uri_complete", ""),
+        "interval": begin_data.get("interval", 5),
+        "expire_in": begin_data.get("expire_in", 600),
+    }
+    _json_print(result)
+
+
+async def feishu_onboard_poll(domain: str, device_code: str) -> None:
+    """单次轮询 Device Flow 授权状态"""
+    from openakita.setup.feishu_onboard import FeishuOnboard
+
+    ob = FeishuOnboard(domain=domain)
+    result = await ob.poll(device_code)
+    _json_print(result)
+
+
+async def feishu_validate(app_id: str, app_secret: str, domain: str) -> None:
+    """验证飞书凭证有效性"""
+    from openakita.setup.feishu_onboard import validate_credentials
+
+    result = await validate_credentials(app_id, app_secret, domain=domain)
+    _json_print(result)
+
+
 def list_skills(workspace_dir: str) -> None:
     from openakita.skills.loader import SkillLoader
 
@@ -1474,6 +1507,18 @@ def main(argv: list[str] | None = None) -> None:
     p_cfg.add_argument("--workspace-dir", required=True, help="工作区目录")
     p_cfg.add_argument("--skill-name", required=True, help="技能名称")
 
+    p_fos = sub.add_parser("feishu-onboard-start", help="启动飞书 Device Flow 扫码建应用（JSON）")
+    p_fos.add_argument("--domain", default="feishu", help="feishu | lark")
+
+    p_fop = sub.add_parser("feishu-onboard-poll", help="轮询飞书 Device Flow 授权状态（JSON）")
+    p_fop.add_argument("--domain", default="feishu", help="feishu | lark")
+    p_fop.add_argument("--device-code", required=True, help="init 返回的 device_code")
+
+    p_fv = sub.add_parser("feishu-validate", help="验证飞书凭证有效性（JSON）")
+    p_fv.add_argument("--app-id", required=True, help="飞书 App ID")
+    p_fv.add_argument("--app-secret", required=True, help="飞书 App Secret")
+    p_fv.add_argument("--domain", default="feishu", help="feishu | lark")
+
     args = p.parse_args(argv)
 
     if args.cmd == "list-providers":
@@ -1532,6 +1577,22 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.cmd == "get-skill-config":
         get_skill_config(workspace_dir=args.workspace_dir, skill_name=args.skill_name)
+        return
+
+    if args.cmd == "feishu-onboard-start":
+        asyncio.run(feishu_onboard_start(domain=args.domain))
+        return
+
+    if args.cmd == "feishu-onboard-poll":
+        asyncio.run(feishu_onboard_poll(domain=args.domain, device_code=args.device_code))
+        return
+
+    if args.cmd == "feishu-validate":
+        asyncio.run(feishu_validate(
+            app_id=args.app_id,
+            app_secret=args.app_secret,
+            domain=args.domain,
+        ))
         return
 
     raise SystemExit(2)

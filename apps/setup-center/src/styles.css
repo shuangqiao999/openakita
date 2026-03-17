@@ -677,13 +677,13 @@ button.btnPrimary:hover {
   color: #fff;
 }
 
-.btnApplyRestart {
+button.btnApplyRestart {
   background: #0e7490;
   color: #fff;
   border: 1px solid transparent;
 }
 
-.btnApplyRestart:hover {
+button.btnApplyRestart:hover {
   background: #0c6a82;
 }
 
@@ -1680,12 +1680,14 @@ button.btnPrimary:hover {
   background: var(--bg1);
 }
 .capChipActive {
-  border-color: var(--nav-active-border);
-  color: var(--brand);
-  background: var(--nav-active);
+  border-color: var(--accent, #3b82f6);
+  color: var(--accent, #3b82f6);
+  background: rgba(59, 130, 246, 0.08);
+  font-weight: 700;
+  box-shadow: 0 0 0 1px var(--accent, #3b82f6);
 }
 .capChipActive:hover {
-  background: var(--nav-hover);
+  background: rgba(59, 130, 246, 0.14);
 }
 
 /* Advanced details */

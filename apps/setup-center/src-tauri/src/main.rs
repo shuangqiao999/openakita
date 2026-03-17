@@ -2721,6 +2721,9 @@ fn main() {
             openakita_uninstall_skill,
             openakita_list_marketplace,
             openakita_get_skill_config,
+            openakita_feishu_onboard_start,
+            openakita_feishu_onboard_poll,
+            openakita_feishu_validate,
             fetch_pypi_versions,
             http_get_json,
             http_proxy_request,
@@ -5182,6 +5185,68 @@ async fn openakita_get_skill_config(
             &wd_str,
             "--skill-name",
             &skill_name,
+        ];
+        run_python_module_json(&venv_dir, "openakita.setup_center.bridge", &args, &[])
+    })
+    .await
+}
+
+/// Start Feishu Device Flow onboarding (QR scan).
+/// Returns JSON with device_code + verification_uri.
+#[tauri::command]
+async fn openakita_feishu_onboard_start(
+    venv_dir: String,
+    domain: Option<String>,
+) -> Result<String, String> {
+    spawn_blocking_result(move || {
+        let d = domain.unwrap_or_else(|| "feishu".to_string());
+        let args = vec!["feishu-onboard-start", "--domain", &d];
+        run_python_module_json(&venv_dir, "openakita.setup_center.bridge", &args, &[])
+    })
+    .await
+}
+
+/// Poll Feishu Device Flow authorization status.
+/// Returns JSON with status / app_id / app_secret on success.
+#[tauri::command]
+async fn openakita_feishu_onboard_poll(
+    venv_dir: String,
+    domain: Option<String>,
+    device_code: String,
+) -> Result<String, String> {
+    spawn_blocking_result(move || {
+        let d = domain.unwrap_or_else(|| "feishu".to_string());
+        let args = vec![
+            "feishu-onboard-poll",
+            "--domain",
+            &d,
+            "--device-code",
+            &device_code,
+        ];
+        run_python_module_json(&venv_dir, "openakita.setup_center.bridge", &args, &[])
+    })
+    .await
+}
+
+/// Validate Feishu App ID / App Secret credentials.
+/// Returns JSON with {valid: bool, error?: string}.
+#[tauri::command]
+async fn openakita_feishu_validate(
+    venv_dir: String,
+    app_id: String,
+    app_secret: String,
+    domain: Option<String>,
+) -> Result<String, String> {
+    spawn_blocking_result(move || {
+        let d = domain.unwrap_or_else(|| "feishu".to_string());
+        let args = vec![
+            "feishu-validate",
+            "--app-id",
+            &app_id,
+            "--app-secret",
+            &app_secret,
+            "--domain",
+            &d,
         ];
         run_python_module_json(&venv_dir, "openakita.setup_center.bridge", &args, &[])
     })

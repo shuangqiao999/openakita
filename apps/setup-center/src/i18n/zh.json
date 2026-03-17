@@ -1443,5 +1443,27 @@
     "saveError": "保存文件失败",
     "reloadSuccess": "Identity 已重新加载",
     "reloadError": "重载失败"
+  },
+  "feishu": {
+    "qrScanCreate": "扫码创建机器人",
+    "qrTitle": "飞书扫码授权",
+    "qrSubtitle": "使用飞书 APP 扫描二维码创建机器人应用",
+    "qrLoading": "正在初始化...",
+    "qrScanHint": "请使用飞书 APP 扫描上方二维码",
+    "qrSuccess": "授权成功！凭证已自动填入",
+    "qrRetry": "重试",
+    "qrTimeout": "扫码超时，请重试",
+    "qrExpired": "二维码已过期，请重试",
+    "qrDenied": "授权已被拒绝",
+    "qrInitFailed": "初始化失败，请检查网络",
+    "streaming": "流式卡片输出",
+    "groupStreaming": "群聊中也启用流式输出",
+    "groupMode": "群聊回复模式",
+    "groupMode_mention_only": "仅 @时回复",
+    "groupMode_smart": "智能判断",
+    "groupMode_always": "所有消息",
+    "groupModeHint_mention_only": "仅在被 @提及 时回复，最安全",
+    "groupModeHint_smart": "AI 判断消息是否需要回复",
+    "groupModeHint_always": "回复群内所有消息（慎用）"
   }
 }

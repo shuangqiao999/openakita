@@ -478,6 +478,20 @@ def _ensure_channel_deps() -> None:
         )
 
 
+def _cred_bool(val) -> bool | None:
+    """Safely convert a credential value to bool.
+
+    IMView stores checkbox values as strings ``"true"``/``"false"`` via
+    ``updateCredential``.  A naive ``bool("false")`` would return ``True``.
+    Return ``None`` when *val* is absent so callers can fall back to env.
+    """
+    if val is None:
+        return None
+    if isinstance(val, bool):
+        return val
+    return str(val).lower() in ("true", "1", "yes")
+
+
 def _create_bot_adapter(bot_type: str, creds: dict, *, channel_name: str, bot_id: str, agent_profile_id: str):
     """Create an IM adapter instance from im_bots config entry."""
     from .channels.base import ChannelAdapter
@@ -488,6 +502,9 @@ def _create_bot_adapter(bot_type: str, creds: dict, *, channel_name: str, bot_id
             app_id=creds.get("app_id", ""),
             app_secret=creds.get("app_secret", ""),
             channel_name=channel_name, bot_id=bot_id, agent_profile_id=agent_profile_id,
+            streaming_enabled=_cred_bool(creds.get("streaming_enabled")),
+            group_streaming=_cred_bool(creds.get("group_streaming")),
+            group_response_mode=creds.get("group_response_mode") or None,
         )
     elif bot_type == "telegram":
         from .channels.adapters import TelegramAdapter
@@ -544,7 +561,7 @@ def _create_bot_adapter(bot_type: str, creds: dict, *, channel_name: str, bot_id
         return QQBotAdapter(
             app_id=creds.get("app_id", ""),
             app_secret=creds.get("app_secret", ""),
-            sandbox=bool(creds.get("sandbox", False)),
+            sandbox=_cred_bool(creds.get("sandbox")) or False,
             mode=creds.get("mode", "websocket"),
             channel_name=channel_name, bot_id=bot_id, agent_profile_id=agent_profile_id,
         )
@@ -926,10 +943,23 @@ async def start_im_channels(agent_or_master):
     agent_handler.skip_current_step = agent.skip_current_step
     agent_handler.insert_user_message = agent.insert_user_message
 
+    async def agent_handler_stream(session, message: str):
+        """流式版 agent_handler，yield SSE event dicts（仅单 Agent 模式可用）。"""
+        session_messages = session.context.get_messages()
+        async for event in agent.chat_with_session_stream(
+            message=message,
+            session_messages=session_messages,
+            session_id=session.id,
+            session=session,
+            gateway=_message_gateway,
+        ):
+            yield event
+
     agent.set_scheduler_gateway(_message_gateway)
     _message_gateway.set_brain(agent.brain)
 
     _message_gateway.agent_handler = agent_handler
+    _message_gateway.agent_handler_stream = agent_handler_stream
 
     # 设置 turn_loader 用于 session 崩溃恢复回填
     _setup_session_backfill(agent_or_master)
