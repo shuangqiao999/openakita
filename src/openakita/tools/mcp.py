@@ -12,9 +12,12 @@ MCP (Model Context Protocol) 客户端
 
 import asyncio
 import contextlib
+import functools
 import json
 import logging
+import os
 import shutil
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -63,6 +66,36 @@ try:
     MCP_SSE_AVAILABLE = True
 except ImportError:
     pass
+
+
+@functools.lru_cache(maxsize=1)
+def _resolve_macos_shell_path() -> str | None:
+    """macOS GUI 应用不继承用户 shell 的 PATH，通过 login shell 获取真实 PATH。
+
+    Finder/Dock 启动的 .app 只拿到 /usr/bin:/bin:/usr/sbin:/sbin，
+    不含 Homebrew、NVM、Volta 等工具管理器注入的路径，导致 npx/node 等命令找不到。
+    此函数运行一次用户的 login shell 并提取完整 PATH，结果由 lru_cache 缓存。
+    """
+    if sys.platform != "darwin":
+        return None
+    shell = os.environ.get("SHELL", "/bin/zsh")
+    try:
+        proc = subprocess.run(
+            [shell, "-l", "-c",
+             'printf "\\n__AKITA_PATH__\\n%s\\n__AKITA_PATH__\\n" "$PATH"'],
+            capture_output=True, text=True, timeout=5,
+            stdin=subprocess.DEVNULL,
+        )
+        if proc.returncode == 0:
+            parts = proc.stdout.split("__AKITA_PATH__")
+            if len(parts) >= 3:
+                path = parts[1].strip()
+                if path:
+                    logger.debug("[MCP] Resolved macOS shell PATH: %s", path)
+                    return path
+    except Exception as e:
+        logger.debug("[MCP] Failed to resolve macOS shell PATH: %s", e)
+    return None
 
 
 @dataclass
@@ -270,6 +303,14 @@ class MCPClient:
         if found:
             return found
 
+        # 2.5) macOS GUI 应用的 PATH 不含用户工具路径，用 login shell PATH 再查一次
+        if not found and sys.platform == "darwin" and not search_path:
+            shell_path = _resolve_macos_shell_path()
+            if shell_path:
+                found = shutil.which(cmd, path=shell_path)
+                if found:
+                    return found
+
         # 3) 如果有 cwd，也在 cwd 下做一次绝对搜索
         if config.cwd:
             candidate = Path(config.cwd) / cmd
@@ -336,10 +377,21 @@ class MCPClient:
                         if candidate.is_file():
                             args[i] = str(candidate.resolve())
 
+        # macOS GUI 应用的 PATH 不含 Homebrew/NVM/Volta 等用户工具路径，
+        # 需要通过 login shell 获取完整 PATH 传递给 MCP 子进程
+        subprocess_env: dict | None = dict(config.env) if config.env else None
+        if sys.platform == "darwin":
+            shell_path = _resolve_macos_shell_path()
+            if shell_path:
+                if subprocess_env is None:
+                    subprocess_env = {**os.environ, "PATH": shell_path}
+                elif "PATH" not in subprocess_env and "Path" not in subprocess_env:
+                    subprocess_env["PATH"] = shell_path
+
         server_params = StdioServerParameters(
             command=command,
             args=args,
-            env=config.env or None,
+            env=subprocess_env,
             cwd=config.cwd or None,
         )
 
