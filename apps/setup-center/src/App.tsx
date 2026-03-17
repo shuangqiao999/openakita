@@ -3053,7 +3053,7 @@ export function App() {
       case "tools":
         return [
           "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "FORCE_IPV4",
-          "TOOL_MAX_PARALLEL", "FORCE_TOOL_CALL_MAX_RETRIES",
+          "TOOL_MAX_PARALLEL", "FORCE_TOOL_CALL_MAX_RETRIES", "FORCE_TOOL_CALL_IM_FLOOR", "CONFIRMATION_TEXT_MAX_RETRIES",
           "ALLOW_PARALLEL_TOOLS_WITH_INTERRUPT_CHECKS",
           "MCP_ENABLED", "MCP_TIMEOUT",
           "DESKTOP_ENABLED", "DESKTOP_DEFAULT_MONITOR", "DESKTOP_COMPRESSION_QUALITY",
@@ -5365,7 +5365,8 @@ export function App() {
   function renderTools() {
     const keysTools = [
       "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "FORCE_IPV4",
-      "TOOL_MAX_PARALLEL", "FORCE_TOOL_CALL_MAX_RETRIES", "ALLOW_PARALLEL_TOOLS_WITH_INTERRUPT_CHECKS",
+      "TOOL_MAX_PARALLEL", "FORCE_TOOL_CALL_MAX_RETRIES", "FORCE_TOOL_CALL_IM_FLOOR", "CONFIRMATION_TEXT_MAX_RETRIES",
+      "ALLOW_PARALLEL_TOOLS_WITH_INTERRUPT_CHECKS",
       "MCP_ENABLED", "MCP_TIMEOUT",
       "DESKTOP_ENABLED", "DESKTOP_DEFAULT_MONITOR", "DESKTOP_COMPRESSION_QUALITY",
       "DESKTOP_MAX_WIDTH", "DESKTOP_MAX_HEIGHT", "DESKTOP_CACHE_TTL",
@@ -5562,15 +5563,34 @@ export function App() {
             </div>
           </details>
 
-          {/* ── Other ── */}
-          <details className="group/other rounded-lg border border-border mt-2">
+          {/* ── Hallucination Guard ── */}
+          <details className="group/hguard rounded-lg border border-border mt-2">
             <summary className="cursor-pointer flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium select-none list-none [&::-webkit-details-marker]:hidden hover:bg-accent/50 transition-colors">
-              <ChevronDownIcon className="size-4 shrink-0 transition-transform group-open/other:rotate-180 text-muted-foreground" />
-              {t("config.toolsOther")}
+              <ChevronDownIcon className="size-4 shrink-0 transition-transform group-open/hguard:rotate-180 text-muted-foreground" />
+              {t("config.toolsHallucinationGuard")}
             </summary>
             <div className="flex flex-col gap-2.5 px-4 py-3 border-t border-border">
+              <p className="text-xs text-muted-foreground">{t("config.toolsHallucinationGuardHint")}</p>
               <div className="grid2">
-                {FT({ k: "FORCE_TOOL_CALL_MAX_RETRIES", label: t("config.toolsForceRetry"), placeholder: "1" })}
+                {FS({ k: "FORCE_TOOL_CALL_MAX_RETRIES", label: t("config.toolsForceRetry"), options: [
+                  { value: "0", label: t("config.guardOff") },
+                  { value: "1", label: "1" },
+                  { value: "2", label: "2" },
+                  { value: "3", label: "3" },
+                ] })}
+                {FS({ k: "FORCE_TOOL_CALL_IM_FLOOR", label: t("config.toolsImFloor"), options: [
+                  { value: "0", label: t("config.guardSameAsGlobal") },
+                  { value: "1", label: "1" },
+                  { value: "2", label: "2" },
+                ] })}
+              </div>
+              <div className="grid2">
+                {FS({ k: "CONFIRMATION_TEXT_MAX_RETRIES", label: t("config.toolsConfirmTextRetry"), options: [
+                  { value: "0", label: t("config.guardOff") },
+                  { value: "1", label: "1" },
+                  { value: "2", label: "2" },
+                  { value: "3", label: "3" },
+                ] })}
               </div>
             </div>
           </details>
@@ -6346,6 +6366,8 @@ export function App() {
       "THINKING_MODE",
       "TOOL_MAX_PARALLEL",
       "FORCE_TOOL_CALL_MAX_RETRIES",
+      "FORCE_TOOL_CALL_IM_FLOOR",
+      "CONFIRMATION_TEXT_MAX_RETRIES",
       "ALLOW_PARALLEL_TOOLS_WITH_INTERRUPT_CHECKS",
       // timeouts
       "PROGRESS_TIMEOUT_SECONDS",

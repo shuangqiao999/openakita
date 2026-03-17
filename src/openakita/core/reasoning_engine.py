@@ -569,15 +569,16 @@ class ReasoningEngine:
                     logger.warning(f"[EndpointOverride] Failed to switch to {endpoint_override}: {msg}, using default")
 
         # ForceToolCall 配置
-        # IM 保留至少 2 次重试，防止模型声称执行了操作但未调用工具（幻觉）
+        im_floor = max(0, int(getattr(settings, "force_tool_call_im_floor", 1)))
+        configured = int(getattr(settings, "force_tool_call_max_retries", 1))
         if session_type == "im":
-            base_force_retries = max(2, int(getattr(settings, "force_tool_call_max_retries", 2)))
+            base_force_retries = max(im_floor, configured)
         else:
-            base_force_retries = max(0, int(getattr(settings, "force_tool_call_max_retries", 2)))
+            base_force_retries = max(0, configured)
 
         max_no_tool_retries = self._effective_force_retries(base_force_retries, conversation_id)
         max_verify_retries = 3
-        max_confirmation_text_retries = 2
+        max_confirmation_text_retries = max(0, int(getattr(settings, "confirmation_text_max_retries", 2)))
 
         # 追踪变量
         executed_tool_names: list[str] = []
@@ -1525,15 +1526,16 @@ class ReasoningEngine:
             working_messages = list(messages)
 
             # ForceToolCall 配置
-            # IM 保留至少 2 次重试，防止模型声称执行了操作但未调用工具（幻觉）
+            im_floor = max(0, int(getattr(settings, "force_tool_call_im_floor", 1)))
+            configured = int(getattr(settings, "force_tool_call_max_retries", 1))
             if session_type == "im":
-                base_force_retries = max(2, int(getattr(settings, "force_tool_call_max_retries", 2)))
+                base_force_retries = max(im_floor, configured)
             else:
-                base_force_retries = max(0, int(getattr(settings, "force_tool_call_max_retries", 2)))
+                base_force_retries = max(0, configured)
 
             max_no_tool_retries = self._effective_force_retries(base_force_retries, conversation_id)
             max_verify_retries = 3
-            max_confirmation_text_retries = 2
+            max_confirmation_text_retries = max(0, int(getattr(settings, "confirmation_text_max_retries", 2)))
 
             executed_tool_names: list[str] = []
             delivery_receipts: list[dict] = []
@@ -3180,22 +3182,8 @@ class ReasoningEngine:
             f"text_preview=\"{(stripped_text or '')[:80].replace(chr(10), ' ')}\""
         )
 
-        # 确认式回复检测：模型在向用户确认信息（如语音识别结果、执行计划），
-        # 而非遗漏工具调用。此时 ForceToolCall 重试毫无意义，只会浪费 token 并
-        # 生成重复内容。直接返回给用户即可。
-        if stripped_text and self._is_confirmation_response(stripped_text):
-            logger.info(
-                "[IntentTag] Confirmation-style response detected, "
-                "skipping ForceToolCall retries"
-            )
-            return clean_llm_response(stripped_text)
-
-        # [REPLY] 允许 1 次重试（防止模型错误使用 REPLY 跳过工具调用）
-        # [ACTION] 或无标记 → 使用完整重试次数（默认 2 次）
-        if intent == "REPLY":
-            max_no_tool_retries = 1
-        else:
-            max_no_tool_retries = self._effective_force_retries(base_force_retries, conversation_id)
+        # [REPLY] / [ACTION] / 无标记 → 统一使用配置的重试次数
+        max_no_tool_retries = self._effective_force_retries(base_force_retries, conversation_id)
         no_tool_call_count += 1
 
         if no_tool_call_count <= max_no_tool_retries:
@@ -3623,27 +3611,6 @@ class ReasoningEngine:
             }
             return "tool_result" not in part_types
         return False
-
-    @staticmethod
-    def _is_confirmation_response(text: str) -> bool:
-        """检测模型回复是否为确认式回复（要求用户确认后再执行）。
-
-        典型场景：语音识别后确认识别结果、复述执行计划等待确认。
-        这类回复不应触发 ForceToolCall 重试——模型是有意征询用户意见。
-        """
-        import re
-        _text = text.strip()
-        if len(_text) < 10:
-            return False
-        _tail = _text[-200:] if len(_text) > 200 else _text
-        confirmation_patterns = [
-            r"确认后.*(?:回复|发送|输入)",
-            r"请(?:回复|发送|输入).*[\"「]?确认[\"」]?",
-            r"(?:是否|请)确认",
-            r"请确认以上",
-            r"确认.*(?:准确|正确|无误)",
-        ]
-        return any(re.search(pat, _tail) for pat in confirmation_patterns)
 
     @staticmethod
     def _effective_force_retries(base_retries: int, conversation_id: str | None) -> int:

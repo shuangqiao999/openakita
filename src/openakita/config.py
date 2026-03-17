@@ -62,6 +62,14 @@ class Settings(BaseSettings):
         default=1,
         description="当模型未调用工具时，最多追问要求调用工具的次数（0=禁用）",
     )
+    force_tool_call_im_floor: int = Field(
+        default=1,
+        description="IM 通道的 ForceToolCall 最低重试次数（0=与全局一致，不强制下限）",
+    )
+    confirmation_text_max_retries: int = Field(
+        default=2,
+        description="工具执行后无可见文本时的最大追问次数（0=禁用）",
+    )
 
     # === 工具并行执行 ===
     # 单轮模型返回多个 tool_use/tool_calls 时，Agent 可选择并行执行工具以提升吞吐。
@@ -663,6 +671,9 @@ _PERSISTABLE_KEYS: list[str] = [
     "ui_language",
     "multi_agent_enabled",
     "im_bots",
+    "force_tool_call_max_retries",
+    "force_tool_call_im_floor",
+    "confirmation_text_max_retries",
 ]
 
 

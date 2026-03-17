@@ -1,14 +1,13 @@
 """
 OpenAkita Prompt 管线模块
 
-从全文注入改为"编译摘要 + 语义检索 + 预算组装 + 运行时守门"的管线模式。
+从全文注入改为"编译摘要 + 语义检索 + 预算组装"的管线模式。
 
 模块组成:
 - compiler.py: 从源 md 编译摘要
 - retriever.py: 从 MEMORY.md 检索相关片段
 - budget.py: Token 预算裁剪
 - builder.py: 组装最终系统提示词
-- guard.py: 运行时守门（无工具调用则重试）
 """
 
 from .budget import BudgetConfig, apply_budget
@@ -20,7 +19,6 @@ from .compiler import (
     compile_soul,
     compile_user,
 )
-from .guard import GuardConfig, guard_response
 from .retriever import retrieve_memory
 
 __all__ = [
@@ -37,7 +35,4 @@ __all__ = [
     "BudgetConfig",
     # Builder
     "build_system_prompt",
-    # Guard
-    "guard_response",
-    "GuardConfig",
 ]

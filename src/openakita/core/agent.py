@@ -4714,12 +4714,13 @@ NEXT: 建议的下一步（如有）"""
         current_model = self.brain.model
 
         # 追问计数器：当 LLM 没有调用工具时，最多追问几次
-        # IM 也保留至少 1 次重试，防止模型声称执行了操作但未调用工具（幻觉）
         no_tool_call_count = 0
+        im_floor = max(0, int(getattr(settings, "force_tool_call_im_floor", 1)))
+        configured = int(getattr(settings, "force_tool_call_max_retries", 1))
         if session_type == "im":
-            base_force_retries = max(1, int(getattr(settings, "force_tool_call_max_retries", 1)))
+            base_force_retries = max(im_floor, configured)
         else:
-            base_force_retries = max(0, int(getattr(settings, "force_tool_call_max_retries", 1)))
+            base_force_retries = max(0, configured)
 
         def _effective_force_retries() -> int:
             """
@@ -4751,7 +4752,7 @@ NEXT: 建议的下一步（如有）"""
 
         # 工具已执行但 LLM 没给任何可见文本确认：额外再试（不计入 ForceToolCall 配额）
         no_confirmation_text_count = 0
-        max_confirmation_text_retries = 2
+        max_confirmation_text_retries = max(0, int(getattr(settings, "confirmation_text_max_retries", 2)))
 
         # Track executed tool names for task completion verification
         executed_tool_names: list[str] = []
@@ -5295,12 +5296,7 @@ NEXT: 建议的下一步（如有）"""
                     f"text_preview=\"{(stripped_text or '')[:80].replace(chr(10), ' ')}\""
                 )
 
-                if intent == "REPLY":
-                    logger.info("[IntentTag] REPLY — accepting text response, skip ForceToolCall retry")
-                    cleaned = clean_llm_response(stripped_text)
-                    return cleaned or stripped_text
-
-                # ACTION 或无标记 → 走 ForceToolCall 重试
+                # REPLY / ACTION / 无标记 → 统一走配置的 ForceToolCall 重试次数
                 max_no_tool_retries = _effective_force_retries()
                 no_tool_call_count += 1
 
