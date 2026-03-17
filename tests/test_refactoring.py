@@ -26,7 +26,7 @@ failed = 0
 errors = []
 
 
-def test(name):
+def check(name):
     """测试装饰器"""
     def decorator(fn):
         global passed, failed
@@ -41,7 +41,7 @@ def test(name):
     return decorator
 
 
-def async_test(name):
+def async_check(name):
     """异步测试装饰器"""
     def decorator(fn):
         global passed, failed
@@ -70,7 +70,7 @@ def async_test(name):
 print("\n📦 Phase 1: 基础设施")
 
 
-@test("AgentState 导入和状态机")
+@check("AgentState 导入和状态机")
 def _():
     from openakita.core.agent_state import AgentState, TaskState, TaskStatus
 
@@ -110,7 +110,7 @@ def _():
     assert task2.status == TaskStatus.REASONING
 
 
-@test("Tracing 框架基本功能")
+@check("Tracing 框架基本功能")
 def _():
     from openakita.tracing.tracer import AgentTracer, SpanType, SpanStatus, get_tracer, set_tracer
 
@@ -139,14 +139,14 @@ def _():
     set_tracer(AgentTracer(enabled=False))
 
 
-@test("Tracing Exporter")
+@check("Tracing Exporter")
 def _():
     from openakita.tracing.exporter import FileExporter, ConsoleExporter, TraceExporter
     assert issubclass(FileExporter, TraceExporter)
     assert issubclass(ConsoleExporter, TraceExporter)
 
 
-@test("ToolError 结构化错误")
+@check("ToolError 结构化错误")
 def _():
     from openakita.tools.errors import ToolError, ErrorType, classify_error
 
@@ -177,13 +177,13 @@ def _():
 print("\n🔧 Phase 2: Agent 子模块拆分")
 
 
-@test("ToolExecutor 导入")
+@check("ToolExecutor 导入")
 def _():
     from openakita.core.tool_executor import ToolExecutor
     assert ToolExecutor is not None
 
 
-@test("ContextManager 基本功能")
+@check("ContextManager 基本功能")
 def _():
     from openakita.core.context_manager import ContextManager
 
@@ -205,7 +205,7 @@ def _():
     assert len(groups) > 0
 
 
-@test("ResponseHandler 导入")
+@check("ResponseHandler 导入")
 def _():
     from openakita.core.response_handler import (
         ResponseHandler, clean_llm_response,
@@ -218,19 +218,19 @@ def _():
     assert "最终答案" in cleaned
 
 
-@test("SkillManager 导入")
+@check("SkillManager 导入")
 def _():
     from openakita.core.skill_manager import SkillManager
     assert SkillManager is not None
 
 
-@test("PromptAssembler 导入")
+@check("PromptAssembler 导入")
 def _():
     from openakita.core.prompt_assembler import PromptAssembler
     assert PromptAssembler is not None
 
 
-@test("ReasoningEngine 和 Checkpoint")
+@check("ReasoningEngine 和 Checkpoint")
 def _():
     from openakita.core.reasoning_engine import (
         ReasoningEngine, Decision, DecisionType, Checkpoint,
@@ -259,7 +259,7 @@ def _():
 print("\n⚡ Phase 3: 增强功能")
 
 
-@test("MemoryStorage (SQLite 统一存储)")
+@check("MemoryStorage (SQLite 统一存储)")
 def _():
     from openakita.memory.storage import MemoryStorage
 
@@ -316,7 +316,7 @@ def _():
             pass
 
 
-@test("高频工具直接注入 (catalog)")
+@check("高频工具直接注入 (catalog)")
 def _():
     from openakita.tools.catalog import HIGH_FREQ_TOOLS, ToolCatalog
     assert len(HIGH_FREQ_TOOLS) == 4
@@ -331,7 +331,7 @@ print("\n🚀 Phase 4: 高级功能")
 
 
 
-@test("评估框架 - Metrics")
+@check("评估框架 - Metrics")
 def _():
     from openakita.evaluation.metrics import EvalMetrics, EvalResult, TraceMetrics
 
@@ -387,7 +387,7 @@ def _():
     assert "80.0%" in report_text
 
 
-@test("评估框架 - Judge")
+@check("评估框架 - Judge")
 def _():
     from openakita.evaluation.judge import Judge, JudgeResult
 
@@ -407,7 +407,7 @@ def _():
     assert len(result.suggestions) == 1
 
 
-@test("评估框架 - Optimizer")
+@check("评估框架 - Optimizer")
 def _():
     from openakita.evaluation.optimizer import (
         FeedbackAnalyzer, FeedbackOptimizer, OptimizationAction,
@@ -442,7 +442,7 @@ def _():
 print("\n🔗 集成测试")
 
 
-@test("Config 新增配置项")
+@check("Config 新增配置项")
 def _():
     from openakita.config import settings
 
@@ -456,7 +456,7 @@ def _():
     assert settings.evaluation_enabled is False
 
 
-@test("main.py 追踪初始化")
+@check("main.py 追踪初始化")
 def _():
     from openakita.tracing.tracer import get_tracer
     tracer = get_tracer()
@@ -465,7 +465,7 @@ def _():
     assert tracer.enabled
 
 
-@test("Agent 子模块初始化检查")
+@check("Agent 子模块初始化检查")
 def _():
     """验证 Agent 类有初始化所有子模块的代码"""
     from openakita.core.agent import Agent
@@ -482,7 +482,7 @@ def _():
     assert "ReasoningEngine" in source, "reasoning_engine 未在 __init__ 中初始化"
 
 
-@test("Agent._chat_with_tools_and_context 委托给 ReasoningEngine")
+@check("Agent._chat_with_tools_and_context 委托给 ReasoningEngine")
 def _():
     """验证核心方法已委托"""
     from openakita.core.agent import Agent
@@ -492,7 +492,7 @@ def _():
         "_chat_with_tools_and_context 未委托给 reasoning_engine.run()"
 
 
-@test("全模块导入链完整性")
+@check("全模块导入链完整性")
 def _():
     """验证所有新模块的完整导入链"""
     # Phase 1
@@ -530,4 +530,5 @@ if errors:
     for name, err in errors:
         print(f"  - {name}: {err}")
 
-sys.exit(1 if failed > 0 else 0)
+if __name__ == "__main__":
+    sys.exit(1 if failed > 0 else 0)

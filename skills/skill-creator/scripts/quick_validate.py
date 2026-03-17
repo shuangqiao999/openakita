@@ -91,6 +91,27 @@ def validate_skill(skill_path):
         if len(compatibility) > 500:
             return False, f"Compatibility is too long ({len(compatibility)} characters). Maximum is 500 characters."
 
+    # Validate agents/openai.yaml if present (optional)
+    openai_yaml = skill_path / 'agents' / 'openai.yaml'
+    if openai_yaml.exists():
+        try:
+            yaml_content = yaml.safe_load(openai_yaml.read_text())
+            if not isinstance(yaml_content, dict):
+                return False, "agents/openai.yaml must be a YAML dictionary"
+            interface = yaml_content.get('interface', {})
+            if interface:
+                short_desc = interface.get('short_description', '')
+                if short_desc and not (25 <= len(short_desc) <= 64):
+                    return False, (
+                        f"agents/openai.yaml: short_description must be 25-64 characters "
+                        f"(got {len(short_desc)})"
+                    )
+            i18n = yaml_content.get('i18n', {})
+            if i18n and not isinstance(i18n, dict):
+                return False, "agents/openai.yaml: i18n must be a dictionary"
+        except yaml.YAMLError as e:
+            return False, f"Invalid YAML in agents/openai.yaml: {e}"
+
     return True, "Skill is valid!"
 
 if __name__ == "__main__":

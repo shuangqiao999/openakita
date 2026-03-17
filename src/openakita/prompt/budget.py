@@ -13,7 +13,8 @@ Prompt Budget - Token 预算裁剪模块
 - user_budget: 300 tokens (user.summary + runtime_facts)
 - memory_budget: 2500 tokens (retriever 输出)
 
-总预算约 ~20800 tokens，占 128k 上下文约 16.3%。
+默认总预算约 ~20800 tokens，占 128k 上下文约 16.3%。
+对于小上下文窗口模型，使用 BudgetConfig.for_context_window(ctx) 自适应缩放。
 """
 
 import logging
@@ -50,6 +51,51 @@ class BudgetConfig:
             "identity",  # 6 - 身份信息（最后裁剪）
         ]
     )
+
+    @classmethod
+    def for_context_window(cls, context_window: int) -> "BudgetConfig":
+        """根据模型上下文窗口大小自适应调整预算。
+
+        系统提示词应控制在 context_window 的 40% 以内（剩余留给对话和输出）。
+        大于 64K 时使用默认预算（为大模型优化）。
+        """
+        if context_window <= 0 or context_window > 64000:
+            return cls()
+
+        prompt_budget = int(context_window * 0.40)
+
+        if context_window > 32000:
+            return cls(
+                identity_budget=5000,
+                catalogs_budget=10000,
+                user_budget=300,
+                memory_budget=2000,
+                total_budget=min(prompt_budget, 18000),
+            )
+        elif context_window >= 16000:
+            return cls(
+                identity_budget=4000,
+                catalogs_budget=6000,
+                user_budget=250,
+                memory_budget=1500,
+                total_budget=min(prompt_budget, 12000),
+            )
+        elif context_window >= 8000:
+            return cls(
+                identity_budget=2500,
+                catalogs_budget=4000,
+                user_budget=200,
+                memory_budget=1000,
+                total_budget=min(prompt_budget, 8000),
+            )
+        else:
+            return cls(
+                identity_budget=800,
+                catalogs_budget=800,
+                user_budget=100,
+                memory_budget=300,
+                total_budget=min(prompt_budget, 2000),
+            )
 
 
 @dataclass

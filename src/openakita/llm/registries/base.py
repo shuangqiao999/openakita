@@ -7,6 +7,24 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
+import httpx
+
+_shared_registry_client: httpx.AsyncClient | None = None
+
+
+def get_registry_client() -> httpx.AsyncClient:
+    """获取 registry 共享 httpx 客户端（连接池复用，避免每次请求新建/销毁）。"""
+    global _shared_registry_client
+    if _shared_registry_client is None or _shared_registry_client.is_closed:
+        _shared_registry_client = httpx.AsyncClient(
+            timeout=30,
+            limits=httpx.Limits(
+                max_connections=30,
+                max_keepalive_connections=10,
+            ),
+        )
+    return _shared_registry_client
+
 
 @dataclass
 class ProviderInfo:

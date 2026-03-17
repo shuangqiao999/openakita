@@ -155,6 +155,7 @@ def build_system_prompt(
     session_type: str = "cli",  # 建议 8: 区分 CLI/IM
     precomputed_memory: str | None = None,
     persona_manager: Optional["PersonaManager"] = None,
+    is_sub_agent: bool = False,
 ) -> str:
     """
     组装系统提示词
@@ -197,6 +198,21 @@ def build_system_prompt(
         tools_enabled=tools_enabled,
         budget_tokens=budget_config.identity_budget,
     )
+
+    # 2.1 多 Agent 主 Agent 委派优先声明（在 Identity 之前，最高优先级）
+    from ..config import settings as _settings
+    if _settings.multi_agent_enabled and not is_sub_agent:
+        delegation_preamble = (
+            "## 协作优先原则（最高优先级）\n\n"
+            "你拥有一支专业 Agent 团队。执行任务前，先判断是否有更合适的专业 Agent：\n"
+            "- 有专业 Agent 能处理 → 立即委派（delegate_to_agent），不要自己尝试\n"
+            "- 任务涉及多个专业领域 → 拆分并行委派（delegate_parallel）\n"
+            "- 只有简单问答或用户明确要你亲自做 → 才自己处理\n\n"
+            "此原则优先于下文中「自己解决」「永不放弃」等个人执行哲学。"
+            "当委派与自己执行冲突时，选择委派。\n"
+        )
+        system_parts.append(delegation_preamble)
+
     if identity_section:
         system_parts.append(identity_section)
 

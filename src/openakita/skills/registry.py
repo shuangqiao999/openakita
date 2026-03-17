@@ -61,7 +61,7 @@ class SkillEntry:
     # 技能来源 URL（来自 .openakita-source 文件，用于区分同名技能）
     source_url: str | None = None
 
-    # 国际化（由 .openakita-i18n.json sidecar 文件注入）
+    # 国际化（由 agents/openai.yaml i18n 字段注入，兼容旧的 .openakita-i18n.json）
     name_i18n: dict[str, str] = field(default_factory=dict)
     description_i18n: dict[str, str] = field(default_factory=dict)
 

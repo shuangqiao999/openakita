@@ -163,7 +163,7 @@ if __name__ == "__main__":
         skill_md_path = skill_dir / "SKILL.md"
         await self.file_tool.write(str(skill_md_path), skill_md_content)
 
-        # 4.5 生成 .openakita-i18n.json（中文翻译）
+        # 4.5 生成 i18n 翻译（agents/openai.yaml）
         await self._generate_i18n(skill_dir, name, description)
 
         # 5. 生成脚本
@@ -228,7 +228,7 @@ if __name__ == "__main__":
         return response.content.strip()
 
     async def _generate_i18n(self, skill_dir: Path, name: str, description: str) -> None:
-        """生成 .openakita-i18n.json 中文翻译文件。"""
+        """生成中文翻译，写入 agents/openai.yaml i18n 字段。"""
         try:
             from ..skills.i18n import auto_translate_skill
             await auto_translate_skill(skill_dir, name, description, self.brain)

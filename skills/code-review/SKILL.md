@@ -1,9 +1,10 @@
 ---
-name: openakita/skills@code-reviewer
-description:
-  Use this skill to review code. It supports both local changes (staged or working tree)
-  and remote Pull Requests (by ID or URL). It focuses on correctness, maintainability,
-  and adherence to project standards.
+name: openakita/skills@code-review
+description: Review code changes for correctness, security, and maintainability. Supports local git diffs (staged or working tree) and remote Pull Requests (by ID or URL). Use when the user asks to review code, check a PR, audit changes, or wants feedback on code quality before merging.
+license: MIT
+metadata:
+  author: openakita
+  version: "1.0.0"
 ---
 
 # Code Reviewer

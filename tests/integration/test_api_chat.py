@@ -50,11 +50,8 @@ async def client(app):
 
 class TestRootEndpoint:
     async def test_root_returns_status(self, client):
-        resp = await client.get("/")
+        resp = await client.get("/", follow_redirects=True)
         assert resp.status_code == 200
-        data = resp.json()
-        assert data["service"] == "openakita"
-        assert data["status"] == "running"
 
 
 class TestHealthEndpoint:

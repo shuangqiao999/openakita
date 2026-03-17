@@ -769,3 +769,102 @@ export function IconFingerprint(p: IconProps = {}) {
     <path d="M9 6.8a6 6 0 0 1 9 5.2c0 .47 0 1.17-.02 2" />
   </>);
 }
+
+export function IconRadar(p: IconProps = {}) {
+  return svg(p, <>
+    <path d="M19.07 4.93A10 10 0 0 0 6.99 3.34" />
+    <path d="M4 6h.01" />
+    <path d="M2.29 9.62A10 10 0 1 0 21.31 8.35" />
+    <path d="M16.24 7.76A6 6 0 1 0 8.23 16.67" />
+    <path d="M12 18h.01" />
+    <path d="M17.99 11.66A6 6 0 0 1 15.77 16.67" />
+    <circle cx="12" cy="12" r="2" />
+    <path d="m13.41 10.59 5.66-5.66" />
+  </>);
+}
+
+export function IconSave(p: IconProps = {}) {
+  return svg(p, <>
+    <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+    <polyline points="17 21 17 13 7 13 7 21" />
+    <polyline points="7 3 7 8 15 8" />
+  </>);
+}
+
+export function IconHeartPulse(p: IconProps = {}) {
+  return svg(p, <>
+    <path d="M19.5 12.572l-7.5 7.428l-7.5-7.428A5 5 0 0 1 12 6.006a5 5 0 0 1 7.5 6.572" />
+    <path d="M5 12h2l1 3 2-6 1 3h2" />
+  </>);
+}
+
+export function IconInbox(p: IconProps = {}) {
+  return svg(p, <>
+    <polyline points="22 12 16 12 14 15 10 15 8 12 2 12" />
+    <path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
+  </>);
+}
+
+export function IconMaximize2(p: IconProps = {}) {
+  return svg(p, <>
+    <polyline points="15 3 21 3 21 9" />
+    <polyline points="9 21 3 21 3 15" />
+    <line x1="21" y1="3" x2="14" y2="10" />
+    <line x1="3" y1="21" x2="10" y2="14" />
+  </>);
+}
+
+export function IconSnowflake(p: IconProps = {}) {
+  return svg(p, <>
+    <line x1="12" y1="2" x2="12" y2="22" />
+    <path d="M20 16l-4-4 4-4" />
+    <path d="M4 8l4 4-4 4" />
+    <line x1="2" y1="12" x2="22" y2="12" />
+    <path d="M16 4l-4 4-4-4" />
+    <path d="M8 20l4-4 4 4" />
+  </>);
+}
+
+export function IconLayoutGrid(p: IconProps = {}) {
+  return svg(p, <>
+    <rect x="3" y="3" width="7" height="7" />
+    <rect x="14" y="3" width="7" height="7" />
+    <rect x="14" y="14" width="7" height="7" />
+    <rect x="3" y="14" width="7" height="7" />
+  </>);
+}
+
+export function IconBuilding(p: IconProps = {}) {
+  return svg(p, <>
+    <rect x="4" y="2" width="16" height="20" rx="2" ry="2" />
+    <path d="M9 22v-4h6v4" />
+    <path d="M8 6h.01" />
+    <path d="M16 6h.01" />
+    <path d="M12 6h.01" />
+    <path d="M12 10h.01" />
+    <path d="M12 14h.01" />
+    <path d="M16 10h.01" />
+    <path d="M16 14h.01" />
+    <path d="M8 10h.01" />
+    <path d="M8 14h.01" />
+  </>);
+}
+
+export function IconSitemap(p: IconProps = {}) {
+  return svg(p, <>
+    <rect x="9" y="2" width="6" height="4" rx="1" />
+    <rect x="2" y="14" width="6" height="4" rx="1" />
+    <rect x="9" y="14" width="6" height="4" rx="1" />
+    <rect x="16" y="14" width="6" height="4" rx="1" />
+    <path d="M12 6v4" />
+    <path d="M5 14v-2a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v2" />
+  </>);
+}
+
+export function IconAlertCircle(p: IconProps = {}) {
+  return svg(p, <>
+    <circle cx="12" cy="12" r="10" />
+    <line x1="12" y1="8" x2="12" y2="12" />
+    <line x1="12" y1="16" x2="12.01" y2="16" />
+  </>);
+}

@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from openakita.core.engine_bridge import engine_stream, is_dual_loop, to_engine
+
 from ..schemas import ChatAnswerRequest, ChatControlRequest, ChatRequest
 
 logger = logging.getLogger(__name__)
@@ -35,6 +37,7 @@ class BusyInfo:
 
 _busy_conversations: dict[str, BusyInfo] = {}
 _busy_lock = asyncio.Lock()
+_busy_thread_lock = __import__("threading").Lock()
 
 
 async def _mark_busy(conversation_id: str, client_id: str) -> BusyInfo | None:
@@ -50,7 +53,8 @@ async def _mark_busy(conversation_id: str, client_id: str) -> BusyInfo | None:
 
 
 async def _clear_busy(conversation_id: str) -> None:
-    async with _busy_lock:
+    # Use thread-safe lock to support cross-loop calls (engine → API)
+    with _busy_thread_lock:
         _busy_conversations.pop(conversation_id, None)
 
 
@@ -118,7 +122,7 @@ async def _get_agent_for_session(request: Request, conversation_id: str, agent_p
     pool = getattr(request.app.state, "agent_pool", None)
     if pool is not None and conversation_id:
         profile = _resolve_profile(agent_profile_id)
-        return await pool.get_or_create(conversation_id, profile)
+        return await to_engine(pool.get_or_create(conversation_id, profile))
     return getattr(request.app.state, "agent", None)
 
 
@@ -638,8 +642,12 @@ async def chat(request: Request, body: ChatRequest):
             "client_id": client_id,
         })
 
+    sse_gen = _stream_chat(body, agent, session_manager, http_request=request)
+    if is_dual_loop():
+        sse_gen = engine_stream(sse_gen)
+
     return StreamingResponse(
-        _stream_chat(body, agent, session_manager, http_request=request),
+        sse_gen,
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -762,7 +770,7 @@ async def chat_insert(request: Request, body: ChatControlRequest):
         return {"status": "ok", "action": "skip", "reason": reason}
 
     _insert_conv_id = conv_id or getattr(actual_agent, "_current_conversation_id", None)
-    ok = await actual_agent.insert_user_message(body.message, session_id=_insert_conv_id)
+    ok = await to_engine(actual_agent.insert_user_message(body.message, session_id=_insert_conv_id))
     logger.info(f"[Chat API] Insert 作为普通消息: ok={ok}, message={body.message[:60]!r}")
     if not ok:
         return {"status": "warning", "action": "insert", "message": "No active task, message dropped"}

@@ -1,6 +1,10 @@
 ---
 name: openakita/skills@gmail-automation
 description: "Automate Gmail tasks via Rube MCP (Composio): send/reply, search, labels, drafts, attachments. Always search tools first for current schemas."
+license: MIT
+metadata:
+  author: openakita
+  version: "1.0.0"
 requires:
   mcp: [rube]
 ---

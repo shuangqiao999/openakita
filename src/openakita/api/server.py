@@ -29,7 +29,6 @@ from fastapi.responses import JSONResponse
 from .auth import WebAccessConfig, create_auth_middleware
 from .routes import (
     agents,
-    auth as auth_routes,
     bug_report,
     chat,
     chat_models,
@@ -42,13 +41,19 @@ from .routes import (
     logs,
     mcp,
     memory,
+    orgs,
     scheduler,
     sessions,
     skills,
     token_stats,
     upload,
-    websocket as ws_routes,
     workspace_io,
+)
+from .routes import (
+    auth as auth_routes,
+)
+from .routes import (
+    websocket as ws_routes,
 )
 
 logger = logging.getLogger(__name__)
@@ -240,6 +245,16 @@ def create_app(
     app.state.orchestrator = orchestrator
     app.state.agent_pool = agent_pool
 
+    # Initialize OrgManager & OrgRuntime
+    from openakita.orgs.manager import OrgManager
+    from openakita.orgs.runtime import OrgRuntime
+    from openakita.orgs.templates import ensure_builtin_templates
+    org_manager = OrgManager(data_dir)
+    ensure_builtin_templates(data_dir / "org_templates")
+    app.state.org_manager = org_manager
+    org_runtime = OrgRuntime(org_manager)
+    app.state.org_runtime = org_runtime
+
     # Mount routes
     app.include_router(auth_routes.router, tags=["认证"])
     app.include_router(agents.router, tags=["智能体"])
@@ -262,6 +277,8 @@ def create_app(
     app.include_router(ws_routes.router, tags=["WebSocket"])
     app.include_router(hub.router, tags=["Hub"])
     app.include_router(identity.router, tags=["身份"])
+    app.include_router(orgs.router, tags=["组织编排"])
+    app.include_router(orgs.inbox_router, tags=["组织消息中心"])
 
     @app.get("/", tags=["系统"])
     async def root():
@@ -275,6 +292,13 @@ def create_app(
             "api_version": "1.0.0",
             "status": "running",
         }
+
+    # ── Serve uploaded avatar files ──
+    from fastapi.staticfiles import StaticFiles as _StaticFiles
+    from openakita.config import settings as _settings
+    _avatar_dir = _settings.data_dir / "avatars"
+    _avatar_dir.mkdir(parents=True, exist_ok=True)
+    app.mount("/api/avatars", _StaticFiles(directory=str(_avatar_dir)), name="avatars")
 
     # ── Serve web frontend static files ──
     _mount_web_frontend(app)
@@ -305,6 +329,28 @@ def create_app(
         logger.warning("No shutdown_event available, shutdown request ignored")
         return {"status": "error", "message": "shutdown not available in this mode"}
 
+    @app.on_event("startup")
+    async def _startup_org_runtime():
+        loop = asyncio.get_running_loop()
+        loop.slow_callback_duration = 0.5
+        if hasattr(app.state, "org_runtime") and app.state.org_runtime:
+            try:
+                from openakita.core.engine_bridge import to_engine
+
+                await to_engine(app.state.org_runtime.start())
+            except Exception as e:
+                logger.warning(f"OrgRuntime startup error (non-fatal): {e}")
+
+    @app.on_event("shutdown")
+    async def _shutdown_org_runtime():
+        if hasattr(app.state, "org_runtime") and app.state.org_runtime:
+            try:
+                from openakita.core.engine_bridge import to_engine
+
+                await to_engine(app.state.org_runtime.shutdown())
+            except Exception as e:
+                logger.warning(f"OrgRuntime shutdown error: {e}")
+
     return app
 
 
@@ -320,17 +366,21 @@ async def start_api_server(
     max_retries: int = 5,
 ) -> asyncio.Task:
     """
-    Start the HTTP API server as a background asyncio task.
+    Start the HTTP API server in a **dedicated background thread** with its
+    own asyncio event loop ("API loop").
 
-    This is designed to be called from within the `openakita serve` event loop,
-    so it shares the same event loop as the Agent and IM channels.
+    The calling loop becomes the "engine loop" — it keeps running Agent,
+    OrgRuntime, Scheduler, Gateway and all other heavy async work.  The API
+    loop only handles HTTP request/response and WebSocket I/O, so it stays
+    responsive even when the engine is saturated with LLM calls.
 
-    启动前会检测端口可用性；如果端口被占用（如 TIME_WAIT），
-    最多等待 30 秒端口释放。绑定失败时带退避重试。
+    Returns a proxy ``asyncio.Task`` in the engine loop.  Cancelling this
+    task triggers a graceful uvicorn shutdown.
 
-    Returns the server task for later cancellation.
     Raises RuntimeError if the server cannot start after all retries.
     """
+    import threading
+
     import uvicorn
 
     # 端口预检：如果端口不可用，先等待释放（处理 TIME_WAIT 等场景）
@@ -344,10 +394,17 @@ async def start_api_server(
             )
         logger.info(f"Port {port} is now available")
 
-    app = create_app(agent=agent, shutdown_event=shutdown_event, session_manager=session_manager, gateway=gateway, orchestrator=orchestrator, agent_pool=agent_pool)
+    engine_loop = asyncio.get_running_loop()
 
-    server_started = asyncio.Event()
-    server_error: list[Exception] = []
+    app = create_app(
+        agent=agent,
+        shutdown_event=shutdown_event,
+        session_manager=session_manager,
+        gateway=gateway,
+        orchestrator=orchestrator,
+        agent_pool=agent_pool,
+    )
+    app.state.engine_loop = engine_loop
 
     config = uvicorn.Config(
         app=app,
@@ -355,65 +412,94 @@ async def start_api_server(
         port=port,
         log_level="warning",
         access_log=False,
-        http="h11",  # 避免外部环境中异常的 httptools 模块导致 API 连接不可用
-        log_config=None,  # 关键：禁止 uvicorn 调用 dictConfig 覆盖根日志器
+        http="h11",
+        log_config=None,
     )
     server = uvicorn.Server(config)
 
-    async def _run():
+    # ── Launch uvicorn in a background thread ────────────────────────
+    api_loop_holder: list[asyncio.AbstractEventLoop] = []
+    thread_ready = threading.Event()
+    thread_error: list[Exception] = []
+
+    def _api_thread() -> None:
         try:
-            await server.serve()
-        except asyncio.CancelledError:
-            logger.info("API server shutting down")
-        except Exception as e:
-            server_error.append(e)
-            logger.error(f"API server error: {e}", exc_info=True)
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            api_loop_holder.append(loop)
+            thread_ready.set()
+            loop.run_until_complete(server.serve())
+        except Exception as exc:
+            thread_error.append(exc)
         finally:
-            server_started.set()
+            thread_ready.set()
+            try:
+                loop = api_loop_holder[0] if api_loop_holder else None
+                if loop and not loop.is_closed():
+                    loop.close()
+            except Exception:
+                pass
 
-    task = asyncio.create_task(_run())
+    api_thread = threading.Thread(
+        target=_api_thread, daemon=True, name="openakita-api",
+    )
+    api_thread.start()
+
+    await asyncio.to_thread(thread_ready.wait)
+
+    if thread_error:
+        raise RuntimeError(f"API thread failed to start: {thread_error[0]}")
+
+    api_loop = api_loop_holder[0] if api_loop_holder else None
+
+    # ── Register loops for the cross-loop bridge ─────────────────────
+    from openakita.core.engine_bridge import set_api_loop, set_engine_loop
+
+    set_engine_loop(engine_loop)
+    if api_loop is not None:
+        set_api_loop(api_loop)
+
     from openakita import get_version_string
-    logger.info(f"HTTP API server starting on http://{host}:{port} (version: {get_version_string()})")
 
-    # 短暂等待确认服务器是否成功开始监听
-    # uvicorn 启动监听通常在 1-2 秒内完成
+    logger.info(
+        f"HTTP API server starting on http://{host}:{port} "
+        f"(version: {get_version_string()}, dual-loop: {api_loop is not None})"
+    )
+
+    # ── Verify server is listening ───────────────────────────────────
     for attempt in range(max_retries):
         await asyncio.sleep(1.5)
-        if server_error:
-            err = server_error[0]
-            err_str = str(err)
-            if "address already in use" in err_str.lower() or "10048" in err_str:
-                if attempt < max_retries - 1:
-                    backoff = (attempt + 1) * 2
-                    logger.warning(
-                        f"Port {port} bind failed (attempt {attempt + 1}/{max_retries}), "
-                        f"retrying in {backoff}s..."
-                    )
-                    await asyncio.sleep(backoff)
-                    server_error.clear()
-                    server = uvicorn.Server(config)
-                    task = asyncio.create_task(_run())
-                    continue
+
+        if not api_thread.is_alive():
+            err = thread_error[0] if thread_error else RuntimeError("API thread died")
             raise RuntimeError(f"HTTP API server failed to start: {err}")
-        # 检查服务器是否已开始监听
+
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.settimeout(1.0)
                 s.connect((host, port))
-                logger.info(f"HTTP API server confirmed listening on http://{host}:{port}")
-                return task
+                logger.info(
+                    f"HTTP API server confirmed listening on http://{host}:{port} "
+                    f"(thread={api_thread.name})"
+                )
+                break
         except (ConnectionRefusedError, OSError, TimeoutError):
             if attempt < max_retries - 1:
                 logger.debug(f"Server not yet listening (attempt {attempt + 1}), waiting...")
                 continue
 
-    # 最终检查
-    if server_error:
-        raise RuntimeError(f"HTTP API server failed to start: {server_error[0]}")
+    # ── Proxy task — cancelling it triggers graceful shutdown ─────────
+    async def _proxy() -> None:
+        try:
+            while api_thread.is_alive():
+                await asyncio.sleep(0.5)
+        except asyncio.CancelledError:
+            logger.info("API proxy task cancelled, shutting down uvicorn...")
+            server.should_exit = True
+            await asyncio.to_thread(api_thread.join, 5.0)
 
-    # 没有报错但也没有成功连接——可能是慢启动，返回 task 让调用者继续
-    logger.warning("HTTP API server startup not confirmed, but no errors detected")
-    return task
+    proxy_task = asyncio.create_task(_proxy())
+    return proxy_task
 
 
 def update_agent(app: FastAPI, agent: Any) -> None:

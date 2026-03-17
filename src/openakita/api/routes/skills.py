@@ -125,7 +125,7 @@ def _notify_pools_skills_changed(request: Request) -> None:
 
 
 async def _auto_translate_new_skills(request: Request, install_url: str) -> None:
-    """安装后为缺少 .openakita-i18n.json 的技能自动生成中文翻译。
+    """安装后为缺少 i18n 翻译的技能自动生成中文翻译（写入 agents/openai.yaml）。
 
     翻译失败不影响安装结果，仅记录日志。
     """
@@ -347,7 +347,7 @@ async def install_skill(request: Request):
                 loader.load_all(base_path)
             _apply_allowlist_and_rebuild_catalog(request)
 
-            # 自动翻译：为新安装的技能生成 .openakita-i18n.json
+            # 自动翻译：为新安装的技能生成 i18n (agents/openai.yaml)
             await _auto_translate_new_skills(request, url)
     except Exception as e:
         logger.warning(f"Post-install reload failed (skill was installed): {e}")

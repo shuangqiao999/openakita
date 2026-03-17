@@ -63,7 +63,7 @@ class SkillMetadata:
     #            "required": bool, "help": str, "default": Any, "options": list, "min": num, "max": num}
     config: list[dict] = field(default_factory=list)
 
-    # 国际化（由 .openakita-i18n.json sidecar 文件注入，不存储在 frontmatter 中）
+    # 国际化（由 agents/openai.yaml i18n 字段注入，兼容旧的 .openakita-i18n.json）
     # key 为语言代码 (如 "zh")，value 为该语言的显示名/描述
     name_i18n: dict[str, str] = field(default_factory=dict)
     description_i18n: dict[str, str] = field(default_factory=dict)

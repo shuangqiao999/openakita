@@ -155,7 +155,7 @@ class TestCancellableLlmCall:
         mock_response.content = [MagicMock(type="text", text="回复内容")]
 
         mock_brain = MagicMock()
-        mock_brain.messages_create = MagicMock(return_value=mock_response)
+        mock_brain.messages_create_async = AsyncMock(return_value=mock_response)
 
         agent = MagicMock()
         agent.brain = mock_brain
@@ -163,7 +163,6 @@ class TestCancellableLlmCall:
 
         cancel_event = asyncio.Event()
 
-        # 直接测试辅助逻辑
         from openakita.core.agent import Agent
 
         result = await Agent._cancellable_llm_call(
@@ -176,14 +175,12 @@ class TestCancellableLlmCall:
         """cancel_event 触发时 _cancellable_llm_call 抛出 UserCancelledError"""
         from openakita.core.errors import UserCancelledError
 
-        # 模拟一个耗时很长的 LLM 调用
-        def slow_llm(**kwargs):
-            import time
-            time.sleep(10)  # 模拟长时间调用
+        async def slow_llm(**kwargs):
+            await asyncio.sleep(10)
             return MagicMock()
 
         mock_brain = MagicMock()
-        mock_brain.messages_create = slow_llm
+        mock_brain.messages_create_async = slow_llm
 
         agent = MagicMock()
         agent.brain = mock_brain
@@ -215,59 +212,39 @@ class TestCancellableLlmCall:
 
 
 class TestHandleCancelFarewell:
-    """_handle_cancel_farewell 测试"""
+    """_handle_cancel_farewell 测试 (新版: 立即返回默认文本, LLM 收尾在后台)"""
 
     @pytest.mark.asyncio
-    async def test_farewell_calls_llm(self):
-        """收尾时调用 LLM 生成自然文本"""
+    async def test_farewell_returns_default_immediately(self):
+        """收尾立即返回默认文本，后台启动 LLM 收尾任务"""
         from openakita.core.agent import Agent
 
-        farewell_response = MagicMock()
-        farewell_block = MagicMock()
-        farewell_block.type = "text"
-        farewell_block.text = "好的，我已经停止了当前任务。"
-        farewell_response.content = [farewell_block]
-
-        mock_brain = MagicMock()
-        mock_brain.messages_create = MagicMock(return_value=farewell_response)
-
         agent = MagicMock(spec=Agent)
-        agent.brain = mock_brain
+        agent.brain = MagicMock()
         agent._cancel_reason = "停止"
         agent._context = MagicMock()
         agent._context.messages = []
         agent._handle_cancel_farewell = Agent._handle_cancel_farewell.__get__(agent, Agent)
-        agent._persist_cancel_to_context = Agent._persist_cancel_to_context.__get__(agent, Agent)
+        agent._background_cancel_farewell = AsyncMock()
 
         result = await agent._handle_cancel_farewell([], "system_prompt", "gpt-4")
-        assert "停止" in result
-        assert mock_brain.messages_create.called
+        assert "已停止" in result
 
     @pytest.mark.asyncio
-    async def test_farewell_timeout_fallback(self):
-        """LLM 超时时返回默认文本"""
+    async def test_farewell_default_text(self):
+        """默认收尾文本内容正确"""
         from openakita.core.agent import Agent
 
-        def slow_llm(**kwargs):
-            import time
-            time.sleep(20)  # 会被 wait_for 超时
-
-        mock_brain = MagicMock()
-        mock_brain.messages_create = slow_llm
-
         agent = MagicMock(spec=Agent)
-        agent.brain = mock_brain
+        agent.brain = MagicMock()
         agent._cancel_reason = "停止"
         agent._context = MagicMock()
         agent._context.messages = []
         agent._handle_cancel_farewell = Agent._handle_cancel_farewell.__get__(agent, Agent)
-        agent._persist_cancel_to_context = Agent._persist_cancel_to_context.__get__(agent, Agent)
+        agent._background_cancel_farewell = AsyncMock()
 
-        # 减小超时使测试快速
-        with patch("openakita.core.agent.asyncio.wait_for", side_effect=asyncio.TimeoutError()):
-            result = await agent._handle_cancel_farewell([], "system_prompt", "gpt-4")
-
-        assert result == "✅ 任务已停止。"
+        result = await agent._handle_cancel_farewell([], "system_prompt", "gpt-4")
+        assert result == "✅ 好的，已停止当前任务。"
 
 
 # ─────────────────────────────────────────────
@@ -316,20 +293,19 @@ class TestCancelCurrentTaskIntegration:
 
     def test_cancel_triggers_state_event(self):
         """cancel_current_task 设置 _state.current_task.cancel_event"""
+        from openakita.core.agent import Agent
         from openakita.core.agent_state import AgentState
 
         agent_state = AgentState()
         task = agent_state.begin_task()
 
-        # 模拟 Agent 实例
-        agent = MagicMock()
-        agent._task_cancelled = False
-        agent._cancel_reason = ""
-        agent._state = agent_state
+        agent = object.__new__(Agent)
+        agent.agent_state = agent_state
+        agent._pending_cancels = {}
+        agent._plan_handler = None
+        agent._interrupt_enabled = True
 
-        from openakita.core.agent import Agent
-
-        Agent.cancel_current_task(agent, reason="IM 停止指令")
+        agent.cancel_current_task(reason="IM 停止指令")
 
         assert agent._task_cancelled is True
         assert task.cancelled is True
@@ -418,6 +394,7 @@ class TestStreamCancelFarewell:
 
         engine = MagicMock()
         engine._brain = mock_brain
+        engine._background_cancel_farewell = AsyncMock()
         engine._stream_cancel_farewell = ReasoningEngine._stream_cancel_farewell.__get__(
             engine, ReasoningEngine
         )
@@ -432,7 +409,6 @@ class TestStreamCancelFarewell:
         assert len(events) > 0
         assert all(e["type"] == "text_delta" for e in events)
         full_text = "".join(e["content"] for e in events)
-        assert "停止" in full_text
 
     @pytest.mark.asyncio
     async def test_farewell_timeout_yields_default(self):
@@ -449,6 +425,7 @@ class TestStreamCancelFarewell:
 
         engine = MagicMock()
         engine._brain = mock_brain
+        engine._background_cancel_farewell = AsyncMock()
         engine._stream_cancel_farewell = ReasoningEngine._stream_cancel_farewell.__get__(
             engine, ReasoningEngine
         )
@@ -465,7 +442,7 @@ class TestStreamCancelFarewell:
                 events.append(ev)
 
         full_text = "".join(e["content"] for e in events)
-        assert "✅ 任务已停止" in full_text
+        assert "已停止" in full_text
 
 
 # ─────────────────────────────────────────────
@@ -756,8 +733,7 @@ class TestClassifyInterrupt:
         from openakita.core.agent import Agent
 
         agent = object.__new__(Agent)
-        agent._task_cancelled = False
-        agent._cancel_reason = ""
+        agent.agent_state = None
         agent._interrupt_enabled = True
         return agent
 

@@ -1,12 +1,9 @@
 ---
 name: openakita/skills@file-manager
-description: |
-  文件和目录管理工具。创建、读取、写入、删除、移动、复制文件。
-  搜索文件、列出目录、获取文件信息。
-  关键词: 文件, 目录, 创建, 删除, 复制, 移动, 搜索, 列出
+description: File and directory management tool for creating, reading, writing, deleting, moving, copying, and searching files. Use this skill when the user needs to perform file operations, list directories, search by pattern or content, or get file metadata like size and modification time.
 license: MIT
 metadata:
-  author: myagent
+  author: openakita
   version: "1.0.0"
 ---
 

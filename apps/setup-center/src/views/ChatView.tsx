@@ -38,6 +38,7 @@ import {
   IconImage, IconRefresh, IconClipboard, IconTrash, IconZap,
   IconMask, IconBot, IconUsers, IconHelp, IconEdit, IconDownload,
   IconPin, IconSearch, IconCircleDot, IconXCircle,
+  IconBuilding,
   getFileTypeIcon,
 } from "../icons";
 
@@ -1107,6 +1108,7 @@ function SlashCommandPanel({
              cmd.id === "persona" ? <IconMask size={16} /> :
              cmd.id === "agent" ? <IconBot size={16} /> :
              cmd.id === "agents" ? <IconUsers size={16} /> :
+             cmd.id === "org" ? <IconUsers size={16} /> :
              cmd.id === "help" ? <IconHelp size={16} /> :
              <span style={{ fontSize: 14 }}>/</span>}
           </span>
@@ -1829,6 +1831,39 @@ export function ChatView({
   const [agentMenuOpen, setAgentMenuOpen] = useState(false);
   const agentMenuRef = useRef<HTMLDivElement | null>(null);
 
+  // ── Org mode state ──
+  const [orgMode, setOrgMode] = useState(false);
+  const [orgList, setOrgList] = useState<{id: string; name: string; icon: string; status: string}[]>([]);
+  const [selectedOrgId, setSelectedOrgId] = useState<string | null>(null);
+  const [selectedOrgNodeId, setSelectedOrgNodeId] = useState<string | null>(null);
+  const [orgMenuOpen, setOrgMenuOpen] = useState(false);
+  const orgMenuRef = useRef<HTMLDivElement | null>(null);
+  const [orgCommandPending, setOrgCommandPending] = useState(false);
+  const orgCommandPendingRef = useRef(false);
+
+  useEffect(() => {
+    if (!orgMenuOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (orgMenuRef.current && !orgMenuRef.current.contains(e.target as HTMLElement)) {
+        setOrgMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [orgMenuOpen]);
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const { orgId, nodeId } = (e as CustomEvent).detail ?? {};
+      if (!orgId) return;
+      setOrgMode(true);
+      setSelectedOrgId(orgId);
+      setSelectedOrgNodeId(nodeId ?? null);
+    };
+    window.addEventListener("openakita_activate_org", handler);
+    return () => window.removeEventListener("openakita_activate_org", handler);
+  }, []);
+
   type SubAgentEntry = { agentId: string; status: "delegating" | "done" | "error"; reason?: string; startTime: number };
   const [displayActiveSubAgents, setDisplayActiveSubAgents] = useState<SubAgentEntry[]>([]);
 
@@ -2169,6 +2204,18 @@ export function ChatView({
       }
     };
     fetchProfiles();
+  }, [multiAgentEnabled, apiBaseUrl, serviceRunning, visible]);
+
+  useEffect(() => {
+    if (!multiAgentEnabled || !visible || !serviceRunning) return;
+    const fetchOrgs = async () => {
+      try {
+        const res = await safeFetch(`${apiBaseUrl}/api/orgs`);
+        const data = await res.json();
+        setOrgList(data.map((o: any) => ({ id: o.id, name: o.name, icon: o.icon || "", status: o.status })));
+      } catch { /* ignore */ }
+    };
+    fetchOrgs();
   }, [multiAgentEnabled, apiBaseUrl, serviceRunning, visible]);
 
   // Sync selectedAgent → current conversation's agentProfileId
@@ -2541,6 +2588,25 @@ export function ChatView({
     { id: "agents", label: "查看 Agent 列表", description: "显示可用的 Agent 列表", action: () => {
       setMessages((prev) => [...prev, { id: genId(), role: "system", content: "Agent 列表取决于 handoff 配置。当前可通过 /agent <名称> 手动请求切换。", timestamp: Date.now() }]);
     }},
+    { id: "org", label: "组织模式", description: "切换到组织编排模式，向组织下命令", action: (args) => {
+      if (args === "off" || args === "关闭") {
+        setOrgMode(false);
+        setSelectedOrgId(null);
+        setMessages((prev) => [...prev, { id: genId(), role: "system", content: "已退出组织模式", timestamp: Date.now() }]);
+      } else if (args) {
+        const match = orgList.find(o => o.name.includes(args) || o.id === args);
+        if (match) {
+          setOrgMode(true);
+          setSelectedOrgId(match.id);
+          setMessages((prev) => [...prev, { id: genId(), role: "system", content: `已切换到组织: ${match.icon} ${match.name}`, timestamp: Date.now() }]);
+        } else {
+          setMessages((prev) => [...prev, { id: genId(), role: "system", content: `未找到组织「${args}」。可用组织: ${orgList.map(o => o.name).join(", ") || "无"}`, timestamp: Date.now() }]);
+        }
+      } else {
+        const names = orgList.map(o => `${o.icon} ${o.name}`).join("\n") || "（暂无组织）";
+        setMessages((prev) => [...prev, { id: genId(), role: "system", content: `组织模式 ${orgMode ? "已开启" : "已关闭"}\n可用组织:\n${names}\n\n用法: /org <组织名> 或 /org off`, timestamp: Date.now() }]);
+      }
+    }},
     { id: "thinking", label: "深度思考", description: "设置思考模式 (on/off/auto)", action: (args) => {
       const mode = args?.toLowerCase().trim();
       if (mode === "on" || mode === "off" || mode === "auto") {
@@ -2576,8 +2642,12 @@ export function ChatView({
   // ── 新建对话 ──
   const newConversation = useCallback(() => {
     const id = genId();
-    if (activeConvId && messages.length > 0) {
-      saveMessagesToStorage(STORAGE_KEY_MSGS_PREFIX + activeConvId, messages);
+    if (activeConvId) {
+      const ctx = streamContexts.current.get(activeConvId);
+      const msgsToSave = ctx?.isStreaming ? ctx.messages : messages;
+      if (msgsToSave.length > 0) {
+        saveMessagesToStorage(STORAGE_KEY_MSGS_PREFIX + activeConvId, msgsToSave);
+      }
     }
     setActiveConvId(id);
     setMessages([]);
@@ -2670,6 +2740,7 @@ export function ChatView({
   const sendMessage = useCallback(async (overrideText?: string, targetConvId?: string, displayContent?: string) => {
     const text = (overrideText ?? inputTextRef.current).trim();
     if (!text && pendingAttachments.length === 0) return;
+    if (orgCommandPendingRef.current) return;
 
     const resolvedConvId = targetConvId || activeConvId;
     const targetIsStreaming = resolvedConvId ? !!streamContexts.current.get(resolvedConvId)?.isStreaming : false;
@@ -2686,6 +2757,179 @@ export function ChatView({
         cmd.action(parts.slice(1).join(" "));
         setInputValue("");
         setSlashOpen(false);
+        return;
+      }
+    }
+
+    // @org: 前缀或组织模式 — 路由到组织 API
+    const orgPrefixMatch = text.match(/^@org:(\S+?)(?:\/(\S+?))?\s+([\s\S]+)/);
+    if (orgPrefixMatch || (orgMode && selectedOrgId)) {
+      let targetOrgId = selectedOrgId;
+      let targetNodeId = selectedOrgNodeId;
+      let msgContent = text;
+      if (orgPrefixMatch) {
+        const orgRef = orgPrefixMatch[1];
+        targetNodeId = orgPrefixMatch[2] || null;
+        msgContent = orgPrefixMatch[3];
+        const match = orgList.find(o => o.name.includes(orgRef) || o.id === orgRef);
+        if (match) targetOrgId = match.id;
+      }
+      if (targetOrgId) {
+        const orgUserMsg: ChatMessage = { id: genId(), role: "user", content: text, timestamp: Date.now() };
+        const placeholderId = genId();
+        const orgOrgName = orgList.find(o => o.id === targetOrgId)?.name || targetOrgId;
+        const orgConvId = activeConvId;
+        const orgMsgsSnapshot: ChatMessage[] = [...messages, orgUserMsg, {
+          id: placeholderId, role: "assistant" as const,
+          content: "", streaming: true, timestamp: Date.now(),
+        }];
+        let orgMsgsLive = orgMsgsSnapshot;
+
+        const updateOrgMessages = (updater: (msgs: ChatMessage[]) => ChatMessage[]) => {
+          orgMsgsLive = updater(orgMsgsLive);
+          if (activeConvIdRef.current === orgConvId) {
+            setMessages(orgMsgsLive);
+          }
+        };
+
+        setMessages(orgMsgsSnapshot);
+        setInputValue("");
+        orgCommandPendingRef.current = true;
+        setOrgCommandPending(true);
+
+        const progressLines: string[] = [];
+        const pushProgress = (line: string) => {
+          progressLines.push(line);
+          const preview = progressLines.slice(-8).map(l => `> ${l}`).join("\n");
+          updateOrgMessages((prev) => prev.map(m =>
+            m.id === placeholderId ? { ...m, content: preview } : m
+          ));
+        };
+
+        const unsub = onWsEvent((event, raw) => {
+          const d = raw as Record<string, unknown> | null;
+          if (!d || d.org_id !== targetOrgId) return;
+          const nodeId = (d.node_id || d.from_node || "") as string;
+          const toNode = (d.to_node || "") as string;
+          if (event === "org:node_status") {
+            const st = d.status as string;
+            if (st === "busy") {
+              const task = (d.current_task || "") as string;
+              pushProgress(`🟢 **${nodeId}** 开始处理${task ? `：${task.slice(0, 60)}` : ""}`);
+            } else if (st === "idle") {
+              pushProgress(`✅ **${nodeId}** 完成`);
+            } else if (st === "error") {
+              pushProgress(`❌ **${nodeId}** 出错`);
+            }
+          } else if (event === "org:task_delegated") {
+            const task = (d.task || "") as string;
+            pushProgress(`📋 **${nodeId}** → **${toNode}** 分配任务：${(task as string).slice(0, 50)}`);
+          } else if (event === "org:message") {
+            const msgType = d.msg_type as string || "消息";
+            pushProgress(`💬 **${nodeId}** → **${toNode}** ${msgType}`);
+          } else if (event === "org:escalation") {
+            pushProgress(`⬆️ **${nodeId}** 向上汇报`);
+          } else if (event === "org:blackboard_update") {
+            pushProgress(`📝 **${nodeId}** 更新黑板`);
+          } else if (event === "org:task_complete") {
+            pushProgress(`🎯 **${nodeId}** 任务完成`);
+          } else if (event === "org:task_timeout") {
+            pushProgress(`⏰ **${nodeId}** 任务超时`);
+          }
+        });
+
+        try {
+          const submitRes = await safeFetch(`${apiBaseUrl}/api/orgs/${targetOrgId}/command`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ content: msgContent, target_node_id: targetNodeId }),
+          });
+          const submitData = await submitRes.json();
+          const commandId = submitData.command_id as string | undefined;
+
+          if (!commandId) {
+            const resultText = submitData.result || submitData.error || JSON.stringify(submitData);
+            const progressSummary = progressLines.length > 0
+              ? progressLines.map(l => `> ${l}`).join("\n") + "\n\n---\n\n"
+              : "";
+            updateOrgMessages((prev) => prev.map(m =>
+              m.id === placeholderId
+                ? { ...m, content: `${progressSummary}**[${orgOrgName}]** ${resultText}`, streaming: false }
+                : m
+            ));
+          } else {
+            let resolved = false;
+            const onDone = onWsEvent((evt, raw) => {
+              const d = raw as Record<string, unknown> | null;
+              if (evt !== "org:command_done" || !d || d.command_id !== commandId) return;
+              resolved = true;
+              const result = d.result as Record<string, unknown> | null;
+              const error = d.error as string | undefined;
+              const resultText = (result && (result.result || result.error)) || error || JSON.stringify(d);
+              const progressSummary = progressLines.length > 0
+                ? progressLines.map(l => `> ${l}`).join("\n") + "\n\n---\n\n"
+                : "";
+              updateOrgMessages((prev) => prev.map(m =>
+                m.id === placeholderId
+                  ? { ...m, content: `${progressSummary}**[${orgOrgName}]** ${resultText}`, streaming: false }
+                  : m
+              ));
+            });
+
+            const pollInterval = 5_000;
+            const stallThreshold = 60_000;
+            let lastProgressAt = Date.now();
+            const origPushProgress = pushProgress;
+            const wrappedPush = (line: string) => { lastProgressAt = Date.now(); origPushProgress(line); };
+            // Replace the outer pushProgress's timestamp tracking
+            void wrappedPush;
+
+            while (!resolved) {
+              await new Promise(r => setTimeout(r, pollInterval));
+              if (resolved) break;
+              try {
+                const pollRes = await safeFetch(
+                  `${apiBaseUrl}/api/orgs/${targetOrgId}/commands/${commandId}`
+                );
+                const pollData = await pollRes.json();
+                if (pollData.status === "done" || pollData.status === "error") {
+                  if (!resolved) {
+                    resolved = true;
+                    const resultText = pollData.result?.result || pollData.result?.error || pollData.error || JSON.stringify(pollData);
+                    const progressSummary = progressLines.length > 0
+                      ? progressLines.map(l => `> ${l}`).join("\n") + "\n\n---\n\n"
+                      : "";
+                    updateOrgMessages((prev) => prev.map(m =>
+                      m.id === placeholderId
+                        ? { ...m, content: `${progressSummary}**[${orgOrgName}]** ${resultText}`, streaming: false }
+                        : m
+                    ));
+                  }
+                }
+              } catch { /* poll failed, retry next cycle */ }
+
+              if (!resolved && Date.now() - lastProgressAt > stallThreshold) {
+                pushProgress("⏳ 执行时间较长，组织仍在处理中...");
+                lastProgressAt = Date.now();
+              }
+            }
+
+            onDone();
+          }
+        } catch (e: any) {
+          updateOrgMessages((prev) => prev.map(m =>
+            m.id === placeholderId
+              ? { ...m, content: `组织命令失败: ${e.message || e}`, streaming: false, role: "system" as const }
+              : m
+          ));
+        } finally {
+          unsub();
+          orgCommandPendingRef.current = false;
+          setOrgCommandPending(false);
+          if (orgConvId) {
+            saveMessagesToStorage(STORAGE_KEY_MSGS_PREFIX + orgConvId, orgMsgsLive);
+          }
+        }
         return;
       }
     }
@@ -3949,6 +4193,17 @@ export function ChatView({
     const has = val.trim().length > 0;
     setHasInputText(prev => prev !== has ? has : prev);
 
+    // @org: 前缀检测 — 自动切换到组织模式
+    const orgMatch = val.match(/^@org:(\S+)\s/);
+    if (orgMatch && !orgMode) {
+      const target = orgMatch[1];
+      const match = orgList.find(o => o.name.includes(target) || o.id === target);
+      if (match) {
+        setOrgMode(true);
+        setSelectedOrgId(match.id);
+      }
+    }
+
     if (val.startsWith("/") && !val.includes(" ")) {
       setSlashOpen(true);
       setSlashFilter(val.slice(1));
@@ -3956,7 +4211,7 @@ export function ChatView({
     } else {
       setSlashOpen(false);
     }
-  }, []);
+  }, [orgMode, orgList]);
 
   // ── Filtered + grouped conversations for Cursor-style sidebar ──
   const filteredConversations = useMemo(() => {
@@ -4422,7 +4677,7 @@ export function ChatView({
                   })}
                 </div>
               )}
-              {multiAgentEnabled && agentProfiles.length > 0 && (
+              {multiAgentEnabled && agentProfiles.length > 0 && !orgMode && (
                 <div ref={agentMenuRef} style={{ position: "relative", marginLeft: 8 }}>
                   <button
                     className="chatModelPickerBtn"
@@ -4464,7 +4719,82 @@ export function ChatView({
                   )}
                 </div>
               )}
+              {/* Org mode selector */}
+              {multiAgentEnabled && orgList.length > 0 && (
+                <div ref={orgMenuRef} style={{ position: "relative", marginLeft: 8 }}>
+                  <button
+                    className="chatModelPickerBtn"
+                    onClick={() => {
+                      if (orgMode) {
+                        setOrgMode(false);
+                        setSelectedOrgId(null);
+                        setOrgMenuOpen(false);
+                      } else {
+                        setOrgMenuOpen((v) => !v);
+                      }
+                    }}
+                    style={{
+                      gap: 4,
+                      background: orgMode ? "rgba(14,165,233,0.15)" : undefined,
+                      borderColor: orgMode ? "var(--primary)" : undefined,
+                    }}
+                  >
+                    <span style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 4 }}>
+                      <IconBuilding size={13} />
+                      {orgMode && selectedOrgId
+                        ? (() => { const o = orgList.find(x => x.id === selectedOrgId); return o ? o.name : "组织"; })()
+                        : "组织"}
+                    </span>
+                    {orgMode ? <IconX size={10} /> : <IconChevronDown size={12} />}
+                  </button>
+                  {orgMenuOpen && (
+                    <div className="chatModelMenu" style={{ minWidth: 200 }}>
+                      {orgList.map((o) => (
+                        <div
+                          key={o.id}
+                          className={`chatModelMenuItem ${selectedOrgId === o.id ? "chatModelMenuItemActive" : ""}`}
+                          onClick={() => {
+                            setOrgMode(true);
+                            setSelectedOrgId(o.id);
+                            setOrgMenuOpen(false);
+                          }}
+                        >
+                          <IconBuilding size={13} style={{ marginRight: 4, flexShrink: 0 }} />
+                          <span style={{ fontWeight: 600 }}>{o.name}</span>
+                          <span style={{ fontSize: 11, opacity: 0.5, marginLeft: 6 }}>{o.status}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
+
+            {/* Org mode hint bar */}
+            {orgMode && selectedOrgId && (
+              <div style={{
+                fontSize: 11, color: "var(--primary)", padding: "4px 8px",
+                background: "rgba(14,165,233,0.08)", borderRadius: 6, marginBottom: 4,
+                display: "flex", alignItems: "center", gap: 6,
+              }}>
+                <IconBuilding size={12} />
+                正在与「{orgList.find(o => o.id === selectedOrgId)?.name}」{selectedOrgNodeId ? ` / ${selectedOrgNodeId}` : ""}对话
+                {selectedOrgNodeId && (
+                  <button
+                    onClick={() => setSelectedOrgNodeId(null)}
+                    style={{
+                      background: "none", border: "none", cursor: "pointer",
+                      color: "var(--muted)", fontSize: 10, padding: "0 2px",
+                      display: "flex", alignItems: "center",
+                    }}
+                    title="取消节点指定，改为与整个组织对话"
+                  >
+                    <IconX size={10} />
+                  </button>
+                )}
+                {orgCommandPending && <span style={{ opacity: 0.6 }}> — 组织协调中，进度实时显示 ↓</span>}
+              </div>
+            )}
 
             {/* Textarea */}
             <textarea
@@ -4472,7 +4802,7 @@ export function ChatView({
               onChange={handleInputChange}
               onKeyDown={handleInputKeyDown}
               onPaste={handlePaste}
-              placeholder={isCurrentConvStreaming ? t("chat.queueHint") : planMode ? `Plan ${t("chat.planMode")}` : t("chat.placeholder")}
+              placeholder={orgCommandPending ? "组织正在处理中..." : orgMode ? (selectedOrgNodeId ? `输入指令发送给 ${selectedOrgNodeId}...` : "输入指令发送给组织...") : isCurrentConvStreaming ? t("chat.queueHint") : planMode ? `Plan ${t("chat.planMode")}` : t("chat.placeholder")}
               rows={1}
               className="chatInputTextarea"
               onInput={(e) => {
@@ -4585,8 +4915,8 @@ export function ChatView({
                     </div>
                   );
                 })()}
-                {isCurrentConvStreaming ? (
-                  hasInputText ? (
+                {isCurrentConvStreaming || orgCommandPending ? (
+                  hasInputText && !orgCommandPending ? (
                     <button
                       data-slot="queue"
                       onClick={handleQueueMessage}
@@ -4596,8 +4926,15 @@ export function ChatView({
                       <IconSend size={14} />
                     </button>
                   ) : (
-                    <button data-slot="stop" onClick={handleCancelTask} className="chatInputSendBtn chatInputStopBtn" title={t("chat.stopGeneration")}>
-                      <IconStop size={14} />
+                    <button
+                      data-slot="stop"
+                      onClick={orgCommandPending ? undefined : handleCancelTask}
+                      className={`chatInputSendBtn ${orgCommandPending ? "" : "chatInputStopBtn"}`}
+                      title={orgCommandPending ? "组织处理中..." : t("chat.stopGeneration")}
+                      disabled={orgCommandPending}
+                      style={orgCommandPending ? { opacity: 0.5, cursor: "wait" } : undefined}
+                    >
+                      {orgCommandPending ? <IconSend size={14} /> : <IconStop size={14} />}
                     </button>
                   )
                 ) : (

@@ -198,7 +198,7 @@ async def read_env():
             masked[k] = v[:4] + "***" + v[-2:] if len(v) > 6 else "***"
         else:
             masked[k] = v
-    return {"env": env, "masked": masked, "raw": content}
+    return {"env": masked, "masked": masked, "raw": ""}
 
 
 @router.post("/api/config/env")
@@ -213,11 +213,17 @@ async def write_env(body: EnvUpdateRequest):
     existing = ""
     if env_path.exists():
         existing = env_path.read_bytes().decode("utf-8", errors="replace")
+    import re as _re
+    _env_key_pattern = _re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+    for key in body.entries:
+        if not _env_key_pattern.match(key):
+            from fastapi import HTTPException as _HE
+            raise _HE(status_code=400, detail=f"Invalid env key: {key}")
+
     new_content = _update_env_content(
         existing, body.entries, delete_keys=set(body.delete_keys)
     )
     env_path.write_text(new_content, encoding="utf-8")
-    # Sync into os.environ so the running process picks up new values immediately
     for key, value in body.entries.items():
         if value:
             os.environ[key] = value
@@ -402,25 +408,38 @@ def _hot_patch_agent_tools(request: Request, *, enable: bool) -> None:
         return
     try:
         from openakita.tools.definitions.agent import AGENT_TOOLS
+        from openakita.tools.definitions.org_setup import ORG_SETUP_TOOLS
         from openakita.tools.handlers.agent import create_handler as create_agent_handler
-        tool_names = [t["name"] for t in AGENT_TOOLS]
+        from openakita.tools.handlers.org_setup import create_handler as create_org_setup_handler
+
+        all_tools = AGENT_TOOLS + ORG_SETUP_TOOLS
+        tool_names = [t["name"] for t in all_tools]
 
         if enable:
             existing = {t["name"] for t in agent._tools}
-            for t in AGENT_TOOLS:
+            for t in all_tools:
                 if t["name"] not in existing:
                     agent._tools.append(t)
                 agent.tool_catalog.add_tool(t)
             agent.handler_registry.register(
-                "agent", create_agent_handler(agent), tool_names,
+                "agent", create_agent_handler(agent),
+                [t["name"] for t in AGENT_TOOLS],
             )
-            logger.info("[Config API] Agent tools hot-patched onto global agent")
+            agent.handler_registry.register(
+                "org_setup", create_org_setup_handler(agent),
+                [t["name"] for t in ORG_SETUP_TOOLS],
+            )
+            logger.info("[Config API] Agent + org_setup tools hot-patched onto global agent")
         else:
             agent._tools = [t for t in agent._tools if t["name"] not in set(tool_names)]
             for name in tool_names:
                 agent.tool_catalog.remove_tool(name)
             agent.handler_registry.unregister("agent")
-            logger.info("[Config API] Agent tools removed from global agent")
+            try:
+                agent.handler_registry.unregister("org_setup")
+            except Exception:
+                pass
+            logger.info("[Config API] Agent + org_setup tools removed from global agent")
     except Exception as e:
         logger.warning(f"[Config API] Failed to hot-patch agent tools: {e}")
 

@@ -574,7 +574,10 @@ class TelegramAdapter(ChannelAdapter):
                 return
 
             chat_id = str(message.chat.id)
-            user_id = message.from_user.id if message.from_user else "unknown"
+            if not message.from_user:
+                logger.debug(f"Ignoring message without from_user in chat {chat_id}")
+                return
+            user_id = message.from_user.id
             logger.debug(f"Received message from user {user_id} in chat {chat_id}: {message.text}")
 
             # 配对验证

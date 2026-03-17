@@ -2510,7 +2510,7 @@ class ReasoningEngine:
             trace_dir.mkdir(parents=True, exist_ok=True)
 
             timestamp = datetime.now().strftime("%H%M%S")
-            cid_part = (conversation_id or "unknown")[:16]
+            cid_part = (conversation_id or "unknown")[:16].replace(":", "_")
             trace_file = trace_dir / f"trace_{cid_part}_{timestamp}.json"
 
             # 汇总统计
@@ -3470,8 +3470,15 @@ class ReasoningEngine:
             )
             return None
 
-        # --- 检查 fallback 是否与当前模型实际相同 ---
+        # --- 检查 fallback 模型是否可用 ---
         new_model = task_monitor.fallback_model
+        if not new_model:
+            logger.warning(
+                "[ModelSwitch] No fallback model available (all endpoints may be in cooldown), "
+                "aborting model switch"
+            )
+            return None
+
         resolved = self._resolve_endpoint_name(new_model)
         current_endpoint = self._resolve_endpoint_name(current_model)
         if resolved and current_endpoint and resolved == current_endpoint:

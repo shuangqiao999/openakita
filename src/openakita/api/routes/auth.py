@@ -183,18 +183,24 @@ async def check_auth(request: Request, response: Response):
     return {"authenticated": False}
 
 
-# ── POST /api/auth/change-password (local only) ──
+# ── POST /api/auth/change-password ──
+# Local: no current_password needed.
+# Remote: must provide correct current_password (old password).
 
 @router.post("/change-password")
 async def change_password(request: Request):
-    if not _is_local_from_real_ip(request):
-        return JSONResponse(
-            status_code=403,
-            content={"detail": "Password can only be changed from localhost"},
-        )
-
     config = _get_config(request)
     body = await _parse_body(request)
+    is_local = _is_local_from_real_ip(request)
+
+    if not is_local:
+        current_password = body.get("current_password", "")
+        if not current_password or not config.verify_password(current_password):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Current password is required for remote password change"},
+            )
+
     new_password = body.get("new_password", "")
     if not new_password:
         return JSONResponse(status_code=400, content={"detail": "new_password is required"})
@@ -203,7 +209,8 @@ async def change_password(request: Request):
     from .websocket import manager
     disconnected = await manager.disconnect_remote_clients()
 
-    logger.info("Web access password changed from localhost, disconnected %d remote session(s)", disconnected)
+    origin = "localhost" if is_local else "remote"
+    logger.info("Web access password changed from %s, disconnected %d remote session(s)", origin, disconnected)
     return {"status": "ok", "message": "Password changed. All remote sessions invalidated.", "disconnected": disconnected}
 
 

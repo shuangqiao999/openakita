@@ -4,6 +4,7 @@ import { FieldText, FieldBool, TelegramPairingCodeHint } from "../components/Env
 import { IconBook, IconClipboard, LogoTelegram, LogoFeishu, LogoWework, LogoDingtalk, LogoQQ } from "../icons";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import type { EnvMap } from "../types";
+import type { IMBot } from "./im-shared";
 import { envGet, envSet } from "../utils";
 import { copyToClipboard } from "../utils/clipboard";
 
@@ -14,6 +15,10 @@ type IMConfigViewProps = {
   currentWorkspaceId: string | null;
   imDisabled?: boolean;
   onToggleIM?: () => void;
+  apiBaseUrl?: string;
+  onNavigateToBotConfig?: (presetType: string) => void;
+  pendingBots?: IMBot[];
+  onPendingBotsChange?: React.Dispatch<React.SetStateAction<IMBot[]>>;
 };
 
 export function IMConfigView(props: IMConfigViewProps) {

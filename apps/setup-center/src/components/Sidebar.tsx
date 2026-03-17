@@ -6,11 +6,11 @@ import {
   IconChevronDown, IconChevronRight, IconGlobe,
   IconZap, IconPlug, IconCalendar,
   IconBug, IconBrain, IconGitHub, IconGitee, IconUsers, IconBot,
-  IconGear, IconBook, IconStorefront, IconPuzzle, IconFingerprint,
+  IconGear, IconBook, IconStorefront, IconPuzzle, IconFingerprint, IconLayoutGrid,
 } from "../icons";
 import logoUrl from "../assets/logo.png";
 
-type ViewId = "wizard" | "status" | "chat" | "skills" | "im" | "onboarding" | "modules" | "token_stats" | "mcp" | "scheduler" | "memory" | "identity" | "dashboard" | "agent_manager" | "agent_store" | "skill_store";
+type ViewId = "wizard" | "status" | "chat" | "skills" | "im" | "onboarding" | "modules" | "token_stats" | "mcp" | "scheduler" | "memory" | "identity" | "dashboard" | "org_editor" | "agent_manager" | "agent_store" | "skill_store";
 
 export type SidebarProps = {
   collapsed: boolean;
@@ -116,6 +116,11 @@ export function Sidebar({
         {multiAgentEnabled && (
           <div className={`navItem ${view === "dashboard" ? "navItemActive" : ""}`} onClick={() => onViewChange("dashboard")} role="button" tabIndex={0} title={t("sidebar.dashboard")}>
             <IconUsers size={16} /> {!collapsed && <span>{t("sidebar.dashboard")} <sup style={{ fontSize: 9, color: "var(--primary, #3b82f6)", fontWeight: 600 }}>Beta</sup></span>}
+          </div>
+        )}
+        {multiAgentEnabled && (
+          <div className={`navItem ${view === "org_editor" ? "navItemActive" : ""}`} onClick={() => onViewChange("org_editor")} role="button" tabIndex={0} title={t("sidebar.orgEditor")}>
+            <IconLayoutGrid size={16} /> {!collapsed && <span>{t("sidebar.orgEditor")} <sup style={{ fontSize: 9, color: "var(--primary, #3b82f6)", fontWeight: 600 }}>Beta</sup></span>}
           </div>
         )}
         {multiAgentEnabled && (

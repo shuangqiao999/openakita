@@ -1,7 +1,9 @@
 ---
 name: generate-agents-md
-description: "Generate or update AGENTS.md for the current project. Use when user asks to create project guidelines, initialize AGENTS.md, standardize project conventions, or says '生成 AGENTS.md', '初始化项目规范'."
+description: "Generate or update AGENTS.md for the current project. Use when user asks to create project guidelines, initialize AGENTS.md, or standardize project conventions."
 system: true
+handler: system
+tool-name: generate_agents_md
 category: Development
 allowed-tools: ["read_file", "write_file", "run_shell", "list_directory"]
 ---

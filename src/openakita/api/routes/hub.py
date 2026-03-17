@@ -89,6 +89,12 @@ class ExportRequest(BaseModel):
     include_skills: list[str] | None = None
 
 
+class BatchExportRequest(BaseModel):
+    profile_ids: list[str]
+    author_name: str = ""
+    version: str = "1.0.0"
+
+
 @router.post("/api/agents/package/export")
 async def export_agent(req: ExportRequest):
     """Export an agent profile as a .akita-agent package."""
@@ -121,21 +127,204 @@ async def export_agent(req: ExportRequest):
     )
 
 
+@router.post("/api/agents/package/batch-export")
+async def batch_export_agents(req: BatchExportRequest):
+    """Export multiple agents as a single .zip archive."""
+    import zipfile
+    from openakita.agents.packager import AgentPackager, PackageError
+
+    if not req.profile_ids:
+        raise HTTPException(status_code=400, detail="profile_ids is required")
+    if len(req.profile_ids) > 20:
+        raise HTTPException(status_code=400, detail="最多同时导出 20 个 Agent")
+
+    profile_store, skills_dir, root = _get_stores()
+    output_dir = root / "data" / "agent_packages"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    packager = AgentPackager(
+        profile_store=profile_store,
+        skills_dir=skills_dir,
+        output_dir=output_dir,
+    )
+
+    exported: list[Path] = []
+    errors: list[str] = []
+    for pid in req.profile_ids:
+        try:
+            out = packager.package(
+                profile_id=pid,
+                author_name=req.author_name,
+                version=req.version,
+            )
+            exported.append(out)
+        except PackageError as e:
+            errors.append(f"{pid}: {e}")
+
+    if not exported:
+        raise HTTPException(status_code=400, detail=f"没有可导出的 Agent: {'; '.join(errors)}")
+
+    if len(exported) == 1:
+        return FileResponse(
+            path=str(exported[0]),
+            media_type="application/x-akita-agent",
+            filename=exported[0].name,
+        )
+
+    zip_path = output_dir / "batch_export.zip"
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for p in exported:
+            zf.write(p, p.name)
+
+    return FileResponse(
+        path=str(zip_path),
+        media_type="application/zip",
+        filename=f"agents_batch_{len(exported)}.zip",
+    )
+
+
+class ExportJsonRequest(BaseModel):
+    profile_id: str
+    version: str = "1.0.0"
+    output_path: str = ""
+
+
+@router.post("/api/agents/package/export-json")
+async def export_agent_json(req: ExportJsonRequest):
+    """Export agent profile as JSON. If output_path given, write to disk."""
+    import json as _json
+
+    profile_store, _, _ = _get_stores()
+    profile = profile_store.get(req.profile_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail=f"Profile not found: {req.profile_id}")
+    data = profile.to_dict()
+    data.pop("ephemeral", None)
+    data.pop("inherit_from", None)
+    export_data = {
+        "format": "akita-agent",
+        "version": req.version,
+        "profile": data,
+    }
+
+    if req.output_path:
+        out = Path(req.output_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(_json.dumps(export_data, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {"ok": True, "path": str(out)}
+
+    from fastapi.responses import JSONResponse
+    return JSONResponse(content=export_data)
+
+
+class BatchExportJsonRequest(BaseModel):
+    profile_ids: list[str]
+    output_path: str = ""
+
+
+@router.post("/api/agents/package/batch-export-json")
+async def batch_export_agents_json(req: BatchExportJsonRequest):
+    """Export multiple agent profiles as JSON. If output_path given, write to disk."""
+    import json as _json
+
+    if not req.profile_ids:
+        raise HTTPException(status_code=400, detail="profile_ids is required")
+    if len(req.profile_ids) > 50:
+        raise HTTPException(status_code=400, detail="最多同时导出 50 个 Agent")
+
+    profile_store, _, _ = _get_stores()
+    exported = []
+    errors = []
+    for pid in req.profile_ids:
+        profile = profile_store.get(pid)
+        if profile is None:
+            errors.append(pid)
+            continue
+        data = profile.to_dict()
+        data.pop("ephemeral", None)
+        data.pop("inherit_from", None)
+        exported.append(data)
+
+    result = {
+        "format": "akita-agent-batch",
+        "version": "1.0",
+        "agents": exported,
+        "errors": errors,
+    }
+
+    if req.output_path:
+        out = Path(req.output_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(_json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {"ok": True, "path": str(out)}
+
+    from fastapi.responses import JSONResponse
+    return JSONResponse(content=result)
+
+
 @router.post("/api/agents/package/import")
 async def import_agent(
     request: Request,
     file: UploadFile = File(...),
     force: bool = False,
 ):
-    """Import an agent from an uploaded .akita-agent package."""
-    from openakita.agents.packager import AgentInstaller, PackageError
+    """Import an agent from .akita-agent (ZIP) or .json file."""
+    import json as _json
+    from openakita.agents.profile import AgentProfile
 
     profile_store, skills_dir, _ = _get_stores()
+    content = await file.read()
+    filename = file.filename or ""
+
+    if filename.endswith(".json"):
+        try:
+            data = _json.loads(content)
+        except (ValueError, UnicodeDecodeError) as e:
+            raise HTTPException(400, f"无效的 JSON 文件: {e}")
+
+        if data.get("format") == "akita-agent-batch":
+            agents_data = data.get("agents", [])
+        elif data.get("format") == "akita-agent":
+            agents_data = [data.get("profile", {})]
+        elif isinstance(data.get("profile"), dict):
+            agents_data = [data["profile"]]
+        else:
+            raise HTTPException(400, "无法识别的 JSON 格式，缺少 profile 或 agents 字段")
+
+        imported = []
+        skipped = []
+        for pdata in agents_data:
+            if not pdata or not isinstance(pdata, dict):
+                continue
+            pid = pdata.get("id", "")
+            pdata["type"] = "custom"
+            for k in ("ephemeral", "inherit_from", "user_customized", "hidden"):
+                pdata.pop(k, None)
+
+            if profile_store.exists(pid) and not force:
+                suffix = 1
+                while profile_store.exists(f"{pid}-{suffix}"):
+                    suffix += 1
+                old_id = pid
+                pid = f"{pid}-{suffix}"
+                pdata["id"] = pid
+                skipped.append(f"{old_id} → {pid}")
+
+            profile = AgentProfile.from_dict(pdata)
+            profile_store.save(profile)
+            imported.append(profile.to_dict())
+
+        _reload_skills(request)
+        msg = f"导入成功: {len(imported)} 个 Agent"
+        if skipped:
+            msg += f"（{len(skipped)} 个 ID 冲突已重命名: {', '.join(skipped)}）"
+        return {"message": msg, "profile": imported[0] if len(imported) == 1 else None, "imported": imported}
+
+    from openakita.agents.packager import AgentInstaller, PackageError
 
     with tempfile.NamedTemporaryFile(
         suffix=".akita-agent", delete=False
     ) as tmp:
-        content = await file.read()
         tmp.write(content)
         tmp_path = Path(tmp.name)
 

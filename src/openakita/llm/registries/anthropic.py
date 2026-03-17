@@ -2,10 +2,8 @@
 Anthropic 服务商注册表
 """
 
-import httpx
-
 from ..capabilities import infer_capabilities
-from .base import ModelInfo, ProviderInfo, ProviderRegistry
+from .base import ModelInfo, ProviderInfo, ProviderRegistry, get_registry_client
 
 
 class AnthropicRegistry(ProviderRegistry):
@@ -23,34 +21,32 @@ class AnthropicRegistry(ProviderRegistry):
 
     async def list_models(self, api_key: str) -> list[ModelInfo]:
         """获取 Anthropic 模型列表"""
-        async with httpx.AsyncClient(timeout=30) as client:
-            try:
-                resp = await client.get(
-                    f"{self.info.default_base_url}/v1/models",
-                    headers={
-                        "x-api-key": api_key,
-                        "anthropic-version": "2023-06-01",
-                    },
-                )
-                resp.raise_for_status()
-                data = resp.json()
+        client = get_registry_client()
+        try:
+            resp = await client.get(
+                f"{self.info.default_base_url}/v1/models",
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
 
-                models = []
-                for m in data.get("data", []):
-                    model_id = m.get("id", "")
-                    models.append(
-                        ModelInfo(
-                            id=model_id,
-                            name=m.get("display_name", model_id),
-                            capabilities=infer_capabilities(model_id, provider_slug="anthropic"),
-                        )
+            models = []
+            for m in data.get("data", []):
+                model_id = m.get("id", "")
+                models.append(
+                    ModelInfo(
+                        id=model_id,
+                        name=m.get("display_name", model_id),
+                        capabilities=infer_capabilities(model_id, provider_slug="anthropic"),
                     )
+                )
+            return models
 
-                return models
-
-            except httpx.HTTPError:
-                # API 调用失败，返回预置模型列表
-                return self._get_preset_models()
+        except Exception:
+            return self._get_preset_models()
 
     def _get_preset_models(self) -> list[ModelInfo]:
         """返回预置模型列表"""

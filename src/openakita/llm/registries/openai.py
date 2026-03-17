@@ -2,10 +2,8 @@
 OpenAI 服务商注册表
 """
 
-import httpx
-
 from ..capabilities import infer_capabilities
-from .base import ModelInfo, ProviderInfo, ProviderRegistry
+from .base import ModelInfo, ProviderInfo, ProviderRegistry, get_registry_client
 
 
 class OpenAIRegistry(ProviderRegistry):
@@ -23,37 +21,31 @@ class OpenAIRegistry(ProviderRegistry):
 
     async def list_models(self, api_key: str) -> list[ModelInfo]:
         """获取 OpenAI 模型列表"""
-        async with httpx.AsyncClient(timeout=30) as client:
-            try:
-                resp = await client.get(
-                    f"{self.info.default_base_url}/models",
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                    },
-                )
-                resp.raise_for_status()
-                data = resp.json()
+        client = get_registry_client()
+        try:
+            resp = await client.get(
+                f"{self.info.default_base_url}/models",
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
 
-                models = []
-                for m in data.get("data", []):
-                    model_id = m.get("id", "")
-                    # 只返回 chat 模型
-                    if not self._is_chat_model(model_id):
-                        continue
-
-                    models.append(
-                        ModelInfo(
-                            id=model_id,
-                            name=model_id,
-                            capabilities=infer_capabilities(model_id, provider_slug="openai"),
-                        )
+            models = []
+            for m in data.get("data", []):
+                model_id = m.get("id", "")
+                if not self._is_chat_model(model_id):
+                    continue
+                models.append(
+                    ModelInfo(
+                        id=model_id,
+                        name=model_id,
+                        capabilities=infer_capabilities(model_id, provider_slug="openai"),
                     )
+                )
+            return sorted(models, key=lambda x: x.id)
 
-                return sorted(models, key=lambda x: x.id)
-
-            except httpx.HTTPError:
-                # API 调用失败，返回预置模型列表
-                return self._get_preset_models()
+        except Exception:
+            return self._get_preset_models()
 
     def _is_chat_model(self, model_id: str) -> bool:
         """判断是否是 chat 模型"""

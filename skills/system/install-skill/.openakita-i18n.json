@@ -1,6 +1,0 @@
-{
-  "zh": {
-    "name": "安装技能",
-    "description": "从 URL 或 Git 仓库安装技能到本地 skills/ 目录，支持 GitHub 简写格式。"
-  }
-}

@@ -230,7 +230,7 @@ SYSTEM_PRESETS: list[AgentProfile] = [
         type=AgentType.SYSTEM,
         skills=[
             "openakita/skills@content-research-writer", "openakita/skills@xiaohongshu-creator",
-            "openakita/skills@docx", "openakita/skills@pptx", "openakita/skills@brand-guidelines",
+            "openakita/skills@docx", "openakita/skills@pptx",
             "openakita/skills@apify-scraper", "openakita/skills@summarizer",
             "jimliu/baoyu-skills@baoyu-image-gen", "jimliu/baoyu-skills@baoyu-infographic",
             "jimliu/baoyu-skills@baoyu-cover-image", "jimliu/baoyu-skills@baoyu-slide-deck",
@@ -475,7 +475,7 @@ SYSTEM_PRESETS: list[AgentProfile] = [
             "obra/superpowers@requesting-code-review", "obra/superpowers@receiving-code-review",
             "obra/superpowers@using-git-worktrees", "obra/superpowers@subagent-driven-development",
             "obra/superpowers@dispatching-parallel-agents",
-            "openakita/skills@code-reviewer", "openakita/skills@github-automation",
+            "openakita/skills@code-review", "openakita/skills@github-automation",
             "openakita/skills@changelog-generator",
         ],
         skills_mode=SkillsMode.INCLUSIVE,
@@ -558,7 +558,7 @@ SYSTEM_PRESETS: list[AgentProfile] = [
         type=AgentType.SYSTEM,
         skills=[
             "openakita/skills@github-automation", "openakita/skills@changelog-generator",
-            "openakita/skills@code-reviewer",
+            "openakita/skills@code-review",
             "obra/superpowers@systematic-debugging", "obra/superpowers@verification-before-completion",
             "obra/superpowers@using-git-worktrees", "obra/superpowers@finishing-a-development-branch",
             "obra/superpowers@writing-plans", "obra/superpowers@executing-plans",

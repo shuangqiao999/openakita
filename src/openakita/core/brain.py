@@ -101,11 +101,26 @@ class Brain:
         self._compiler_client: LLMClient | None = None
         self._init_compiler_client()
 
-        # 公开属性（从 LLMClient 获取）
+        # Compiler 熔断器状态
+        self._compiler_fail_count: int = 0
+        self._compiler_circuit_open: bool = False
+        self._compiler_circuit_open_at: float = 0.0
+        self._COMPILER_FAIL_THRESHOLD: int = 5
+        self._COMPILER_CIRCUIT_RESET_S: float = 300.0
+
+        # 公开属性（从 LMClient 获取）
         self._update_public_attrs()
 
         # Thinking 模式状态
         self._thinking_enabled = True
+
+        # Trace context for debug dump files (org_id, node_id, session_id, etc.)
+        self._trace_context: dict[str, str] = {}
+
+        # Per-session LLM call accumulator (reset via reset_usage_accumulator)
+        self._acc_calls: int = 0
+        self._acc_tokens_in: int = 0
+        self._acc_tokens_out: int = 0
 
         # 启动信息
         endpoints = self._llm_client.endpoints
@@ -134,6 +149,10 @@ class Brain:
             self.model = settings.default_model
             self.base_url = ""
 
+    def set_trace_context(self, ctx: dict[str, str]) -> None:
+        """Set trace context (org_id, node_id, session_id, etc.) for LLM debug dumps."""
+        self._trace_context = dict(ctx)
+
     def _init_compiler_client(self) -> None:
         """从配置加载 Prompt Compiler 专属 LLMClient"""
         try:
@@ -146,6 +165,42 @@ class Brain:
                 logger.info("No compiler endpoints configured, will fall back to main model")
         except Exception as e:
             logger.warning(f"Failed to init compiler client: {e}")
+
+    def _compiler_available(self) -> bool:
+        """Check if the compiler client is usable (not circuit-broken)."""
+        if not self._compiler_client:
+            return False
+        if not self._compiler_circuit_open:
+            return True
+        import time
+        elapsed = time.monotonic() - self._compiler_circuit_open_at
+        if elapsed >= self._COMPILER_CIRCUIT_RESET_S:
+            self._compiler_circuit_open = False
+            self._compiler_fail_count = 0
+            logger.info("[Brain] Compiler circuit breaker reset, will retry compiler endpoint")
+            return True
+        return False
+
+    def _compiler_on_success(self) -> None:
+        self._compiler_fail_count = 0
+        if self._compiler_circuit_open:
+            self._compiler_circuit_open = False
+            logger.info("[Brain] Compiler circuit breaker closed (success)")
+
+    def _compiler_on_failure(self) -> None:
+        self._compiler_fail_count += 1
+        if (
+            not self._compiler_circuit_open
+            and self._compiler_fail_count >= self._COMPILER_FAIL_THRESHOLD
+        ):
+            import time
+            self._compiler_circuit_open = True
+            self._compiler_circuit_open_at = time.monotonic()
+            logger.warning(
+                f"[Brain] Compiler circuit breaker OPEN after "
+                f"{self._compiler_fail_count} consecutive failures, "
+                f"skipping compiler for {self._COMPILER_CIRCUIT_RESET_S}s"
+            )
 
     def reload_compiler_client(self) -> bool:
         """热重载编译端点配置。
@@ -184,8 +239,7 @@ class Brain:
         """
         messages = [Message(role="user", content=[TextBlock(text=prompt)])]
 
-        # 尝试 compiler 专用端点
-        if self._compiler_client:
+        if self._compiler_available():
             try:
                 response = await self._compiler_client.chat(
                     messages=messages,
@@ -193,9 +247,11 @@ class Brain:
                     enable_thinking=False,
                     max_tokens=2048,
                 )
+                self._compiler_on_success()
                 self._record_usage(response)
                 return self._llm_response_to_response(response)
             except Exception as e:
+                self._compiler_on_failure()
                 logger.warning(f"Compiler LLM failed, falling back to main model: {e}")
 
         # 回退到主模型（同样禁用思考，以节省时间）
@@ -235,11 +291,11 @@ class Brain:
         messages = [Message(role="user", content=[TextBlock(text=prompt)])]
         sys_prompt = system or ""
 
-        # 调试：保存请求
         req_id = self._dump_llm_request(sys_prompt, messages, [], caller="think_lightweight")
 
-        client = self._compiler_client or self._llm_client
-        client_name = "compiler" if client is self._compiler_client else "main"
+        use_compiler = self._compiler_available()
+        client = self._compiler_client if use_compiler else self._llm_client
+        client_name = "compiler" if use_compiler else "main"
 
         try:
             response = await client.chat(
@@ -248,10 +304,12 @@ class Brain:
                 enable_thinking=False,
                 max_tokens=max_tokens,
             )
+            if use_compiler:
+                self._compiler_on_success()
             logger.info(f"[LLM] think_lightweight completed via {client_name} endpoint")
         except Exception as e:
-            if client is not self._llm_client:
-                # compiler 失败，fallback 到主端点
+            if use_compiler:
+                self._compiler_on_failure()
                 logger.warning(f"[LLM] think_lightweight: compiler failed ({e}), falling back to main")
                 response = await self._llm_client.chat(
                     messages=messages,
@@ -460,6 +518,11 @@ class Brain:
             usage = response.usage
             if not usage:
                 return
+
+            self._acc_calls += 1
+            self._acc_tokens_in += usage.input_tokens
+            self._acc_tokens_out += usage.output_tokens
+
             ep_name = response.endpoint_name or self.get_current_endpoint_info().get("name", "")
             cost = 0.0
             for ep in self._llm_client.endpoints:
@@ -481,6 +544,18 @@ class Brain:
             )
         except Exception as e:
             logger.debug(f"[Brain] _record_usage failed (non-fatal): {e}")
+
+    def drain_usage_accumulator(self) -> dict:
+        """Return accumulated LLM usage since last drain, then reset counters."""
+        stats = {
+            "calls": self._acc_calls,
+            "tokens_in": self._acc_tokens_in,
+            "tokens_out": self._acc_tokens_out,
+        }
+        self._acc_calls = 0
+        self._acc_tokens_in = 0
+        self._acc_tokens_out = 0
+        return stats
 
     # ========================================================================
     # 格式转换方法
@@ -945,16 +1020,14 @@ class Brain:
             total_estimated_tokens = estimated_system_tokens + estimated_messages_tokens + estimated_tools_tokens
 
             # ── 4. 构建完整 debug 数据（和发给 LLM 的请求结构一致）──
-            debug_data = {
+            debug_data: dict[str, Any] = {
                 "timestamp": datetime.now().isoformat(),
                 "caller": caller,
-                # === 发给 LLM 的完整请求 ===
                 "llm_request": {
                     "system": system,
                     "messages": serializable_messages,
                     "tools": full_tools,
                 },
-                # === 统计信息 ===
                 "stats": {
                     "system_prompt_length": system_length,
                     "system_prompt_tokens": estimated_system_tokens,
@@ -965,6 +1038,8 @@ class Brain:
                     "total_estimated_tokens": total_estimated_tokens,
                 },
             }
+            if self._trace_context:
+                debug_data["context"] = dict(self._trace_context)
 
             with open(debug_file, "w", encoding="utf-8") as f:
                 json.dump(debug_data, f, ensure_ascii=False, indent=2, default=str)
@@ -1014,7 +1089,7 @@ class Brain:
             # 序列化 content blocks
             content_blocks = self._serialize_response_content(response)
 
-            debug_data = {
+            debug_data: dict[str, Any] = {
                 "timestamp": datetime.now().isoformat(),
                 "caller": caller,
                 "request_id": request_id,
@@ -1032,6 +1107,8 @@ class Brain:
                     "content": content_blocks,
                 },
             }
+            if self._trace_context:
+                debug_data["context"] = dict(self._trace_context)
 
             with open(debug_file, "w", encoding="utf-8") as f:
                 json.dump(debug_data, f, ensure_ascii=False, indent=2, default=str)
@@ -1110,14 +1187,8 @@ class Brain:
 
         return blocks
 
-    def _cleanup_old_debug_files(self, debug_dir: Path, max_age_days: int = 3) -> None:
-        """
-        清理超过指定天数的旧调试文件
-
-        Args:
-            debug_dir: 调试文件目录
-            max_age_days: 最大保留天数，默认 3 天
-        """
+    def _cleanup_old_debug_files(self, debug_dir: Path, max_age_days: int = 7) -> None:
+        """清理超过指定天数的旧调试文件（request + response）。"""
         try:
             import os
             from datetime import timedelta
@@ -1125,19 +1196,20 @@ class Brain:
             cutoff_time = datetime.now() - timedelta(days=max_age_days)
             deleted_count = 0
 
-            for file in debug_dir.glob("llm_request_*.json"):
-                try:
-                    # 获取文件修改时间
-                    mtime = datetime.fromtimestamp(os.path.getmtime(file))
-                    if mtime < cutoff_time:
-                        file.unlink()
-                        deleted_count += 1
-                except Exception:
-                    pass  # 忽略单个文件删除失败
+            for pattern in ("llm_request_*.json", "llm_response_*.json"):
+                for file in debug_dir.glob(pattern):
+                    try:
+                        mtime = datetime.fromtimestamp(os.path.getmtime(file))
+                        if mtime < cutoff_time:
+                            file.unlink()
+                            deleted_count += 1
+                    except Exception:
+                        pass
 
             if deleted_count > 0:
                 logger.debug(
-                    f"[LLM DEBUG] Cleaned up {deleted_count} old debug files (older than {max_age_days} days)"
+                    f"[LLM DEBUG] Cleaned up {deleted_count} old debug files "
+                    f"(older than {max_age_days} days)"
                 )
 
         except Exception as e:

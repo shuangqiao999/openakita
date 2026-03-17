@@ -157,10 +157,9 @@ class TestImportHelper:
         """所有模块的 pip 包对应的 import name 应在映射表中"""
         from openakita.tools._import_helper import _PACKAGE_MODULE_MAP
 
-        # 模块 → 需要映射的 import names
+        # 外置模块 → 需要映射的 import names
         required_mappings = {
             "vector-memory": ["sentence_transformers", "chromadb"],
-            "browser": ["playwright", "browser_use", "langchain_openai"],
             "whisper": ["whisper", "static_ffmpeg"],
         }
 
@@ -173,6 +172,16 @@ class TestImportHelper:
                 assert mapped_module_id == module_id, (
                     f"映射错误: {name} 映射到 {mapped_module_id}，应为 {module_id}"
                 )
+
+        # browser 相关包已内置到 core (module_id=None)
+        core_packages = ["playwright", "browser_use", "langchain_openai"]
+        for name in core_packages:
+            assert name in _PACKAGE_MODULE_MAP, (
+                f"缺少映射: {name} 不在 _PACKAGE_MODULE_MAP 中"
+            )
+            assert _PACKAGE_MODULE_MAP[name][0] is None, (
+                f"映射错误: {name} 应为核心包 (None)，但映射到 {_PACKAGE_MODULE_MAP[name][0]}"
+            )
 
     def test_import_or_hint_returns_none_for_available(self):
         """已安装的标准库包应返回 None"""
@@ -194,13 +203,21 @@ class TestImportHelper:
         assert "pip install" in result or "设置中心" in result
 
     def test_frozen_hint_mentions_setup_center(self):
-        """打包环境下，提示应引导用户去设置中心"""
+        """打包环境下，外置模块提示应引导用户去设置中心"""
+        from openakita.tools._import_helper import _build_hint
+
+        with patch("openakita.tools._import_helper.IS_FROZEN", True):
+            hint = _build_hint("sentence_transformers")
+            assert "设置中心" in hint
+            assert "向量记忆增强" in hint
+
+    def test_frozen_hint_core_package_mentions_reinstall(self):
+        """打包环境下，核心包缺失应提示重新安装"""
         from openakita.tools._import_helper import _build_hint
 
         with patch("openakita.tools._import_helper.IS_FROZEN", True):
             hint = _build_hint("playwright")
-            assert "设置中心" in hint
-            assert "浏览器自动化" in hint
+            assert "重新安装" in hint
 
     def test_dev_hint_mentions_pip(self):
         """开发环境下，提示应包含 pip install"""
@@ -306,7 +323,7 @@ class TestBundleModulesConsistency:
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
 
-        expected_modules = {"vector-memory", "browser", "whisper"}
+        expected_modules = {"vector-memory", "whisper", "orchestration"}
         actual_modules = set(mod.MODULE_DEFS.keys())
 
         assert expected_modules == actual_modules, (
@@ -326,11 +343,11 @@ class TestBundleModulesConsistency:
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
 
-        # main.rs 中的包定义（手动提取，保持同步）
+        # main.rs / bundle_modules.py 中的包定义（手动提取，保持同步）
         main_rs_packages = {
             "vector-memory": ["sentence-transformers", "chromadb"],
-            "browser": ["playwright", "browser-use", "langchain-openai"],
             "whisper": ["openai-whisper", "static-ffmpeg"],
+            "orchestration": ["pyzmq"],
         }
 
         for module_id, expected_pkgs in main_rs_packages.items():
@@ -421,19 +438,18 @@ class TestMirrorConsistency:
 
     def test_official_preset_has_explicit_url(self):
         """官方 PyPI 预设应有显式 URL（不应为空字符串）"""
-        app_tsx_path = (
+        constants_path = (
             Path(__file__).parent.parent
             / "apps"
             / "setup-center"
             / "src"
-            / "App.tsx"
+            / "constants.ts"
         )
-        if not app_tsx_path.exists():
-            pytest.skip("App.tsx not found")
+        if not constants_path.exists():
+            pytest.skip("constants.ts not found")
 
-        content = app_tsx_path.read_text(encoding="utf-8")
+        content = constants_path.read_text(encoding="utf-8")
 
-        # 查找 official preset 数据行：{ id: "official", label: ..., url: ... }
         found = False
         for line in content.split("\n"):
             stripped = line.strip()
@@ -502,7 +518,7 @@ class TestMirrorConsistency:
 
         # 契约化错误码（最小覆盖）
         assert '"C1_BUNDLED_RUNTIME"' in content
-        assert '"PY_BUNDLE_MISSING"' in content
+        assert '"C0_BACKEND_OFFLINE"' in content
 
         # 已不再依赖 system python 诊断项
         assert "system_python_ok" not in content
@@ -575,14 +591,11 @@ class TestPostInstallHooks:
 
         content = main_rs_path.read_text(encoding="utf-8")
 
-        # 应存在在启动后端进程（cmd.env）中设置 PLAYWRIGHT_BROWSERS_PATH 的代码
-        # 查找 "PLAYWRIGHT_BROWSERS_PATH" 且附近有 cmd.env 的代码段
-        assert content.count('"PLAYWRIGHT_BROWSERS_PATH"') >= 2, (
-            "PLAYWRIGHT_BROWSERS_PATH 应至少出现 2 次：安装时和启动时"
+        assert content.count('"PLAYWRIGHT_BROWSERS_PATH"') >= 1, (
+            "PLAYWRIGHT_BROWSERS_PATH 应至少出现 1 次（启动后端时兜底设置）"
         )
 
-        # 确认在后端启动函数中（OPENAKITA_MODULE_PATHS 所在函数）也有设置
-        # 找到 OPENAKITA_MODULE_PATHS 的 cmd.env 行
+        # 确认在后端启动函数中（cmd.env OPENAKITA_MODULE_PATHS 附近）有设置
         lines = content.split("\n")
         found_launch_pw_path = False
         in_launch_region = False
@@ -592,7 +605,6 @@ class TestPostInstallHooks:
             if in_launch_region and "PLAYWRIGHT_BROWSERS_PATH" in line:
                 found_launch_pw_path = True
                 break
-            # 如果遇到新函数定义，退出搜索区域
             if in_launch_region and line.strip().startswith("fn "):
                 break
 
@@ -645,6 +657,8 @@ class TestMemoryRetrievalFallback:
         manager.memory_md_path = MagicMock()
         manager.memory_md_path.exists.return_value = True
         manager.memory_md_path.read_text.return_value = "# Core Memory\n\nTest core memory"
+        manager.retrieval_engine = None
+        manager._recent_messages = None
 
         mem_dict = {}
         if memories:
@@ -669,67 +683,69 @@ class TestMemoryRetrievalFallback:
         manager._strip_common_prefix = lambda c: c
         return manager
 
-    def test_get_injection_context_falls_back_to_keyword(self):
-        """向量库不可用时 get_injection_context 应回退到关键词搜索"""
+    def test_get_injection_context_delegates_to_retrieval_engine(self):
+        """get_injection_context 应委托给 retrieval_engine.retrieve"""
         from openakita.memory.manager import MemoryManager
 
-        mem1 = _make_mock_memory("m1", "用户喜欢 Python 编程语言")
-        mem2 = _make_mock_memory("m2", "用户讨厌 Java 语言")
-        mem3 = _make_mock_memory("m3", "今天天气很好")
+        manager = self._make_manager(vector_enabled=False, memories=[
+            _make_mock_memory("m1", "用户喜欢 Python 编程语言"),
+        ])
+        mock_engine = MagicMock()
+        mock_engine.retrieve.return_value = "用户喜欢 Python 编程语言"
+        manager.retrieval_engine = mock_engine
 
-        manager = self._make_manager(vector_enabled=False, memories=[mem1, mem2, mem3])
-
-        # 直接调用 get_injection_context 的逻辑
-        # 因为 MemoryManager 构造复杂，我们直接测试核心逻辑
         result = MemoryManager.get_injection_context(manager, "Python")
 
+        mock_engine.retrieve.assert_called_once_with(
+            query="Python", recent_messages=None, max_tokens=700,
+        )
         assert "Python 编程语言" in result
-        assert "关键词匹配" in result
-        assert "天气" not in result  # 不相关的不应出现
 
-    def test_get_injection_context_uses_vector_when_available(self):
-        """向量库可用时应使用向量搜索"""
+    def test_get_injection_context_passes_query_correctly(self):
+        """get_injection_context 应将 task_description 作为 query 传入"""
         from openakita.memory.manager import MemoryManager
 
-        mem1 = _make_mock_memory("m1", "用户喜欢 Python 编程")
-
-        manager = self._make_manager(vector_enabled=True, memories=[mem1])
-        manager.vector_store.search.return_value = [("m1", 0.05)]
+        manager = self._make_manager(vector_enabled=True, memories=[
+            _make_mock_memory("m1", "用户喜欢 Python 编程"),
+        ])
+        mock_engine = MagicMock()
+        mock_engine.retrieve.return_value = "用户喜欢 Python 编程"
+        manager.retrieval_engine = mock_engine
 
         result = MemoryManager.get_injection_context(manager, "编程语言")
 
-        manager.vector_store.search.assert_called_once()
-        assert "语义匹配" in result
+        call_kwargs = mock_engine.retrieve.call_args[1]
+        assert call_kwargs["query"] == "编程语言"
         assert "Python 编程" in result
 
-    def test_get_injection_context_falls_back_when_vector_empty(self):
-        """向量库可用但搜索无结果时应回退关键词搜索"""
+    def test_get_injection_context_returns_engine_result(self):
+        """get_injection_context 应原样返回 retrieval_engine 结果"""
         from openakita.memory.manager import MemoryManager
 
-        mem1 = _make_mock_memory("m1", "用户喜欢 Python 编程")
-
-        manager = self._make_manager(vector_enabled=True, memories=[mem1])
-        manager.vector_store.search.return_value = []
+        manager = self._make_manager(vector_enabled=True)
+        mock_engine = MagicMock()
+        expected = "用户喜欢 Python 编程\n相关记忆摘要"
+        mock_engine.retrieve.return_value = expected
+        manager.retrieval_engine = mock_engine
 
         result = MemoryManager.get_injection_context(manager, "Python")
 
-        # 向量搜索返回空 → 回退关键词
-        assert "Python 编程" in result
-        assert "关键词匹配" in result
+        assert result == expected
 
-    def test_get_injection_context_falls_back_when_vector_throws(self):
-        """向量搜索抛异常时应回退关键词搜索"""
+    def test_get_injection_context_with_recent_messages(self):
+        """get_injection_context 应传递 _recent_messages 给 retrieval_engine"""
         from openakita.memory.manager import MemoryManager
 
-        mem1 = _make_mock_memory("m1", "用户喜欢 Python 编程")
+        manager = self._make_manager(vector_enabled=False)
+        manager._recent_messages = [{"role": "user", "content": "Python 怎么用"}]
+        mock_engine = MagicMock()
+        mock_engine.retrieve.return_value = "Python 使用指南"
+        manager.retrieval_engine = mock_engine
 
-        manager = self._make_manager(vector_enabled=True, memories=[mem1])
-        manager.vector_store.search.side_effect = RuntimeError("ChromaDB crashed")
+        MemoryManager.get_injection_context(manager, "Python")
 
-        result = MemoryManager.get_injection_context(manager, "Python")
-
-        assert "Python 编程" in result
-        assert "关键词匹配" in result
+        call_kwargs = mock_engine.retrieve.call_args[1]
+        assert call_kwargs["recent_messages"] == [{"role": "user", "content": "Python 怎么用"}]
 
     def test_retriever_falls_back_to_keyword(self):
         """retriever._search_related_memories 向量库不可用时应回退关键词"""
@@ -765,11 +781,13 @@ class TestMemoryRetrievalFallback:
         assert "深色主题" in result
 
     def test_retriever_async_falls_back(self):
-        """async_search_related_memories 向量库不可用时应回退"""
+        """async_search_related_memories 向量库不可用时应回退到关键词"""
         from openakita.prompt.retriever import async_search_related_memories
 
         mem1 = _make_mock_memory("m1", "系统使用 PostgreSQL 数据库")
         manager = self._make_manager(vector_enabled=False, memories=[mem1])
+        # retrieval_engine=None 确保不走 RetrievalEngine 路径，回退到 _search_related_memories
+        manager.retrieval_engine = None
 
         result, used_vector = asyncio.get_event_loop().run_until_complete(
             async_search_related_memories(

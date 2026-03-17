@@ -9,10 +9,11 @@ import {
   AlertDialogContent, AlertDialogDescription, AlertDialogFooter,
   AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Brain, Loader2 } from "lucide-react";
+import { Brain, Loader2, Upload, Download } from "lucide-react";
 import { Section } from "../components/Section";
 import { toast } from "sonner";
 import { safeFetch } from "../providers";
+import { IS_TAURI, saveFileDialog, showInFolder } from "../platform";
 import type { EnvMap } from "../types";
 import { envGet, envSet } from "../utils";
 
@@ -66,6 +67,69 @@ export function AgentSystemView(props: AgentSystemViewProps) {
 
   const [reviewing, setReviewing] = useState(false);
   const [showReviewConfirm, setShowReviewConfirm] = useState(false);
+  const [importing, setImporting] = useState(false);
+
+  const handleImportPersona = async () => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".md";
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      setImporting(true);
+      try {
+        const formData = new FormData();
+        formData.append("file", file);
+        const res = await safeFetch(`${apiBaseUrl}/api/identity/persona/import`, {
+          method: "POST",
+          body: formData,
+        });
+        const data = await res.json();
+        if (data.persona_id) {
+          setEnvDraft((m) => envSet(m, "PERSONA_NAME", data.persona_id));
+          toast.success(t("config.personaImportSuccess", { name: data.persona_id }));
+        }
+      } catch (e: any) {
+        toast.error(t("config.personaImportError") + ": " + (e.message || "Unknown error"));
+      } finally {
+        setImporting(false);
+      }
+    };
+    input.click();
+  };
+
+  const handleDownloadTemplate = async () => {
+    try {
+      const res = await safeFetch(`${apiBaseUrl}/api/identity/persona/template`);
+      const text = await res.text();
+
+      if (IS_TAURI) {
+        const chosen = await saveFileDialog({
+          title: t("config.personaTemplateSaveTitle"),
+          defaultPath: "persona_template.md",
+          filters: [{ name: "Markdown", extensions: ["md"] }],
+        });
+        if (!chosen) return;
+        const { writeTextFile } = await import("@tauri-apps/plugin-fs");
+        await writeTextFile(chosen, text);
+        toast.success(t("config.personaTemplateSaved", { path: chosen }), {
+          action: { label: t("config.personaOpenFolder"), onClick: () => showInFolder(chosen) },
+          duration: 8000,
+        });
+      } else {
+        const blob = new Blob([text], { type: "text/markdown;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "persona_template.md";
+        a.click();
+        URL.revokeObjectURL(url);
+        toast.success(t("config.personaTemplateDownloaded"));
+      }
+    } catch (e: any) {
+      toast.error(e.message || "Download failed");
+    }
+  };
 
   const handleReview = async () => {
     setShowReviewConfirm(false);
@@ -158,6 +222,28 @@ export function AgentSystemView(props: AgentSystemViewProps) {
               }}
             />
           )}
+          <div className="flex items-center gap-2 mt-3 pt-3 border-t border-border/50">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleImportPersona}
+              disabled={importing || !serviceRunning}
+              className="text-xs"
+            >
+              {importing ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
+              {t("config.personaImport")}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={handleDownloadTemplate}
+              disabled={!serviceRunning}
+              className="text-xs text-muted-foreground"
+            >
+              <Download size={14} />
+              {t("config.personaTemplateDownload")}
+            </Button>
+          </div>
         </Section>
 
         {/* ── 核心参数 ── */}

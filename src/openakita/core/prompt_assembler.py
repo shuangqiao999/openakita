@@ -131,6 +131,8 @@ class PromptAssembler:
         self,
         task_description: str = "",
         session_type: str = "cli",
+        context_window: int = 0,
+        is_sub_agent: bool = False,
     ) -> str:
         """
         使用编译管线构建系统提示词 (v2) - 异步版本。
@@ -141,10 +143,13 @@ class PromptAssembler:
         Args:
             task_description: 任务描述
             session_type: 会话类型
+            context_window: 目标模型上下文窗口大小（>0 时启用自适应预算）
+            is_sub_agent: 是否为子 Agent 调用（子 Agent 不注入委派优先声明）
 
         Returns:
             编译后的系统提示词
         """
+        from ..prompt.budget import BudgetConfig
         from ..prompt.builder import build_system_prompt
         from ..prompt.compiler import check_compiled_outdated, compile_all
 
@@ -154,21 +159,36 @@ class PromptAssembler:
             logger.info("Compiled identity files outdated, recompiling...")
             compile_all(identity_dir)
 
-        return build_system_prompt(
-            identity_dir=identity_dir,
-            tools_enabled=True,
-            tool_catalog=self._tool_catalog,
-            skill_catalog=self._skill_catalog,
-            mcp_catalog=self._mcp_catalog,
-            memory_manager=self._memory_manager,
-            task_description=task_description,
-            include_tools_guide=True,
-            session_type=session_type,
-            persona_manager=self._persona_manager,
+        budget_config = (
+            BudgetConfig.for_context_window(context_window)
+            if context_window > 0
+            else None
         )
 
-    def _build_compiled_sync(self, task_description: str = "", session_type: str = "cli") -> str:
+        return build_system_prompt(
+            identity_dir=identity_dir,
+            tools_enabled=True,
+            tool_catalog=self._tool_catalog,
+            skill_catalog=self._skill_catalog,
+            mcp_catalog=self._mcp_catalog,
+            memory_manager=self._memory_manager,
+            task_description=task_description,
+            budget_config=budget_config,
+            include_tools_guide=True,
+            session_type=session_type,
+            persona_manager=self._persona_manager,
+            is_sub_agent=is_sub_agent,
+        )
+
+    def _build_compiled_sync(
+        self,
+        task_description: str = "",
+        session_type: str = "cli",
+        context_window: int = 0,
+        is_sub_agent: bool = False,
+    ) -> str:
         """同步版本：启动时构建初始系统提示词"""
+        from ..prompt.budget import BudgetConfig
         from ..prompt.builder import build_system_prompt
         from ..prompt.compiler import check_compiled_outdated, compile_all
 
@@ -178,6 +198,12 @@ class PromptAssembler:
             logger.info("Compiled identity files outdated, recompiling...")
             compile_all(identity_dir)
 
+        budget_config = (
+            BudgetConfig.for_context_window(context_window)
+            if context_window > 0
+            else None
+        )
+
         return build_system_prompt(
             identity_dir=identity_dir,
             tools_enabled=True,
@@ -186,9 +212,11 @@ class PromptAssembler:
             mcp_catalog=self._mcp_catalog,
             memory_manager=self._memory_manager,
             task_description=task_description,
+            budget_config=budget_config,
             include_tools_guide=True,
             session_type=session_type,
             persona_manager=self._persona_manager,
+            is_sub_agent=is_sub_agent,
         )
 
     def _generate_tools_text(self, tools: list[dict]) -> str:

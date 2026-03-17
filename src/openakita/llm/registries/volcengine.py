@@ -8,10 +8,8 @@ API 文档: https://www.volcengine.com/docs/82379/1330626
 Base URL: https://ark.cn-beijing.volces.com/api/v3
 """
 
-import httpx
-
 from ..capabilities import infer_capabilities
-from .base import ModelInfo, ProviderInfo, ProviderRegistry
+from .base import ModelInfo, ProviderInfo, ProviderRegistry, get_registry_client
 
 
 class VolcEngineRegistry(ProviderRegistry):
@@ -34,37 +32,35 @@ class VolcEngineRegistry(ProviderRegistry):
         火山方舟兼容 OpenAI /models 接口。
         如果 API 调用失败，返回预置的常用模型列表。
         """
-        async with httpx.AsyncClient(timeout=30) as client:
-            try:
-                resp = await client.get(
-                    f"{self.info.default_base_url}/models",
-                    headers={"Authorization": f"Bearer {api_key}"},
-                )
-                resp.raise_for_status()
-                data = resp.json()
+        client = get_registry_client()
+        try:
+            resp = await client.get(
+                f"{self.info.default_base_url}/models",
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
 
-                models: list[ModelInfo] = []
-                seen: set[str] = set()
-                for m in data.get("data", []) or []:
-                    if not isinstance(m, dict):
-                        continue
-                    mid = (m.get("id") or "").strip()
-                    if not mid or mid in seen:
-                        continue
-                    seen.add(mid)
-                    models.append(
-                        ModelInfo(
-                            id=mid,
-                            name=mid,
-                            capabilities=infer_capabilities(mid, provider_slug="volcengine"),
-                        )
+            models: list[ModelInfo] = []
+            seen: set[str] = set()
+            for m in data.get("data", []) or []:
+                if not isinstance(m, dict):
+                    continue
+                mid = (m.get("id") or "").strip()
+                if not mid or mid in seen:
+                    continue
+                seen.add(mid)
+                models.append(
+                    ModelInfo(
+                        id=mid,
+                        name=mid,
+                        capabilities=infer_capabilities(mid, provider_slug="volcengine"),
                     )
+                )
+            return sorted(models, key=lambda x: x.id)
 
-                return sorted(models, key=lambda x: x.id)
-
-            except httpx.HTTPError:
-                # API 调用失败，返回预置模型列表
-                return self._get_preset_models()
+        except Exception:
+            return self._get_preset_models()
 
     def get_model_capabilities(self, model_id: str) -> dict:
         """获取模型能力"""

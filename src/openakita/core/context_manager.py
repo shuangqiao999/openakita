@@ -16,13 +16,13 @@ import logging
 from typing import Any
 
 from ..tracing.tracer import get_tracer
+from .context_utils import DEFAULT_MAX_CONTEXT_TOKENS
+from .context_utils import estimate_tokens as _shared_estimate_tokens
+from .context_utils import get_max_context_tokens as _shared_get_max_context_tokens
 from .token_tracking import TokenTrackingContext, reset_tracking_context, set_tracking_context
 from .tool_executor import OVERFLOW_MARKER
 
 logger = logging.getLogger(__name__)
-
-# 上下文管理常量
-DEFAULT_MAX_CONTEXT_TOKENS = 160000
 CHARS_PER_TOKEN = 2  # JSON 序列化后约 2 字符 = 1 token
 MIN_RECENT_TURNS = 8  # 至少保留最近 8 组对话（工具密集型对话需要更多上下文）
 COMPRESSION_RATIO = 0.15  # 目标压缩到原上下文的 15%
@@ -82,57 +82,21 @@ class ContextManager:
         raise _CancelledError("Context compression cancelled by user")
 
     def get_max_context_tokens(self, conversation_id: str | None = None) -> int:
-        """
-        动态获取当前模型的上下文窗口大小。
-
-        优先级：
-        1. 端点配置的 context_window 字段
-        2. 兜底值 200000
-        3. 减去 max_tokens（输出预留）和 5% buffer
+        """动态获取当前模型的可用上下文 token 数。
 
         Args:
             conversation_id: 对话 ID（用于识别 per-conversation 端点覆盖）
         """
-        FALLBACK_CONTEXT_WINDOW = 200000
-
-        try:
-            info = self._brain.get_current_model_info(conversation_id=conversation_id)
-            ep_name = info.get("name", "")
-            endpoints = self._brain._llm_client.endpoints
-            for ep in endpoints:
-                if ep.name == ep_name:
-                    ctx = getattr(ep, "context_window", 0) or 0
-                    if ctx < 8192:
-                        ctx = FALLBACK_CONTEXT_WINDOW
-                    output_reserve = ep.max_tokens or 4096
-                    output_reserve = min(output_reserve, ctx // 3)
-                    result = int((ctx - output_reserve) * 0.95)
-                    if result < 4096:
-                        return DEFAULT_MAX_CONTEXT_TOKENS
-                    return result
-            return DEFAULT_MAX_CONTEXT_TOKENS
-        except Exception:
-            return DEFAULT_MAX_CONTEXT_TOKENS
+        return _shared_get_max_context_tokens(self._brain, conversation_id=conversation_id)
 
     def estimate_tokens(self, text: str) -> int:
-        """
-        估算文本的 token 数量。
-
-        使用中英文感知算法：中文约 1.5 字符/token，英文约 4 字符/token。
-        """
-        return self.static_estimate_tokens(text)
+        """估算文本的 token 数量（中英文感知）。"""
+        return _shared_estimate_tokens(text)
 
     @staticmethod
     def static_estimate_tokens(text: str) -> int:
         """静态版 estimate_tokens，供外部模块无需实例即可调用。"""
-        if not text:
-            return 0
-        chinese_chars = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
-        total_chars = len(text)
-        english_chars = total_chars - chinese_chars
-        chinese_tokens = chinese_chars / 1.5
-        english_tokens = english_chars / 4
-        return max(int(chinese_tokens + english_tokens), 1)
+        return _shared_estimate_tokens(text)
 
     def estimate_messages_tokens(self, messages: list[dict]) -> int:
         """
@@ -265,13 +229,14 @@ class ContextManager:
                 tools_tokens = len(tools) * 200
 
         hard_limit = max_tokens - system_tokens - tools_tokens - 500
-        if hard_limit < 4096:
+        min_hard_limit = max(min(1024, int(max_tokens * 0.3)), 256)
+        if hard_limit < min_hard_limit:
             logger.warning(
                 f"[Compress] hard_limit too small ({hard_limit}), "
                 f"max={max_tokens}, system={system_tokens}, tools={tools_tokens}. "
-                f"Falling back to 4096."
+                f"Falling back to {min_hard_limit}."
             )
-            hard_limit = 4096
+            hard_limit = min_hard_limit
         soft_limit = int(hard_limit * 0.85)
 
         current_tokens = self.estimate_messages_tokens(messages)

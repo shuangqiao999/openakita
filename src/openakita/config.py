@@ -4,7 +4,10 @@ OpenAkita 配置模块
 
 import json
 import logging
+import os
 from pathlib import Path
+
+os.environ.setdefault("OPENAKITA", "1")
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
@@ -128,6 +131,10 @@ class Settings(BaseSettings):
     log_to_file: bool = Field(default=True, description="是否输出到文件")
 
     # === Whisper 语音识别 ===
+    whisper_enabled: bool = Field(
+        default=False,
+        description="是否启用本地 Whisper 语音识别（模型较大，占用内存高；关闭后使用在线 STT）",
+    )
     whisper_model: str = Field(
         default="base", description="Whisper 模型 (tiny/base/small/medium/large)"
     )

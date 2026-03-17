@@ -33,7 +33,7 @@ class TestLLMRequest:
         assert len(request.messages) == 1
         assert request.system == ""
         assert request.tools is None
-        assert request.max_tokens == 4096
+        assert request.max_tokens == 0
         assert request.temperature == 1.0
         assert request.enable_thinking == False
     
@@ -149,8 +149,8 @@ class TestEndpointConfig:
         )
         
         assert config.priority == 1
-        assert config.max_tokens == 4096
-        assert config.timeout == 60
+        assert config.max_tokens == 0
+        assert config.timeout == 180
         assert config.capabilities == ["text"]
         assert config.extra_params is None
         assert config.note is None

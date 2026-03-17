@@ -294,3 +294,39 @@ async def health_check(request: Request, body: HealthCheckRequest):
 
     return {"results": [r.model_dump() for r in results]}
 
+
+@router.get("/api/health/loop")
+async def health_loop(request: Request):
+    """Event loop 健康状态与 LLM 并发统计。"""
+    from openakita.llm.client import LLMClient
+
+    loop = asyncio.get_running_loop()
+
+    # 测量 event loop 延迟：调度一个 callback 看实际执行需要多久
+    lag_event = asyncio.Event()
+    t0 = time.monotonic()
+    loop.call_soon(lag_event.set)
+    await lag_event.wait()
+    lag_ms = round((time.monotonic() - t0) * 1000, 1)
+
+    llm_stats = LLMClient.get_concurrency_stats()
+
+    org_runtime = getattr(request.app.state, "org_runtime", None)
+    org_stats = {}
+    if org_runtime:
+        for oid, sem in org_runtime._org_semaphores.items():
+            active = org_runtime.max_concurrent_nodes_per_org - sem._value
+            org_stats[oid] = {
+                "active_nodes": active,
+                "max": org_runtime.max_concurrent_nodes_per_org,
+            }
+
+    from openakita.core.engine_bridge import is_dual_loop
+
+    return {
+        "dual_loop": is_dual_loop(),
+        "api_loop_lag_ms": lag_ms,
+        "llm_concurrent": llm_stats,
+        "org_concurrency": org_stats,
+    }
+

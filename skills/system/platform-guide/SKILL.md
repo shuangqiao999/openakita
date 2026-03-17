@@ -1,7 +1,9 @@
 ---
 name: platform-guide
-description: "OpenAkita 平台使用指南：教你帮用户从 Agent Hub 和 Skill Store 搜索、安装 Agent 和 Skill"
+description: "OpenAkita Platform guide for searching and installing Agents from Agent Hub and Skills from Skill Store. Use when user asks to find, browse, or install Agents or Skills from the platform."
 system: true
+handler: system
+tool-name: platform_guide
 category: Platform
 ---
 

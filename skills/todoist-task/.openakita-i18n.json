@@ -1,6 +1,0 @@
-{
-  "zh": {
-    "name": "Todoist 任务管理",
-    "description": "通过 Todoist REST API v2 管理任务、项目、标签和过滤器，支持任务 CRUD、优先级、截止日期、重复任务和批量操作。"
-  }
-}

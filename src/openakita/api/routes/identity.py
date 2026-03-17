@@ -14,7 +14,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, UploadFile, File
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
 from openakita.config import settings
@@ -415,6 +416,99 @@ async def compile_status():
         "outdated": outdated,
         "last_compiled": last_compiled,
         "files": status,
+    }
+
+
+# ─── Persona import / template ───────────────────────────────────────────
+
+_PERSONA_TEMPLATE = """\
+# 自定义人格名称
+
+> 预设角色: 用一句话描述这个角色
+
+## 性格特征
+- 特征1：描述
+- 特征2：描述
+- 特征3：描述
+
+## 沟通风格
+- 正式程度: neutral（可选 formal / neutral / casual）
+- 幽默感: occasional（可选 none / occasional / frequent）
+- 回复长度: adaptive（可选 brief / moderate / adaptive / detailed）
+- 情感距离: friendly（可选 professional / friendly / intimate）
+- 称呼: 默认使用用户设定的称呼
+
+## 主动行为
+- 描述角色会主动做哪些事
+- 主动提醒、建议等行为模式
+
+## 活人感配置
+- 主动消息: 低频 / 中频 / 高频（每日最多 N 条）
+- 消息类型: 任务提醒、关心问候等
+- 闲聊问候: 低频主动发起
+
+## 表情包配置
+- 使用频率: rare / occasional / frequent
+- 偏好分类: 通用
+- 使用场景: 任务完成、鼓励等
+
+## 提示词片段
+你是一个[角色描述]，[核心行为准则]。[沟通风格要求]。
+"""
+
+
+@router.get("/persona/template")
+async def download_persona_template():
+    """Download a persona MD template file for users to fill in."""
+    return PlainTextResponse(
+        content=_PERSONA_TEMPLATE,
+        media_type="text/markdown; charset=utf-8",
+        headers={
+            "Content-Disposition": 'attachment; filename="persona_template.md"',
+        },
+    )
+
+
+@router.post("/persona/import")
+async def import_persona_file(file: UploadFile = File(...)):
+    """Import a persona MD file. Saves to identity/personas/ with the uploaded filename.
+
+    No strict validation — the file is saved as-is.
+    """
+    if not file.filename:
+        raise HTTPException(400, "文件名不能为空")
+
+    fname = file.filename
+    if not fname.endswith(".md"):
+        fname = fname + ".md"
+
+    safe_name = re.sub(r"[^\w\-.]", "_", fname)
+    if safe_name.startswith(".") or "/" in safe_name or "\\" in safe_name:
+        raise HTTPException(400, "非法文件名")
+
+    content_bytes = await file.read()
+    try:
+        content = content_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(400, "文件编码必须为 UTF-8")
+
+    personas_dir = _identity_dir() / "personas"
+    personas_dir.mkdir(parents=True, exist_ok=True)
+    target = (personas_dir / safe_name).resolve()
+
+    if not str(target).startswith(str(personas_dir.resolve())):
+        raise HTTPException(400, "Path traversal not allowed")
+
+    target.write_text(content, encoding="utf-8")
+
+    persona_id = safe_name.removesuffix(".md")
+    logger.info(f"[Identity API] Imported persona file: {safe_name}")
+
+    return {
+        "saved": True,
+        "name": f"personas/{safe_name}",
+        "persona_id": persona_id,
+        "tokens": estimate_tokens(content),
     }
 
 

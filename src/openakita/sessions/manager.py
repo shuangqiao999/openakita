@@ -386,14 +386,9 @@ class SessionManager:
                     else:
                         skipped_expired += 1
 
-                    session_ts = session.last_active.isoformat()
-                    existing = self._channel_registry.get(session.channel)
-                    if not existing or session_ts >= existing.get("last_seen", ""):
-                        self._channel_registry[session.channel] = {
-                            "chat_id": session.chat_id,
-                            "user_id": session.user_id,
-                            "last_seen": session_ts,
-                        }
+                    self._update_channel_registry(
+                        session.channel, session.chat_id, session.user_id
+                    )
                 except Exception as e:
                     logger.warning(f"Failed to load session: {e}")
 
@@ -468,13 +463,33 @@ class SessionManager:
         更新通道注册表
 
         每当有新 session 创建时调用，持久记录 channel→chat_id 映射。
-        对于同一 channel，只保留最近活跃的 chat_id。
+        兼容旧格式（单 dict）和新格式（list of dicts）。
+        同一 channel 保留最近活跃的多个 chat_id（上限 20）。
         """
-        self._channel_registry[channel] = {
-            "chat_id": chat_id,
-            "user_id": user_id,
-            "last_seen": datetime.now().isoformat(),
-        }
+        now = datetime.now().isoformat()
+        entry = self._channel_registry.get(channel)
+
+        # 兼容旧格式：将单 dict 升级为 list
+        if isinstance(entry, dict):
+            entry = [entry]
+
+        if not isinstance(entry, list):
+            entry = []
+
+        # 更新或追加
+        found = False
+        for item in entry:
+            if item.get("chat_id") == chat_id:
+                item["user_id"] = user_id
+                item["last_seen"] = now
+                found = True
+                break
+        if not found:
+            entry.append({"chat_id": chat_id, "user_id": user_id, "last_seen": now})
+
+        # 按 last_seen 排序，保留最近 20 条
+        entry.sort(key=lambda x: x.get("last_seen", ""), reverse=True)
+        self._channel_registry[channel] = entry[:20]
         self._save_channel_registry()
 
     def get_known_channel_target(
@@ -490,9 +505,29 @@ class SessionManager:
             (channel_name, chat_id) 或 None
         """
         entry = self._channel_registry.get(channel)
-        if entry and entry.get("chat_id"):
-            return (channel, entry["chat_id"])
+        # 兼容旧格式（单 dict）
+        if isinstance(entry, dict):
+            if entry.get("chat_id"):
+                return (channel, entry["chat_id"])
+        # 新格式（list of dicts）：返回最近活跃的
+        elif isinstance(entry, list) and entry:
+            top = entry[0]
+            if top.get("chat_id"):
+                return (channel, top["chat_id"])
         return None
+
+    def get_all_channel_targets(
+        self, channel: str
+    ) -> list[tuple[str, str]]:
+        """返回通道的所有已知 chat_id（多群场景）。"""
+        entry = self._channel_registry.get(channel)
+        if isinstance(entry, dict):
+            if entry.get("chat_id"):
+                return [(channel, entry["chat_id"])]
+            return []
+        if isinstance(entry, list):
+            return [(channel, e["chat_id"]) for e in entry if e.get("chat_id")]
+        return []
 
     def _save_sessions(self) -> bool:
         """

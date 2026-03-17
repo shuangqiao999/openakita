@@ -1,6 +1,6 @@
 ---
 name: send-sticker
-description: 搜索并发送表情包图片。在闲聊、问候、鼓励等场景下使用，让对话更生动有趣。
+description: Search and send sticker images in chat. Use during casual conversations, greetings, encouragement, or celebrations to make interactions more lively and engaging.
 system: true
 handler: sticker
 tool-name: send_sticker

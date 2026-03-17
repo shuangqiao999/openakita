@@ -1,7 +1,10 @@
 ---
 name: openakita/skills@webapp-testing
 description: Toolkit for interacting with and testing local web applications using Playwright. Supports verifying frontend functionality, debugging UI behavior, capturing browser screenshots, and viewing browser logs.
-license: Complete terms in LICENSE.txt
+license: MIT
+metadata:
+  author: openakita
+  version: "1.0.0"
 ---
 
 # Web Application Testing

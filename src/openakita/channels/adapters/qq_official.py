@@ -20,7 +20,9 @@ import hashlib
 import hmac
 import json
 import logging
+import shutil
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -82,6 +84,7 @@ class QQBotAdapter(ChannelAdapter):
         channel_name: str | None = None,
         bot_id: str | None = None,
         agent_profile_id: str = "default",
+        public_api_url: str = "",
     ):
         """
         Args:
@@ -95,6 +98,8 @@ class QQBotAdapter(ChannelAdapter):
             channel_name: 通道名称（多Bot时用于区分实例）
             bot_id: Bot 实例唯一标识
             agent_profile_id: 绑定的 agent profile ID
+            public_api_url: OpenAkita API 的公网 URL（如 https://example.com），
+                用于将本地图片转为 QQ 可访问的公网 URL。不配置则群/C2C 无法发送本地图片。
         """
         super().__init__(channel_name=channel_name, bot_id=bot_id, agent_profile_id=agent_profile_id)
 
@@ -104,6 +109,7 @@ class QQBotAdapter(ChannelAdapter):
         self.mode = mode.lower().strip()
         self.webhook_port = webhook_port
         self.webhook_path = webhook_path
+        self.public_api_url = public_api_url.rstrip("/") if public_api_url else ""
         self.media_dir = Path(media_dir) if media_dir else Path("data/media/qqbot")
         self.media_dir.mkdir(parents=True, exist_ok=True)
 
@@ -165,6 +171,33 @@ class QQBotAdapter(ChannelAdapter):
             if mid:
                 return mid
         return self._last_msg_id.get(chat_id)
+
+    def _local_path_to_public_url(self, local_path: str) -> str | None:
+        """将本地文件复制到 uploads 目录，返回公网可访问的 URL。
+
+        需要配置 public_api_url 才能生效。
+        """
+        if not self.public_api_url:
+            return None
+
+        src = Path(local_path)
+        if not src.exists():
+            logger.warning(f"Local file not found: {local_path}")
+            return None
+
+        try:
+            from openakita.api.routes.upload import get_upload_dir
+
+            upload_dir = get_upload_dir()
+            unique_name = f"{int(time.time())}_{uuid.uuid4().hex[:8]}{src.suffix}"
+            dest = upload_dir / unique_name
+            shutil.copy2(src, dest)
+            url = f"{self.public_api_url}/api/uploads/{unique_name}"
+            logger.info(f"Local image served as public URL: {url}")
+            return url
+        except Exception as e:
+            logger.warning(f"Failed to make local image publicly accessible: {e}")
+            return None
 
     async def start(self) -> None:
         """启动 QQ 官方机器人"""
@@ -1062,6 +1095,15 @@ class QQBotAdapter(ChannelAdapter):
                 result_id = str(getattr(result, "id", ""))
 
         # 发送图片（需要公网 URL）
+        # 本地图片自动转公网 URL（需要配置 public_api_url）
+        if not image_url and image_path:
+            image_url = self._local_path_to_public_url(image_path)
+            if not image_url:
+                logger.warning(
+                    f"QQ Official Bot: 无法发送本地图片到群/C2C。"
+                    f"请配置 public_api_url 使本地图片可通过公网访问。"
+                    f" image_path={image_path}"
+                )
         if image_url:
             try:
                 media_id = await self._send_rich_media(

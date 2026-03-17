@@ -1,6 +1,10 @@
 ---
 name: openakita/skills@content-research-writer
-description: Assists in writing high-quality content by conducting research, adding citations, improving hooks, iterating on outlines, and providing real-time feedback on each section. Transforms your writing process from solo effort to collaborative partnership.
+description: Assists in writing high-quality content by conducting research, adding citations, improving hooks, iterating on outlines, and providing real-time feedback on each section. Use when the user wants to write blog posts, articles, newsletters, tutorials, case studies, thought leadership pieces, or any long-form content that benefits from research and structured feedback.
+license: MIT
+metadata:
+  author: openakita
+  version: "1.0.0"
 ---
 
 # Content Research Writer

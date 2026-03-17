@@ -1,6 +1,6 @@
 ---
 name: switch-persona
-description: 切换 Agent 人格预设角色。支持 8 种预设：默认助手、商务助理、技术专家、私人管家、女友感、男友感、家人感、贾维斯。
+description: Switch Agent persona preset. Supports 8 presets including default assistant, business, tech expert, butler, girlfriend, boyfriend, family, and Jarvis. Use when user asks to change communication style or personality.
 system: true
 handler: persona
 tool-name: switch_persona

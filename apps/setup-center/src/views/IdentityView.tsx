@@ -268,23 +268,23 @@ export function IdentityView({ serviceRunning, apiBaseUrl }: Props) {
         </div>
       )}
 
-      <div style={{ display: "flex", gap: 12, flex: 1, minHeight: 0 }}>
+      <div className="identityLayout" style={{ display: "flex", gap: 12, flex: 1, minHeight: 0 }}>
         {/* Left: File list */}
-        <div style={{
+        <div className="identityFileList" style={{
           width: 220,
           flexShrink: 0,
           overflowY: "auto",
           borderRight: "1px solid var(--border, #e2e8f0)",
           paddingRight: 10,
         }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: "#64748b", textTransform: "uppercase", padding: "4px 0 6px", letterSpacing: 0.5 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", padding: "4px 0 6px", letterSpacing: 0.5 }}>
             {t("identity.sourceFiles")}
           </div>
           {sourceFiles.map(f => (
             <FileItem key={f.name} file={f} selected={selectedFile === f.name} onClick={() => loadFile(f.name)} />
           ))}
 
-          <div style={{ fontSize: 11, fontWeight: 600, color: "#64748b", textTransform: "uppercase", padding: "10px 0 6px", letterSpacing: 0.5 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", padding: "10px 0 6px", letterSpacing: 0.5 }}>
             {t("identity.runtimeFiles")}
           </div>
           {runtimeFiles.map(f => (
@@ -295,7 +295,7 @@ export function IdentityView({ serviceRunning, apiBaseUrl }: Props) {
         {/* Right: Editor */}
         <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
           {!selectedFile ? (
-            <div className="card" style={{ textAlign: "center", padding: 40, color: "#94a3b8" }}>
+            <div className="card" style={{ textAlign: "center", padding: 40, color: "var(--muted)" }}>
               {t("identity.noFileSelected")}
             </div>
           ) : (
@@ -316,12 +316,12 @@ export function IdentityView({ serviceRunning, apiBaseUrl }: Props) {
                 )}
 
                 {selectedFile === "SOUL.md" && (
-                  <span style={{ fontSize: 11, color: "#059669", background: "#d1fae5", padding: "2px 8px", borderRadius: 4 }}>
+                  <span style={{ fontSize: 11, color: "var(--ok, #059669)", background: "var(--ok-bg, #d1fae5)", padding: "2px 8px", borderRadius: 4 }}>
                     {t("identity.fullTextInject")}
                   </span>
                 )}
                 {selectedFile === "AGENT.md" && (
-                  <span style={{ fontSize: 11, color: "#d97706", background: "#fef3c7", padding: "2px 8px", borderRadius: 4 }}>
+                  <span style={{ fontSize: 11, color: "var(--warn, #d97706)", background: "var(--warn-bg, #fef3c7)", padding: "2px 8px", borderRadius: 4 }}>
                     {t("identity.needsCompile")}
                   </span>
                 )}

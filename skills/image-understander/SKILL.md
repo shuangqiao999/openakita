@@ -1,6 +1,10 @@
 ---
 name: openakita/skills@image-understander
-description: Analyze images using GPT-4 Vision. Supports image description, OCR text extraction, object recognition, and visual Q&A. When you need to understand image content using OpenAI GPT-4 Vision API.
+description: Analyze images using GPT-4 Vision for detailed description, OCR text extraction, object recognition, and visual Q&A. Use when the user needs to understand image content, extract text from screenshots, identify objects in photos, or ask questions about images via OpenAI GPT-4 Vision API.
+license: MIT
+metadata:
+  author: openakita
+  version: "1.0.0"
 ---
 
 # 图片理解技能 (Image Understander)

@@ -1,7 +1,7 @@
 {
   "name": "openakita-setup-center",
   "private": true,
-  "version": "1.25.12",
+  "version": "1.26.4",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -27,6 +27,7 @@
     "@tauri-apps/plugin-http": "^2.5.7",
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-updater": "^2.10.0",
+    "@xyflow/react": "^12.10.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "highlight.js": "^11.11.1",

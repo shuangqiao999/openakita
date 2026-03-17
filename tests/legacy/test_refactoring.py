@@ -529,4 +529,5 @@ if errors:
     for name, err in errors:
         print(f"  - {name}: {err}")
 
-sys.exit(1 if failed > 0 else 0)
+if __name__ == "__main__":
+    sys.exit(1 if failed > 0 else 0)

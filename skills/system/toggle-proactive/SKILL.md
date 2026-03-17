@@ -1,6 +1,6 @@
 ---
 name: toggle-proactive
-description: 开关活人感模式。开启后 Agent 会主动发送问候、任务提醒、关键回顾等消息。
+description: Toggle proactive messaging mode. When enabled, Agent proactively sends greetings, task reminders, and key recaps via IM channel. Use when user asks to enable/disable proactive messages.
 system: true
 handler: persona
 tool-name: toggle_proactive

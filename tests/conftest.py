@@ -5,8 +5,22 @@ Global pytest fixtures for OpenAkita test suite.
 from __future__ import annotations
 
 import os
+import platform
 import sys
 from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Workaround: On Windows, platform._wmi_query() can hang when the WMI
+# service is slow/unresponsive (e.g. after a crash).  Faker triggers this
+# during pytest plugin collection via platform.system().  Pre-populate the
+# uname cache so the real WMI call is never needed.
+# ---------------------------------------------------------------------------
+if sys.platform == "win32":
+    _orig_wmi = getattr(platform, "_wmi_query", None)
+    if _orig_wmi is not None:
+        platform._wmi_query = lambda *a, **k: ("10.0.26200", 1, "Multiprocessor Free", 0, 0)
+        platform.system()          # populate cache
+        platform._wmi_query = _orig_wmi   # restore
 
 import pytest
 

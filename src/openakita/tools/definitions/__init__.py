@@ -55,6 +55,7 @@ from .sticker import STICKER_TOOLS
 from .system import SYSTEM_TOOLS
 from .agent import AGENT_TOOLS
 from .agent_hub import AGENT_HUB_TOOLS
+from .org_setup import ORG_SETUP_TOOLS
 from .agent_package import AGENT_PACKAGE_TOOLS
 from .skill_store import SKILL_STORE_TOOLS
 from .web_search import WEB_SEARCH_TOOLS
@@ -98,6 +99,7 @@ __all__ = [
     # 工具列表
     "BASE_TOOLS",
     "AGENT_TOOLS",
+    "ORG_SETUP_TOOLS",
     "AGENT_HUB_TOOLS",
     "AGENT_PACKAGE_TOOLS",
     "SKILL_STORE_TOOLS",

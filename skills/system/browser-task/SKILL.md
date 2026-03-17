@@ -1,6 +1,6 @@
 ---
 name: browser-task
-description: 智能浏览器任务 - 描述任务，自动完成（推荐优先使用）
+description: Smart browser task agent - describe what you want done in natural language and it completes automatically. PREFERRED tool for multi-step browser operations like searching, form filling, and data extraction.
 system: true
 handler: browser
 tool-name: browser_task
@@ -58,6 +58,18 @@ browser_task(task="打开 GitHub 首页，获取今日热门项目的名称")
 ```python
 browser_task(task="打开百度搜索福建福州，截图保存")
 ```
+
+## 浏览器工具选用指引
+
+系统提供三条浏览器链路，按场景选择：
+
+| 场景 | 工具 | 说明 |
+|------|------|------|
+| Agent 自主执行多步任务 | `browser_task`（首选） | 搜索、填表、抓取等，自动规划步骤 |
+| 仅需单步操作 | `browser_navigate` / `browser_screenshot` 等 | task 失败时手动介入，或只做截图/导航 |
+| 操作用户已登录的 Chrome | `call_mcp_tool("chrome-devtools", ...)` | 保留登录态和 Cookie，需用户 Chrome 开启调试端口 |
+
+决策顺序：优先 `browser_task` → 单步退化到细粒度工具 → 需要登录态时用 chrome-devtools MCP。
 
 ## 何时使用细粒度工具
 

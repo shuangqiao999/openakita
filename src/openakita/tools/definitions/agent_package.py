@@ -33,6 +33,10 @@ AGENT_PACKAGE_TOOLS = [
                     "items": {"type": "string"},
                     "description": "Skill names to bundle (default: agent's local skills)",
                 },
+                "output_dir": {
+                    "type": "string",
+                    "description": "导出文件保存目录（可选，默认保存到 data/agent_packages/）。用户可以指定路径如 ~/Desktop",
+                },
             },
             "required": ["profile_id"],
         },
@@ -78,6 +82,26 @@ AGENT_PACKAGE_TOOLS = [
                 },
             },
             "required": ["package_path"],
+        },
+    },
+    {
+        "name": "batch_export_agents",
+        "category": "Agent Package",
+        "description": "Export multiple Agents at once. Packs all specified agents into individual .akita-agent files in the target directory.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "profile_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "要导出的 Agent Profile ID 列表",
+                },
+                "output_dir": {
+                    "type": "string",
+                    "description": "导出文件保存目录（用户可以指定路径如 ~/Desktop）",
+                },
+            },
+            "required": ["profile_ids"],
         },
     },
 ]

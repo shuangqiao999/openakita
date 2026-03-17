@@ -163,6 +163,10 @@ class WebAccessConfig:
                 self._data["password_hash"] = hash_hex
                 self._data["password_salt"] = salt_hex
                 self._data["password_plain_hint"] = _make_hint(env_password)
+                self._data["password_user_set"] = True
+                needs_save = True
+            elif not self._data.get("password_user_set"):
+                self._data["password_user_set"] = True
                 needs_save = True
         elif not self._data.get("password_hash"):
             # First run: auto-generate random password

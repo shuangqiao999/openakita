@@ -270,6 +270,26 @@ export async function openFileDialog(options?: {
   return typeof selected === "string" ? selected : (selected as any)?.path ?? null;
 }
 
+/**
+ * Show a native "Save File" dialog (Tauri only).
+ * Returns the chosen path or null if cancelled.
+ * On web, returns null — callers should fall back to browser download.
+ */
+export async function saveFileDialog(options?: {
+  title?: string;
+  defaultPath?: string;
+  filters?: { name: string; extensions: string[] }[];
+}): Promise<string | null> {
+  if (!IS_TAURI) return null;
+  const { save } = await import("@tauri-apps/plugin-dialog");
+  const selected = await save({
+    title: options?.title,
+    defaultPath: options?.defaultPath,
+    filters: options?.filters,
+  });
+  return selected ?? null;
+}
+
 // ---------------------------------------------------------------------------
 // Tauri updater & process
 // ---------------------------------------------------------------------------
@@ -281,6 +301,59 @@ export async function relaunchApp(): Promise<void> {
   }
   const { relaunch } = await import("@tauri-apps/plugin-process");
   await relaunch();
+}
+
+// ---------------------------------------------------------------------------
+// Popup / detached windows
+// ---------------------------------------------------------------------------
+
+/**
+ * Open a view in a detached popup window.
+ * In Tauri, creates a new WebviewWindow; in Web, uses window.open.
+ */
+export async function openPopupWindow(
+  path: string,
+  label: string,
+  opts?: { width?: number; height?: number; title?: string },
+): Promise<void> {
+  const width = opts?.width ?? 1200;
+  const height = opts?.height ?? 800;
+  const title = opts?.title ?? label;
+
+  if (IS_CAPACITOR) {
+    // Mobile: popup windows not supported, navigate in-place or no-op
+    return;
+  }
+
+  if (IS_TAURI) {
+    try {
+      const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+      new WebviewWindow(label, {
+        url: path,
+        title,
+        width,
+        height,
+        center: true,
+        decorations: true,
+        resizable: true,
+      });
+    } catch (e) {
+      window.open(path, label, `width=${width},height=${height}`);
+    }
+  } else {
+    const left = (screen.width - width) / 2;
+    const top = (screen.height - height) / 2;
+    window.open(
+      path,
+      label,
+      `width=${width},height=${height},left=${left},top=${top},resizable=yes`,
+    );
+  }
+}
+
+/** Whether popup windows are available on the current platform. */
+export function canOpenPopupWindow(): boolean {
+  return !IS_CAPACITOR;
 }
 
 // ---------------------------------------------------------------------------

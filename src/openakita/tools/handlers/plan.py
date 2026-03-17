@@ -8,6 +8,7 @@ Plan 模式处理器
 - complete_plan: 完成计划
 """
 
+import json
 import logging
 import secrets
 from datetime import datetime
@@ -354,6 +355,11 @@ class PlanHandler:
             pass
 
         steps = params.get("steps", [])
+        if isinstance(steps, str):
+            try:
+                steps = json.loads(steps)
+            except (json.JSONDecodeError, TypeError):
+                return "❌ steps 参数格式错误，需要 JSON 数组"
         for step in steps:
             step["status"] = "pending"
             step["result"] = ""

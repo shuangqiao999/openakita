@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""批量生成内置技能的 .openakita-i18n.json 翻译文件。
+"""批量生成内置技能的 agents/openai.yaml i18n 翻译。
 
 运行方式: python scripts/generate_skill_i18n.py
+
+同时兼容旧的 .openakita-i18n.json（如果存在则迁移到 agents/openai.yaml）。
 """
 
-import json
 from pathlib import Path
+
+import yaml
 
 SKILLS_ROOT = Path(__file__).resolve().parents[1] / "skills"
 
@@ -388,9 +391,29 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
 }
 
 
+def _write_i18n_to_yaml(skill_dir: Path, i18n_data: dict) -> None:
+    """将 i18n 数据写入 agents/openai.yaml，合并已有内容。"""
+    yaml_file = skill_dir / "agents" / "openai.yaml"
+    existing: dict = {}
+    if yaml_file.exists():
+        try:
+            existing = yaml.safe_load(yaml_file.read_text(encoding="utf-8")) or {}
+        except Exception:
+            existing = {}
+
+    existing["i18n"] = i18n_data
+
+    yaml_file.parent.mkdir(parents=True, exist_ok=True)
+    yaml_file.write_text(
+        yaml.dump(existing, allow_unicode=True, default_flow_style=False, sort_keys=False),
+        encoding="utf-8",
+    )
+
+
 def main():
     created = 0
     skipped = 0
+    migrated = 0
 
     for skill_md in sorted(SKILLS_ROOT.rglob("SKILL.md")):
         skill_dir = skill_md.parent
@@ -401,16 +424,17 @@ def main():
             skipped += 1
             continue
 
-        i18n_file = skill_dir / ".openakita-i18n.json"
-        data = {"zh": TRANSLATIONS[skill_name]}
-
-        i18n_file.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        i18n_data = {"zh": TRANSLATIONS[skill_name]}
+        _write_i18n_to_yaml(skill_dir, i18n_data)
         created += 1
 
-    print(f"\nDone: {created} created, {skipped} skipped")
+        # 清理旧的 .openakita-i18n.json
+        legacy = skill_dir / ".openakita-i18n.json"
+        if legacy.exists():
+            legacy.unlink()
+            migrated += 1
+
+    print(f"\nDone: {created} created/updated, {migrated} migrated from JSON, {skipped} skipped")
 
 
 if __name__ == "__main__":

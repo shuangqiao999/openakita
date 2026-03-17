@@ -76,8 +76,7 @@ class TestSession:
         """测试会话过期"""
         from openakita.sessions import Session, SessionConfig
         
-        # 创建一个超时时间很短的会话
-        config = SessionConfig(timeout_minutes=0)  # 立即过期
+        config = SessionConfig(timeout_minutes=1)
         session = Session.create(
             channel="test",
             chat_id="test",
@@ -85,10 +84,10 @@ class TestSession:
             config=config,
         )
         
-        # 手动设置 last_active 为过去
-        session.last_active = datetime.now() - timedelta(minutes=1)
+        # 手动设置 last_active 为过去（超过 1 分钟）
+        session.last_active = datetime.now() - timedelta(minutes=2)
         
-        assert session.is_expired()
+        assert session.is_expired(timeout_minutes=1)
         print("✅ Session 过期检测正常")
     
     def test_session_serialization(self):

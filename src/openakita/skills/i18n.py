@@ -1,8 +1,9 @@
 """
 技能国际化支持
 
-通过 .openakita-i18n.json sidecar 文件为技能提供多语言名称和描述。
-- 内置技能：预置翻译文件
+通过 agents/openai.yaml 的 i18n 字段为技能提供多语言名称和描述。
+向后兼容旧的 .openakita-i18n.json sidecar 文件。
+- 内置技能：预置翻译（agents/openai.yaml）
 - 市场安装技能：安装后自动调用 LLM 翻译生成
 - 用户创建技能：skill-creator 引导创建
 """
@@ -15,21 +16,63 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import yaml
+
 if TYPE_CHECKING:
     from ..core.brain import Brain
 
 logger = logging.getLogger(__name__)
 
-I18N_FILENAME = ".openakita-i18n.json"
+LEGACY_I18N_FILENAME = ".openakita-i18n.json"
+OPENAI_YAML_PATH = "agents/openai.yaml"
 
 
 def read_i18n(skill_dir: Path) -> dict[str, dict[str, str]]:
-    """读取技能目录下的 .openakita-i18n.json。
+    """读取技能的 i18n 数据。
+
+    优先从 agents/openai.yaml 的 ``i18n`` 字段读取，
+    回退到旧的 .openakita-i18n.json 格式。
 
     Returns:
         {lang: {"name": ..., "description": ...}, ...} 或空 dict
     """
-    i18n_file = skill_dir / I18N_FILENAME
+    result = _read_i18n_from_yaml(skill_dir)
+    if result:
+        return result
+    return _read_i18n_from_json(skill_dir)
+
+
+def _read_i18n_from_yaml(skill_dir: Path) -> dict[str, dict[str, str]]:
+    """从 agents/openai.yaml 的 i18n 字段读取。"""
+    yaml_file = skill_dir / OPENAI_YAML_PATH
+    if not yaml_file.exists():
+        return {}
+    try:
+        content = yaml.safe_load(yaml_file.read_text(encoding="utf-8"))
+        if not isinstance(content, dict):
+            return {}
+        i18n = content.get("i18n")
+        if not isinstance(i18n, dict):
+            return {}
+        result: dict[str, dict[str, str]] = {}
+        for lang, fields in i18n.items():
+            if isinstance(fields, dict):
+                entry: dict[str, str] = {}
+                if "name" in fields:
+                    entry["name"] = str(fields["name"])
+                if "description" in fields:
+                    entry["description"] = str(fields["description"])
+                if entry:
+                    result[lang] = entry
+        return result
+    except Exception as e:
+        logger.warning(f"Failed to read i18n from agents/openai.yaml for {skill_dir.name}: {e}")
+    return {}
+
+
+def _read_i18n_from_json(skill_dir: Path) -> dict[str, dict[str, str]]:
+    """从旧的 .openakita-i18n.json 读取（向后兼容）。"""
+    i18n_file = skill_dir / LEGACY_I18N_FILENAME
     if not i18n_file.exists():
         return {}
     try:
@@ -37,15 +80,28 @@ def read_i18n(skill_dir: Path) -> dict[str, dict[str, str]]:
         if isinstance(data, dict):
             return data
     except Exception as e:
-        logger.warning(f"Failed to read i18n for {skill_dir.name}: {e}")
+        logger.warning(f"Failed to read legacy i18n for {skill_dir.name}: {e}")
     return {}
 
 
 def write_i18n(skill_dir: Path, data: dict[str, dict[str, str]]) -> None:
-    """写入 .openakita-i18n.json。"""
-    i18n_file = skill_dir / I18N_FILENAME
-    i18n_file.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+    """将 i18n 数据写入 agents/openai.yaml。
+
+    如果 agents/openai.yaml 已存在，合并 i18n 字段；否则创建新文件。
+    """
+    yaml_file = skill_dir / OPENAI_YAML_PATH
+    existing: dict = {}
+    if yaml_file.exists():
+        try:
+            existing = yaml.safe_load(yaml_file.read_text(encoding="utf-8")) or {}
+        except Exception:
+            existing = {}
+
+    existing["i18n"] = data
+
+    yaml_file.parent.mkdir(parents=True, exist_ok=True)
+    yaml_file.write_text(
+        yaml.dump(existing, allow_unicode=True, default_flow_style=False, sort_keys=False),
         encoding="utf-8",
     )
 
@@ -77,7 +133,9 @@ async def auto_translate_skill(
     description: str,
     brain: "Brain",
 ) -> bool:
-    """安装后自动翻译技能名和描述，写入 .openakita-i18n.json。
+    """安装后自动翻译技能名和描述，写入 agents/openai.yaml 的 i18n 字段。
+
+    如果已有 i18n 数据（无论来源），则跳过。
 
     Args:
         skill_dir: 技能目录
@@ -88,8 +146,7 @@ async def auto_translate_skill(
     Returns:
         True 表示成功写入翻译，False 表示跳过或失败
     """
-    i18n_file = skill_dir / I18N_FILENAME
-    if i18n_file.exists():
+    if read_i18n(skill_dir):
         return False
 
     prompt = (

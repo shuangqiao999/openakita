@@ -33,6 +33,7 @@ class AgentPackageHandler:
         "import_agent",
         "list_exportable_agents",
         "inspect_agent_package",
+        "batch_export_agents",
     ]
 
     def __init__(self, agent: Agent):
@@ -48,6 +49,8 @@ class AgentPackageHandler:
                 return await self._list_exportable(params)
             elif tool_name == "inspect_agent_package":
                 return await self._inspect(params)
+            elif tool_name == "batch_export_agents":
+                return await self._batch_export(params)
             else:
                 return f"Unknown tool: {tool_name}"
         except Exception as e:
@@ -62,7 +65,14 @@ class AgentPackageHandler:
             return "❌ 需要指定 profile_id"
 
         profile_store, skills_dir, root = _get_stores()
-        output_dir = root / "data" / "agent_packages"
+
+        user_output_dir = params.get("output_dir", "")
+        if user_output_dir:
+            output_dir = Path(user_output_dir)
+            if not output_dir.is_absolute():
+                output_dir = root / user_output_dir
+        else:
+            output_dir = root / "data" / "agent_packages"
 
         packager = AgentPackager(
             profile_store=profile_store,
@@ -83,6 +93,7 @@ class AgentPackageHandler:
             f"✅ Agent 已导出！\n\n"
             f"📦 文件: {output_path}\n"
             f"📏 大小: {size_kb:.1f} KB\n\n"
+            f"💡 导出路径: `{output_dir}`\n"
             f"你可以将这个 `.akita-agent` 文件分享给其他用户导入使用。"
         )
 
@@ -198,6 +209,48 @@ class AgentPackageHandler:
             lines.append(f"\n**提示词预览**: {prompt_preview}")
 
         lines.append("\n使用 `import_agent` 工具导入此 Agent。")
+        return "\n".join(lines)
+
+    async def _batch_export(self, params: dict[str, Any]) -> str:
+        from ...agents.packager import AgentPackager
+
+        profile_ids = params.get("profile_ids", [])
+        if not profile_ids:
+            return "❌ 需要指定 profile_ids 列表"
+
+        profile_store, skills_dir, root = _get_stores()
+
+        user_output_dir = params.get("output_dir", "")
+        if user_output_dir:
+            output_dir = Path(user_output_dir)
+            if not output_dir.is_absolute():
+                output_dir = root / user_output_dir
+        else:
+            output_dir = root / "data" / "agent_packages"
+
+        packager = AgentPackager(
+            profile_store=profile_store,
+            skills_dir=skills_dir,
+            output_dir=output_dir,
+        )
+
+        exported: list[str] = []
+        errors: list[str] = []
+        for pid in profile_ids:
+            try:
+                out = packager.package(profile_id=pid)
+                exported.append(f"✅ {pid} → {out.name} ({out.stat().st_size / 1024:.1f} KB)")
+            except Exception as e:
+                errors.append(f"❌ {pid}: {e}")
+
+        lines = [f"📦 批量导出完成 — {len(exported)} 成功, {len(errors)} 失败\n"]
+        lines.append(f"💡 导出路径: `{output_dir}`\n")
+        if exported:
+            lines.append("**已导出:**")
+            lines.extend(exported)
+        if errors:
+            lines.append("\n**失败:**")
+            lines.extend(errors)
         return "\n".join(lines)
 
     def _try_reload_skills(self) -> None:

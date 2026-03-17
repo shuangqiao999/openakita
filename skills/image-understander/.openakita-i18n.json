@@ -1,6 +1,0 @@
-{
-  "zh": {
-    "name": "图像理解 (GPT-4V)",
-    "description": "使用 GPT-4 Vision 分析图片，支持图片描述、OCR 文字提取、目标识别和视觉问答。"
-  }
-}

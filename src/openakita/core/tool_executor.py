@@ -132,6 +132,15 @@ class ToolExecutor:
     # 长时间运行工具的硬超时（秒），防止工具卡死拖垮整个 agent 循环
     _TOOL_HARD_TIMEOUT: int = 120
 
+    _LONG_RUNNING_TOOLS: dict[str, int] = {
+        "org_request_meeting": 600,
+        "org_broadcast": 300,
+        "delegate_to_agent": 300,
+        "browser_navigate": 300,
+        "browser_use": 300,
+        "run_shell": 300,
+    }
+
     def get_handler_name(self, tool_name: str) -> str | None:
         """获取工具对应的 handler 名称"""
         try:
@@ -155,7 +164,8 @@ class ToolExecutor:
         if state and hasattr(state, "cancel_event") and state.cancel_event:
             cancel_future = asyncio.ensure_future(state.cancel_event.wait())
 
-        timeout_task = asyncio.ensure_future(asyncio.sleep(self._TOOL_HARD_TIMEOUT))
+        hard_timeout = self._LONG_RUNNING_TOOLS.get(tool_name, self._TOOL_HARD_TIMEOUT)
+        timeout_task = asyncio.ensure_future(asyncio.sleep(hard_timeout))
 
         wait_set: set[asyncio.Future] = {tool_task, timeout_task}
         if cancel_future:
@@ -173,8 +183,8 @@ class ToolExecutor:
                 reason = "用户请求取消任务"
                 logger.warning(f"[ToolExecutor] Tool '{tool_name}' cancelled by user")
             else:
-                reason = f"工具执行超时 ({self._TOOL_HARD_TIMEOUT}s)"
-                logger.error(f"[ToolExecutor] Tool '{tool_name}' timed out after {self._TOOL_HARD_TIMEOUT}s")
+                reason = f"工具执行超时 ({hard_timeout}s)"
+                logger.error(f"[ToolExecutor] Tool '{tool_name}' timed out after {hard_timeout}s")
 
             tool_task.cancel()
             try:

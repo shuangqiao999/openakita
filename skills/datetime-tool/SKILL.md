@@ -1,9 +1,6 @@
 ---
 name: openakita/skills@datetime-tool
-description: |
-  获取当前时间、格式化日期、计算日期差值、时区转换。
-  当用户询问时间、日期、时区相关问题时使用此技能。
-  关键词: 时间, 日期, 时区, 今天, 现在, 星期, 几点
+description: Get current time, format dates, calculate date differences, and convert timezones. Use this skill when the user asks about time, dates, timezone conversions, weekdays, or needs date calculations and formatting in any locale.
 license: MIT
 metadata:
   author: myagent

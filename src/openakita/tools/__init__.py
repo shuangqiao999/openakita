@@ -23,7 +23,18 @@ __all__ = [
 ]
 
 # Windows 桌面自动化模块（仅 Windows 平台可用）
-if sys.platform == "win32":
+# 延迟导入：pyautogui 在某些 Windows 环境下初始化极慢，
+# 改为按需导入（首次使用桌面工具时才加载）。
+_DESKTOP_LOADED = False
+
+
+def _ensure_desktop_loaded():
+    """按需加载桌面自动化模块，避免模块级导入阻塞整个包。"""
+    global _DESKTOP_LOADED
+    if _DESKTOP_LOADED:
+        return True
+    if sys.platform != "win32":
+        return False
     try:
         from .desktop import (  # noqa: F401
             DESKTOP_TOOLS,
@@ -37,6 +48,18 @@ if sys.platform == "win32":
             get_controller,
             register_desktop_tools,
         )
+
+        _g = globals()
+        _g["DESKTOP_TOOLS"] = DESKTOP_TOOLS
+        _g["DesktopController"] = DesktopController
+        _g["DesktopToolHandler"] = DesktopToolHandler
+        _g["KeyboardController"] = KeyboardController
+        _g["MouseController"] = MouseController
+        _g["ScreenCapture"] = ScreenCapture
+        _g["UIAClient"] = UIAClient
+        _g["VisionAnalyzer"] = VisionAnalyzer
+        _g["get_controller"] = get_controller
+        _g["register_desktop_tools"] = register_desktop_tools
 
         __all__.extend(
             [
@@ -52,11 +75,13 @@ if sys.platform == "win32":
                 "register_desktop_tools",
             ]
         )
+        _DESKTOP_LOADED = True
+        return True
     except ImportError as e:
-        # 依赖未安装时的警告
         import logging
 
         logging.getLogger(__name__).debug(
             f"Desktop automation module not available: {e}. "
             "Install with: pip install mss pyautogui pywinauto"
         )
+        return False

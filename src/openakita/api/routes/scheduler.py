@@ -249,7 +249,9 @@ async def trigger_task(request: Request, task_id: str):
     if scheduler is None:
         return {"error": "Agent not initialized"}
 
-    execution = await scheduler.trigger_now(task_id)
+    from openakita.core.engine_bridge import to_engine
+
+    execution = await to_engine(scheduler.trigger_now(task_id))
     if execution is None:
         return {"error": "Task not found or trigger failed"}
 
@@ -339,21 +341,26 @@ async def list_channels(request: Request):
         registry = getattr(session_manager, "_channel_registry", None)
         if registry and isinstance(registry, dict):
             for ch, entry in registry.items():
-                if ch in skip_channels or not isinstance(entry, dict):
+                if ch in skip_channels:
                     continue
-                cid = entry.get("chat_id")
-                if not cid:
-                    continue
-                pair = (ch, cid)
-                if pair in seen:
-                    continue
-                seen.add(pair)
-                results.append({
-                    "channel_id": ch,
-                    "chat_id": cid,
-                    "user_id": entry.get("user_id"),
-                    "last_active": entry.get("last_seen", ""),
-                })
+                # 兼容新格式（list of dicts）和旧格式（单 dict）
+                items = entry if isinstance(entry, list) else [entry] if isinstance(entry, dict) else []
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    cid = item.get("chat_id")
+                    if not cid:
+                        continue
+                    pair = (ch, cid)
+                    if pair in seen:
+                        continue
+                    seen.add(pair)
+                    results.append({
+                        "channel_id": ch,
+                        "chat_id": cid,
+                        "user_id": item.get("user_id"),
+                        "last_active": item.get("last_seen", ""),
+                    })
 
     return {"channels": results}
 

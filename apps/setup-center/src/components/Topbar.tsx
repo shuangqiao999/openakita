@@ -35,6 +35,7 @@ export type TopbarProps = {
   isWeb?: boolean;
   onLogout?: () => void;
   webAccessUrl?: string;
+  apiBaseUrl?: string;
   onToggleMobileSidebar?: () => void;
   serverName?: string;
   onServerManager?: () => void;
@@ -49,33 +50,35 @@ export function Topbar({
   onCreateWorkspace,
   serviceRunning, endpointCount, dataMode, busy,
   onDisconnect, onConnect, onStart, onRefreshAll,
-  toggleTheme, themePrefState, isWeb, onLogout, webAccessUrl, onToggleMobileSidebar,
-  serverName, onServerManager,
+  toggleTheme, themePrefState, isWeb, onLogout, webAccessUrl, apiBaseUrl,
+  onToggleMobileSidebar, serverName, onServerManager,
 }: TopbarProps) {
   const { t, i18n } = useTranslation();
-  const [remoteCopied, setRemoteCopied] = useState(false);
+  const [remoteCopyState, setRemoteCopyState] = useState<"idle" | "copied" | "no_ip">("idle");
 
   const copyRemoteUrl = async () => {
+    const base = apiBaseUrl || "http://127.0.0.1:18900";
     try {
-      const res = await fetch("/api/health", { signal: AbortSignal.timeout(3000) }).catch(() =>
-        fetch("http://127.0.0.1:18900/api/health", { signal: AbortSignal.timeout(3000) })
-      );
-      const data = await res.json();
-      const ip = data.local_ip || "127.0.0.1";
-      const port = location.port || "18900";
-      const url = `http://${ip}:${port}/web`;
-      const ok = await copyToClipboard(url);
-      if (ok) {
-        setRemoteCopied(true);
-        setTimeout(() => setRemoteCopied(false), 2000);
+      let data: any;
+      for (const url of [base, "http://127.0.0.1:18900"]) {
+        try {
+          const res = await fetch(`${url}/api/health`, { signal: AbortSignal.timeout(3000) });
+          if (res.ok) { data = await res.json(); break; }
+        } catch { /* try next */ }
+      }
+      const ip = data?.local_ip;
+      if (ip && ip !== "127.0.0.1" && ip !== "::1" && ip !== "localhost") {
+        const port = new URL(base).port || "18900";
+        await navigator.clipboard.writeText(`http://${ip}:${port}/web`);
+        setRemoteCopyState("copied");
+        setTimeout(() => setRemoteCopyState("idle"), 2000);
+      } else {
+        setRemoteCopyState("no_ip");
+        setTimeout(() => setRemoteCopyState("idle"), 4000);
       }
     } catch {
-      const url = `http://127.0.0.1:18900/web`;
-      const ok = await copyToClipboard(url);
-      if (ok) {
-        setRemoteCopied(true);
-        setTimeout(() => setRemoteCopied(false), 2000);
-      }
+      setRemoteCopyState("no_ip");
+      setTimeout(() => setRemoteCopyState("idle"), 4000);
     }
   };
 
@@ -219,15 +222,21 @@ export function Topbar({
               title={t("topbar.copyRemoteUrl", "复制远程访问地址")}
               style={{
                 cursor: "pointer", fontSize: 11, display: "inline-flex", alignItems: "center", gap: 2,
-                color: remoteCopied ? "var(--ok, #10b981)" : "var(--accent, #5B8DEF)",
-                opacity: remoteCopied ? 1 : 0.7,
+                color: remoteCopyState === "copied" ? "var(--ok, #10b981)"
+                  : remoteCopyState === "no_ip" ? "var(--warning-text, #92400e)"
+                  : "var(--accent, #5B8DEF)",
+                opacity: remoteCopyState !== "idle" ? 1 : 0.7,
                 transition: "color 0.2s",
               }}
               onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.opacity = "1"; }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = remoteCopied ? "1" : "0.7"; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = remoteCopyState !== "idle" ? "1" : "0.7"; }}
             >
               <IconClipboard size={11} />
-              <span>{remoteCopied ? t("common.copied", "已复制") : t("topbar.remoteUrl", "远程地址")}</span>
+              <span>{
+                remoteCopyState === "copied" ? t("common.copied", "已复制")
+                : remoteCopyState === "no_ip" ? t("topbar.ipNotFound", "请用 ipconfig 或 ifconfig 查看本机 IP")
+                : t("topbar.remoteUrl", "远程地址")
+              }</span>
             </span>
           </>
         )}

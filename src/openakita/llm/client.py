@@ -135,6 +135,41 @@ class LLMClient:
 
     # 默认临时切换有效期（小时）
     DEFAULT_OVERRIDE_HOURS = 12
+
+    # 全局 LLM 并发控制：限制同时在飞的请求数，防止并发风暴打爆 event loop
+    DEFAULT_MAX_CONCURRENT = 20
+    _global_semaphore: asyncio.Semaphore | None = None
+    _global_semaphore_loop_id: int | None = None
+    _global_semaphore_value: int = 0
+    _global_inflight: int = 0  # 当前在飞请求计数（用于监控）
+
+    @classmethod
+    def _get_semaphore(cls, max_concurrent: int = 0) -> asyncio.Semaphore:
+        """获取或创建全局并发信号量（绑定到当前 event loop）。"""
+        target = max_concurrent or cls.DEFAULT_MAX_CONCURRENT
+        try:
+            loop_id = id(asyncio.get_running_loop())
+        except RuntimeError:
+            loop_id = None
+        if (
+            cls._global_semaphore is None
+            or cls._global_semaphore_loop_id != loop_id
+            or cls._global_semaphore_value != target
+        ):
+            cls._global_semaphore = asyncio.Semaphore(target)
+            cls._global_semaphore_loop_id = loop_id
+            cls._global_semaphore_value = target
+            cls._global_inflight = 0
+        return cls._global_semaphore
+
+    @classmethod
+    def get_concurrency_stats(cls) -> dict:
+        """返回当前并发统计（供健康监控 API 使用）。"""
+        return {
+            "inflight": cls._global_inflight,
+            "max_concurrent": cls._global_semaphore_value or cls.DEFAULT_MAX_CONCURRENT,
+        }
+
     def __init__(
         self,
         config_path: Path | None = None,
@@ -289,6 +324,51 @@ class LLMClient:
             UnsupportedMediaError: 视频内容但没有支持视频的端点
             AllEndpointsFailedError: 所有端点都失败
         """
+        sem = self._get_semaphore(self._settings.get("max_concurrent", 0))
+        async with sem:
+            return await self._chat_inner(
+                messages=messages, system=system, tools=tools,
+                max_tokens=max_tokens, temperature=temperature,
+                enable_thinking=enable_thinking, thinking_depth=thinking_depth,
+                conversation_id=conversation_id, **kwargs,
+            )
+
+    async def _chat_inner(
+        self,
+        messages: list[Message],
+        system: str = "",
+        tools: list[Tool] | None = None,
+        max_tokens: int = 0,
+        temperature: float = 1.0,
+        enable_thinking: bool = False,
+        thinking_depth: str | None = None,
+        conversation_id: str | None = None,
+        **kwargs,
+    ) -> LLMResponse:
+        """chat() 的内部实现（已在 semaphore 保护下运行）。"""
+        LLMClient._global_inflight += 1
+        try:
+            return await self.__chat_impl(
+                messages=messages, system=system, tools=tools,
+                max_tokens=max_tokens, temperature=temperature,
+                enable_thinking=enable_thinking, thinking_depth=thinking_depth,
+                conversation_id=conversation_id, **kwargs,
+            )
+        finally:
+            LLMClient._global_inflight -= 1
+
+    async def __chat_impl(
+        self,
+        messages: list[Message],
+        system: str = "",
+        tools: list[Tool] | None = None,
+        max_tokens: int = 0,
+        temperature: float = 1.0,
+        enable_thinking: bool = False,
+        thinking_depth: str | None = None,
+        conversation_id: str | None = None,
+        **kwargs,
+    ) -> LLMResponse:
         request = LLMRequest(
             messages=messages,
             system=system,
@@ -407,6 +487,33 @@ class LLMClient:
         Yields:
             流式事件
         """
+        sem = self._get_semaphore(self._settings.get("max_concurrent", 0))
+        async with sem:
+            LLMClient._global_inflight += 1
+            try:
+                async for event in self._chat_stream_inner(
+                    messages=messages, system=system, tools=tools,
+                    max_tokens=max_tokens, temperature=temperature,
+                    enable_thinking=enable_thinking, thinking_depth=thinking_depth,
+                    conversation_id=conversation_id, **kwargs,
+                ):
+                    yield event
+            finally:
+                LLMClient._global_inflight -= 1
+
+    async def _chat_stream_inner(
+        self,
+        messages: list[Message],
+        system: str = "",
+        tools: list[Tool] | None = None,
+        max_tokens: int = 0,
+        temperature: float = 1.0,
+        enable_thinking: bool = False,
+        thinking_depth: str | None = None,
+        conversation_id: str | None = None,
+        **kwargs,
+    ) -> AsyncIterator[dict]:
+        """chat_stream() 的内部实现（已在 semaphore 保护下运行）。"""
         request = LLMRequest(
             messages=messages,
             system=system,

@@ -2,8 +2,8 @@
 
 import logging
 from datetime import datetime, timedelta
-from fastapi import APIRouter, HTTPException, Request
 
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -11,6 +11,63 @@ router = APIRouter()
 
 # Valid IM bot types
 VALID_BOT_TYPES = frozenset({"feishu", "telegram", "dingtalk", "wework", "wework_ws", "onebot", "onebot_reverse", "qqbot"})
+
+
+def _bot_channel_name(bot: dict) -> str:
+    """Derive the channel_name for a bot config dict."""
+    bot_type = bot.get("type", "")
+    bot_id = bot.get("id", "")
+    return f"{bot_type}:{bot_id}" if bot_id else bot_type
+
+
+async def _hot_register_bot(request: Request, bot: dict) -> None:
+    """Create an adapter and register it in the running gateway (if available)."""
+    gateway = getattr(request.app.state, "gateway", None)
+    if gateway is None:
+        logger.info("[Agents API] No running gateway, bot will activate on next restart")
+        return
+    try:
+        from openakita.main import _create_bot_adapter
+
+        channel_name = _bot_channel_name(bot)
+        bot_id = bot.get("id", "")
+        agent_id = bot.get("agent_profile_id", "default")
+        adapter = _create_bot_adapter(
+            bot.get("type", ""), bot.get("credentials", {}),
+            channel_name=channel_name, bot_id=bot_id, agent_profile_id=agent_id,
+        )
+        if adapter:
+            from openakita.core.engine_bridge import to_engine
+
+            await to_engine(gateway.register_adapter(adapter))
+            logger.info(f"[Agents API] Hot-registered adapter: {channel_name}")
+    except Exception as e:
+        logger.warning(f"[Agents API] Hot-register failed (will activate on restart): {e}")
+
+
+async def _hot_unregister_bot(request: Request, bot: dict) -> None:
+    """Stop and remove an adapter from the running gateway."""
+    gateway = getattr(request.app.state, "gateway", None)
+    if gateway is None:
+        return
+    channel_name = _bot_channel_name(bot)
+    adapters = getattr(gateway, "_adapters", {})
+    adapter = adapters.pop(channel_name, None)
+    if adapter:
+        try:
+            from openakita.core.engine_bridge import to_engine
+
+            await to_engine(adapter.stop())
+            logger.info(f"[Agents API] Hot-unregistered adapter: {channel_name}")
+        except Exception as e:
+            logger.warning(f"[Agents API] Failed to stop adapter {channel_name}: {e}")
+
+
+async def _hot_update_bot(request: Request, bot: dict) -> None:
+    """Replace a running adapter with a new one (stop old → register new)."""
+    await _hot_unregister_bot(request, bot)
+    if bot.get("enabled", True):
+        await _hot_register_bot(request, bot)
 
 
 # ─── Pydantic models ─────────────────────────────────────────────────────
@@ -78,7 +135,7 @@ async def list_bots():
 
 
 @router.post("/api/agents/bots")
-async def create_bot(body: BotCreateRequest):
+async def create_bot(body: BotCreateRequest, request: Request):
     """Add a new bot. Validates id uniqueness and type."""
     from openakita.config import runtime_state, settings
 
@@ -116,7 +173,7 @@ async def create_bot(body: BotCreateRequest):
 
 
 @router.put("/api/agents/bots/{bot_id}")
-async def update_bot(bot_id: str, body: BotUpdateRequest):
+async def update_bot(bot_id: str, body: BotUpdateRequest, request: Request):
     """Update an existing bot. Partial update (only provided fields are changed)."""
     from openakita.config import runtime_state, settings
 
@@ -157,7 +214,7 @@ async def update_bot(bot_id: str, body: BotUpdateRequest):
 
 
 @router.delete("/api/agents/bots/{bot_id}")
-async def delete_bot(bot_id: str):
+async def delete_bot(bot_id: str, request: Request):
     """Remove a bot."""
     from openakita.config import runtime_state, settings
 
@@ -179,7 +236,7 @@ async def delete_bot(bot_id: str):
 
 
 @router.post("/api/agents/bots/{bot_id}/toggle")
-async def toggle_bot(bot_id: str, body: BotToggleRequest):
+async def toggle_bot(bot_id: str, body: BotToggleRequest, request: Request):
     """Enable or disable a bot."""
     from openakita.config import runtime_state, settings
 
@@ -202,6 +259,176 @@ async def toggle_bot(bot_id: str, body: BotToggleRequest):
         await remove_im_bot(bot)
 
     return {"status": "ok", "bot": bot}
+
+
+# ─── Env-bot introspection & migration ───────────────────────────────────
+
+
+def _collect_env_bots() -> list[dict]:
+    """Return a list of bots currently configured via .env (not in im_bots)."""
+    from openakita.config import settings
+
+    existing_types = {
+        b.get("type") for b in settings.im_bots if isinstance(b, dict)
+    }
+
+    env_bots: list[dict] = []
+
+    if settings.telegram_enabled and settings.telegram_bot_token:
+        env_bots.append({
+            "type": "telegram",
+            "env_enabled": True,
+            "migrated": "telegram" in existing_types,
+            "credentials": {
+                "bot_token": settings.telegram_bot_token,
+                "webhook_url": settings.telegram_webhook_url or "",
+                "proxy": settings.telegram_proxy or "",
+                "pairing_code": settings.telegram_pairing_code or "",
+                "require_pairing": str(settings.telegram_require_pairing).lower(),
+            },
+        })
+
+    if settings.feishu_enabled and settings.feishu_app_id:
+        env_bots.append({
+            "type": "feishu",
+            "env_enabled": True,
+            "migrated": "feishu" in existing_types,
+            "credentials": {
+                "app_id": settings.feishu_app_id,
+                "app_secret": settings.feishu_app_secret,
+            },
+        })
+
+    if settings.wework_enabled and settings.wework_corp_id:
+        env_bots.append({
+            "type": "wework",
+            "env_enabled": True,
+            "migrated": "wework" in existing_types,
+            "credentials": {
+                "corp_id": settings.wework_corp_id,
+                "token": settings.wework_token,
+                "encoding_aes_key": settings.wework_encoding_aes_key,
+                "callback_port": str(settings.wework_callback_port),
+                "callback_host": settings.wework_callback_host,
+            },
+        })
+
+    if settings.dingtalk_enabled and settings.dingtalk_client_id:
+        env_bots.append({
+            "type": "dingtalk",
+            "env_enabled": True,
+            "migrated": "dingtalk" in existing_types,
+            "credentials": {
+                "client_id": settings.dingtalk_client_id,
+                "client_secret": settings.dingtalk_client_secret,
+            },
+        })
+
+    if settings.onebot_enabled and settings.onebot_ws_url:
+        env_bots.append({
+            "type": "onebot",
+            "env_enabled": True,
+            "migrated": "onebot" in existing_types,
+            "credentials": {
+                "ws_url": settings.onebot_ws_url,
+                "access_token": settings.onebot_access_token or "",
+            },
+        })
+
+    if settings.qqbot_enabled and settings.qqbot_app_id:
+        env_bots.append({
+            "type": "qqbot",
+            "env_enabled": True,
+            "migrated": "qqbot" in existing_types,
+            "credentials": {
+                "app_id": settings.qqbot_app_id,
+                "app_secret": settings.qqbot_app_secret,
+                "sandbox": str(settings.qqbot_sandbox).lower(),
+                "mode": settings.qqbot_mode,
+                "webhook_port": str(settings.qqbot_webhook_port),
+                "webhook_path": settings.qqbot_webhook_path,
+            },
+        })
+
+    return env_bots
+
+
+@router.get("/api/agents/env-bots")
+async def list_env_bots():
+    """List bots configured via .env that haven't been migrated to im_bots yet."""
+    return {"env_bots": _collect_env_bots()}
+
+
+BOT_TYPE_LABELS = {
+    "telegram": "Telegram",
+    "feishu": "飞书",
+    "dingtalk": "钉钉",
+    "wework": "企业微信",
+    "onebot": "OneBot",
+    "qqbot": "QQ Bot",
+}
+
+
+@router.post("/api/agents/bots/migrate-from-env")
+async def migrate_env_bots(request: Request):
+    """Migrate .env-configured bots into im_bots for unified management."""
+    from openakita.config import runtime_state, settings
+
+    env_bots = _collect_env_bots()
+    migrated = []
+    skipped = []
+
+    for eb in env_bots:
+        bot_type = eb["type"]
+        if eb["migrated"]:
+            skipped.append(bot_type)
+            continue
+
+        bot_id = f"{bot_type}-env"
+        existing_ids = {b.get("id") for b in settings.im_bots if isinstance(b, dict)}
+        suffix = 0
+        final_id = bot_id
+        while final_id in existing_ids:
+            suffix += 1
+            final_id = f"{bot_id}-{suffix}"
+
+        bot = {
+            "id": final_id,
+            "type": bot_type,
+            "name": BOT_TYPE_LABELS.get(bot_type, bot_type),
+            "agent_profile_id": "default",
+            "enabled": True,
+            "credentials": eb["credentials"],
+        }
+        settings.im_bots = list(settings.im_bots) + [bot]
+        migrated.append(bot)
+
+        # Unregister old .env adapter (channel_name = bot_type) before
+        # registering the new im_bots adapter to avoid duplicate adapters
+        gateway = getattr(request.app.state, "gateway", None)
+        if gateway:
+            adapters = getattr(gateway, "_adapters", {})
+            old_adapter = adapters.pop(bot_type, None)
+            if old_adapter:
+                try:
+                    await old_adapter.stop()
+                    logger.info(f"[Migration] Stopped old .env adapter: {bot_type}")
+                except Exception as e:
+                    logger.warning(f"[Migration] Failed to stop old adapter {bot_type}: {e}")
+
+        if bot["enabled"]:
+            await _hot_register_bot(request, bot)
+
+    if migrated:
+        runtime_state.save()
+        logger.info(f"[Migration] Migrated {len(migrated)} env bots: "
+                     f"{[b['id'] for b in migrated]}")
+
+    return {
+        "status": "ok",
+        "migrated": migrated,
+        "skipped": skipped,
+    }
 
 
 # ─── Agent category routes ───────────────────────────────────────────────

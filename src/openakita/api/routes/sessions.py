@@ -204,6 +204,48 @@ def _cancel_tasks_for_session(
         logger.debug(f"[Sessions] Orchestrator cancel skipped: {e}")
 
 
+class AppendMessageRequest(BaseModel):
+    role: str = Field(..., description="user | assistant | system")
+    content: str = Field(..., description="Message content")
+
+
+class AppendBatchRequest(BaseModel):
+    messages: list[AppendMessageRequest] = Field(..., description="Messages to append")
+
+
+@router.post("/api/sessions/{conversation_id}/messages")
+async def append_session_messages(
+    request: Request,
+    conversation_id: str,
+    body: AppendBatchRequest,
+    channel: str = "desktop",
+    user_id: str = "desktop_user",
+):
+    """Append messages to a session (create if missing).
+
+    Used by OrgChatPanel and other embedded chat UIs to persist messages
+    through the same session backend as the main ChatView.
+    """
+    session_manager = getattr(request.app.state, "session_manager", None)
+    if not session_manager:
+        return {"ok": False, "error": "session_manager not available"}
+
+    session = session_manager.get_session(
+        channel=channel,
+        chat_id=conversation_id,
+        user_id=user_id,
+        create_if_missing=True,
+    )
+    if not session:
+        return {"ok": False, "error": "failed to create session"}
+
+    for msg in body.messages:
+        session.add_message(msg.role, msg.content)
+
+    session_manager.mark_dirty()
+    return {"ok": True, "count": len(body.messages)}
+
+
 @router.post("/api/sessions/generate-title")
 async def generate_title(request: Request, body: GenerateTitleRequest):
     """Use LLM to generate a concise conversation title from the first message."""

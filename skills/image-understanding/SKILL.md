@@ -1,6 +1,10 @@
 ---
 name: openakita/skills@image-understanding
-description: Analyze images using Dashscope (Qwen) Vision models. Supports detailed description, OCR text extraction, object recognition, and visual Q&A. When you need to understand image content using Alibaba Cloud Dashscope API.
+description: Analyze images using Dashscope (Qwen) Vision models for detailed description, OCR text extraction, object recognition, and visual Q&A. Use when the user needs to understand image content via Alibaba Cloud Dashscope API, especially for Chinese-language image analysis and documents.
+license: MIT
+metadata:
+  author: openakita
+  version: "1.0.0"
 ---
 
 # 图片理解技能 (Image Understanding)

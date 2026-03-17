@@ -1,6 +1,6 @@
 ---
 name: generate-image
-description: 文生图（Qwen-Image）。根据提示词生成图片并保存为本地 PNG 文件；需要配置 DASHSCOPE_API_KEY，可选配置 DASHSCOPE_IMAGE_API_URL。生成后可用 deliver_artifacts 发送到 IM。
+description: Generate images from text prompts using Qwen-Image (Dashscope). Saves output as local PNG files. Requires DASHSCOPE_API_KEY. Use deliver_artifacts to send generated images to IM chat.
 system: true
 handler: system
 tool-name: generate_image

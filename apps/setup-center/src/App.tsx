@@ -15,8 +15,11 @@ import { MemoryView } from "./views/MemoryView";
 import { IdentityView } from "./views/IdentityView";
 import { AgentDashboardView } from "./views/AgentDashboardView";
 import { AgentManagerView } from "./views/AgentManagerView";
+import { OrgEditorView } from "./views/OrgEditorView";
 import { FeedbackModal } from "./views/FeedbackModal";
 import { IMConfigView } from "./views/IMConfigView";
+import type { IMBot } from "./views/im-shared";
+import { TYPE_TO_ENABLED_KEY } from "./views/im-shared";
 import { AgentSystemView } from "./views/AgentSystemView";
 import { AgentStoreView } from "./views/AgentStoreView";
 import { SkillStoreView } from "./views/SkillStoreView";
@@ -273,7 +276,11 @@ export function App() {
     [t],
   );
 
-  const [view, setView] = useState<"wizard" | "status" | "chat" | "skills" | "im" | "onboarding" | "modules" | "token_stats" | "mcp" | "scheduler" | "memory" | "identity" | "dashboard" | "agent_manager" | "agent_store" | "skill_store">((IS_WEB || IS_CAPACITOR) ? "chat" : "wizard");
+  const [view, setView] = useState<"wizard" | "status" | "chat" | "skills" | "im" | "onboarding" | "modules" | "token_stats" | "mcp" | "scheduler" | "memory" | "identity" | "dashboard" | "org_editor" | "agent_manager" | "agent_store" | "skill_store">(() => {
+    const hash = window.location.hash;
+    if (hash === "#/org-editor") return "org_editor";
+    return (IS_WEB || IS_CAPACITOR) ? "chat" : "wizard";
+  });
   const [appInitializing, setAppInitializing] = useState(!(IS_WEB || IS_CAPACITOR));
   const [configExpanded, setConfigExpanded] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -352,6 +359,7 @@ export function App() {
   const [obCliAddToPath, setObCliAddToPath] = useState(true);
   const [obAutostart, setObAutostart] = useState(true); // 开机自启，默认勾选
   const [obAgreementInput, setObAgreementInput] = useState("");
+  const [obPendingBots, setObPendingBots] = useState<IMBot[]>([]);
 
   // Custom root directory
   const [obShowCustomRoot, setObShowCustomRoot] = useState(false);
@@ -5335,10 +5343,41 @@ export function App() {
     disabledViews, toggleViewDisabled,
   };
 
-  function renderIM() {
+  function renderIM(opts?: { onboarding?: boolean }) {
     const imDisabled = disabledViews.includes("im");
     return (
-      <IMConfigView {..._configViewProps} imDisabled={imDisabled} onToggleIM={() => toggleViewDisabled("im")} />
+      <>
+        {!opts?.onboarding && (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", marginBottom: 8 }}>
+            <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--muted)", cursor: "pointer" }}>
+              <span>{imDisabled ? "IM 通道 已禁用" : "IM 通道 已启用"}</span>
+              <div
+                onClick={() => toggleViewDisabled("im")}
+                style={{
+                  width: 40, height: 22, borderRadius: 11, cursor: "pointer",
+                  background: imDisabled ? "var(--line)" : "var(--ok)",
+                  position: "relative", transition: "background 0.2s",
+                }}
+              >
+                <div style={{
+                  width: 18, height: 18, borderRadius: 9, background: "#fff",
+                  position: "absolute", top: 2,
+                  left: imDisabled ? 2 : 20,
+                  transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+                }} />
+              </div>
+            </label>
+          </div>
+        )}
+        <IMConfigView
+          {..._configViewProps}
+          imDisabled={imDisabled}
+          onToggleIM={() => toggleViewDisabled("im")}
+          apiBaseUrl={httpApiBase()}
+          onNavigateToBotConfig={opts?.onboarding ? undefined : (presetType) => { setView("im"); }}
+          {...(opts?.onboarding ? { pendingBots: obPendingBots, onPendingBotsChange: setObPendingBots } : {})}
+        />
+      </>
     );
   }
 
@@ -6987,6 +7026,9 @@ export function App() {
     if (obAutostart) {
       taskDefs.push({ id: "autostart", label: t("onboarding.autostart.taskLabel"), status: "pending" });
     }
+    if (obPendingBots.length > 0) {
+      taskDefs.push({ id: "register-bots", label: t("onboarding.registerBots", { count: obPendingBots.length }), status: "pending" });
+    }
     taskDefs.push({ id: "service-start", label: "启动后端服务", status: "pending" });
     taskDefs.push({ id: "http-wait", label: "等待 HTTP 服务就绪", status: "pending" });
     setObTasks(taskDefs);
@@ -7051,6 +7093,18 @@ export function App() {
         log(t("onboarding.progress.llmConfigSaved"));
         updateTask("llm-config", { status: "done", detail: `${savedEndpoints.length} 个端点` });
         logTask("保存 LLM 配置", "done", `${savedEndpoints.length} 个端点`);
+      }
+
+      // Derive .env enabled flags from pending bots (ensures channel deps get installed)
+      if (obPendingBots.length > 0) {
+        const enabledTypes = new Set(obPendingBots.map((b) => b.type));
+        for (const bType of enabledTypes) {
+          const ek = TYPE_TO_ENABLED_KEY[bType];
+          if (ek) {
+            setEnvDraft((m: EnvMap) => ({ ...m, [ek]: "true" }));
+            envDraft[ek] = "true";
+          }
+        }
       }
 
       // ── STEP: env-save ──
@@ -7162,6 +7216,54 @@ export function App() {
         }
       }
 
+      // ── STEP: register-bots (write to runtime_state.json via Tauri, before backend starts) ──
+      if (obPendingBots.length > 0) {
+        updateTask("register-bots", { status: "running" });
+        logTask("注册 IM Bot", "running");
+        try {
+          let runtimeState: Record<string, unknown> = {};
+          try {
+            const content = await invoke<string>("workspace_read_file", {
+              workspaceId: activeWsId,
+              relativePath: "data/runtime_state.json",
+            });
+            runtimeState = JSON.parse(content);
+          } catch { /* file doesn't exist yet, start fresh */ }
+
+          const existingBots: Record<string, unknown>[] = Array.isArray(runtimeState.im_bots)
+            ? (runtimeState.im_bots as Record<string, unknown>[])
+            : [];
+          const existingIds = new Set(existingBots.map((b) => b.id));
+
+          let added = 0;
+          for (const bot of obPendingBots) {
+            if (!existingIds.has(bot.id)) {
+              existingBots.push(bot);
+              existingIds.add(bot.id);
+              added++;
+              log(`✓ Bot ${bot.name || bot.id} 已写入配置`);
+            } else {
+              log(`⏭ Bot ${bot.id} 已存在，跳过`);
+            }
+          }
+          runtimeState.im_bots = existingBots;
+
+          await invoke("workspace_write_file", {
+            workspaceId: activeWsId,
+            relativePath: "data/runtime_state.json",
+            content: JSON.stringify(runtimeState, null, 2),
+          });
+
+          updateTask("register-bots", { status: "done", detail: `${added} Bot${added > 1 ? "s" : ""}` });
+          logTask("注册 IM Bot", "done", `${added} Bot(s) → runtime_state.json`);
+        } catch (e) {
+          log(`⚠ Bot 配置写入失败: ${String(e)}`);
+          updateTask("register-bots", { status: "error", detail: String(e).slice(0, 120) });
+          logTask("注册 IM Bot", "error", String(e));
+          hasErr = true;
+        }
+      }
+
       // ── STEP: service-start ──
       updateTask("service-start", { status: "running" });
       logTask("启动后端服务", "running");
@@ -7174,10 +7276,10 @@ export function App() {
         logTask("启动后端服务", "done");
 
         // ── STEP: http-wait ──
+        let httpReady = false;
         updateTask("http-wait", { status: "running" });
         logTask("等待 HTTP 服务就绪", "running");
         log("等待 HTTP 服务就绪...");
-        let httpReady = false;
         for (let i = 0; i < 20; i++) {
           await new Promise(r => setTimeout(r, 2000));
           updateTask("http-wait", { detail: `已等待 ${(i + 1) * 2}s...` });
@@ -7538,7 +7640,7 @@ export function App() {
             <div className="obContent">
               <h2 className="obStepTitle">{t("onboarding.im.title")}</h2>
               <p className="obStepDesc">{t("onboarding.im.desc")}</p>
-              <div className="obFormArea">{renderIM()}</div>
+              <div className="obFormArea">{renderIM({ onboarding: true })}</div>
               <p className="obSkipHint">{t("onboarding.skipHint")}</p>
             </div>
             <div className="obFooter">
@@ -7893,6 +7995,14 @@ export function App() {
         />
       );
     }
+    if (view === "org_editor") {
+      return (
+        <OrgEditorView
+          apiBaseUrl={apiBaseUrl}
+          visible={view === "org_editor"}
+        />
+      );
+    }
     if (view === "agent_manager") {
       return (
         <AgentManagerView
@@ -8191,7 +8301,15 @@ export function App() {
         collapsed={isMobile ? false : sidebarCollapsed}
         onToggleCollapsed={() => { if (!isMobile) setSidebarCollapsed((v) => !v); }}
         view={view}
-        onViewChange={(v) => { setView(v); setMobileSidebarOpen(false); }}
+        onViewChange={(v) => {
+          setView(v);
+          setMobileSidebarOpen(false);
+          if (v === "org_editor") {
+            window.location.hash = "#/org-editor";
+          } else if (window.location.hash === "#/org-editor") {
+            window.location.hash = "";
+          }
+        }}
         mobileOpen={mobileSidebarOpen}
         configExpanded={configExpanded}
         onToggleConfig={() => {
@@ -8266,7 +8384,8 @@ export function App() {
             await logout(IS_CAPACITOR ? apiBaseUrl : "");
             setWebAuthed(false);
           } : undefined}
-          webAccessUrl={IS_TAURI && (serviceStatus?.running ?? false) ? `http://127.0.0.1:18900/web` : undefined}
+          webAccessUrl={IS_TAURI && (serviceStatus?.running ?? false) ? `${apiBaseUrl || "http://127.0.0.1:18900"}/web` : undefined}
+          apiBaseUrl={apiBaseUrl || "http://127.0.0.1:18900"}
           onToggleMobileSidebar={isMobile ? () => setMobileSidebarOpen((v) => !v) : undefined}
           serverName={IS_CAPACITOR ? (getActiveServer()?.name || undefined) : undefined}
           onServerManager={IS_CAPACITOR ? () => setShowServerManager(true) : undefined}
