@@ -213,11 +213,13 @@ Gateway 回复时 `outgoing_meta = dict(original.metadata)` 完整复制，
 - `senderId` 是加密 ID（`$:LWCP_v1:$...` 格式），**不能** 用于 API 调用
 - 当前实现：`senderStaffId || senderId`，若 `senderStaffId` 为空则 fallback 到加密 ID，此时 **单聊回复必定失败**
 
-### 约束 6：stop() 必须关闭旧连接
+### 约束 6：stop() 必须阻断 SDK 重连
 
-- 钉钉平台可能在新旧 WebSocket 连接间分发消息
-- 旧连接的 `_main_loop` 已失效，投递会静默失败
-- `stop()` 必须停止 Stream 线程事件循环，等待线程退出
+- SDK `start()` 内部是 `while True` 循环，catch 所有异常（含 CancelledError）并重试
+- 仅关闭 WebSocket 会触发 SDK 立即重连（`open_connection` → 新 ticket → 新连接）
+- 必须 monkey-patch `client.open_connection = lambda: None` 阻断重连
+- 同时将 `_main_loop = None` 防止僵尸线程投递到已关闭的事件循环
+- `_handle_stream_message` 检查 `_running` + `_main_loop.is_closed()` 双重防护
 
 ### 约束 7：Webhook 仅支持 text/markdown
 
@@ -527,15 +529,18 @@ start()
       → 线程退出: state → RECONNECTING, 指数退避重启
 
 stop()
-  → _running = False
+  → _running = False, _main_loop = None
   → state: → STOPPED
   → 取消看门狗
+  → monkey-patch client.open_connection = lambda: None  ← 阻断 SDK while True 重连
   → 关闭 WebSocket (ws.close() via run_coroutine_threadsafe)
   → 停止事件循环 (stream_loop.stop)
   → 等待线程退出 (join 5s)
-  → 清理 pending tasks
   → http_client.aclose()
   → 输出 metrics (消息数, 重连数, 去重命中数)
+
+注意: SDK start() 内部是 while True 循环，捕获所有异常含 CancelledError 并重连。
+必须 patch open_connection 才能阻断重连，否则旧线程成为僵尸。
 ```
 
 ---
@@ -569,7 +574,7 @@ stop()
 - [ ] media/upload 是否使用旧版 token？
 - [ ] 新增消息类型是否在 `_parse_message_content` 中处理？
 - [ ] 新增发送类型是否在 `_build_msg_key_param` 中处理？
-- [ ] `stop()` 是否完整关闭了 Stream 线程？
+- [ ] `stop()` 是否 patch 了 `open_connection` 并清除 `_main_loop`？
 - [ ] 缓存字典是否有容量保护？
 - [ ] `send_typing` 是否幂等（同一 chat_id 只发一次）？
 - [ ] `send_message` 是否检查并消费 `_thinking_cards`？
@@ -648,6 +653,9 @@ Gateway: _on_message()
         → AI Card 失败: fallback → _create_standard_card → _CardState(ai=False)
       → sk in _thinking_cards → 跳过 (幂等)
   → Agent 处理...
+  → thinking_end → emit_progress_event("💭 preview")
+    → gateway._try_patch_progress_to_card → adapter._patch_card_content(card_state, text)
+      → AI Card: PUT streaming / StandardCard: PUT update → 思考内容写入卡片
   → stream_token(chat_id, token)  [流式模式]
     → AI Card: PUT /v1.0/card/streaming (无需节流)
     → StandardCard: PUT update (800ms 节流)
@@ -720,8 +728,10 @@ Gateway: _on_message()
 | **去重增强** | key 加 bot_id 前缀，60s TTL 过期清理，上限 5000 | 多实例安全，内存可控 |
 | **连接状态机** | `DingTalkStreamState` 枚举 + 状态转换日志 | 问题排查更直观 |
 | **运行指标** | `_StreamMetrics`: 消息数、重连数、去重命中数等 | stop() 时输出汇总 |
-| **stop() 改进** | 先关闭 WebSocket 再停止事件循环 | 解决线程 5s 退出超时问题 |
+| **stop() 改进** | monkey-patch `open_connection` 阻断 SDK 重连 + 清除 `_main_loop` | 彻底解决热重载后 Stream 僵尸线程问题 |
 | **事件循环对齐** | `loop.run_until_complete(client.start())` 替代 `start_forever()` | `_stream_loop` 指向实际运行循环 |
+| **消息投递防御** | `_handle_stream_message` 检查 `_running` + `_main_loop.is_closed()` | 避免 "Event loop is closed" 错误 |
+| **思考进度卡片** | 新增 `_patch_card_content`，思考内容写入卡片而非独立消息 | 解决思考预览显示在最终回复之后的时序问题 |
 | **视频消息发送** | `_build_msg_key_param` 新增 `sampleVideo` | 支持原生视频消息 |
 | **文本分块** | `_chunk_markdown_text()` 4000 字符 markdown-aware 分块 | 避免超长文本发送失败 |
 

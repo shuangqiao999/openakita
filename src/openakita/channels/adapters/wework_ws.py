@@ -1131,7 +1131,7 @@ class WeWorkWsAdapter(ChannelAdapter):
             "stream": {
                 "id": stream_id,
                 "finish": False,
-                "content": "<think>等待模型响应 1s",
+                "content": "<think>等待模型响应 1s</think>",
             },
         }
         try:
@@ -1164,8 +1164,7 @@ class WeWorkWsAdapter(ChannelAdapter):
                 if count >= MAX_INTERMEDIATE_STREAM_MSGS:
                     logger.debug(f"[thinking] Stream {stream_id[:8]} hit intermediate limit, stopping counter")
                     break
-                lines = [f"等待模型响应 {s}s" for s in range(1, seconds + 1)]
-                content = "<think>" + "\n".join(lines)
+                content = f"<think>等待模型响应 {seconds}s</think>"
                 body: dict = {
                     "msgtype": "stream",
                     "stream": {"id": stream_id, "finish": False, "content": content},

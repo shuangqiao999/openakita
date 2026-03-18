@@ -311,10 +311,11 @@ class DingTalkAdapter(ChannelAdapter):
     async def stop(self) -> None:
         """停止钉钉适配器，确保旧 Stream 连接被完全关闭。
 
-        不关闭旧连接会导致钉钉平台在新旧连接间分发消息，
-        发到旧连接上的消息因 _main_loop 已失效而被静默丢弃（与飞书同源 Bug）。
+        SDK 的 start() 内部是 while True 循环，会捕获所有异常（含 CancelledError）
+        并自动重连。必须 monkey-patch open_connection 阻断重连才能真正退出。
         """
         self._running = False
+        self._main_loop = None
         self._set_stream_state(DingTalkStreamState.STOPPED)
 
         # 0) 取消看门狗
@@ -324,9 +325,16 @@ class DingTalkAdapter(ChannelAdapter):
                 await self._stream_watchdog_task
             self._stream_watchdog_task = None
 
-        # 1) 关闭 WebSocket 以中断 Stream recv 循环
         client = self._stream_client
         stream_loop = self._stream_loop
+
+        # 1) 阻断 SDK 重连：替换 open_connection 使其返回 None
+        #    SDK 收到 None 后会 sleep(10) 再重试，但不再建立新连接，
+        #    配合 loop.stop() 可在下一次 await 时退出。
+        if client is not None:
+            client.open_connection = lambda: None
+
+        # 2) 关闭 WebSocket 以中断 Stream recv 循环
         if client is not None and stream_loop is not None:
             ws = getattr(client, "websocket", None)
             if ws is not None:
@@ -336,14 +344,14 @@ class DingTalkAdapter(ChannelAdapter):
                     pass
                 await asyncio.sleep(0.3)
 
-        # 2) 停止 Stream 线程的事件循环
+        # 3) 停止 Stream 线程的事件循环
         if stream_loop is not None:
             try:
                 stream_loop.call_soon_threadsafe(stream_loop.stop)
             except Exception:
                 pass
 
-        # 3) 等待 Stream 线程退出
+        # 4) 等待 Stream 线程退出
         stream_thread = self._stream_thread
         if stream_thread is not None and stream_thread.is_alive():
             stream_thread.join(timeout=5)
@@ -427,17 +435,12 @@ class DingTalkAdapter(ChannelAdapter):
                     logger.error(f"DingTalk Stream error: {e}", exc_info=True)
             finally:
                 self._stream_loop = None
+                # SDK start() 的 while True 循环会 catch CancelledError 并 continue，
+                # 尝试 cancel + gather 会永远阻塞。直接关闭 loop 即可。
                 try:
-                    pending = asyncio.all_tasks(loop)
-                    for task in pending:
-                        task.cancel()
-                    if pending:
-                        loop.run_until_complete(
-                            asyncio.gather(*pending, return_exceptions=True)
-                        )
+                    loop.close()
                 except Exception:
                     pass
-                loop.close()
 
         self._stream_thread = threading.Thread(
             target=_run_stream_in_thread,
@@ -620,9 +623,10 @@ class DingTalkAdapter(ChannelAdapter):
         # 从 Stream 线程投递到主事件循环。
         # 必须使用 run_coroutine_threadsafe：当前线程已有运行中的事件循环（SDK 的 stream loop），
         # 不能使用 asyncio.run()，否则会触发 RuntimeError 导致消息丢失。
-        if self._main_loop is not None:
+        main_loop = self._main_loop
+        if main_loop is not None and self._running and not main_loop.is_closed():
             future = asyncio.run_coroutine_threadsafe(
-                self._emit_message(unified), self._main_loop
+                self._emit_message(unified), main_loop
             )
             def _on_emit_done(f: "asyncio.futures.Future") -> None:
                 try:
@@ -634,9 +638,8 @@ class DingTalkAdapter(ChannelAdapter):
                     )
             future.add_done_callback(_on_emit_done)
         else:
-            logger.error(
-                "Main event loop not set (DingTalk adapter not started from async context?), "
-                "dropping message to avoid dispatch failure in Stream thread"
+            logger.warning(
+                "DingTalk: dropping message (adapter stopping or main loop unavailable)"
             )
 
     async def _parse_message_content(
@@ -992,6 +995,26 @@ class DingTalkAdapter(ChannelAdapter):
         if "processQueryKey" not in result:
             raise RuntimeError(f"Card update failed: {result}")
         logger.debug(f"DingTalk: card updated, bizId={card_biz_id}")
+
+    async def _patch_card_content(
+        self, card_state: "_CardState", text: str,
+    ) -> bool:
+        """将进度/思考文本写入已存在的 thinking 卡片（不消费卡片）。
+
+        gateway 的 _try_patch_progress_to_card 调用此方法，
+        使思考内容直接更新到卡片上，避免发送独立文本消息导致时序错乱。
+        """
+        if not card_state or not card_state.card_id:
+            return False
+        try:
+            if card_state.is_ai_card:
+                await self._stream_ai_card(card_state.card_id, text)
+            else:
+                await self._update_interactive_card(card_state.card_id, text)
+            return True
+        except Exception as e:
+            logger.debug(f"DingTalk: _patch_card_content failed: {e}")
+            return False
 
     # ==================== 消息发送 ====================
 

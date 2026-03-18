@@ -880,17 +880,105 @@ class QQBotAdapter(ChannelAdapter):
                 srv_send_msg=srv_send_msg,
             )
 
+    async def _upload_rich_media_base64(
+        self,
+        chat_type: str,
+        target_id: str,
+        file_type: int,
+        file_data: str,
+        srv_send_msg: bool = False,
+    ) -> dict:
+        """通过 file_data (base64) 直接上传富媒体到 QQ 服务器，绕过 botpy SDK。
+
+        botpy SDK 的 post_group_file / post_c2c_file 仅支持 url 参数，
+        但 QQ 官方 API 同时支持 file_data（base64 编码的二进制内容）。
+        此方法直接调用 REST API 实现本地文件上传。
+        """
+        import httpx as hx
+
+        token = await self._get_access_token()
+        base_url = (
+            "https://sandbox.api.sgroup.qq.com"
+            if self.sandbox
+            else "https://api.sgroup.qq.com"
+        )
+        headers = {
+            "Authorization": f"QQBotToken {self.app_id}.{token}",
+            "Content-Type": "application/json",
+        }
+
+        if chat_type == "group":
+            url = f"{base_url}/v2/groups/{target_id}/files"
+        else:
+            url = f"{base_url}/v2/users/{target_id}/files"
+
+        payload = {
+            "file_type": file_type,
+            "file_data": file_data,
+            "srv_send_msg": srv_send_msg,
+        }
+        async with hx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+            resp.raise_for_status()
+            return resp.json()
+
+    async def _send_media_message_via_http(
+        self,
+        chat_type: str,
+        target_id: str,
+        file_info: str,
+        msg_id: str | None = None,
+    ) -> str:
+        """Webhook 模式下通过 HTTP 直接发送媒体消息 (msg_type=7)。"""
+        import httpx as hx
+
+        token = await self._get_access_token()
+        base_url = (
+            "https://sandbox.api.sgroup.qq.com"
+            if self.sandbox
+            else "https://api.sgroup.qq.com"
+        )
+        headers = {
+            "Authorization": f"QQBotToken {self.app_id}.{token}",
+            "Content-Type": "application/json",
+        }
+
+        if chat_type == "group":
+            url = f"{base_url}/v2/groups/{target_id}/messages"
+        else:
+            url = f"{base_url}/v2/users/{target_id}/messages"
+
+        seq_key = msg_id or target_id
+        payload: dict[str, Any] = {
+            "msg_type": 7,
+            "media": {"file_info": file_info},
+            "msg_seq": self._next_msg_seq(seq_key),
+        }
+        if msg_id:
+            payload["msg_id"] = msg_id
+
+        async with hx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            return str(data.get("id", ""))
+
     async def _send_rich_media(
         self,
         api: Any,
         chat_type: str,
         target_id: str,
         file_type: int,
-        url: str,
+        url: str | None = None,
         msg_id: str | None = None,
+        local_path: str | None = None,
     ) -> str:
         """
         完整的富媒体发送流程（两步）：上传 + 发消息。
+
+        支持两种上传方式（二选一）：
+        - url: 公网可访问的媒体 URL（走 botpy SDK）
+        - local_path: 本地文件路径（读取后 base64 编码，直接调用 QQ API）
 
         Args:
             api: botpy API client
@@ -899,17 +987,32 @@ class QQBotAdapter(ChannelAdapter):
             file_type: 1=图片, 2=视频, 3=语音
             url: 公网可访问的媒体 URL
             msg_id: 被动回复的消息 ID（可选）
+            local_path: 本地文件路径（可选，与 url 二选一）
 
         Returns:
             发送后的消息 ID
         """
+        import base64 as b64
+
         # Step 1: 上传富媒体资源获取 file_info
-        upload_result = await self._upload_rich_media(
-            api, chat_type, target_id,
-            file_type=file_type,
-            url=url,
-            srv_send_msg=False,
-        )
+        if local_path:
+            with open(local_path, "rb") as f:
+                file_data = b64.standard_b64encode(f.read()).decode("ascii")
+            upload_result = await self._upload_rich_media_base64(
+                chat_type, target_id,
+                file_type=file_type,
+                file_data=file_data,
+                srv_send_msg=False,
+            )
+        elif url:
+            upload_result = await self._upload_rich_media(
+                api, chat_type, target_id,
+                file_type=file_type,
+                url=url,
+                srv_send_msg=False,
+            )
+        else:
+            raise ValueError("_send_rich_media requires either url or local_path")
 
         file_info = (
             getattr(upload_result, "file_info", None)
@@ -921,13 +1024,19 @@ class QQBotAdapter(ChannelAdapter):
             )
 
         # Step 2: 发送消息 msg_type=7 (media)
-        result = await self._send_to_target(
-            api, chat_type, target_id,
-            msg_type=7,
-            media={"file_info": file_info},
-            msg_id=msg_id,
+        if api is not None:
+            result = await self._send_to_target(
+                api, chat_type, target_id,
+                msg_type=7,
+                media={"file_info": file_info},
+                msg_id=msg_id,
+            )
+            return str(getattr(result, "id", ""))
+
+        # Webhook 模式：api 为 None，直接用 HTTP 发送媒体消息
+        return await self._send_media_message_via_http(
+            chat_type, target_id, file_info, msg_id,
         )
-        return str(getattr(result, "id", ""))
 
     # ==================== 消息发送 ====================
 
@@ -1025,12 +1134,7 @@ class QQBotAdapter(ChannelAdapter):
         msg_id: str | None,
         parse_mode: str | None = None,
     ) -> str:
-        """Webhook 模式：通过 HTTP API 发送消息（文本/Markdown，不支持富媒体）"""
-        if message.content.images:
-            raise NotImplementedError(
-                "QQ 官方机器人 Webhook 模式暂不支持发送图片，请切换到 WebSocket 模式"
-            )
-
+        """Webhook 模式：通过 HTTP API 发送消息（文本/Markdown/图片）"""
         try:
             import httpx as hx
         except ImportError:
@@ -1061,51 +1165,81 @@ class QQBotAdapter(ChannelAdapter):
 
         seq_key = msg_id or target_id
 
-        async with hx.AsyncClient(base_url=base_url, headers=headers) as client:
-            # 尝试 Markdown 发送
-            if self._should_try_markdown(parse_mode, text):
-                md_body: dict[str, Any] = {
-                    "msg_type": 2,
-                    "markdown": {"content": text},
-                    "msg_seq": self._next_msg_seq(seq_key),
-                }
-                if msg_id:
-                    md_body["msg_id"] = msg_id
-                try:
-                    resp = await client.post(url, json=md_body)
-                    resp.raise_for_status()
-                    data = resp.json()
-                    return str(data.get("id", ""))
-                except Exception as e:
-                    self._markdown_available = False
-                    logger.warning(
-                        "QQ Markdown 发送失败，已降级为纯文本（后续消息将跳过 Markdown）: %s",
-                        e,
-                    )
+        # 提取图片信息
+        first_image_url: str | None = None
+        first_image_path: str | None = None
+        if message.content.images:
+            img = message.content.images[0]
+            if img.url:
+                first_image_url = img.url
+            elif img.local_path:
+                first_image_path = img.local_path
 
-            # 纯文本发送（含 40054005 去重重试，最多 2 次）
-            for attempt in range(2):
-                body: dict[str, Any] = {
-                    "msg_type": 0,
-                    "content": text,
-                    "msg_seq": self._next_msg_seq(seq_key),
-                }
-                if msg_id:
-                    body["msg_id"] = msg_id
+        result_id = ""
 
-                resp = await client.post(url, json=body)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    return str(data.get("id", ""))
-                if "40054005" in resp.text and attempt < 1:
-                    logger.warning(
-                        f"QQ HTTP 40054005 dedup (attempt {attempt + 1}), retrying"
-                    )
-                    continue
-                resp.raise_for_status()
+        if text:
+            async with hx.AsyncClient(base_url=base_url, headers=headers) as client:
+                # 尝试 Markdown 发送
+                sent_as_md = False
+                if self._should_try_markdown(parse_mode, text):
+                    md_body: dict[str, Any] = {
+                        "msg_type": 2,
+                        "markdown": {"content": text},
+                        "msg_seq": self._next_msg_seq(seq_key),
+                    }
+                    if msg_id:
+                        md_body["msg_id"] = msg_id
+                    try:
+                        resp = await client.post(url, json=md_body)
+                        resp.raise_for_status()
+                        data = resp.json()
+                        result_id = str(data.get("id", ""))
+                        sent_as_md = True
+                    except Exception as e:
+                        self._markdown_available = False
+                        logger.warning(
+                            "QQ Markdown 发送失败，已降级为纯文本（后续消息将跳过 Markdown）: %s",
+                            e,
+                        )
 
-            resp.raise_for_status()
-            return ""
+                # 纯文本发送（含 40054005 去重重试，最多 2 次）
+                if not sent_as_md:
+                    for attempt in range(2):
+                        body: dict[str, Any] = {
+                            "msg_type": 0,
+                            "content": text,
+                            "msg_seq": self._next_msg_seq(seq_key),
+                        }
+                        if msg_id:
+                            body["msg_id"] = msg_id
+
+                        resp = await client.post(url, json=body)
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            result_id = str(data.get("id", ""))
+                            break
+                        if "40054005" in resp.text and attempt < 1:
+                            logger.warning(
+                                f"QQ HTTP 40054005 dedup (attempt {attempt + 1}), retrying"
+                            )
+                            continue
+                        resp.raise_for_status()
+
+        # 发送图片（公网 URL 或本地文件 base64 上传）
+        if first_image_url or first_image_path:
+            try:
+                media_id = await self._send_rich_media(
+                    None, chat_type, target_id,
+                    file_type=1,
+                    url=first_image_url,
+                    msg_id=msg_id,
+                    local_path=first_image_path if not first_image_url else None,
+                )
+                result_id = result_id or media_id
+            except Exception as img_err:
+                logger.warning(f"QQ Webhook: failed to send image: {img_err}")
+
+        return result_id
 
     async def _send_channel_message(
         self,
@@ -1168,11 +1302,6 @@ class QQBotAdapter(ChannelAdapter):
         1. 文本消息 (msg_type=0) 或 Markdown (msg_type=2)
         2. 图片通过富媒体 API 两步上传后发送 (msg_type=7)
         """
-        if image_path and not image_url:
-            raise NotImplementedError(
-                "QQ 官方机器人群/C2C 图片发送需要公网可访问的 URL，不支持本地文件路径"
-            )
-
         result_id = ""
 
         # 发送文本（优先尝试 Markdown）
@@ -1199,7 +1328,7 @@ class QQBotAdapter(ChannelAdapter):
                 )
                 result_id = str(getattr(result, "id", ""))
 
-        # 发送图片（需要公网 URL）
+        # 发送图片（公网 URL 或本地文件 base64 上传）
         if image_url:
             try:
                 media_id = await self._send_rich_media(
@@ -1210,7 +1339,18 @@ class QQBotAdapter(ChannelAdapter):
                 )
                 result_id = result_id or media_id
             except Exception as img_err:
-                logger.warning(f"Failed to send image via rich media API: {img_err}")
+                logger.warning(f"Failed to send image via URL: {img_err}")
+        elif image_path:
+            try:
+                media_id = await self._send_rich_media(
+                    api, chat_type, target_id,
+                    file_type=1,
+                    msg_id=msg_id,
+                    local_path=image_path,
+                )
+                result_id = result_id or media_id
+            except Exception as img_err:
+                logger.warning(f"Failed to send local image via base64: {img_err}")
 
         return result_id
 

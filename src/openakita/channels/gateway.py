@@ -2466,15 +2466,19 @@ class MessageGateway:
                 f"preview=\"{response_text[:80]}\""
             )
             if not streamed_ok:
-                # Extract 💭 thinking lines for adapters that render <think> natively
+                # For adapters that render <think> natively, extract ALL
+                # accumulated progress lines and wrap them in a <think> block
+                # so WeCom renders them as a collapsible thinking section
+                # within the same message bubble.
                 _adapter = self._adapters.get(message.channel)
                 if _adapter and getattr(_adapter, "_THINK_TAG_NATIVE", False):
                     _buf = self._progress_buffers.get(session.session_key, [])
-                    _think_lines = [ln[2:].strip() for ln in _buf if ln.startswith("💭")]
-                    if _think_lines:
-                        _buf[:] = [ln for ln in _buf if not ln.startswith("💭")]
-                        _think_text = "\n".join(_think_lines)
-                        response_text = f"<think>{_think_text}</think>{response_text}"
+                    if _buf:
+                        _all_lines = [ln.strip() for ln in _buf if ln.strip()]
+                        _buf[:] = []
+                        if _all_lines:
+                            _think_text = "\n".join(_all_lines)
+                            response_text = f"<think>\n{_think_text}\n</think>\n{response_text}"
 
                 _had_progress = bool(self._progress_buffers.get(session.session_key))
                 await self.flush_progress(session)
@@ -3131,14 +3135,16 @@ class MessageGateway:
         if not reply_text or not reply_text.strip():
             return (reply_text, False)
 
-        # Extract 💭 thinking lines for adapters that render <think> natively
+        # For adapters that render <think> natively, extract ALL accumulated
+        # progress lines and wrap them in a <think> block.
         if getattr(adapter, "_THINK_TAG_NATIVE", False):
             _buf = self._progress_buffers.get(session.session_key, [])
-            _think_lines = [ln[2:].strip() for ln in _buf if ln.startswith("💭")]
-            if _think_lines:
-                _buf[:] = [ln for ln in _buf if not ln.startswith("💭")]
-                _think_text = "\n".join(_think_lines)
-                reply_text = f"<think>{_think_text}</think>{reply_text}"
+            if _buf:
+                _all_lines = [ln.strip() for ln in _buf if ln.strip()]
+                _buf[:] = []
+                if _all_lines:
+                    _think_text = "\n".join(_all_lines)
+                    reply_text = f"<think>\n{_think_text}\n</think>\n{reply_text}"
 
         await self.flush_progress(session)
 
@@ -3663,6 +3669,13 @@ class MessageGateway:
         if buf and buf[-1] == text:
             return  # 连续相同消息去重
         buf.append(text)
+
+        # For adapters with native <think> support, accumulate only — no
+        # intermediate send.  All buffered lines will be extracted and wrapped
+        # in <think> tags at reply time (see _send_response / _call_agent_streaming).
+        _adapter = self._adapters.get(session.channel)
+        if _adapter and getattr(_adapter, "_THINK_TAG_NATIVE", False):
+            return
 
         existing = self._progress_flush_tasks.get(session_key)
         if existing and not existing.done():

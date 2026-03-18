@@ -394,6 +394,16 @@ start()
 
 ## 九、变更记录
 
+### 2026-03-18 (五): 修复进度事件泄露为独立消息
+
+**问题**: 前一轮修复（P1-P3）仅在最终回复时从 progress buffer 提取 💭 行，但 `emit_progress_event` 的 2 秒节流 `_flush()` 在推理期间已将进度以独立消息发送，导致最终回复时缓冲区为空。此外，仅提取 💭 行而遗漏了 🔧/✅ 等工具进度行。移动端思考指示器因累积式内容和未闭合 `</think>` 标签无法折叠。
+
+**修复**:
+
+- **F1** `gateway.py` — `emit_progress_event()`: 对 `_THINK_TAG_NATIVE` 适配器跳过节流刷新任务，仅累积到 buffer；所有进度行在回复时统一提取
+- **F2** `gateway.py` — 非流式/流式回复路径: 从 buffer 提取**全部**进度行（而非仅 💭），统一包裹 `<think>` 标签整合到回复文本
+- **F3** `wework_ws.py` — `_thinking_counter_loop()` / `_maybe_send_thinking_indicator()`: 思考指示器改为单行内容 + 闭合 `</think>` 标签，修复移动端不折叠问题
+
 ### 2026-03-18 (四): 思考内容整合到回复流
 
 **问题**: 当 `IM_CHAIN_PUSH=true` 时，模型的 thinking content 被 gateway 以独立 markdown 消息（💭）推送给用户，与 WeCom 原生 `<think>` 折叠块体验冲突。

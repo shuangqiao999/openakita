@@ -396,6 +396,86 @@ class TestTypingLifecycle:
         assert result.startswith("webhook_")
 
 
+class TestPatchCardContent:
+    """Test _patch_card_content for thinking-to-card progress patching."""
+
+    @pytest.mark.asyncio
+    async def test_standard_card_patch(self, adapter):
+        card_state = _CardState(card_id="biz_patch_01", is_ai_card=False)
+        adapter._http_client.put = AsyncMock(return_value=_mock_card_response())
+
+        result = await adapter._patch_card_content(card_state, "💭 思考中...")
+        assert result is True
+        adapter._http_client.put.assert_called_once()
+        body = adapter._http_client.put.call_args.kwargs["json"]
+        assert body["cardBizId"] == "biz_patch_01"
+        card_data = json.loads(body["cardData"])
+        assert "💭 思考中..." in card_data["contents"][0]["text"]
+
+    @pytest.mark.asyncio
+    async def test_ai_card_patch(self, adapter):
+        card_state = _CardState(card_id="ai_patch_01", is_ai_card=True)
+        adapter._http_client.put = AsyncMock(return_value=_mock_ai_card_stream_response())
+
+        result = await adapter._patch_card_content(card_state, "💭 深度推理中...")
+        assert result is True
+        adapter._http_client.put.assert_called_once()
+        body = adapter._http_client.put.call_args.kwargs["json"]
+        assert body["outTrackId"] == "ai_patch_01"
+
+    @pytest.mark.asyncio
+    async def test_patch_failure_returns_false(self, adapter):
+        card_state = _CardState(card_id="biz_fail", is_ai_card=False)
+        adapter._http_client.put = AsyncMock(side_effect=Exception("network"))
+
+        result = await adapter._patch_card_content(card_state, "text")
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_none_card_state_returns_false(self, adapter):
+        result = await adapter._patch_card_content(None, "text")
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_empty_card_id_returns_false(self, adapter):
+        card_state = _CardState(card_id="", is_ai_card=False)
+        result = await adapter._patch_card_content(card_state, "text")
+        assert result is False
+
+
+class TestStopMonkeyPatch:
+    """Test that stop() prevents SDK reconnection."""
+
+    @pytest.mark.asyncio
+    async def test_stop_patches_open_connection(self, adapter):
+        mock_client = MagicMock()
+        mock_client.websocket = None
+        original_open = mock_client.open_connection
+        adapter._stream_client = mock_client
+        adapter._running = True
+
+        await adapter.stop()
+
+        assert mock_client.open_connection is not original_open
+        assert mock_client.open_connection() is None
+
+    @pytest.mark.asyncio
+    async def test_stop_clears_main_loop(self, adapter):
+        loop = MagicMock()
+        adapter._main_loop = loop
+        adapter._running = True
+
+        await adapter.stop()
+
+        assert adapter._main_loop is None
+
+    @pytest.mark.asyncio
+    async def test_stop_sets_running_false(self, adapter):
+        adapter._running = True
+        await adapter.stop()
+        assert adapter._running is False
+
+
 class TestTextChunking:
     """Test _chunk_markdown_text."""
 
