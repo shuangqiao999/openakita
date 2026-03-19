@@ -395,7 +395,7 @@ class OneBotAdapter(ChannelAdapter):
                 try:
                     info = await self.get_group_info(data["group_id"])
                     if info:
-                        chat_name = info.get("name", "")
+                        chat_name = info.get("name") or ""
                         if chat_name:
                             self._group_name_cache[gid] = chat_name
                 except Exception:

@@ -320,7 +320,7 @@ function MessagesTab({ serviceRunning, apiBase }: { serviceRunning: boolean; api
                     {s.chatType === "group" ? <IconUsers size={13} /> : <IconUser size={13} />}
                     <span className="imSessionName">
                       {s.chatType === "group"
-                        ? (s.chatName || s.displayName || s.chatId || s.sessionId.slice(0, 12))
+                        ? (s.chatName || s.chatId || s.sessionId.slice(0, 12))
                         : (s.displayName || s.userId || s.chatId || s.sessionId.slice(0, 12))}
                     </span>
                     {s.chatType === "group" && s.chatName && s.displayName && (

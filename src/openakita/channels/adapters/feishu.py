@@ -1731,13 +1731,14 @@ class FeishuAdapter(ChannelAdapter):
 
         try:
             info = await self.get_chat_info(chat_id)
-            name = (info or {}).get("name", "") if info else ""
+            name = (info or {}).get("name") or "" if info else ""
         except Exception:
             name = ""
 
-        self._chat_name_cache[chat_id] = name
-        while len(self._chat_name_cache) > self._chat_name_cache_max:
-            self._chat_name_cache.popitem(last=False)
+        if name:
+            self._chat_name_cache[chat_id] = name
+            while len(self._chat_name_cache) > self._chat_name_cache_max:
+                self._chat_name_cache.popitem(last=False)
 
         return name
 
