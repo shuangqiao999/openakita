@@ -2851,7 +2851,7 @@ export function ChatView({
 
   // ── 发送消息（overrideText 用于 ask_user 回复等场景，绕过 inputText；targetConvId 用于自动出队等需要指定目标会话的场景） ──
   // displayContent: 当发送给 API 的原文（如 JSON）不适合直接展示时，可指定用户气泡中的显示文本
-  const sendMessage = useCallback(async (overrideText?: string, targetConvId?: string, displayContent?: string) => {
+  const sendMessage = useCallback(async (overrideText?: string, targetConvId?: string, displayContent?: string, modeOverride?: "agent" | "plan" | "ask") => {
     const text = (overrideText ?? inputTextRef.current).trim();
     if (!text && pendingAttachments.length === 0) return;
     if (orgCommandPendingRef.current) return;
@@ -3170,11 +3170,12 @@ export function ChatView({
     };
 
     try {
+      const effectiveMode = modeOverride ?? chatMode;
       const body: Record<string, unknown> = {
         message: text,
         conversation_id: convId,
-        mode: chatMode,
-        plan_mode: chatMode === "plan",
+        mode: effectiveMode,
+        plan_mode: effectiveMode === "plan",
         endpoint: selectedEndpoint === "auto" ? null : selectedEndpoint,
         thinking_mode: thinkingMode !== "auto" ? thinkingMode : null,
         thinking_depth: thinkingMode !== "off" ? thinkingDepth : null,
@@ -3960,13 +3961,18 @@ export function ChatView({
       ? formatAskUserAnswer(answer, target.askUser)
       : undefined;
 
+    const isPlanSwitch = answer === "plan" && target?.askUser?.options?.some((o: { id: string }) => o.id === "plan");
+    if (isPlanSwitch) {
+      setChatMode("plan");
+    }
+
     setMessages((prev) => prev.map((m) =>
       m.id === msgId && m.askUser
         ? { ...m, askUser: { ...m.askUser, answered: true, answer } }
         : m
     ));
     // reason_stream 在 ask_user 后中断流，用户回复通过新 /api/chat 请求继续处理
-    sendMessage(answer, undefined, displayText !== answer ? displayText : undefined);
+    sendMessage(answer, undefined, displayText !== answer ? displayText : undefined, isPlanSwitch ? "plan" : undefined);
   }, [sendMessage]);
 
   // ── 停止生成 ──
