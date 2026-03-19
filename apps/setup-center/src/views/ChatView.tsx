@@ -1834,8 +1834,7 @@ export function ChatView({
     try { const v = localStorage.getItem("chat_thinkingDepth"); return (v === "low" || v === "medium" || v === "high") ? v : "medium"; }
     catch { return "medium"; }
   });
-  const [thinkingMenuOpen, setThinkingMenuOpen] = useState(false);
-  const thinkingMenuRef = useRef<HTMLDivElement | null>(null);
+
 
   // 持久化思考偏好
   useEffect(() => { try { localStorage.setItem("chat_thinkingMode", thinkingMode); } catch {} }, [thinkingMode]);
@@ -2410,18 +2409,6 @@ export function ChatView({
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [modelMenuOpen]);
-
-  // ── 点击外部关闭思考菜单 ──
-  useEffect(() => {
-    if (!thinkingMenuOpen) return;
-    const handler = (e: MouseEvent) => {
-      if (thinkingMenuRef.current && !thinkingMenuRef.current.contains(e.target as Node)) {
-        setThinkingMenuOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [thinkingMenuOpen]);
 
   // ── 斜杠命令定义 ──
   const slashCommands: SlashCommand[] = useMemo(() => [
@@ -4436,61 +4423,48 @@ export function ChatView({
                   <span style={{ fontSize: 11, marginLeft: 2 }}>Plan</span>
                 </button>
 
-                {/* 深度思考按钮 + 下拉菜单 */}
-                <div ref={thinkingMenuRef} style={{ position: "relative", display: "inline-flex" }}>
+                {/* 深度思考按钮 + 思考深度按钮 */}
+                <button
+                  data-slot="toolbar"
+                  onClick={() => {
+                    if (thinkingMode === "auto") {
+                      setThinkingMode("on");
+                    } else if (thinkingMode === "on") {
+                      setThinkingMode("off");
+                    } else {
+                      setThinkingMode("auto");
+                    }
+                  }}
+                  className={`chatInputIconBtn ${thinkingMode === "on" ? "chatInputIconBtnActive" : thinkingMode === "off" ? "chatInputIconBtnOff" : ""}`}
+                  title={`深度思考: ${thinkingMode === "on" ? "开启" : thinkingMode === "off" ? "关闭" : "自动"}`}
+                >
+                  <IconZap size={16} />
+                  <span style={{ fontSize: 11, marginLeft: 2 }}>
+                    {thinkingMode === "on" ? "Think" : thinkingMode === "off" ? "NoThink" : "Auto"}
+                  </span>
+                </button>
+                {thinkingMode !== "off" && (
                   <button
                     data-slot="toolbar"
                     onClick={() => {
-                      if (thinkingMode === "auto") {
-                        setThinkingMode("on");
-                      } else if (thinkingMode === "on") {
-                        setThinkingMode("off");
-                      } else {
-                        setThinkingMode("auto");
-                      }
+                      setThinkingDepth((d) => d === "low" ? "medium" : d === "medium" ? "high" : "low");
                     }}
-                    onContextMenu={(e) => { e.preventDefault(); setThinkingMenuOpen((v) => !v); }}
-                    className={`chatInputIconBtn ${thinkingMode === "on" ? "chatInputIconBtnActive" : thinkingMode === "off" ? "chatInputIconBtnOff" : ""}`}
-                    title={`深度思考: ${thinkingMode === "on" ? "开启" : thinkingMode === "off" ? "关闭" : "自动"} (右键设置深度)`}
+                    className="chatInputIconBtn"
+                    title={{ low: "思考深度: 低 — 快速响应\n点击切换", medium: "思考深度: 中 — 平衡模式\n点击切换", high: "思考深度: 高 — 深度推理\n点击切换" }[thinkingDepth]}
                   >
-                    <IconZap size={16} />
-                    <span style={{ fontSize: 11, marginLeft: 2 }}>
-                      {thinkingMode === "on" ? "Think" : thinkingMode === "off" ? "NoThink" : "Auto"}
-                    </span>
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style={{ flexShrink: 0 }}>
+                      <rect x="1" y="9" width="3" height="4" rx="0.5" fill="currentColor" opacity={thinkingDepth === "low" || thinkingDepth === "medium" || thinkingDepth === "high" ? 1 : 0.25} />
+                      <rect x="5.5" y="5.5" width="3" height="7.5" rx="0.5" fill="currentColor" opacity={thinkingDepth === "medium" || thinkingDepth === "high" ? 1 : 0.25} />
+                      <rect x="10" y="2" width="3" height="11" rx="0.5" fill="currentColor" opacity={thinkingDepth === "high" ? 1 : 0.25} />
+                    </svg>
+                    <span style={{ fontSize: 10 }}>{{ low: "低", medium: "中", high: "高" }[thinkingDepth]}</span>
                   </button>
-                  {thinkingMenuOpen && (
-                    <div className="chatThinkingMenu">
-                      <div className="chatThinkingMenuSection">思考模式</div>
-                      {(["auto", "on", "off"] as const).map((mode) => (
-                        <div
-                          key={mode}
-                          className={`chatThinkingMenuItem ${thinkingMode === mode ? "chatThinkingMenuItemActive" : ""}`}
-                          onClick={() => { setThinkingMode(mode); setThinkingMenuOpen(false); }}
-                        >
-                          <span>{{ auto: "🤖 自动", on: "🧠 开启", off: "⚡ 关闭" }[mode]}</span>
-                          <span style={{ fontSize: 10, opacity: 0.5 }}>{{ auto: "系统决定", on: "强制深度思考", off: "快速回复" }[mode]}</span>
-                        </div>
-                      ))}
-                      <div className="chatThinkingMenuDivider" />
-                      <div className="chatThinkingMenuSection">思考深度</div>
-                      {(["low", "medium", "high"] as const).map((depth) => (
-                        <div
-                          key={depth}
-                          className={`chatThinkingMenuItem ${thinkingDepth === depth ? "chatThinkingMenuItemActive" : ""}`}
-                          onClick={() => { setThinkingDepth(depth); setThinkingMenuOpen(false); }}
-                        >
-                          <span>{{ low: "💨 低", medium: "⚖️ 中", high: "🔬 高" }[depth]}</span>
-                          <span style={{ fontSize: 10, opacity: 0.5 }}>{{ low: "快速响应", medium: "平衡模式", high: "深度推理" }[depth]}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                )}
               </div>
 
               <div className="chatInputToolbarRight">
-                {/* Context usage ring */}
-                {contextLimit > 0 && (() => {
+                {/* Context usage ring — only show when we have real usage data */}
+                {contextLimit > 0 && contextTokens > 0 && (() => {
                   const pct = Math.min(contextTokens / contextLimit, 1);
                   const pctLabel = (pct * 100).toFixed(1);
                   const fmtK = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n);

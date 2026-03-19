@@ -3212,64 +3212,6 @@ button.btnApplyRestart:hover {
   background: rgba(156, 163, 175, 0.06) !important;
 }
 
-/* 深度思考下拉菜单 */
-.chatThinkingMenu {
-  position: absolute;
-  bottom: calc(100% + 8px);
-  left: 0;
-  min-width: 200px;
-  background: var(--bg-app);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  box-shadow: var(--shadow);
-  padding: 6px;
-  z-index: 200;
-  animation: thinkingMenuFadeIn 0.15s ease;
-}
-
-@keyframes thinkingMenuFadeIn {
-  from { opacity: 0; transform: translateY(4px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-.chatThinkingMenuSection {
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-secondary, #6b7280);
-  padding: 6px 10px 4px;
-  opacity: 0.6;
-}
-
-.chatThinkingMenuItem {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 8px 10px;
-  border-radius: 8px;
-  cursor: pointer;
-  font-size: 13px;
-  transition: background 0.12s;
-}
-
-.chatThinkingMenuItem:hover {
-  background: rgba(37, 99, 235, 0.12);
-}
-
-.chatThinkingMenuItemActive {
-  background: rgba(124, 58, 237, 0.15) !important;
-  color: rgba(124, 58, 237, 0.95);
-  font-weight: 600;
-}
-
-.chatThinkingMenuDivider {
-  height: 1px;
-  background: var(--line, #e5e7eb);
-  margin: 4px 8px;
-}
-
 /* 思维链 & 模式切换 按钮 */
 .chainToggleBtn,
 .modeToggleBtn {
