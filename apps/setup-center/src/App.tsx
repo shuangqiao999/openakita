@@ -2976,11 +2976,16 @@ export function App() {
         .catch(() => {})
         .finally(() => setAdvLoading((p) => ({ ...p, sysinfo: false })));
 
-      // Load current HUB_API_URL from .env
+      // Load current HUB_API_URL and HUB_ENABLED from .env
       safeFetch(`${apiUrl}/api/config/env`, { signal: AbortSignal.timeout(5_000) })
         .then((r) => r.json())
         .then((data) => {
           if (data.env?.HUB_API_URL) setHubApiUrl(data.env.HUB_API_URL);
+          if (data.env?.HUB_ENABLED != null) {
+            const enabled = data.env.HUB_ENABLED === "true" || data.env.HUB_ENABLED === "True";
+            setStoreVisible(enabled);
+            localStorage.setItem("openakita_storeVisible", String(enabled));
+          }
         })
         .catch(() => {});
     }
@@ -5792,7 +5797,19 @@ export function App() {
             toggle={
               <Switch
                 checked={storeVisible}
-                onCheckedChange={(v) => { setStoreVisible(v); localStorage.setItem("openakita_storeVisible", String(v)); }}
+                onCheckedChange={(v) => {
+                  setStoreVisible(v);
+                  localStorage.setItem("openakita_storeVisible", String(v));
+                  if (shouldUseHttpApi()) {
+                    safeFetch(`${httpApiBase()}/api/config/env`, {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ entries: { HUB_ENABLED: String(v) } }),
+                    }).catch(() => {});
+                  } else {
+                    setEnvDraft((prev) => envSet(prev, "HUB_ENABLED", String(v)));
+                  }
+                }}
               />
             }
           >

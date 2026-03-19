@@ -375,6 +375,10 @@ class Settings(BaseSettings):
     )
 
     # === OpenAkita Platform (Agent Hub / Skill Store) ===
+    hub_enabled: bool = Field(
+        default=False,
+        description="启用 OpenAkita Platform 连接（Agent Hub / Skill Store）。关闭时不注册远程市场工具。",
+    )
     hub_api_url: str = Field(
         default="https://openakita.ai/api",
         description="OpenAkita Platform API base URL for Agent Hub and Skill Store",

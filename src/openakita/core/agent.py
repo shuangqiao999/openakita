@@ -430,6 +430,12 @@ class Agent:
             self._tools.extend(AGENT_TOOLS)
             logger.info(f"Multi-agent tools enabled ({len(AGENT_TOOLS)} tools)")
 
+        # Platform hub tools (Agent Hub + Skill Store, only when enabled)
+        if settings.hub_enabled:
+            from ..tools.definitions import HUB_TOOLS
+            self._tools.extend(HUB_TOOLS)
+            logger.info(f"Platform hub tools enabled ({len(HUB_TOOLS)} tools)")
+
         self._update_shell_tool_description()
 
         # 对话上下文
@@ -1029,19 +1035,18 @@ class Agent:
             ["export_agent", "import_agent", "list_exportable_agents", "inspect_agent_package"],
         )
 
-        # Agent Hub（平台 Agent Store 交互）
-        self.handler_registry.register(
-            "agent_hub",
-            create_agent_hub_handler(self),
-            ["search_hub_agents", "install_hub_agent", "publish_agent", "get_hub_agent_detail"],
-        )
-
-        # Skill Store（平台 Skill Store 交互）
-        self.handler_registry.register(
-            "skill_store",
-            create_skill_store_handler(self),
-            ["search_store_skills", "install_store_skill", "get_store_skill_detail", "submit_skill_repo"],
-        )
+        # Agent Hub + Skill Store（平台交互，仅在 hub_enabled 时注册）
+        if settings.hub_enabled:
+            self.handler_registry.register(
+                "agent_hub",
+                create_agent_hub_handler(self),
+                ["search_hub_agents", "install_hub_agent", "publish_agent", "get_hub_agent_detail"],
+            )
+            self.handler_registry.register(
+                "skill_store",
+                create_skill_store_handler(self),
+                ["search_store_skills", "install_store_skill", "get_store_skill_detail", "submit_skill_repo"],
+            )
 
         # 桌面工具（仅 Windows 且依赖可用时注册，与 _tools/ToolCatalog 保持一致）
         if _DESKTOP_AVAILABLE:
