@@ -1935,6 +1935,85 @@ export function App() {
     throw new Error(`写入配置失败：服务未运行且无本地工作区 (${relativePath})`);
   }
 
+  // ── Tauri-local endpoint save/delete (fallback when HTTP API is unavailable) ──
+
+  function allocateUniqueEnvVar(
+    endpoint: Record<string, unknown>,
+    config: Record<string, unknown>,
+  ): string {
+    const used = new Set<string>();
+    for (const listKey of ["endpoints", "compiler_endpoints", "stt_endpoints"]) {
+      for (const ep of (config[listKey] as any[] || [])) {
+        if (ep?.api_key_env) used.add(ep.api_key_env);
+      }
+    }
+    const provider = String(endpoint.provider || "custom").toUpperCase().replace(/-/g, "_");
+    const baseName = `${provider}_API_KEY`;
+    if (!used.has(baseName)) return baseName;
+    for (let i = 2; i < 100; i++) {
+      const candidate = `${baseName}_${i}`;
+      if (!used.has(candidate)) return candidate;
+    }
+    return `${baseName}_${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  async function saveEndpointLocal(
+    endpoint: Record<string, unknown>,
+    apiKey: string | null,
+    endpointType: string,
+  ): Promise<{ endpoint: Record<string, unknown> }> {
+    let config: Record<string, unknown>;
+    try {
+      const raw = await readWorkspaceFile("data/llm_endpoints.json");
+      config = raw ? JSON.parse(raw) : {};
+    } catch {
+      config = {};
+    }
+
+    const name = String(endpoint.name || "");
+    const epList: any[] = (config[endpointType] as any[] || []);
+    const existing = epList.find((e: any) => e.name === name);
+
+    let envVar = "";
+    if (apiKey) {
+      envVar = existing?.api_key_env || (endpoint.api_key_env as string) || allocateUniqueEnvVar(endpoint, config);
+      if (IS_TAURI && currentWorkspaceId) {
+        await invoke("workspace_update_env", {
+          workspaceId: currentWorkspaceId,
+          entries: [{ key: envVar, value: apiKey }],
+        });
+      }
+      setEnvDraft((e) => envSet(e, envVar, apiKey));
+    } else {
+      envVar = existing?.api_key_env || (endpoint.api_key_env as string) || "";
+    }
+    endpoint.api_key_env = envVar;
+
+    if (existing) {
+      const idx = epList.indexOf(existing);
+      epList[idx] = { ...existing, ...endpoint };
+    } else {
+      epList.push(endpoint);
+    }
+    config[endpointType] = epList;
+
+    await writeWorkspaceFile("data/llm_endpoints.json", JSON.stringify(config, null, 2));
+    return { endpoint: { ...endpoint, api_key_env: envVar } };
+  }
+
+  async function deleteEndpointLocal(name: string, endpointType: string): Promise<void> {
+    let config: Record<string, unknown>;
+    try {
+      const raw = await readWorkspaceFile("data/llm_endpoints.json");
+      config = raw ? JSON.parse(raw) : {};
+    } catch {
+      config = {};
+    }
+    const epList: any[] = (config[endpointType] as any[] || []);
+    config[endpointType] = epList.filter((e: any) => e.name !== name);
+    await writeWorkspaceFile("data/llm_endpoints.json", JSON.stringify(config, null, 2));
+  }
+
   /**
    * 通知运行中的后端热重载配置。
    * 仅在后端运行时调用有意义；后端未运行时静默跳过。
@@ -2213,30 +2292,33 @@ export function App() {
         capabilities: ["text"],
       };
 
-      const res = await safeFetch(`${httpApiBase()}/api/config/save-endpoint`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          endpoint,
-          api_key: effectiveCompApiKeyValue || null,
-          endpoint_type: "compiler_endpoints",
-        }),
-      });
-      const data = await res.json();
-      if (data.status === "error" || data.status === "conflict") {
-        notifyError(data.error || "保存失败");
-        return false;
-      }
-
-      if (effectiveCompApiKeyValue && data.endpoint?.api_key_env) {
-        setEnvDraft((e) => envSet(e, data.endpoint.api_key_env, effectiveCompApiKeyValue));
+      if (shouldUseHttpApi()) {
+        const res = await safeFetch(`${httpApiBase()}/api/config/save-endpoint`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            endpoint,
+            api_key: effectiveCompApiKeyValue || null,
+            endpoint_type: "compiler_endpoints",
+          }),
+        });
+        const data = await res.json();
+        if (data.status === "error" || data.status === "conflict") {
+          notifyError(data.error || "保存失败");
+          return false;
+        }
+        if (effectiveCompApiKeyValue && data.endpoint?.api_key_env) {
+          setEnvDraft((e) => envSet(e, data.endpoint.api_key_env, effectiveCompApiKeyValue));
+        }
+      } else {
+        await saveEndpointLocal(endpoint, effectiveCompApiKeyValue || null, "compiler_endpoints");
       }
 
       setCompilerModel("");
       setCompilerApiKeyValue("");
       setCompilerEndpointName("");
       setCompilerBaseUrl("");
-      notifySuccess(`编译端点 ${data.endpoint?.name || epName} 已保存`);
+      notifySuccess(`编译端点 ${epName} 已保存`);
       await loadSavedEndpoints();
       return true;
     } catch (e) {
@@ -2251,10 +2333,14 @@ export function App() {
     if (!currentWorkspaceId && dataMode !== "remote") return;
     const _busyId = notifyLoading("删除编译端点...");
     try {
-      await safeFetch(
-        `${httpApiBase()}/api/config/endpoint/${encodeURIComponent(epName)}?endpoint_type=compiler_endpoints`,
-        { method: "DELETE" },
-      );
+      if (shouldUseHttpApi()) {
+        await safeFetch(
+          `${httpApiBase()}/api/config/endpoint/${encodeURIComponent(epName)}?endpoint_type=compiler_endpoints`,
+          { method: "DELETE" },
+        );
+      } else {
+        await deleteEndpointLocal(epName, "compiler_endpoints");
+      }
       setSavedCompilerEndpoints((prev) => prev.filter((e) => e.name !== epName));
       notifySuccess(`编译端点 ${epName} 已删除`);
       loadSavedEndpoints().catch(() => {});
@@ -2305,23 +2391,26 @@ export function App() {
         capabilities: ["text"],
       };
 
-      const res = await safeFetch(`${httpApiBase()}/api/config/save-endpoint`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          endpoint,
-          api_key: effectiveSttApiKeyValue || null,
-          endpoint_type: "stt_endpoints",
-        }),
-      });
-      const data = await res.json();
-      if (data.status === "error" || data.status === "conflict") {
-        notifyError(data.error || "保存失败");
-        return false;
-      }
-
-      if (effectiveSttApiKeyValue && data.endpoint?.api_key_env) {
-        setEnvDraft((e) => envSet(e, data.endpoint.api_key_env, effectiveSttApiKeyValue));
+      if (shouldUseHttpApi()) {
+        const res = await safeFetch(`${httpApiBase()}/api/config/save-endpoint`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            endpoint,
+            api_key: effectiveSttApiKeyValue || null,
+            endpoint_type: "stt_endpoints",
+          }),
+        });
+        const data = await res.json();
+        if (data.status === "error" || data.status === "conflict") {
+          notifyError(data.error || "保存失败");
+          return false;
+        }
+        if (effectiveSttApiKeyValue && data.endpoint?.api_key_env) {
+          setEnvDraft((e) => envSet(e, data.endpoint.api_key_env, effectiveSttApiKeyValue));
+        }
+      } else {
+        await saveEndpointLocal(endpoint, effectiveSttApiKeyValue || null, "stt_endpoints");
       }
 
       setSttModel("");
@@ -2329,7 +2418,7 @@ export function App() {
       setSttEndpointName("");
       setSttBaseUrl("");
       setSttModels([]);
-      notifySuccess(`STT 端点 ${data.endpoint?.name || epName} 已保存`);
+      notifySuccess(`STT 端点 ${epName} 已保存`);
       await loadSavedEndpoints();
       return true;
     } catch (e) {
@@ -2344,10 +2433,14 @@ export function App() {
     if (!currentWorkspaceId && dataMode !== "remote") return;
     const _busyId = notifyLoading("删除 STT 端点...");
     try {
-      await safeFetch(
-        `${httpApiBase()}/api/config/endpoint/${encodeURIComponent(epName)}?endpoint_type=stt_endpoints`,
-        { method: "DELETE" },
-      );
+      if (shouldUseHttpApi()) {
+        await safeFetch(
+          `${httpApiBase()}/api/config/endpoint/${encodeURIComponent(epName)}?endpoint_type=stt_endpoints`,
+          { method: "DELETE" },
+        );
+      } else {
+        await deleteEndpointLocal(epName, "stt_endpoints");
+      }
       setSavedSttEndpoints((prev) => prev.filter((e) => e.name !== epName));
       notifySuccess(`STT 端点 ${epName} 已删除`);
       loadSavedEndpoints().catch(() => {});
@@ -2535,30 +2628,35 @@ export function App() {
         endpoint.pricing_tiers = validTiers;
       }
 
-      if (nameChanged) {
-        await safeFetch(
-          `${httpApiBase()}/api/config/endpoint/${encodeURIComponent(editingOriginalName)}?endpoint_type=endpoints`,
-          { method: "DELETE" },
-        );
-      }
-
-      const res = await safeFetch(`${httpApiBase()}/api/config/save-endpoint`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          endpoint,
-          api_key: editDraft.apiKeyValue.trim() || null,
-          endpoint_type: "endpoints",
-        }),
-      });
-      const data = await res.json();
-      if (data.status === "conflict" || data.status === "error") {
-        notifyError(data.error || "保存失败");
-        return;
-      }
-
-      if (editDraft.apiKeyValue.trim() && data.endpoint?.api_key_env) {
-        setEnvDraft((e) => envSet(e, data.endpoint.api_key_env, editDraft.apiKeyValue.trim()));
+      if (shouldUseHttpApi()) {
+        if (nameChanged) {
+          await safeFetch(
+            `${httpApiBase()}/api/config/endpoint/${encodeURIComponent(editingOriginalName)}?endpoint_type=endpoints`,
+            { method: "DELETE" },
+          );
+        }
+        const res = await safeFetch(`${httpApiBase()}/api/config/save-endpoint`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            endpoint,
+            api_key: editDraft.apiKeyValue.trim() || null,
+            endpoint_type: "endpoints",
+          }),
+        });
+        const data = await res.json();
+        if (data.status === "conflict" || data.status === "error") {
+          notifyError(data.error || "保存失败");
+          return;
+        }
+        if (editDraft.apiKeyValue.trim() && data.endpoint?.api_key_env) {
+          setEnvDraft((e) => envSet(e, data.endpoint.api_key_env, editDraft.apiKeyValue.trim()));
+        }
+      } else {
+        if (nameChanged) {
+          await deleteEndpointLocal(editingOriginalName, "endpoints");
+        }
+        await saveEndpointLocal(endpoint, editDraft.apiKeyValue.trim() || null, "endpoints");
       }
 
       notifySuccess("端点已更新");
@@ -2623,27 +2721,30 @@ export function App() {
         endpoint.extra_params = { enable_thinking: true };
       }
 
-      const res = await safeFetch(`${httpApiBase()}/api/config/save-endpoint`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          endpoint,
-          api_key: effectiveApiKeyValue || null,
-          endpoint_type: "endpoints",
-        }),
-      });
-      const data = await res.json();
-      if (data.status === "conflict") {
-        notifyError(data.error || "配置已被其他会话修改，请刷新后重试");
-        return false;
-      }
-      if (data.status === "error") {
-        notifyError(data.error || "保存失败");
-        return false;
-      }
-
-      if (effectiveApiKeyValue && data.endpoint?.api_key_env) {
-        setEnvDraft((e) => envSet(e, data.endpoint.api_key_env, effectiveApiKeyValue));
+      if (shouldUseHttpApi()) {
+        const res = await safeFetch(`${httpApiBase()}/api/config/save-endpoint`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            endpoint,
+            api_key: effectiveApiKeyValue || null,
+            endpoint_type: "endpoints",
+          }),
+        });
+        const data = await res.json();
+        if (data.status === "conflict") {
+          notifyError(data.error || "配置已被其他会话修改，请刷新后重试");
+          return false;
+        }
+        if (data.status === "error") {
+          notifyError(data.error || "保存失败");
+          return false;
+        }
+        if (effectiveApiKeyValue && data.endpoint?.api_key_env) {
+          setEnvDraft((e) => envSet(e, data.endpoint.api_key_env, effectiveApiKeyValue));
+        }
+      } else {
+        await saveEndpointLocal(endpoint, effectiveApiKeyValue || null, "endpoints");
       }
 
       notifySuccess(
@@ -2666,10 +2767,14 @@ export function App() {
     if (!currentWorkspaceId && dataMode !== "remote") return;
     const _busyId = notifyLoading("删除端点...");
     try {
-      await safeFetch(
-        `${httpApiBase()}/api/config/endpoint/${encodeURIComponent(name)}?endpoint_type=endpoints`,
-        { method: "DELETE" },
-      );
+      if (shouldUseHttpApi()) {
+        await safeFetch(
+          `${httpApiBase()}/api/config/endpoint/${encodeURIComponent(name)}?endpoint_type=endpoints`,
+          { method: "DELETE" },
+        );
+      } else {
+        await deleteEndpointLocal(name, "endpoints");
+      }
       setSavedEndpoints((prev) => prev.filter((e) => e.name !== name));
       notifySuccess(`已删除端点：${name}`);
       loadSavedEndpoints().catch(() => {});
@@ -6871,46 +6976,60 @@ export function App() {
       }
 
       // ── STEP: service-start ──
+      // The early-start in ob-welcome may have already launched the backend.
+      // Probe first to avoid a redundant start (which is harmless but slow).
       updateTask("service-start", { status: "running" });
       logTask("启动后端服务", "running");
-      log(t("onboarding.progress.startingService"));
       const effectiveVenv = venvDir || (info ? joinPath(info.openakitaRootDir, "venv") : "");
       let httpReady = false;
       try {
-        await invoke("openakita_service_start", { venvDir: effectiveVenv, workspaceId: activeWsId });
-        log(t("onboarding.progress.serviceStarted"));
-        updateTask("service-start", { status: "done" });
-        logTask("启动后端服务", "done");
+        const earlyProbe = await fetch("http://127.0.0.1:18900/api/health", { signal: AbortSignal.timeout(3000) }).then(r => r.ok).catch(() => false);
+        if (earlyProbe) {
+          log("✓ 后端已在运行（由 ob-welcome 提前启动）");
+          setServiceStatus({ running: true, pid: null, pidFile: "" });
+          setDataMode("remote");
+          httpReady = true;
+          updateTask("service-start", { status: "done", detail: "已在运行" });
+          logTask("启动后端服务", "done", "已在运行");
+          updateTask("http-wait", { status: "done", detail: "已就绪" });
+          logTask("等待 HTTP 服务就绪", "done", "已就绪");
+        } else {
+          log(t("onboarding.progress.startingService"));
+          await invoke("openakita_service_start", { venvDir: effectiveVenv, workspaceId: activeWsId });
+          log(t("onboarding.progress.serviceStarted"));
+          updateTask("service-start", { status: "done" });
+          logTask("启动后端服务", "done");
 
-        // ── STEP: http-wait ──
-        updateTask("http-wait", { status: "running" });
-        logTask("等待 HTTP 服务就绪", "running");
-        log("等待 HTTP 服务就绪...");
-        for (let i = 0; i < 20; i++) {
-          await new Promise(r => setTimeout(r, 2000));
-          updateTask("http-wait", { detail: `已等待 ${(i + 1) * 2}s...` });
-          if (i > 0 && obLogPath) {
-            const now = new Date();
-            const ts = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
-            invoke("append_onboarding_log", { logPath: obLogPath, line: `[${ts}] [任务] 等待 HTTP 服务就绪: 已等待 ${(i + 1) * 2}s...` }).catch(() => {});
-          }
-          try {
-            const res = await fetch("http://127.0.0.1:18900/api/health", { signal: AbortSignal.timeout(3000) });
-            if (res.ok) {
-              log("✓ HTTP 服务已就绪");
-              setServiceStatus({ running: true, pid: null, pidFile: "" });
-              httpReady = true;
-              updateTask("http-wait", { status: "done", detail: `${(i + 1) * 2}s` });
-              logTask("等待 HTTP 服务就绪", "done", `${(i + 1) * 2}s`);
-              break;
+          // ── STEP: http-wait ──
+          updateTask("http-wait", { status: "running" });
+          logTask("等待 HTTP 服务就绪", "running");
+          log("等待 HTTP 服务就绪...");
+          for (let i = 0; i < 20; i++) {
+            await new Promise(r => setTimeout(r, 2000));
+            updateTask("http-wait", { detail: `已等待 ${(i + 1) * 2}s...` });
+            if (i > 0 && obLogPath) {
+              const now = new Date();
+              const ts = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
+              invoke("append_onboarding_log", { logPath: obLogPath, line: `[${ts}] [任务] 等待 HTTP 服务就绪: 已等待 ${(i + 1) * 2}s...` }).catch(() => {});
             }
-          } catch { /* not ready yet */ }
-          if (i % 5 === 4) log(`仍在等待 HTTP 服务启动... (${(i + 1) * 2}s)`);
-        }
-        if (!httpReady) {
-          log("⚠ HTTP 服务尚未就绪，可进入主页面后手动刷新");
-          updateTask("http-wait", { status: "error", detail: "超时" });
-          logTask("等待 HTTP 服务就绪", "error", "超时");
+            try {
+              const res = await fetch("http://127.0.0.1:18900/api/health", { signal: AbortSignal.timeout(3000) });
+              if (res.ok) {
+                log("✓ HTTP 服务已就绪");
+                setServiceStatus({ running: true, pid: null, pidFile: "" });
+                httpReady = true;
+                updateTask("http-wait", { status: "done", detail: `${(i + 1) * 2}s` });
+                logTask("等待 HTTP 服务就绪", "done", `${(i + 1) * 2}s`);
+                break;
+              }
+            } catch { /* not ready yet */ }
+            if (i % 5 === 4) log(`仍在等待 HTTP 服务启动... (${(i + 1) * 2}s)`);
+          }
+          if (!httpReady) {
+            log("⚠ HTTP 服务尚未就绪，可进入主页面后手动刷新");
+            updateTask("http-wait", { status: "error", detail: "超时" });
+            logTask("等待 HTTP 服务就绪", "error", "超时");
+          }
         }
       } catch (e) {
         const errStr = String(e);
@@ -7247,6 +7366,7 @@ export function App() {
                 size="lg"
                 className="mt-2 px-10 rounded-xl text-[15px]"
                 onClick={async () => {
+                  let earlyStartWsId = currentWorkspaceId || "";
                   try {
                     const wsList = await invoke<WorkspaceSummary[]>("list_workspaces");
                     if (!wsList.length) {
@@ -7255,15 +7375,48 @@ export function App() {
                       await invoke("set_current_workspace", { id: wsId });
                       setCurrentWorkspaceId(wsId);
                       setWorkspaces([{ id: wsId, name: t("onboarding.defaultWorkspace"), path: "", isCurrent: true }]);
+                      earlyStartWsId = wsId;
                     } else {
                       setWorkspaces(wsList);
                       if (!currentWorkspaceId && wsList.length > 0) {
                         setCurrentWorkspaceId(wsList[0].id);
                       }
+                      earlyStartWsId = currentWorkspaceId || wsList[0]?.id || "";
                     }
                   } catch (e) {
                     logger.warn("App", "ob: create default workspace failed", { error: String(e) });
                   }
+
+                  // Kick off backend startup in background so HTTP API is
+                  // likely ready by the time the user reaches ob-llm.
+                  if (IS_TAURI && earlyStartWsId) {
+                    const wsId = earlyStartWsId;
+                    const effectiveVenv = venvDir || (info ? joinPath(info.openakitaRootDir, "venv") : "");
+                    (async () => {
+                      try {
+                        const backendInfo = await invoke<{
+                          bundled: boolean; venvReady: boolean; exePath: string;
+                          bundledChecked: string; venvChecked: string;
+                        }>("check_backend_availability", { venvDir: effectiveVenv });
+                        if (!backendInfo.bundled && !backendInfo.venvReady) return;
+                        await invoke("openakita_service_start", { venvDir: effectiveVenv, workspaceId: wsId });
+                        for (let i = 0; i < 15; i++) {
+                          await new Promise(r => setTimeout(r, 2000));
+                          try {
+                            const res = await fetch("http://127.0.0.1:18900/api/health", { signal: AbortSignal.timeout(3000) });
+                            if (res.ok) {
+                              setServiceStatus({ running: true, pid: null, pidFile: "" });
+                              setDataMode("remote");
+                              break;
+                            }
+                          } catch { /* not ready yet */ }
+                        }
+                      } catch (e) {
+                        logger.warn("App", "ob: early backend start failed, will retry in ob-progress", { error: String(e) });
+                      }
+                    })();
+                  }
+
                   setObStep("ob-agreement");
                 }}
               >
