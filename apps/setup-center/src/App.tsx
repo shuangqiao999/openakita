@@ -530,7 +530,7 @@ export function App() {
   const [compBaseUrlExpanded, setCompBaseUrlExpanded] = useState(false);
   const [sttBaseUrlExpanded, setSttBaseUrlExpanded] = useState(false);
   const [addEpMaxTokens, setAddEpMaxTokens] = useState(0);
-  const [addEpContextWindow, setAddEpContextWindow] = useState(30000);
+  const [addEpContextWindow, setAddEpContextWindow] = useState(200000);
   const [addEpTimeout, setAddEpTimeout] = useState(180);
   const [addEpRpmLimit, setAddEpRpmLimit] = useState(0);
   const [codingPlanMode, setCodingPlanMode] = useState(false);
@@ -731,7 +731,7 @@ export function App() {
                 model: String(e?.model || ""), api_key_env: String(e?.api_key_env || ""),
                 priority: Number(e?.priority || 1),
                 max_tokens: Number(e?.max_tokens ?? 0),
-                context_window: Number(e?.context_window || 30000),
+                context_window: Number(e?.context_window || 200000),
                 timeout: Number(e?.timeout || 180),
                 capabilities: Array.isArray(e?.capabilities) ? e.capabilities.map((x: any) => String(x)) : [],
                 enabled: e?.enabled !== false,
@@ -1442,13 +1442,13 @@ export function App() {
     if (codingPlanMode && selectedProvider.coding_plan_base_url) {
       setApiType((selectedProvider.coding_plan_api_type as "openai" | "anthropic") || "anthropic");
       if (!baseUrlTouched) setBaseUrl(selectedProvider.coding_plan_base_url);
-      setAddEpContextWindow(30000);
+      setAddEpContextWindow(200000);
       setAddEpMaxTokens((selectedProvider as ProviderInfo).default_max_tokens ?? 8192);
     } else {
       const t = (selectedProvider.api_type as "openai" | "anthropic") || "openai";
       setApiType(t);
       if (!baseUrlTouched) setBaseUrl(selectedProvider.default_base_url || "");
-      setAddEpContextWindow((selectedProvider as ProviderInfo).default_context_window ?? 30000);
+      setAddEpContextWindow((selectedProvider as ProviderInfo).default_context_window ?? 200000);
       setAddEpMaxTokens((selectedProvider as ProviderInfo).default_max_tokens ?? 0);
     }
     const suggested = selectedProvider.api_key_env_suggestion || envKeyFromSlug(selectedProvider.slug);
@@ -1689,7 +1689,7 @@ export function App() {
           model: String(e?.model || ""),
           priority: Number.isFinite(Number(e?.priority)) ? Number(e?.priority) : 999,
           max_tokens: Number.isFinite(Number(e?.max_tokens)) ? Number(e?.max_tokens) : 0,
-          context_window: Number.isFinite(Number(e?.context_window)) ? Number(e?.context_window) : 30000,
+          context_window: Number.isFinite(Number(e?.context_window)) ? Number(e?.context_window) : 200000,
           timeout: Number.isFinite(Number(e?.timeout)) ? Number(e?.timeout) : 180,
           capabilities: Array.isArray(e?.capabilities) ? e.capabilities.map((x: any) => String(x)) : [],
           rpm_limit: Number.isFinite(Number(e?.rpm_limit)) ? Number(e?.rpm_limit) : 0,
@@ -1724,7 +1724,7 @@ export function App() {
           model: String(e.model || ""),
           priority: Number.isFinite(Number(e.priority)) ? Number(e.priority) : 1,
           max_tokens: Number.isFinite(Number(e.max_tokens)) ? Number(e.max_tokens) : 2048,
-          context_window: Number.isFinite(Number(e.context_window)) ? Number(e.context_window) : 30000,
+          context_window: Number.isFinite(Number(e.context_window)) ? Number(e.context_window) : 200000,
           timeout: Number.isFinite(Number(e.timeout)) ? Number(e.timeout) : 30,
           capabilities: Array.isArray(e.capabilities) ? e.capabilities.map((x: any) => String(x)) : ["text"],
           note: e.note ? String(e.note) : null,
@@ -2520,7 +2520,7 @@ export function App() {
       modelId: ep.model || "",
       caps: Array.isArray(ep.capabilities) && ep.capabilities.length ? ep.capabilities : ["text"],
       maxTokens: typeof ep.max_tokens === "number" ? ep.max_tokens : 0,
-      contextWindow: typeof ep.context_window === "number" ? ep.context_window : 30000,
+      contextWindow: typeof ep.context_window === "number" ? ep.context_window : 200000,
       timeout: typeof ep.timeout === "number" ? ep.timeout : 180,
       rpmLimit: typeof ep.rpm_limit === "number" ? ep.rpm_limit : 0,
       pricingTiers: Array.isArray(ep.pricing_tiers) ? ep.pricing_tiers.map((t: any) => ({
@@ -2616,7 +2616,7 @@ export function App() {
         model: editDraft.modelId.trim(),
         priority: normalizePriority(editDraft.priority, 1),
         max_tokens: editDraft.maxTokens ?? 0,
-        context_window: editDraft.contextWindow ?? 30000,
+        context_window: editDraft.contextWindow ?? 200000,
         timeout: editDraft.timeout ?? 180,
         rpm_limit: editDraft.rpmLimit ?? 0,
         capabilities: editDraft.caps?.length ? editDraft.caps : ["text"],
@@ -4270,7 +4270,7 @@ export function App() {
     setEndpointPriority(1);
     setCodingPlanMode(false);
     setAddEpMaxTokens(0);
-    setAddEpContextWindow(30000);
+    setAddEpContextWindow(200000);
     setAddEpTimeout(180);
     setAddEpRpmLimit(0);
     if (providers.length === 0) doLoadProviders();
@@ -4563,7 +4563,7 @@ export function App() {
                   <div className="space-y-1.5">
                     <Label>{t("llm.advContextWindow")} <span className="text-[11px] font-normal text-muted-foreground/70">{t("llm.advContextWindowHint")}</span></Label>
                     <Input type="number" min={0} value={addEpContextWindow ? Math.round(addEpContextWindow / 1000) : ""} onChange={(e) => setAddEpContextWindow((parseInt(e.target.value) || 0) * 1000)} />
-                    {addEpContextWindow > 0 && addEpContextWindow < 30000 && (
+                    {addEpContextWindow > 0 && addEpContextWindow < 60000 && (
                       <p className="flex items-center gap-1 text-[11px] text-amber-600 dark:text-amber-400 font-medium">
                         <AlertTriangle className="size-3 shrink-0" />
                         {t("llm.advContextWindowWarn")}
@@ -4757,7 +4757,7 @@ export function App() {
                   <div className="space-y-1.5">
                     <Label>{t("llm.advContextWindow")} <span className="text-[11px] font-normal text-muted-foreground/70">{t("llm.advContextWindowHint")}</span></Label>
                     <Input type="number" min={0} value={editDraft.contextWindow ? Math.round(editDraft.contextWindow / 1000) : ""} onChange={(e) => setEditDraft({ ...editDraft, contextWindow: (parseInt(e.target.value) || 0) * 1000 })} />
-                    {editDraft.contextWindow > 0 && editDraft.contextWindow < 30000 && (
+                    {editDraft.contextWindow > 0 && editDraft.contextWindow < 60000 && (
                       <p className="flex items-center gap-1 text-[11px] text-amber-600 dark:text-amber-400 font-medium">
                         <AlertTriangle className="size-3 shrink-0" />
                         {t("llm.advContextWindowWarn")}
