@@ -21,6 +21,7 @@
 </p>
 
 <p align="center">
+  <a href="#quick-start-guide">Quick-Start</a> •
   <a href="#core-capabilities">Capabilities</a> •
   <a href="#5-minute-setup">5-Min Setup</a> •
   <a href="#multi-platform-access">Multi-Platform</a> •
@@ -43,6 +44,50 @@ OpenAkita is an open-source, all-in-one AI assistant — multiple AI Agents work
 **Fully GUI-based setup. Ready in 5 minutes. Zero command line required.**
 
 > **Download**: [GitHub Releases](https://github.com/openakita/openakita/releases) — Windows / macOS / Linux
+
+---
+
+## Quick-Start Guide
+
+### 🚀 For First-Time Users (3 Minutes)
+
+**No installation required** — download the desktop app and start chatting:
+
+1. **Download** the installer from [GitHub Releases](https://github.com/openakita/openakita/releases)
+2. **Install** and follow the onboarding wizard
+3. **Enter your API Key** (get one from [Anthropic](https://console.anthropic.com/) or [DeepSeek](https://platform.deepseek.com/))
+4. **Try your first task**: Type "Create a calculator" and watch it work
+
+### 💻 For Developers (5 Minutes)
+
+```bash
+# Install
+pip install openakita[all]
+
+# Quick setup (interactive wizard)
+openakita init
+
+# Run your first task
+openakita run "Build a weather scraper"
+```
+
+### ✨ What You Can Do Right Away
+
+| Category | Examples |
+|----------|----------|
+| **💬 Chat** | Text + images + files, voice messages, stickers |
+| **🤖 Multi-Agent** | "Create a competitive analysis" → research + analysis + writing agents work together |
+| **🌐 Web** | Search news, scrape websites, automate browser tasks |
+| **📁 Files** | Read/write/edit files, batch rename, search content |
+| **🖥️ Desktop** | Click buttons, type text, take screenshots, automate apps |
+| **⏰ Scheduled** | "Remind me every Monday at 9am" — cron-based reminders |
+
+### ➡️ Next Steps
+
+- **Configure LLM**: Add multiple providers for automatic failover
+- **Set up IM channels**: Connect Telegram/Feishu/DingTalk for instant access
+- **Explore skills**: Install from marketplace or create your own
+- **Join community**: [Discord](https://discord.gg/vFwxNVNH) | [WeChat Group](docs/assets/wechat_group.jpg)
 
 ---
 

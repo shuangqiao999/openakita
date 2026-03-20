@@ -41,6 +41,7 @@ HIGH_FREQ_TOOLS = {
     "run_shell", "read_file", "write_file", "edit_file",
     "list_directory", "ask_user", "grep", "glob",
     "web_search", "web_fetch", "delete_file", "read_lints",
+    "semantic_search",
 }
 
 
