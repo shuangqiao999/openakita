@@ -573,6 +573,122 @@ def _parse_json_tool_calls(text: str) -> tuple[str, list[ToolUseBlock]]:
     return clean_text, tool_calls
 
 
+# ── Dot-style 格式 (.tool_name(kwargs)) ──────────────────
+
+_KNOWN_TOOL_NAMES: set[str] = {
+    "web_search", "news_search", "browser_navigate", "browser_open",
+    "browser_click", "browser_type", "browser_scroll", "browser_screenshot",
+    "browser_wait", "browser_close", "browser_go_back", "browser_switch_tab",
+    "browser_task", "browser_get_content", "view_image",
+    "run_shell", "write_file", "read_file", "list_directory",
+    "send_message", "reply_message", "create_file", "edit_file",
+    "search_files", "delete_file", "move_file", "copy_file",
+    "ask_user", "generate_image", "deliver_artifacts", "send_sticker",
+    "get_voice_file", "get_image_file", "get_chat_history", "get_chat_info",
+    "get_user_info", "get_chat_members", "get_recent_messages",
+    "create_plan", "update_plan_step", "get_plan_status", "complete_plan",
+    "delegate_to_agent", "spawn_agent", "delegate_parallel", "create_agent",
+    "call_mcp_tool", "list_mcp_servers",
+    "desktop_screenshot", "enable_thinking", "get_session_logs",
+    "switch_persona", "update_persona_trait",
+}
+
+_DOT_STYLE_RE = re.compile(r"\.([a-z][a-z0-9_]{2,})\s*\(")
+
+
+def _find_matching_paren(text: str, start: int) -> int:
+    """找到与 start 位置的 '(' 匹配的 ')' 位置，考虑引号内的括号。"""
+    if start >= len(text) or text[start] != "(":
+        return -1
+    depth = 0
+    in_single_quote = False
+    in_double_quote = False
+    escape_next = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == "\\":
+            escape_next = True
+            continue
+        if ch == "'" and not in_double_quote:
+            in_single_quote = not in_single_quote
+        elif ch == '"' and not in_single_quote:
+            in_double_quote = not in_double_quote
+        elif not in_single_quote and not in_double_quote:
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    return i
+    return -1
+
+
+def _parse_python_kwargs(args_str: str) -> dict:
+    """将 Python 风格的 kwargs 字符串解析为 dict。"""
+    import ast
+
+    args_str = args_str.strip()
+    if not args_str:
+        return {}
+    try:
+        tree = ast.parse(f"_f({args_str})", mode="eval")
+        call_node = tree.body
+        if not isinstance(call_node, ast.Call):
+            return {"raw_args": args_str}
+        result = {}
+        for kw in call_node.keywords:
+            if kw.arg is None:
+                continue
+            try:
+                result[kw.arg] = ast.literal_eval(kw.value)
+            except (ValueError, TypeError):
+                result[kw.arg] = ast.unparse(kw.value)
+        return result if result else {"raw_args": args_str}
+    except (SyntaxError, ValueError, TypeError):
+        return {"raw_args": args_str}
+
+
+def _parse_dot_style(text: str) -> tuple[str, list[ToolUseBlock]]:
+    """解析 .tool_name(kwargs) 格式的工具调用（Qwen 等模型常见）。"""
+    tool_calls: list[ToolUseBlock] = []
+    spans_to_remove: list[tuple[int, int]] = []
+
+    for m in _DOT_STYLE_RE.finditer(text):
+        tool_name = m.group(1)
+        if tool_name not in _KNOWN_TOOL_NAMES:
+            continue
+        paren_start = m.end() - 1
+        paren_end = _find_matching_paren(text, paren_start)
+        if paren_end < 0:
+            continue
+        args_str = text[paren_start + 1 : paren_end]
+        arguments = _parse_python_kwargs(args_str)
+        tool_calls.append(ToolUseBlock(
+            id=f"dot_{uuid.uuid4().hex[:12]}",
+            name=tool_name,
+            input=arguments,
+        ))
+        spans_to_remove.append((m.start(), paren_end + 1))
+        logger.info(
+            f"[DOT_TOOL_PARSE] Extracted tool call: {tool_name} "
+            f"with args: {list(arguments.keys())}"
+        )
+
+    if not tool_calls:
+        return text, []
+
+    parts: list[str] = []
+    prev = 0
+    for s, e in sorted(spans_to_remove):
+        parts.append(text[prev:s])
+        prev = e
+    parts.append(text[prev:])
+    return "".join(parts).strip(), tool_calls
+
+
 # ── 格式注册表 + 公开 API ─────────────────────────────
 #
 # 顺序有意义：JSON 放最后，因为其检测 pattern 最宽泛。
@@ -725,119 +841,3 @@ def convert_tool_result_to_responses(call_id: str, content: str) -> dict:
         "output": content,
     }
 
-
-
-# ── Dot-style 格式 (.tool_name(kwargs)) ──────────────────
-
-_KNOWN_TOOL_NAMES: set[str] = {
-    "web_search", "news_search", "browser_navigate", "browser_open",
-    "browser_click", "browser_type", "browser_scroll", "browser_screenshot",
-    "browser_wait", "browser_close", "browser_go_back", "browser_switch_tab",
-    "browser_task", "browser_get_content", "view_image",
-    "run_shell", "write_file", "read_file", "list_directory",
-    "send_message", "reply_message", "create_file", "edit_file",
-    "search_files", "delete_file", "move_file", "copy_file",
-    "ask_user", "generate_image", "deliver_artifacts", "send_sticker",
-    "get_voice_file", "get_image_file", "get_chat_history", "get_chat_info",
-    "get_user_info", "get_chat_members", "get_recent_messages",
-    "create_plan", "update_plan_step", "get_plan_status", "complete_plan",
-    "delegate_to_agent", "spawn_agent", "delegate_parallel", "create_agent",
-    "call_mcp_tool", "list_mcp_servers",
-    "desktop_screenshot", "enable_thinking", "get_session_logs",
-    "switch_persona", "update_persona_trait",
-}
-
-_DOT_STYLE_RE = re.compile(r"\.([a-z][a-z0-9_]{2,})\s*\(")
-
-
-def _find_matching_paren(text: str, start: int) -> int:
-    """找到与 start 位置的 '(' 匹配的 ')' 位置，考虑引号内的括号。"""
-    if start >= len(text) or text[start] != "(":
-        return -1
-    depth = 0
-    in_single_quote = False
-    in_double_quote = False
-    escape_next = False
-    for i in range(start, len(text)):
-        ch = text[i]
-        if escape_next:
-            escape_next = False
-            continue
-        if ch == "\\":
-            escape_next = True
-            continue
-        if ch == "'" and not in_double_quote:
-            in_single_quote = not in_single_quote
-        elif ch == '"' and not in_single_quote:
-            in_double_quote = not in_double_quote
-        elif not in_single_quote and not in_double_quote:
-            if ch == "(":
-                depth += 1
-            elif ch == ")":
-                depth -= 1
-                if depth == 0:
-                    return i
-    return -1
-
-
-def _parse_python_kwargs(args_str: str) -> dict:
-    """将 Python 风格的 kwargs 字符串解析为 dict。"""
-    import ast
-
-    args_str = args_str.strip()
-    if not args_str:
-        return {}
-    try:
-        tree = ast.parse(f"_f({args_str})", mode="eval")
-        call_node = tree.body
-        if not isinstance(call_node, ast.Call):
-            return {"raw_args": args_str}
-        result = {}
-        for kw in call_node.keywords:
-            if kw.arg is None:
-                continue
-            try:
-                result[kw.arg] = ast.literal_eval(kw.value)
-            except (ValueError, TypeError):
-                result[kw.arg] = ast.unparse(kw.value)
-        return result if result else {"raw_args": args_str}
-    except (SyntaxError, ValueError, TypeError):
-        return {"raw_args": args_str}
-
-
-def _parse_dot_style(text: str) -> tuple[str, list[ToolUseBlock]]:
-    """解析 .tool_name(kwargs) 格式的工具调用（Qwen 等模型常见）。"""
-    tool_calls: list[ToolUseBlock] = []
-    spans_to_remove: list[tuple[int, int]] = []
-
-    for m in _DOT_STYLE_RE.finditer(text):
-        tool_name = m.group(1)
-        if tool_name not in _KNOWN_TOOL_NAMES:
-            continue
-        paren_start = m.end() - 1
-        paren_end = _find_matching_paren(text, paren_start)
-        if paren_end < 0:
-            continue
-        args_str = text[paren_start + 1 : paren_end]
-        arguments = _parse_python_kwargs(args_str)
-        tool_calls.append(ToolUseBlock(
-            id=f"dot_{uuid.uuid4().hex[:12]}",
-            name=tool_name,
-            input=arguments,
-        ))
-        spans_to_remove.append((m.start(), paren_end + 1))
-        logger.info(
-            f"[DOT_TOOL_PARSE] Extracted tool call: {tool_name} "
-            f"with args: {list(arguments.keys())}"
-        )
-
-    if not tool_calls:
-        return text, []
-
-    parts: list[str] = []
-    prev = 0
-    for s, e in sorted(spans_to_remove):
-        parts.append(text[prev:s])
-        prev = e
-    parts.append(text[prev:])
-    return "".join(parts).strip(), tool_calls

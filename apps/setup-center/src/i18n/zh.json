@@ -1597,7 +1597,7 @@
     "qrDenied": "授权已被拒绝",
     "qrInitFailed": "初始化失败，请检查网络",
     "streaming": "流式卡片输出",
-    "groupStreaming": "群聊中也启用流式输出",
+    "groupStreaming": "群聊流式卡片输出",
     "groupMode": "群聊回复模式",
     "groupMode_mention_only": "仅 @时回复",
     "groupMode_smart": "智能判断",
