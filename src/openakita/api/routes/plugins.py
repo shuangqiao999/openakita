@@ -326,6 +326,23 @@ async def grant_permissions(
     return {"ok": True, "granted": body.permissions}
 
 
+class PermissionRevokeBody(BaseModel):
+    permissions: list[str] = Field(..., min_length=1)
+    reload: bool = Field(True, description="Reload plugin after revoking permissions")
+
+
+@router.post("/{plugin_id}/permissions/revoke")
+async def revoke_permissions(
+    plugin_id: str, body: PermissionRevokeBody, request: Request
+) -> dict[str, Any]:
+    """Revoke permissions from a plugin and optionally reload it."""
+    pm = _require_manager(request)
+    pm.revoke_permissions(plugin_id, body.permissions)
+    if body.reload:
+        await pm.reload_plugin(plugin_id)
+    return {"ok": True, "revoked": body.permissions}
+
+
 @router.get("/{plugin_id}/permissions")
 async def get_plugin_permissions(plugin_id: str, request: Request) -> dict[str, Any]:
     """Get detailed permission info for a plugin."""

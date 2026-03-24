@@ -321,6 +321,22 @@ export default function PluginManagerView({ visible, httpApiBase }: Props) {
     }
   };
 
+  const handleRevokePermission = async (pluginId: string, perm: string) => {
+    setGranting(true);
+    try {
+      await safeFetch(`${apiBaseRef.current()}/api/plugins/${pluginId}/permissions/revoke`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ permissions: [perm], reload: true }),
+      });
+      await doRefresh();
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setGranting(false);
+    }
+  };
+
   const handleOpenFolder = async (pluginId: string) => {
     try {
       const resp = await safeFetch(`${apiBaseRef.current()}/api/plugins/${pluginId}/open-folder`, {
@@ -745,17 +761,48 @@ export default function PluginManagerView({ visible, httpApiBase }: Props) {
                         {(p.permissions || []).map((perm) => {
                           const isGranted = p.granted_permissions?.includes(perm) ?? false;
                           const isPending = p.pending_permissions?.includes(perm) ?? false;
+                          const isBasic = ["tools.register","hooks.basic","config.read","config.write","data.own","log","skill"].includes(perm);
                           return (
                             <tr key={perm} style={{ borderBottom: "1px solid var(--line)" }}>
                               <td style={{ padding: "4px 8px", color: "var(--fg)" }}>
                                 {permLabel(perm, lang)}
                                 <span style={{ color: "var(--muted)", marginLeft: 4 }}>({perm})</span>
                               </td>
-                              <td style={{ padding: "4px 8px", textAlign: "right" }}>
-                                {isGranted ? (
-                                  <span style={{ color: "var(--ok, #22c55e)", fontSize: 11 }}>{t("plugins.permGranted")}</span>
+                              <td style={{ padding: "4px 8px", textAlign: "right", whiteSpace: "nowrap" }}>
+                                {isBasic ? (
+                                  <span style={{ color: "var(--ok, #22c55e)", fontSize: 11 }}>{t("plugins.permAuto")}</span>
+                                ) : isGranted ? (
+                                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                                    <span style={{ color: "var(--ok, #22c55e)", fontSize: 11 }}>{t("plugins.permGranted")}</span>
+                                    <button
+                                      onClick={() => handleRevokePermission(p.id, perm)}
+                                      disabled={granting}
+                                      style={{
+                                        padding: "1px 6px", borderRadius: 3, fontSize: 10,
+                                        border: "1px solid var(--danger, #ef4444)", background: "transparent",
+                                        color: "var(--error, #f87171)", cursor: granting ? "not-allowed" : "pointer",
+                                        opacity: granting ? 0.5 : 1,
+                                      }}
+                                    >
+                                      {t("plugins.permRevoke")}
+                                    </button>
+                                  </span>
                                 ) : isPending ? (
-                                  <span style={{ color: "var(--warning, #f59e0b)", fontSize: 11 }}>{t("plugins.permPending")}</span>
+                                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                                    <span style={{ color: "var(--warning, #f59e0b)", fontSize: 11 }}>{t("plugins.permPending")}</span>
+                                    <button
+                                      onClick={() => handleGrantPermissions(p.id, [perm])}
+                                      disabled={granting}
+                                      style={{
+                                        padding: "1px 6px", borderRadius: 3, fontSize: 10,
+                                        border: "1px solid var(--ok, #22c55e)", background: "transparent",
+                                        color: "var(--ok, #22c55e)", cursor: granting ? "not-allowed" : "pointer",
+                                        opacity: granting ? 0.5 : 1,
+                                      }}
+                                    >
+                                      {t("plugins.permGrant")}
+                                    </button>
+                                  </span>
                                 ) : null}
                               </td>
                             </tr>

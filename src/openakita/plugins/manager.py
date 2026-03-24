@@ -370,6 +370,22 @@ class PluginManager:
 
         self._save_state()
 
+    def revoke_permissions(
+        self, plugin_id: str, permissions: list[str]
+    ) -> None:
+        """Revoke previously granted permissions."""
+        entry = self._state.get_entry(plugin_id)
+        if entry is not None:
+            entry.granted_permissions = [
+                p for p in entry.granted_permissions if p not in permissions
+            ]
+
+        loaded = self._loaded.get(plugin_id)
+        if loaded:
+            loaded.api._granted_permissions -= set(permissions)
+
+        self._save_state()
+
     # --- Unloading ---
 
     async def unload_plugin(self, plugin_id: str) -> bool:
