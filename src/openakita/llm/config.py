@@ -90,6 +90,29 @@ def _load_env():
 
 _load_env()
 
+_workspace_env_loaded: set[str] = set()
+
+
+def _ensure_workspace_env_loaded(config_path: Path) -> None:
+    """Load the .env file from the workspace that owns *config_path*.
+
+    ``_load_env()`` runs at import-time from CWD, which works for CLI /
+    development but can miss the workspace ``.env`` in packaged desktop
+    builds (Tauri + PyInstaller) where CWD may differ from the workspace
+    root.  This function is called from ``load_endpoints_config()`` — at
+    that point we *know* the concrete config path, so we can derive the
+    workspace root reliably: ``config_path`` is ``<workspace>/data/llm_endpoints.json``.
+    """
+    ws_root = config_path.parent.parent
+    ws_key = str(ws_root)
+    if ws_key in _workspace_env_loaded:
+        return
+    _workspace_env_loaded.add(ws_key)
+    env_path = ws_root / ".env"
+    if env_path.exists():
+        _safe_load_dotenv(env_path)
+        logger.info("Loaded workspace .env from %s", env_path)
+
 
 def get_default_config_path() -> Path:
     """获取默认配置文件路径
@@ -149,6 +172,8 @@ def load_endpoints_config(
         config_path = get_default_config_path()
 
     config_path = Path(config_path)
+
+    _ensure_workspace_env_loaded(config_path)
 
     if not config_path.exists():
         logger.warning(f"Config file not found: {config_path}, using empty config")
