@@ -448,9 +448,12 @@ Use `get_tool_info(tool_name)` to see full parameters before calling.
         添加单个工具
 
         Args:
-            tool: 工具定义
+            tool: 工具定义（支持 Anthropic 和 OpenAI 格式）
         """
-        self._tools[tool["name"]] = tool
+        name = tool.get("name") or tool.get("function", {}).get("name", "")
+        if not name:
+            raise ValueError("Tool definition must have a 'name'")
+        self._tools[name] = tool
         self._cached_catalog = None
 
     def remove_tool(self, tool_name: str) -> bool:

@@ -203,7 +203,7 @@ async def list_plugins(request: Request) -> dict[str, Any]:
 
 
 @router.post("/install")
-async def install_plugin(body: InstallBody) -> dict[str, str]:
+async def install_plugin(body: InstallBody, request: Request) -> dict[str, str]:
     plugins_dir = _plugins_dir()
     src = body.source.strip()
     try:
@@ -218,6 +218,14 @@ async def install_plugin(body: InstallBody) -> dict[str, str]:
     except Exception as e:
         logger.exception("Unexpected error installing plugin from %s", src)
         raise HTTPException(status_code=500, detail=str(e)) from e
+
+    pm = _get_plugin_manager(request)
+    if pm is not None:
+        try:
+            await pm.reload_plugin(plugin_id)
+        except Exception as e:
+            logger.warning("Plugin '%s' installed but failed to hot-load: %s", plugin_id, e)
+
     return {"plugin_id": plugin_id}
 
 
