@@ -423,10 +423,20 @@ NEXT: 建议的下一步"""
         """获取最后一条用户请求"""
         from .tool_executor import smart_truncate
 
+        def _strip_context_prefix(text: str) -> str:
+            """移除对话历史前缀，提取真正的用户输入。"""
+            _marker = "：]"
+            if text.startswith("[以上是之前的对话历史"):
+                idx = text.find(_marker)
+                if idx != -1:
+                    text = text[idx + len(_marker):].strip()
+            return text
+
         for msg in reversed(messages):
             if msg.get("role") == "user":
                 content = msg.get("content", "")
                 if isinstance(content, str) and not content.startswith("[系统]"):
+                    content = _strip_context_prefix(content)
                     result, _ = smart_truncate(content, 3000, save_full=False, label="user_request")
                     return result
                 elif isinstance(content, list):
@@ -434,6 +444,7 @@ NEXT: 建议的下一步"""
                         if isinstance(part, dict) and part.get("type") == "text":
                             text = part.get("text", "")
                             if not text.startswith("[系统]"):
+                                text = _strip_context_prefix(text)
                                 result, _ = smart_truncate(text, 3000, save_full=False, label="user_request")
                                 return result
         return ""

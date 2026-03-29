@@ -710,6 +710,7 @@ async def _stream_chat(
             if _full_reply:
                 await _broadcast_chat_event("chat:message_update", {
                     "conversation_id": _conv_id,
+                    "client_id": getattr(chat_request, "client_id", "") or "",
                     "last_message_preview": _full_reply[:100],
                     "timestamp": time.time(),
                 })
@@ -911,13 +912,14 @@ async def chat_insert(request: Request, body: ChatControlRequest):
 @router.get("/api/agents/sub-tasks")
 async def get_sub_agent_tasks(request: Request, conversation_id: str = ""):
     """Return live sub-agent states for a given conversation (polling endpoint)."""
-    orchestrator = getattr(request.app.state, "orchestrator", None)
+    orchestrator = None
+    try:
+        from openakita.main import _orchestrator
+        orchestrator = _orchestrator
+    except (ImportError, AttributeError):
+        pass
     if orchestrator is None:
-        try:
-            from openakita.main import _orchestrator
-            orchestrator = _orchestrator
-        except (ImportError, AttributeError):
-            pass
+        orchestrator = getattr(request.app.state, "orchestrator", None)
     if orchestrator is None or not conversation_id:
         return []
     try:
