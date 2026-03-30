@@ -30,140 +30,74 @@ class IntentType(Enum):
 
 @dataclass
 class ComplexitySignal:
-    """复杂任务信号，用于判断是否建议切换到 Plan 模式"""
     multi_file_change: bool = False
     cross_module: bool = False
     ambiguous_scope: bool = False
     destructive_potential: bool = False
     multi_step_required: bool = False
+    should_suggest_plan: bool = False
+    score: int = 0
 
-    @property
-    def score(self) -> int:
-        return sum([
-            self.multi_file_change,
-            self.cross_module,
-            self.ambiguous_scope * 2,
-            self.destructive_potential * 2,
-            self.multi_step_required,
-        ])
-
-    @property
-    def should_suggest_plan(self) -> bool:
-        return self.score >= 3
+    def __post_init__(self):
+        self.score = (
+            self.multi_file_change * 2
+            + self.cross_module * 2
+            + self.ambiguous_scope * 2
+            + self.destructive_potential * 1
+            + self.multi_step_required * 1
+        )
+        self.should_suggest_plan = self.score >= 3
 
 
 @dataclass
 class IntentResult:
     intent: IntentType
-    confidence: float = 1.0
-    task_definition: str = ""
-    task_type: str = "other"
+    confidence: float
+    task_definition: str
+    task_type: str
     tool_hints: list[str] = field(default_factory=list)
+    recommended_tools: list[str] = field(default_factory=list)
     memory_keywords: list[str] = field(default_factory=list)
     force_tool: bool = False
     todo_required: bool = False
-    suggest_plan: bool = False
-    complexity: ComplexitySignal = field(default_factory=ComplexitySignal)
     raw_output: str = ""
     fast_reply: bool = False
+    complexity: ComplexitySignal | None = None
+    suggest_plan: bool = False
 
 
-# Default fallback: behaves identically to the pre-optimization flow
-_DEFAULT_RESULT = IntentResult(
-    intent=IntentType.TASK,
-    confidence=0.0,
-    force_tool=True,
-)
+INTENT_ANALYZER_SYSTEM = """You are an intent analyzer. Analyze the user's message and output structured intent information.
 
-INTENT_ANALYZER_SYSTEM = """【角色】
-你是 Intent Analyzer，负责分析用户消息的意图并生成结构化任务定义。
-
-【输入】
-用户的原始请求。
-
-【目标】
-1. 判断用户意图类型
-2. 将请求转化为结构化任务定义
-3. 推荐可能需要的工具分类
-4. 提取记忆检索关键词
-
-【输出结构】
-请用以下 YAML 格式输出：
-
+Output in YAML format:
 ```yaml
-intent: [意图类型: chat/query/task/follow_up/command]
-task_type: [任务类型: question/action/creation/analysis/reminder/compound/other]
-goal: [一句话描述任务目标]
-inputs:
-  given: [已提供的信息列表]
-  missing: [缺失但可能需要的信息列表，如果没有则为空]
-constraints: [约束条件列表，如果没有则为空]
-output_requirements: [输出要求列表]
-risks_or_ambiguities: [风险或歧义点列表，如果没有则为空]
-tool_hints: [可能需要的工具分类列表，从以下选择: File System, Browser, Web Search, IM Channel, Scheduled, Desktop, Agent, Agent Hub, Agent Package, Organization, Profile, Persona, Config。注意：System/Memory/Plan/Skills/Skill Store/MCP 类工具始终可用，无需列出。空列表表示仅使用始终可用的基础工具]
-memory_keywords: [用于检索历史记忆的关键词列表。空列表表示不需要检索记忆]
+intent: <chat|query|task|follow_up|command>
+task_type: <simple|compound|question|other>
+goal: <what the user wants to achieve>
+tool_hints: [<optional tool names to use>]
+recommended_tools: [<tools that might be helpful>]
+memory_keywords: [<keywords to search in memory>]
 ```
 
-【意图类型说明】
-- chat: 闲聊、寒暄、感谢、告别、简短确认（如"好的""收到""你好"）
-- query: 信息查询，可能不需要工具就能回答（如"Python的GIL是什么"）
-- task: 需要通过工具执行的任务（如"帮我写个脚本""搜索一下""创建文件"）
-- follow_up: 对上一轮结果的追问或修改要求（如"改成UTF-8编码""再加一个功能"）
-- command: 系统指令（以 / 开头的命令，如 /stop /plan）
+Rules:
+- intent=chat: simple greetings, confirmations, small talk
+- intent=query: looking for information, facts
+- intent=task: wants to accomplish something, needs tools
+- intent=follow_up: continuation of previous conversation
+- intent=command: wants to execute a specific command
 
-【规则】
-- 不要解决任务，不要给建议，只输出 YAML
-- 极短消息（如"嗯""好""谢谢"）→ intent: chat
-- 涉及"之前""上次""我说过"的消息 → memory_keywords 应包含相关主题词
-- task_type: compound 表示多步骤任务，需要制定计划
-- 保持简洁，每项不超过一句话
+task_type:
+- simple: single action, can be done directly
+- compound: multiple steps required, suggest plan mode
+- question: seeking information
+- other: unclear intent
+"""
 
-【示例1 — 闲聊】
-用户: "你好呀"
 
-```yaml
-intent: chat
-task_type: other
-goal: 用户打招呼
-inputs:
-  given: [问候]
-  missing: []
-constraints: []
-output_requirements: [友好回应]
-risks_or_ambiguities: []
-tool_hints: []
-memory_keywords: []
-```
-
-【示例2 — 任务】
-用户: "帮我写一个Python脚本，读取CSV文件并统计每列的平均值"
-
-```yaml
-intent: task
-task_type: creation
-goal: 创建一个读取CSV文件并计算各列平均值的Python脚本
-inputs:
-  given:
-    - 需要处理的文件格式是CSV
-    - 需要统计的是平均值
-    - 使用Python语言
-  missing:
-    - CSV文件的路径或示例
-    - 是否需要处理非数值列
-constraints: []
-output_requirements:
-  - 可执行的Python脚本
-  - 能够读取CSV文件
-  - 输出每列的平均值
-risks_or_ambiguities:
-  - 未指定如何处理包含非数值数据的列
-tool_hints: [File System]
-memory_keywords: [CSV, Python脚本, 数据统计]
-```"""
+_THINKING_TAG_PATTERN = re.compile(r"<thinking>.*?</thinking>", re.DOTALL)
 
 
 def _strip_thinking_tags(text: str) -> str:
-    return re.sub(r"<thinking>.*?</thinking>", "", text, flags=re.DOTALL).strip()
+    return _THINKING_TAG_PATTERN.sub("", text).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -172,22 +106,117 @@ def _strip_thinking_tags(text: str) -> str:
 
 _GREETING_PATTERNS: set[str] = {
     # Chinese greetings / confirmations / farewells
-    "你好", "您好", "你好呀", "你好啊", "嗨", "哈喽", "hello", "hi", "hey",
-    "嗯", "嗯嗯", "好", "好的", "行", "ok", "可以", "收到", "了解",
-    "谢谢", "谢了", "感谢", "thanks", "thank you", "thx",
-    "再见", "拜拜", "bye", "晚安", "早安", "早", "早上好", "下午好", "晚上好",
-    "在吗", "在不在", "你在吗",
-    "哈哈", "哈哈哈", "笑死", "666", "牛", "厉害",
-    "?", "？", "!", "！",
+    "你好",
+    "您好",
+    "你好呀",
+    "你好啊",
+    "嗨",
+    "哈喽",
+    "hello",
+    "hi",
+    "hey",
+    "嗯",
+    "嗯嗯",
+    "好",
+    "好的",
+    "行",
+    "ok",
+    "可以",
+    "收到",
+    "了解",
+    "知道了",
+    "谢谢",
+    "谢了",
+    "感谢",
+    "thanks",
+    "thank you",
+    "thx",
+    "感恩",
+    "、多谢",
+    "再见",
+    "拜拜",
+    "bye",
+    "晚安",
+    "早安",
+    "早",
+    "早上好",
+    "下午好",
+    "晚上好",
+    "睡觉啦",
+    "在吗",
+    "在不在",
+    "你在吗",
+    "还在吗",
+    "哈哈",
+    "哈哈哈",
+    "笑死",
+    "666",
+    "牛",
+    "厉害",
+    "太强了",
+    "佩服",
+    "?",
+    "？",
+    "!",
+    "！",
+    "。。",
+    "...",
+    "辛苦啦",
+    "麻烦啦",
+    "搞定啦",
+    "完成啦",
+    "好棒",
+    "赞",
+    "点赞",
+    "收到啦",
+    "明白啦",
+    "懂了懂了",
+    "了解了解",
+}
+
+# Fast answer patterns for simple queries that can be answered directly
+# Maps pattern -> (response_type, tool_hint)
+_QUICK_ANSWER_PATTERNS: dict[str, tuple[str, str | None]] = {
+    "现在几点": ("time", None),
+    "几点啦": ("time", None),
+    "现在时间": ("time", None),
+    "今天几号": ("date", None),
+    "今天日期": ("date", None),
+    "今天是": ("date", None),
+    "天气": ("weather", "web_search"),
+    "查天气": ("weather", "web_search"),
 }
 
 # When conversation history exists, only these unambiguous strings use the fast-path;
 # punctuation and short confirmations are analyzed by the LLM (may be follow-ups).
-_SAFE_WITH_HISTORY: frozenset[str] = frozenset({
-    "你好", "您好", "你好呀", "你好啊", "嗨", "哈喽", "hello", "hi", "hey",
-    "谢谢", "谢了", "感谢", "thanks", "thank you", "thx",
-    "再见", "拜拜", "bye", "晚安", "早安", "早", "早上好", "下午好", "晚上好",
-})
+_SAFE_WITH_HISTORY: frozenset[str] = frozenset(
+    {
+        "你好",
+        "您好",
+        "你好呀",
+        "你好啊",
+        "嗨",
+        "哈喽",
+        "hello",
+        "hi",
+        "hey",
+        "谢谢",
+        "谢了",
+        "感谢",
+        "thanks",
+        "thank you",
+        "thx",
+        "再见",
+        "拜拜",
+        "bye",
+        "晚安",
+        "早安",
+        "早",
+        "早上好",
+        "下午好",
+        "晚上好",
+    }
+)
 
 _FAST_CHAT_MAX_LEN = 12
 
@@ -228,8 +257,10 @@ def _try_fast_chat_shortcut(message: str, has_history: bool = False) -> IntentRe
             fast_reply=True,
         )
 
-    if not has_history and len(stripped) <= 6 and all(
-        not c.isalnum() or c in "0123456789" for c in stripped
+    if (
+        not has_history
+        and len(stripped) <= 6
+        and all(not c.isalnum() or c in "0123456789" for c in stripped)
     ):
         logger.info(f"[IntentAnalyzer] Fast-path: '{stripped}' is pure punctuation/emoji → CHAT")
         return IntentResult(
@@ -248,6 +279,71 @@ def _try_fast_chat_shortcut(message: str, has_history: bool = False) -> IntentRe
     return None
 
 
+def _try_fast_query_shortcut(message: str) -> IntentResult | None:
+    """Fast-path for simple queries that can be answered without LLM or with specific tools.
+
+    Returns IntentResult if matched, None otherwise.
+    """
+    import datetime
+
+    stripped = message.strip()
+    normalized = stripped.lower()
+
+    if normalized in _QUICK_ANSWER_PATTERNS:
+        query_type, tool_hint = _QUICK_ANSWER_PATTERNS[normalized]
+
+        if query_type == "time":
+            current_time = datetime.datetime.now().strftime("%H:%M:%S")
+            response = f"现在是 {current_time}"
+            logger.info(f"[IntentAnalyzer] Fast-query: '{stripped}' → time query")
+            return IntentResult(
+                intent=IntentType.CHAT,
+                confidence=1.0,
+                task_definition=response,
+                task_type="question",
+                tool_hints=[tool_hint] if tool_hint else [],
+                memory_keywords=[],
+                force_tool=False,
+                todo_required=False,
+                raw_output="[fast-query-shortcut]",
+                fast_reply=True,
+            )
+
+        if query_type == "date":
+            current_date = datetime.datetime.now().strftime("%Y年%m月%d日 %A")
+            response = f"今天是 {current_date}"
+            logger.info(f"[IntentAnalyzer] Fast-query: '{stripped}' → date query")
+            return IntentResult(
+                intent=IntentType.CHAT,
+                confidence=1.0,
+                task_definition=response,
+                task_type="question",
+                tool_hints=[tool_hint] if tool_hint else [],
+                memory_keywords=[],
+                force_tool=False,
+                todo_required=False,
+                raw_output="[fast-query-shortcut]",
+                fast_reply=True,
+            )
+
+        if query_type == "weather":
+            logger.info(f"[IntentAnalyzer] Fast-query: '{stripped}' → weather (needs web_search)")
+            return IntentResult(
+                intent=IntentType.QUERY,
+                confidence=1.0,
+                task_definition=f"查询{stripped}的天气",
+                task_type="question",
+                tool_hints=[tool_hint] if tool_hint else [],
+                memory_keywords=["天气"],
+                force_tool=True,
+                todo_required=False,
+                raw_output="[fast-query-shortcut]",
+                fast_reply=False,
+            )
+
+    return None
+
+
 class IntentAnalyzer:
     """LLM-based intent analyzer. All messages go through LLM analysis."""
 
@@ -260,8 +356,11 @@ class IntentAnalyzer:
         session_context: Any = None,
         has_history: bool = False,
     ) -> IntentResult:
-        """Analyze user message intent. Rule-based shortcut for obvious greetings,
-        LLM analysis for everything else."""
+        """Analyze user message intent. Rule-based shortcuts first, then LLM analysis."""
+        fast_query_result = _try_fast_query_shortcut(message)
+        if fast_query_result is not None:
+            return fast_query_result
+
         fast_result = _try_fast_chat_shortcut(message, has_history=has_history)
         if fast_result is not None:
             return fast_result
@@ -272,11 +371,7 @@ class IntentAnalyzer:
                 system=INTENT_ANALYZER_SYSTEM,
             )
 
-            raw_output = (
-                _strip_thinking_tags(response.content).strip()
-                if response.content
-                else ""
-            )
+            raw_output = _strip_thinking_tags(response.content).strip() if response.content else ""
             if not raw_output:
                 logger.warning("[IntentAnalyzer] Empty LLM response, using default")
                 return _make_default(message)
@@ -319,8 +414,16 @@ def _parse_intent_output(raw_output: str, message: str) -> IntentResult:
 
         kv_match = re.match(r"^(\w[\w_]*):\s*(.*)", stripped)
         if kv_match and kv_match.group(1) in (
-            "intent", "task_type", "goal", "tool_hints", "memory_keywords",
-            "constraints", "inputs", "output_requirements", "risks_or_ambiguities",
+            "intent",
+            "task_type",
+            "goal",
+            "tool_hints",
+            "recommended_tools",
+            "memory_keywords",
+            "constraints",
+            "inputs",
+            "output_requirements",
+            "risks_or_ambiguities",
         ):
             if current_key:
                 extracted[current_key] = "\n".join(current_lines).strip()
@@ -348,6 +451,7 @@ def _parse_intent_output(raw_output: str, message: str) -> IntentResult:
     task_definition = _build_task_definition(extracted, max_chars=600)
 
     tool_hints = _parse_list(extracted.get("tool_hints", ""))
+    recommended_tools = _parse_list(extracted.get("recommended_tools", ""))
     memory_keywords = _parse_list(extracted.get("memory_keywords", ""))
 
     force_tool = intent in (IntentType.TASK,) and task_type not in ("question", "other")
@@ -359,6 +463,7 @@ def _parse_intent_output(raw_output: str, message: str) -> IntentResult:
         task_definition=task_definition or goal or message[:200],
         task_type=task_type,
         tool_hints=tool_hints,
+        recommended_tools=recommended_tools,
         memory_keywords=memory_keywords,
         force_tool=force_tool,
         todo_required=todo_required,
@@ -418,24 +523,53 @@ def _parse_list(value: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 _REFACTOR_KEYWORDS = [
-    "重构", "refactor", "redesign", "改造", "迁移", "migration", "migrate",
-    "重写", "rewrite",
+    "重构",
+    "refactor",
+    "redesign",
+    "改造",
+    "迁移",
+    "migration",
+    "migrate",
+    "重写",
+    "rewrite",
 ]
 _GLOBAL_KEYWORDS = [
-    "全部", "所有", "整个项目", "across the codebase", "entire", "all files",
-    "批量", "全局",
+    "全部",
+    "所有",
+    "整个项目",
+    "across the codebase",
+    "entire",
+    "all files",
+    "批量",
+    "全局",
 ]
 _ARCHITECTURE_KEYWORDS = [
-    "架构", "设计方案", "技术选型", "architecture", "design",
-    "系统设计", "system design",
+    "架构",
+    "设计方案",
+    "技术选型",
+    "architecture",
+    "design",
+    "系统设计",
+    "system design",
 ]
 _RESEARCH_KEYWORDS = [
-    "调研", "分析", "对比", "evaluate", "compare", "research", "review",
-    "评估", "综合分析",
+    "调研",
+    "分析",
+    "对比",
+    "evaluate",
+    "compare",
+    "research",
+    "review",
+    "评估",
+    "综合分析",
 ]
 _MULTI_FILE_KEYWORDS = [
-    "多个文件", "multiple files", "所有文件", "每个文件",
-    "across files", "跨文件",
+    "多个文件",
+    "multiple files",
+    "所有文件",
+    "每个文件",
+    "across files",
+    "跨文件",
 ]
 
 
