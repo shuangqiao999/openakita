@@ -244,6 +244,7 @@ def build_system_prompt(
     model_id: str = "",
     model_display_name: str = "",
     session_context: dict | None = None,
+    skip_catalogs: bool = False,
 ) -> str:
     """
     组装系统提示词
@@ -360,15 +361,15 @@ def build_system_prompt(
     if arch_section:
         system_parts.append(arch_section)
 
-    # 7. 会话类型规则（FULL 和 MINIMAL 都注入）
-    if prompt_mode in (PromptMode.FULL, PromptMode.MINIMAL):
+    # 7. 会话类型规则（FULL 和 MINIMAL 都注入，ask 模式跳过以减小 prompt）
+    if prompt_mode in (PromptMode.FULL, PromptMode.MINIMAL) and mode != "ask":
         persona_active = persona_manager.is_persona_active() if persona_manager else False
         session_rules = _build_session_type_rules(session_type, persona_active=persona_active)
         if session_rules:
             developer_parts.append(session_rules)
 
-    # 8. 项目 AGENTS.md（FULL 和 MINIMAL 都注入）
-    if prompt_mode in (PromptMode.FULL, PromptMode.MINIMAL):
+    # 8. 项目 AGENTS.md（FULL 和 MINIMAL 都注入，ask 模式跳过——纯聊天不需要开发规范）
+    if prompt_mode in (PromptMode.FULL, PromptMode.MINIMAL) and mode != "ask":
         agents_md_content = _read_agents_md()
         if agents_md_content:
             developer_parts.append(
@@ -377,18 +378,19 @@ def build_system_prompt(
                 + agents_md_content
             )
 
-    # 9. Catalogs 层（所有 prompt_mode 都注入）
-    catalogs_section = _build_catalogs_section(
-        tool_catalog=tool_catalog,
-        skill_catalog=skill_catalog,
-        mcp_catalog=mcp_catalog,
-        plugin_catalog=plugin_catalog,
-        budget_tokens=budget_config.catalogs_budget,
-        include_tools_guide=include_tools_guide,
-        mode=mode,
-    )
-    if catalogs_section:
-        tool_parts.append(catalogs_section)
+    # 9. Catalogs 层（skip_catalogs=True 时完全跳过，CHAT 意图无需工具描述）
+    if not skip_catalogs:
+        catalogs_section = _build_catalogs_section(
+            tool_catalog=tool_catalog,
+            skill_catalog=skill_catalog,
+            mcp_catalog=mcp_catalog,
+            plugin_catalog=plugin_catalog,
+            budget_tokens=budget_config.catalogs_budget,
+            include_tools_guide=include_tools_guide,
+            mode=mode,
+        )
+        if catalogs_section:
+            tool_parts.append(catalogs_section)
 
     # 10. Memory 层（仅 FULL 模式）
     if prompt_mode == PromptMode.FULL:
@@ -1383,10 +1385,15 @@ def _build_pinned_rules_section(
         lines = ["## 用户设定的规则（必须遵守）\n"]
         total_chars = 0
         max_chars = _PINNED_RULES_MAX_TOKENS * _PINNED_RULES_CHARS_PER_TOKEN
+        seen_prefixes: set[str] = set()
         for r in active_rules:
             content = (r.content or "").strip()
             if not content:
                 continue
+            prefix = content[:40]
+            if prefix in seen_prefixes:
+                continue
+            seen_prefixes.add(prefix)
             line = f"- {content}"
             if total_chars + len(line) > max_chars:
                 break

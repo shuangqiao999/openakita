@@ -129,10 +129,16 @@ class PromptCompiler:
 
             if compiled and compiled.strip():
                 output_path.write_text(compiled, encoding="utf-8")
-                results[target] = output_path
                 logger.info(
                     f"[Compiler] LLM compiled {_SOURCE_MAP[target]} -> {_OUTPUT_MAP[target]}"
                 )
+            else:
+                fallback = source_content[: config.get("max_tokens", 500)]
+                output_path.write_text(fallback, encoding="utf-8")
+                logger.info(
+                    f"[Compiler] LLM compilation empty for {target}, wrote truncated source"
+                )
+            results[target] = output_path
 
         (runtime_dir / ".compiled_at").write_text(datetime.now().isoformat(), encoding="utf-8")
         return results
@@ -187,8 +193,14 @@ def compile_all(identity_dir: Path, use_llm: bool = False) -> dict[str, Path]:
 
         if compiled and compiled.strip():
             output_path.write_text(compiled, encoding="utf-8")
-            results[target] = output_path
             logger.info(f"[Compiler] Rule compiled {_SOURCE_MAP[target]} -> {_OUTPUT_MAP[target]}")
+        else:
+            fallback = source_content[: config.get("max_tokens", 500)]
+            output_path.write_text(fallback, encoding="utf-8")
+            logger.info(
+                f"[Compiler] Rule extraction empty for {target}, wrote truncated source"
+            )
+        results[target] = output_path
 
     (runtime_dir / ".compiled_at").write_text(datetime.now().isoformat(), encoding="utf-8")
     return results

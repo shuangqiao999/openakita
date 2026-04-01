@@ -738,8 +738,8 @@ class ReasoningEngine:
             max_no_tool_retries = force_tool_retries
             logger.info(f"[ForceToolCall] Intent override: max_retries={force_tool_retries}")
 
-        max_verify_retries = 3
-        max_confirmation_text_retries = max(0, int(getattr(settings, "confirmation_text_max_retries", 2)))
+        max_verify_retries = 1
+        max_confirmation_text_retries = max(0, int(getattr(settings, "confirmation_text_max_retries", 1)))
 
         # 追踪变量
         executed_tool_names: list[str] = []
@@ -1674,6 +1674,12 @@ class ReasoningEngine:
                             "role": "user",
                             "content": intervention.prompt_injection,
                         })
+                        tools = []
+                        max_no_tool_retries = 0
+                        logger.info(
+                            f"[Supervisor] NUDGE: tools stripped to force text response "
+                            f"(iter={iteration}, pattern={intervention.pattern.value})"
+                        )
 
                     if intervention.should_escalate:
                         max_no_tool_retries = 0
@@ -1870,8 +1876,8 @@ class ReasoningEngine:
                 max_no_tool_retries = force_tool_retries
                 logger.info(f"[ForceToolCall/Stream] Intent override: max_retries={force_tool_retries}")
 
-            max_verify_retries = 3
-            max_confirmation_text_retries = max(0, int(getattr(settings, "confirmation_text_max_retries", 2)))
+            max_verify_retries = 1
+            max_confirmation_text_retries = max(0, int(getattr(settings, "confirmation_text_max_retries", 1)))
 
             executed_tool_names: list[str] = []
             delivery_receipts: list[dict] = []
@@ -2400,7 +2406,7 @@ class ReasoningEngine:
                                 parsed_questions.append(pq)
                             if parsed_questions:
                                 event["questions"] = parsed_questions
-                        
+
                         await broadcast_event("pet-status-update", {"status": "idle"})
                         yield event
                         react_trace.append(_iter_trace)
@@ -2865,6 +2871,12 @@ class ReasoningEngine:
                                 "role": "user",
                                 "content": intervention.prompt_injection,
                             })
+                            tools = []
+                            max_no_tool_retries = 0
+                            logger.info(
+                                f"[Supervisor] NUDGE: tools stripped to force text response "
+                                f"(iter={_iteration}, pattern={intervention.pattern.value})"
+                            )
 
                         if intervention.should_escalate:
                             max_no_tool_retries = 0
@@ -2917,6 +2929,94 @@ class ReasoningEngine:
                         llm_client.restore_default(conversation_id=conversation_id)
                     except Exception:
                         pass
+
+    # ==================== Unified Async Generator Interface ====================
+
+    async def run_stream(
+        self,
+        messages: list[dict],
+        *,
+        tools: list[dict] | None = None,
+        system_prompt: str = "",
+        base_system_prompt: str = "",
+        task_description: str = "",
+        task_monitor: Any = None,
+        session_type: str = "desktop",
+        mode: str = "agent",
+        endpoint_override: str | None = None,
+        conversation_id: str | None = None,
+        thinking_mode: str | None = None,
+        thinking_depth: str | None = None,
+        agent_profile_id: str = "default",
+        session: Any = None,
+        force_tool_retries: int | None = None,
+        is_sub_agent: bool = False,
+    ):
+        """
+        统一流式接口: 将 reason_stream 包装为标准化异步生成器。
+
+        所有流式事件通过 async for 消费，调用方无需关注内部循环细节。
+        与 run() 保持相同的功能集（重试、回滚、取消等），同时支持:
+        - Token 预算警告注入
+        - 可观测性 metrics
+        - 标准化事件格式
+
+        Yields dict events (same format as reason_stream).
+        """
+        try:
+            from .token_budget import TokenBudget
+
+            budget = TokenBudget()
+
+            # Parse budget from last user message
+            for msg in reversed(messages):
+                if msg.get("role") == "user":
+                    content = msg.get("content", "")
+                    if isinstance(content, str):
+                        from .token_budget import parse_token_budget
+                        parsed = parse_token_budget(content)
+                        if parsed:
+                            budget.total_limit = parsed
+                    break
+        except ImportError:
+            budget = None
+
+        async for event in self.reason_stream(
+            messages,
+            tools=tools,
+            system_prompt=system_prompt,
+            base_system_prompt=base_system_prompt,
+            task_description=task_description,
+            task_monitor=task_monitor,
+            session_type=session_type,
+            mode=mode,
+            endpoint_override=endpoint_override,
+            conversation_id=conversation_id,
+            thinking_mode=thinking_mode,
+            thinking_depth=thinking_depth,
+            agent_profile_id=agent_profile_id,
+            session=session,
+            force_tool_retries=force_tool_retries,
+            is_sub_agent=is_sub_agent,
+        ):
+            # Track token usage for budget
+            if budget and event.get("type") == "usage":
+                tokens = event.get("total_tokens", 0)
+                if tokens:
+                    budget.record(tokens)
+                    warning = budget.get_warning_message()
+                    if warning:
+                        yield {"type": "budget_warning", "message": warning}
+                    if budget.is_exceeded:
+                        yield {
+                            "type": "budget_exceeded",
+                            "message": f"Token budget exceeded: "
+                                       f"{budget.used:,}/{budget.total_limit:,}",
+                        }
+                        yield {"type": "done", "reason": "budget_exceeded"}
+                        return
+
+            yield event
 
     # ==================== 思维链叙事辅助 ====================
 
@@ -3651,9 +3751,8 @@ class ReasoningEngine:
 
                 verify_incomplete_count += 1
 
-                # 检查活跃 Plan
                 has_todo_pending = self._has_active_todo_pending(conversation_id)
-                effective_max = max_verify_retries * 2 if has_todo_pending else max_verify_retries
+                effective_max = max_verify_retries + 1 if has_todo_pending else max_verify_retries
 
                 is_in_progress_promise = self._is_in_progress_promise(cleaned_text)
 
@@ -4228,6 +4327,19 @@ class ReasoningEngine:
                         "payload" in error_lower and "larger" in error_lower
                     )
                 if is_ctx_overflow:
+                    # Layer 2: Reactive compact (三层压缩策略的第三层)
+                    try:
+                        import asyncio as _aio
+                        loop = _aio.get_running_loop()
+                        loop.create_task(
+                            self._context_manager.reactive_compact(
+                                working_messages,
+                                system_prompt=getattr(state, '_system_prompt', ''),
+                            )
+                        )
+                    except Exception:
+                        pass
+
                     trunc_msgs, did_trunc = self._truncate_oversized_messages(
                         working_messages
                     )
@@ -4249,7 +4361,6 @@ class ReasoningEngine:
                     # 方案 C2: 单条截断无效（多条小消息累积溢出）
                     # 强制按当前上下文预算的 50% 做硬截断
                     if len(working_messages) > 3:
-                        from .context_manager import ContextManager
                         cm = self._context_manager
                         budget = cm.get_max_context_tokens() if cm else 60000
                         reduced_budget = budget // 2
