@@ -738,8 +738,8 @@ class ReasoningEngine:
             max_no_tool_retries = force_tool_retries
             logger.info(f"[ForceToolCall] Intent override: max_retries={force_tool_retries}")
 
-        max_verify_retries = 3
-        max_confirmation_text_retries = max(0, int(getattr(settings, "confirmation_text_max_retries", 2)))
+        max_verify_retries = 1
+        max_confirmation_text_retries = max(0, int(getattr(settings, "confirmation_text_max_retries", 1)))
 
         # 追踪变量
         executed_tool_names: list[str] = []
@@ -1674,6 +1674,12 @@ class ReasoningEngine:
                             "role": "user",
                             "content": intervention.prompt_injection,
                         })
+                        tools = []
+                        max_no_tool_retries = 0
+                        logger.info(
+                            f"[Supervisor] NUDGE: tools stripped to force text response "
+                            f"(iter={iteration}, pattern={intervention.pattern.value})"
+                        )
 
                     if intervention.should_escalate:
                         max_no_tool_retries = 0
@@ -1870,8 +1876,8 @@ class ReasoningEngine:
                 max_no_tool_retries = force_tool_retries
                 logger.info(f"[ForceToolCall/Stream] Intent override: max_retries={force_tool_retries}")
 
-            max_verify_retries = 3
-            max_confirmation_text_retries = max(0, int(getattr(settings, "confirmation_text_max_retries", 2)))
+            max_verify_retries = 1
+            max_confirmation_text_retries = max(0, int(getattr(settings, "confirmation_text_max_retries", 1)))
 
             executed_tool_names: list[str] = []
             delivery_receipts: list[dict] = []
@@ -2865,6 +2871,12 @@ class ReasoningEngine:
                                 "role": "user",
                                 "content": intervention.prompt_injection,
                             })
+                            tools = []
+                            max_no_tool_retries = 0
+                            logger.info(
+                                f"[Supervisor] NUDGE: tools stripped to force text response "
+                                f"(iter={_iteration}, pattern={intervention.pattern.value})"
+                            )
 
                         if intervention.should_escalate:
                             max_no_tool_retries = 0
@@ -3739,9 +3751,8 @@ class ReasoningEngine:
 
                 verify_incomplete_count += 1
 
-                # 检查活跃 Plan
                 has_todo_pending = self._has_active_todo_pending(conversation_id)
-                effective_max = max_verify_retries * 2 if has_todo_pending else max_verify_retries
+                effective_max = max_verify_retries + 1 if has_todo_pending else max_verify_retries
 
                 is_in_progress_promise = self._is_in_progress_promise(cleaned_text)
 
