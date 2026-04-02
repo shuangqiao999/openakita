@@ -48,8 +48,8 @@ export type MdModules = {
   ReactMarkdown: typeof import("react-markdown").default;
   remarkPlugins: import("react-markdown").Options["remarkPlugins"];
   rehypePlugins: import("react-markdown").Options["rehypePlugins"];
-  remarkGfm?: unknown;
-  rehypeRaw?: unknown;
+  remarkGfm?: any;
+  rehypeRaw?: any;
 };
 
 /** Message queued for sequential sending */
