@@ -11,7 +11,7 @@ import type {
   ChainToolCall,
   ChainSummaryItem,
 } from "./chatTypes";
-import { IS_TAURI, saveFileDialog, writeTextFile } from "../../../platform";
+import { IS_TAURI, saveFileDialog, writeTextFile, logger } from "../../../platform";
 import { getAccessToken } from "../../../platform/auth";
 
 // ── 持久化 Key 常量 ──
@@ -114,6 +114,7 @@ export async function exportConversation(msgs: ChatMessage[], title: string, for
 
   const sanitizedTitle = title.replace(/[/\\?%*:|"<>]/g, "_").slice(0, 50);
 
+  logger.info("Chat.Export", "start", { format: ext, msgCount: msgs.length });
   if (IS_TAURI) {
     try {
       const savePath = await saveFileDialog({
@@ -123,9 +124,10 @@ export async function exportConversation(msgs: ChatMessage[], title: string, for
       });
       if (savePath) {
         await writeTextFile(savePath, content);
+        logger.info("Chat.Export", "success", { path: savePath });
       }
     } catch (e) {
-      console.error("Export failed:", e);
+      logger.error("Chat.Export", "error", { error: String(e) });
     }
   } else {
     const mimeType = ext === "json" ? "application/json" : "text/markdown";
@@ -286,6 +288,35 @@ export function formatToolDescription(tool: string, args: Record<string, unknown
       return `Asked: "${String(args.question || "").slice(0, 40)}"`;
     default:
       return `${tool}(${Object.keys(args).slice(0, 3).join(", ")})`;
+  }
+}
+
+type TFn = (key: string, fallbackOrOpts?: string | Record<string, unknown>) => string;
+
+export function summarizeToolResult(tool: string, result: string | undefined, isError: boolean, t?: TFn): string {
+  const _t = t || ((k: string, fb?: string | Record<string, unknown>) => (typeof fb === "string" ? fb : (fb as Record<string, unknown>)?.defaultValue as string ?? k));
+  if (!result || !result.trim()) return isError ? _t("chat.toolFailed", "Failed") : _t("chat.toolDone", "Done");
+  if (isError) {
+    const short = result.replace(/^(Tool error|Error|❌)\s*/i, "").slice(0, 80);
+    return `${_t("chat.toolFailed", "Failed")}: ${short}`;
+  }
+  const r = result.trim();
+  if (r.length <= 60) return r;
+  switch (tool) {
+    case "read_file":
+      return _t("chat.toolReadLines", { count: r.split("\n").length, defaultValue: `Read ${r.split("\n").length} lines` } as unknown as string);
+    case "web_search":
+      return _t("chat.toolSearchResults", { match: (r.match(/\d+ results?/i)?.[0]) || "results", defaultValue: "Found results" } as unknown as string);
+    case "write_file": case "edit_file":
+      return _t("chat.toolWriteSuccess", "Written");
+    case "execute_code": case "run_code":
+      return _t("chat.toolOutput", { len: r.length, defaultValue: `Output ${r.length} chars` } as unknown as string);
+    case "list_files": case "list_dir": {
+      const count = r.split("\n").filter(Boolean).length;
+      return _t("chat.toolListFiles", { count, defaultValue: `${count} files` } as unknown as string);
+    }
+    default:
+      return r.slice(0, 60) + "…";
   }
 }
 

@@ -23,6 +23,8 @@ export interface MessageListProps {
   onEdit?: (msgId: string) => void;
   onRegenerate?: (msgId: string) => void;
   onRewind?: (msgId: string) => void;
+  onFork?: (msgId: string) => void;
+  onSaveMemory?: (msgId: string) => void;
   onSkipStep?: () => void;
   onImagePreview?: (displayUrl: string, downloadUrl: string, name: string) => void;
 }
@@ -40,6 +42,8 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
     onEdit,
     onRegenerate,
     onRewind,
+    onFork,
+    onSaveMemory,
     onSkipStep,
     onImagePreview,
   },
@@ -83,6 +87,8 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
           onEdit={onEdit}
           onRegenerate={onRegenerate}
           onRewind={onRewind}
+          onFork={onFork}
+          onSaveMemory={onSaveMemory}
           onSkipStep={onSkipStep}
           onImagePreview={onImagePreview}
         />
@@ -90,7 +96,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
     );
   }, [
     messages.length, displayMode, apiBaseUrl, showChain, mdModules,
-    onAskAnswer, onRetry, onEdit, onRegenerate, onRewind, onSkipStep, onImagePreview,
+    onAskAnswer, onRetry, onEdit, onRegenerate, onRewind, onFork, onSaveMemory, onSkipStep, onImagePreview,
   ]);
 
   return (

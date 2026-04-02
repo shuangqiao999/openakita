@@ -1144,65 +1144,74 @@ async def run_interactive():
     print_welcome()
 
     shutdown_event = asyncio.Event()
+    init_done = asyncio.Event()
+    early_input_queue: list[str] = []
 
     agent = get_agent()
 
-    with console.status("[bold green]正在初始化 Agent...", spinner="dots"):
-        await agent.initialize()
+    async def _background_init():
+        """Background: initialize agent, core services, and IM channels."""
+        console.print("[dim]正在初始化 Agent...[/dim]")
+        try:
+            await agent.initialize()
+            console.print("[green]✓[/green] Agent 已准备就绪")
+        except Exception as e:
+            console.print(f"[red]✗ Agent 初始化失败: {e}[/red]")
+            shutdown_event.set()
+            init_done.set()
+            return
 
-    console.print("[green]✓[/green] Agent 已准备就绪")
+        console.print("[dim]正在初始化核心服务...[/dim]")
+        try:
+            await init_core_services(agent)
+        except Exception as e:
+            console.print(f"[red]✗ 核心服务初始化失败: {e}[/red]")
+            logger.error(f"Core services init failed: {e}", exc_info=True)
+
+        # Session recovery (depends on _session_manager from init_core_services)
+        _cli_sf = _cli_session_file
+        _cid: str | None = None
+        if not _cli_force_new_session and _cli_sf.exists():
+            try:
+                _cid = json.loads(_cli_sf.read_text(encoding="utf-8")).get("chat_id")
+            except Exception:
+                _cid = None
+        if not _cid:
+            _cid = f"cli_{_uuid.uuid4().hex[:12]}"
+        nonlocal _cli_chat_id
+        _cli_chat_id = _cid
+        if _session_manager:
+            cs = _session_manager.get_session(channel="cli", chat_id=_cid, user_id="cli_user", create_if_missing=True)
+            if cs:
+                agent._cli_session = cs
+                mc = len(cs.context.get_messages())
+                if mc > 0 and not _cli_force_new_session:
+                    console.print(f"[green]✓[/green] 已恢复上次会话 ({mc} 条消息)")
+                _cli_sf.parent.mkdir(parents=True, exist_ok=True)
+                _cli_sf.write_text(json.dumps({"chat_id": _cid}), encoding="utf-8")
+
+        async def _start_im_bg():
+            try:
+                channels = await start_im_channels(agent)
+                if channels:
+                    console.print(f"[green]✓[/green] IM 通道已启动: {', '.join(channels)}")
+            except Exception as e:
+                logger.warning(f"IM channel start failed: {e}")
+
+        asyncio.create_task(_start_im_bg())
+        init_done.set()
+
+    import uuid as _uuid
 
     agent_or_master = agent
     agent_name = agent.name
-
-    # 初始化核心服务（SessionManager、Agent Pool、Orchestrator）
-    with console.status("[bold green]正在初始化核心服务...", spinner="dots"):
-        await init_core_services(agent_or_master)
-
-    # 启动 IM 通道 — 后台运行，不阻塞 CLI
-    async def _start_im_bg():
-        try:
-            channels = await start_im_channels(agent_or_master)
-            if channels:
-                console.print(f"[green]✓[/green] IM 通道已启动: {', '.join(channels)}")
-        except Exception as e:
-            logger.warning(f"IM channel start failed: {e}")
-
-    _im_task = asyncio.create_task(_start_im_bg())
-
-    console.print()
-
-    # ── CLI 会话恢复/创建 ──
-    import uuid as _uuid
-
-    _cli_session_file = settings.project_root / "data" / ".cli_last_session"
     _cli_chat_id: str | None = None
+    _cli_session_file = settings.project_root / "data" / ".cli_last_session"
 
-    if not _cli_force_new_session and _cli_session_file.exists():
-        try:
-            _saved = json.loads(_cli_session_file.read_text(encoding="utf-8"))
-            _cli_chat_id = _saved.get("chat_id")
-        except Exception:
-            _cli_chat_id = None
+    _init_task = asyncio.create_task(_background_init())
 
-    if not _cli_chat_id:
-        _cli_chat_id = f"cli_{_uuid.uuid4().hex[:12]}"
-
-    cli_session = None
-    if _session_manager:
-        cli_session = _session_manager.get_session(
-            channel="cli", chat_id=_cli_chat_id, user_id="cli_user",
-            create_if_missing=True,
-        )
-    if cli_session:
-        agent_or_master._cli_session = cli_session
-        msg_count = len(cli_session.context.get_messages())
-        if msg_count > 0 and not _cli_force_new_session:
-            console.print(f"[green]✓[/green] 已恢复上次会话 ({msg_count} 条消息)")
-        _cli_session_file.parent.mkdir(parents=True, exist_ok=True)
-        _cli_session_file.write_text(
-            json.dumps({"chat_id": _cli_chat_id}), encoding="utf-8"
-        )
+    console.print("[dim]可以开始输入，初始化完成后将自动处理[/dim]")
+    console.print()
 
     # 注册信号处理器用于优雅关闭
     _shutdown_triggered = False
@@ -1233,13 +1242,52 @@ async def run_interactive():
     ]
     pt_session, _completer = create_cli_session(commands=cli_commands)
 
+    async def _process_message(user_input: str):
+        """Process a single user message (extracted for early-input replay)."""
+        session_messages: list[dict] = []
+        _active_session = getattr(agent_or_master, '_cli_session', None)
+        if _active_session:
+            session_messages = _active_session.context.get_messages()
+        elif hasattr(agent_or_master, '_context'):
+            session_messages = agent_or_master._context.messages
+        _sid = _active_session.id if _active_session else _cli_chat_id
+        event_stream = agent_or_master.chat_with_session_stream(
+            message=user_input,
+            session_messages=session_messages,
+            session_id=_sid,
+        )
+        await render_stream(event_stream, console, agent_name=agent_name)
+
     try:
         while not shutdown_event.is_set():
             try:
-                user_input = await prompt_input(pt_session, "You> ")
+                prompt_prefix = "You> " if init_done.is_set() else "(初始化中) You> "
+                user_input = await prompt_input(pt_session, prompt_prefix)
 
                 if not user_input.strip():
                     continue
+
+                # N7: Queue early input if agent is not ready yet
+                if not init_done.is_set():
+                    if user_input.startswith("/") and user_input.lower().strip() in ("/exit", "/quit"):
+                        console.print("[yellow]再见！[/yellow]")
+                        shutdown_event.set()
+                        break
+                    early_input_queue.append(user_input.strip())
+                    console.print(f"[dim]已缓存消息 ({len(early_input_queue)})，Agent 就绪后将自动处理[/dim]")
+                    continue
+
+                # Replay queued messages after initialization
+                if early_input_queue:
+                    queued = early_input_queue.copy()
+                    early_input_queue.clear()
+                    console.print(f"[green]正在处理 {len(queued)} 条缓存消息...[/green]")
+                    for q in queued:
+                        if q.startswith("/"):
+                            console.print(f"[dim]跳过缓存命令: {q}[/dim]")
+                            continue
+                        console.print(f"[dim]>>> {q}[/dim]")
+                        await _process_message(q)
 
                 # 处理命令
                 if user_input.startswith("/"):
@@ -1370,21 +1418,7 @@ async def run_interactive():
                         continue
 
                 # 正常对话 — 流式输出
-                session_messages: list[dict] = []
-                _active_session = getattr(agent_or_master, '_cli_session', None)
-                if _active_session:
-                    session_messages = _active_session.context.get_messages()
-                elif hasattr(agent_or_master, '_context'):
-                    session_messages = agent_or_master._context.messages
-
-                _sid = _active_session.id if _active_session else _cli_chat_id
-                event_stream = agent_or_master.chat_with_session_stream(
-                    message=user_input,
-                    session_messages=session_messages,
-                    session_id=_sid,
-                )
-
-                await render_stream(event_stream, console, agent_name=agent_name)
+                await _process_message(user_input)
 
             except EOFError:
                 console.print("\n[yellow]再见！[/yellow]")
@@ -1395,10 +1429,10 @@ async def run_interactive():
                 logger.error(f"Error: {e}", exc_info=True)
                 console.print(f"[red]错误: {e}[/red]")
     finally:
-        if not _im_task.done():
-            _im_task.cancel()
+        if not _init_task.done():
+            _init_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await _im_task
+                await _init_task
         with console.status("[bold yellow]正在停止服务...", spinner="dots"):
             await stop_im_channels(graceful=True, drain_timeout=30.0)
         console.print("[green]✓[/green] 服务已停止")

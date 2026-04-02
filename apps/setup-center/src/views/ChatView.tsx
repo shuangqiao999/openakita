@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { setThemePref } from "../theme";
 import type { Theme } from "../theme";
-import { invoke, downloadFile, openFileWithDefault, showInFolder, readFileBase64, onDragDrop, IS_TAURI, IS_WEB, IS_MOBILE_BROWSER, onWsEvent, logger, getAssetUrl } from "../platform";
+import { invoke, downloadFile, openFileWithDefault, showInFolder, readFileBase64, onDragDrop, IS_TAURI, IS_WEB, IS_MOBILE_BROWSER, onWsEvent, logger, getAssetUrl, sendNotification } from "../platform";
 import { getAccessToken } from "../platform/auth";
 import { safeFetch } from "../providers";
 import type {
@@ -33,7 +33,7 @@ import type {
   ChatDisplayMode,
 } from "../types";
 import { genId, formatTime, formatDate, timeAgo } from "../utils";
-import { notifyError } from "../utils/notify";
+import { notifyError, notifyInfo, notifySuccess } from "../utils/notify";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 import {
   IconSend, IconPaperclip, IconMic, IconStopCircle,
@@ -62,6 +62,12 @@ import {
   ERROR_META, SVG_PATHS, getNextSpinnerTip,
 } from "./chat/utils/chatHelpers";
 import { useMdModules } from "./chat/hooks/useMdModules";
+import { useRecording } from "./chat/hooks/useRecording";
+import { useAttachments } from "./chat/hooks/useAttachments";
+import { useSecurityPolicy } from "./chat/hooks/useSecurityPolicy";
+import type { PermissionMode } from "./chat/hooks/useSecurityPolicy";
+import { useCircuitBreaker } from "./chat/hooks/useCircuitBreaker";
+import { useFrictionDetector } from "./chat/hooks/useFrictionDetector";
 import { useMessageReducer, useConversationReducer } from "./chat/hooks/useMessages";
 import type { MessageAction, ConversationAction } from "./chat/hooks/useMessages";
 import { useQueryGuard } from "./chat/hooks/useQueryGuard";
@@ -183,7 +189,6 @@ export function ChatView({
   useEffect(() => { try { localStorage.setItem("chat_showChain", String(showChain)); } catch {} }, [showChain]);
   useEffect(() => { try { localStorage.setItem("chat_displayMode", displayMode); } catch {} }, [displayMode]);
 
-  const [isRecording, setIsRecording] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const modelMenuRef = useRef<HTMLDivElement | null>(null);
 
@@ -386,7 +391,6 @@ export function ChatView({
 
   // (messagesSnapshotRef / liveMessagesCache removed — StreamContext manages live messages)
 
-  // 页面隐藏/关闭时立即落盘，降低"当天消息未及时写入 localStorage"的概率
   useEffect(() => {
     const flushNow = () => {
       if (saveMessagesTimerRef.current) {
@@ -394,14 +398,33 @@ export function ChatView({
         saveMessagesTimerRef.current = null;
       }
       flushCurrentConversationToStorage();
+      // N16: persist draft input
+      const draft = inputTextRef.current;
+      const cid = activeConvIdRef.current;
+      if (cid) {
+        try {
+          if (draft) localStorage.setItem(`chat_draft_${cid}`, draft);
+          else localStorage.removeItem(`chat_draft_${cid}`);
+        } catch {}
+      }
+    };
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      flushNow();
+      // N16: warn if streaming
+      const hasActiveStream = streamContexts.current.size > 0 &&
+        Array.from(streamContexts.current.values()).some((ctx) => ctx.isStreaming);
+      if (hasActiveStream) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
     };
     const onVisibility = () => {
       if (document.visibilityState === "hidden") flushNow();
     };
-    window.addEventListener("beforeunload", flushNow);
+    window.addEventListener("beforeunload", onBeforeUnload);
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
-      window.removeEventListener("beforeunload", flushNow);
+      window.removeEventListener("beforeunload", onBeforeUnload);
       document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [flushCurrentConversationToStorage]);
@@ -476,12 +499,26 @@ export function ChatView({
   useEffect(() => {
     if (!activeConvId) {
       setMessages([]);
+      setPendingAttachments([]);
       return;
     }
     if (skipConvLoadRef.current) {
       skipConvLoadRef.current = false;
       return;
     }
+
+    setPendingAttachments([]);
+
+    // N16: restore draft input for this conversation
+    try {
+      const draft = localStorage.getItem(`chat_draft_${activeConvId}`);
+      if (draft) {
+        setInputValue(draft);
+        localStorage.removeItem(`chat_draft_${activeConvId}`);
+      } else {
+        setInputValue("");
+      }
+    } catch { setInputValue(""); }
 
     // If a StreamContext is actively streaming for this conv, restore its state directly
     const ctx = streamContexts.current.get(activeConvId);
@@ -513,7 +550,6 @@ export function ChatView({
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   // abortRef/readerRef removed — now per-session in StreamContext
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // ── 输入框 Undo/Redo 栈 (6.2) ──
   const undoStackRef = useRef<string[]>([""]);
@@ -899,10 +935,6 @@ export function ChatView({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serviceRunning, activeConvId, streamingTick, apiBaseUrl, messages.length]);
 
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
-  const blobUrlsRef = useRef<string[]>([]);
-
   // ── API base URL (ref for stable closure access) ──
   const apiBase = apiBaseUrl;
   const apiBaseRef = useRef(apiBase);
@@ -918,7 +950,39 @@ export function ChatView({
     return data.url as string;
   }, []);
 
-  // ── 组件卸载清理：abort 所有流式请求 + 停止麦克风 ──
+  const { isRecording, recordingDuration, toggleRecording, cleanupRecording } = useRecording({
+    uploadFile, apiBaseRef, setPendingAttachments, notifyError, t,
+  });
+
+  const {
+    fileInputRef, pastedLargeText, setPastedLargeText, dragOver, setDragOver,
+    handleFileSelect, handlePaste,
+  } = useAttachments({
+    uploadFile, apiBaseRef, setPendingAttachments, activeConvId: activeConvId,
+  });
+
+  const {
+    permissionMode, setPermissionMode, checkAutoAllow,
+    recordAllow, recordDeny, getSessionTrustInfo,
+  } = useSecurityPolicy();
+
+  const sseBreaker = useCircuitBreaker({ failureThreshold: 5, cooldownMs: 30_000 });
+
+  const frictionDetector = useFrictionDetector(useCallback((hint: string) => {
+    const hints: Record<string, string> = {
+      repeated_errors: t("chat.frictionErrors", "连续遇到多次错误，可以尝试简化任务或查看帮助文档"),
+      same_error_retry: t("chat.frictionSameError", "同类型错误多次出现，可能需要换个方式描述需求"),
+      idle_after_error: t("chat.frictionIdle", "遇到困难了？可以尝试 /help 查看可用命令"),
+    };
+    notifyInfo(hints[hint] || hints.repeated_errors, 8000);
+  }, [t]));
+
+  useEffect(() => {
+    const timer = setInterval(() => frictionDetector.checkIdle(), 60_000);
+    return () => clearInterval(timer);
+  }, [frictionDetector.checkIdle]);
+
+  // ── 组件卸载清理：abort 所有流式请求 ──
   useEffect(() => {
     return () => {
       for (const [, ctx] of streamContexts.current) {
@@ -927,15 +991,6 @@ export function ChatView({
         if (ctx.pollingTimer) clearInterval(ctx.pollingTimer);
       }
       streamContexts.current.clear();
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-        try { mediaRecorderRef.current.stop(); } catch { /* ignore */ }
-      }
-      mediaRecorderRef.current = null;
-      if (recordingTimerRef.current) { clearInterval(recordingTimerRef.current); recordingTimerRef.current = null; }
-      for (const url of blobUrlsRef.current) {
-        try { URL.revokeObjectURL(url); } catch {}
-      }
-      blobUrlsRef.current = [];
     };
   }, []);
 
@@ -947,6 +1002,7 @@ export function ChatView({
 
   useEffect(() => {
     if (convSwitchScrollRef.current && messages.length > 0) {
+      logger.debug("Chat.Scroll", "convSwitch.scrollToBottom", { convId: activeConvIdRef.current });
       messageListRef.current?.forceFollow();
       requestAnimationFrame(() => {
         setTimeout(() => messageListRef.current?.scrollToBottom("auto"), 50);
@@ -961,6 +1017,7 @@ export function ChatView({
       return;
     }
     if (needsScrollOnVisible.current) {
+      logger.debug("Chat.Scroll", "tabVisible.scrollToBottom");
       messageListRef.current?.forceFollow();
       requestAnimationFrame(() => {
         setTimeout(() => messageListRef.current?.scrollToBottom("auto"), 50);
@@ -1306,6 +1363,7 @@ export function ChatView({
       const cmdId = parts[0].toLowerCase();
       const cmd = slashCommands.find((c) => c.id === cmdId);
       if (cmd) {
+        logger.info("Chat.Slash", "execute", { command: cmdId });
         cmd.action(parts.slice(1).join(" "));
         setInputValue("");
         setSlashOpen(false);
@@ -1743,6 +1801,16 @@ export function ChatView({
       }
 
       resetIdleTimer(); // Start idle timer before fetch
+      if (!sseBreaker.canAttempt()) {
+        notifyError(t("chat.sseBreakerOpen", "通信异常过于频繁，请稍后再试"));
+        updateMessages((prev) => prev.map((m) =>
+          m.id === assistantMsg.id ? { ...m, content: t("chat.sseBreakerOpen", "通信异常过于频繁，请稍后再试"), streaming: false } : m
+        ));
+        queryGuard.endQuery(guardHandle.generation);
+        return;
+      }
+
+      logger.info("Chat.Stream", "start", { convId: thisConvId, mode: chatMode });
 
       const response = await fetch(`${apiBase}/api/chat`, {
         method: "POST",
@@ -1845,6 +1913,8 @@ export function ChatView({
             const event: StreamEvent = JSON.parse(data);
             sseParseFailures = 0;
 
+            if (queryGuard.isStale(guardHandle.generation)) break;
+
             switch (event.type) {
               case "heartbeat":
                 continue;
@@ -1878,9 +1948,17 @@ export function ChatView({
                 }
                 continue;
               }
-              case "context_compressed":
+              case "context_compressed": {
                 pendingCompressedInfo = { beforeTokens: event.before_tokens, afterTokens: event.after_tokens };
+                const savedPct = event.before_tokens > 0 ? Math.round((1 - event.after_tokens / event.before_tokens) * 100) : 0;
+                notifyInfo(t("chat.contextCompressedNotify", {
+                  before: Math.round(event.before_tokens / 1000),
+                  after: Math.round(event.after_tokens / 1000),
+                  saved: savedPct,
+                  defaultValue: `上下文已压缩: ${Math.round(event.before_tokens / 1000)}K → ${Math.round(event.after_tokens / 1000)}K (节省${savedPct}%)`,
+                }), 4000);
                 break;
+              }
               case "iteration_start": {
                 // 新迭代 → 新 chain group
                 const newGroup: ChainGroup = {
@@ -2157,15 +2235,51 @@ export function ChatView({
                 }
                 break;
               case "security_confirm": {
-                setSecurityConfirm({
-                  tool: event.tool,
-                  args: event.args,
-                  reason: event.reason,
-                  riskLevel: event.risk_level,
-                  needsSandbox: event.needs_sandbox,
-                  toolId: event.id,
-                  countdown: 120,
-                });
+                const secEvent = {
+                  tool: event.tool, args: event.args, reason: event.reason,
+                  risk_level: event.risk_level, needs_sandbox: event.needs_sandbox, id: event.id,
+                };
+                if (secEvent.id && checkAutoAllow(secEvent)) {
+                  logger.info("Chat.Security", "auto.allow", { tool: event.tool, riskLevel: event.risk_level, mode: permissionMode });
+                  recordAllow(event.tool);
+                  (async () => {
+                    try {
+                      const headers: Record<string, string> = { "Content-Type": "application/json" };
+                      if (!IS_TAURI) {
+                        const token = getAccessToken();
+                        if (token) headers["Authorization"] = `Bearer ${token}`;
+                      }
+                      await safeFetch(`${apiBaseRef.current}/api/chat/security-confirm`, {
+                        method: "POST", headers,
+                        body: JSON.stringify({ confirm_id: event.id || "", decision: "allow" }),
+                      });
+                    } catch (err) {
+                      logger.error("Chat.Security", "auto.allow.failed", { error: String(err) });
+                      setSecurityConfirm({
+                        tool: event.tool, args: event.args, reason: event.reason,
+                        riskLevel: event.risk_level, needsSandbox: event.needs_sandbox,
+                        toolId: event.id, countdown: 120,
+                      });
+                    }
+                  })();
+                } else {
+                  logger.info("Chat.Security", "confirm.show", { tool: event.tool, riskLevel: event.risk_level, confirmId: event.id });
+                  if (document.hidden) {
+                    sendNotification({
+                      title: t("chat.securityConfirmTitle", "安全确认"),
+                      body: `${event.tool}: ${event.reason}`,
+                    });
+                  }
+                  setSecurityConfirm({
+                    tool: event.tool,
+                    args: event.args,
+                    reason: event.reason,
+                    riskLevel: event.risk_level,
+                    needsSandbox: event.needs_sandbox,
+                    toolId: event.id,
+                    countdown: 120,
+                  });
+                }
                 break;
               }
               case "ask_user": {
@@ -2244,9 +2358,14 @@ export function ChatView({
                   category: classifyError(event.message),
                   raw: event.message,
                 };
+                frictionDetector.recordError(currentError.category);
                 break;
               case "done":
                 gracefulDone = true;
+                logger.info("Chat.Stream", "done", { convId: thisConvId, contentLen: currentContent.length, toolCalls: currentToolCalls.length });
+                if (document.hidden) {
+                  sendNotification({ title: t("chat.replyReady", "回复已就绪"), body: currentContent.slice(0, 100) || t("chat.taskCompleted", "任务已完成") });
+                }
                 if (event.usage) {
                   if (typeof event.usage.context_tokens === "number") setContextTokens(event.usage.context_tokens);
                   if (typeof event.usage.context_limit === "number") setContextLimit(event.usage.context_limit);
@@ -2293,8 +2412,10 @@ export function ChatView({
             ));
 
             if (event.type === "done") break;
-          } catch {
+          } catch (parseErr) {
             sseParseFailures++;
+            const breakerState = sseBreaker.recordFailure();
+            logger.warn("Chat.Stream", "SSE parse failure", { count: sseParseFailures, dataLen: data.length, breaker: breakerState });
             if (sseParseFailures >= 5) {
               notifyError(t("chat.sseParseError", "SSE 数据解析异常频繁，可能存在通信问题"));
               sseParseFailures = 0;
@@ -2332,8 +2453,11 @@ export function ChatView({
 
         if (!gracefulDone && convId) {
           // SSE 连接被中断（未收到 "done" 事件），后端可能仍在运行，启动持续轮询恢复
+          sseBreaker.recordFailure();
           attemptRecovery(3000);
         } else if (gracefulDone) {
+          sseBreaker.recordSuccess();
+          frictionDetector.recordSuccess();
           // SSE 正常完成，但若未交付任何有效响应，做一次性回填
           const streamDeliveredPayload = !!(
             currentContent.trim() || currentAsk || currentToolCalls.length > 0
@@ -2374,11 +2498,13 @@ export function ChatView({
           (e instanceof Error && e.name === "AbortError");
 
         if (isAbortLike) {
+          logger.info("Chat.Stream", "aborted", { convId: thisConvId, userStopped: sctx.userStopped });
           updateMessages((prev) => prev.map((m) =>
             m.id === assistantMsg.id ? { ...m, streaming: false } : m
           ));
         } else {
           const errMsg = e instanceof Error ? e.message : String(e);
+          logger.error("Chat.Stream", "error", { convId: thisConvId, error: errMsg });
           let guidance = t("chat.backendServiceHint");
           try {
             const healthRes = await fetch(`${apiBase}/api/health`, { signal: AbortSignal.timeout(5000) });
@@ -2554,6 +2680,75 @@ export function ChatView({
     setMessages((prev) => prev.slice(0, idx + 1));
   }, []);
 
+  // N3: Fork conversation from a specific message
+  const handleForkConversation = useCallback(async (msgId: string) => {
+    const msgs = latestMessagesRef.current;
+    const idx = msgs.findIndex((m) => m.id === msgId);
+    if (idx < 0) return;
+    const forkedMsgs = msgs.slice(0, idx + 1).map((m) => ({ ...m, id: genId() }));
+    const newId = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : genId();
+
+    // Save current conversation first
+    flushCurrentConversationToStorage();
+
+    // Create new conversation
+    setConversations((prev) => [{
+      id: newId,
+      title: `${prev.find((c) => c.id === activeConvId)?.title || t("chat.defaultTitle")} (fork)`,
+      lastMessage: forkedMsgs[forkedMsgs.length - 1]?.content?.slice(0, 50) || "",
+      timestamp: Date.now(),
+      messageCount: forkedMsgs.length,
+      agentProfileId: multiAgentEnabled ? selectedAgent : undefined,
+    }, ...prev]);
+
+    saveMessagesToStorage(STORAGE_KEY_MSGS_PREFIX + newId, forkedMsgs);
+    skipConvLoadRef.current = true;
+    setActiveConvId(newId);
+    setMessages(forkedMsgs);
+    setPendingAttachments([]);
+
+    // Sync to backend
+    if (serviceRunning) {
+      try {
+        await safeFetch(`${apiBaseRef.current}/api/sessions/${encodeURIComponent(newId)}/messages`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            replace: true,
+            messages: forkedMsgs.map((m) => ({
+              role: m.role,
+              content: m.content || "",
+            })),
+          }),
+        });
+      } catch {
+        logger.warn("Chat.Fork", "backend sync failed", { newId });
+      }
+    }
+
+    notifyInfo(t("chat.forkedConversation", "已从此处分叉创建新会话"));
+  }, [activeConvId, multiAgentEnabled, selectedAgent, serviceRunning, t, flushCurrentConversationToStorage]);
+
+  // N4: Save message content as memory
+  const handleSaveAsMemory = useCallback(async (msgId: string) => {
+    const msg = latestMessagesRef.current.find((m) => m.id === msgId);
+    if (!msg?.content) return;
+    try {
+      const res = await safeFetch(`${apiBaseRef.current}/api/memories`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: msg.content.slice(0, 2000), type: "fact", importance_score: 0.8 }),
+      });
+      if (res.ok) {
+        notifySuccess(t("chat.memorySaved", "已保存为记忆"));
+      } else {
+        notifyError(t("chat.memorySaveFailed", "保存记忆失败"));
+      }
+    } catch {
+      notifyError(t("chat.memorySaveFailed", "保存记忆失败"));
+    }
+  }, [t]);
+
   const handleSkipStep = useCallback(() => {
     safeFetch(`${apiBase}/api/chat/skip`, {
       method: "POST",
@@ -2681,228 +2876,9 @@ export function ChatView({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streamingTick, messageQueue, sendMessage]);
 
-  // ── 文件/图片上传 ──
-  const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files) return;
-    for (const file of Array.from(files)) {
-      const uploadId = genId();
-      const att: ChatAttachment = {
-        type: file.type.startsWith("image/") ? "image" : file.type.startsWith("video/") ? "video" : file.type.startsWith("audio/") ? "voice" : file.type === "application/pdf" ? "document" : "file",
-        name: file.name,
-        size: file.size,
-        mimeType: file.type,
-        _uploadId: uploadId,
-      };
-      if (att.type === "video" && file.size > 7 * 1024 * 1024) {
-        notifyError(`视频文件过大 (${(file.size / 1024 / 1024).toFixed(1)}MB)，桌面端最大支持 7MB（base64 编码后需 < 10MB）`);
-        continue;
-      }
-      if (att.type === "image" || att.type === "video") {
-        const reader = new FileReader();
-        reader.onload = () => {
-          att.previewUrl = att.type === "image" ? reader.result as string : undefined;
-          att.url = reader.result as string;
-          setPendingAttachments((prev) => [...prev, att]);
-        };
-        reader.onerror = () => {
-          notifyError(`文件读取失败: ${file.name}`);
-        };
-        reader.readAsDataURL(file);
-      } else {
-        setPendingAttachments((prev) => [...prev, att]);
-        uploadFile(file, file.name)
-          .then((serverUrl) => {
-            setPendingAttachments((prev) =>
-              prev.map((a) => a._uploadId === uploadId
-                ? { ...a, url: `${apiBaseRef.current}${serverUrl}` } : a)
-            );
-          })
-          .catch(() => {
-            notifyError(`文件上传失败: ${file.name}`);
-            setPendingAttachments((prev) =>
-              prev.filter((a) => a._uploadId !== uploadId || a.url));
-          });
-      }
-    }
-    e.target.value = "";
-  }, [uploadFile]);
+  // handleFileSelect, handlePaste, pastedLargeText — moved to useAttachments hook
 
-  // ── 粘贴处理 ──
-  const [pastedLargeText, setPastedLargeText] = useState<{ text: string; lines: number } | null>(null);
-  useEffect(() => { setPastedLargeText(null); }, [activeConvId]);
-
-  const handlePaste = useCallback((e: React.ClipboardEvent) => {
-    const items = e.clipboardData?.items;
-    if (!items) return;
-
-    // Large text paste detection (6.4)
-    const plainText = e.clipboardData?.getData("text/plain") || "";
-    if (plainText.length > PASTE_CHAR_THRESHOLD) {
-      e.preventDefault();
-      const lineCount = plainText.split("\n").length;
-      setPastedLargeText({ text: plainText, lines: lineCount });
-      return;
-    }
-
-    for (const item of Array.from(items)) {
-      if (item.type.startsWith("image/")) {
-        e.preventDefault();
-        const file = item.getAsFile();
-        if (!file) continue;
-        const reader = new FileReader();
-        reader.onload = () => {
-          setPendingAttachments((prev) => [...prev, {
-            type: "image",
-            name: `粘贴图片-${Date.now()}.png`,
-            previewUrl: reader.result as string,
-            url: reader.result as string,
-            size: file.size,
-            mimeType: file.type,
-          }]);
-        };
-        reader.readAsDataURL(file);
-      }
-    }
-  }, []);
-
-  // ── 拖拽图片/文件 (Tauri native or HTML5 drag-drop) ──
-  const [dragOver, setDragOver] = useState(false);
-  useEffect(() => {
-    if (!IS_TAURI) return; // Web uses HTML5 drag-drop via onDrop on the container
-    let cancelled = false;
-    let unlisten: (() => void) | null = null;
-
-    const mimeMap: Record<string, string> = {
-      png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
-      gif: "image/gif", webp: "image/webp", bmp: "image/bmp", svg: "image/svg+xml",
-      mp4: "video/mp4", webm: "video/webm", avi: "video/x-msvideo",
-      mov: "video/quicktime", mkv: "video/x-matroska",
-      pdf: "application/pdf", txt: "text/plain", md: "text/plain",
-      json: "application/json", csv: "text/csv",
-    };
-
-    const FILE_MAX_SIZE = 50 * 1024 * 1024; // 50MB
-
-    const handleDroppedPaths = (paths: string[]) => {
-      for (const filePath of paths) {
-        const name = filePath.split(/[\\/]/).pop() || "file";
-        const ext = (name.split(".").pop() || "").toLowerCase();
-        const isImage = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"].includes(ext);
-        const isVideo = ["mp4", "webm", "avi", "mov", "mkv"].includes(ext);
-        const mimeType = mimeMap[ext] || "application/octet-stream";
-        readFileBase64(filePath)
-          .then((dataUrl) => {
-            if (cancelled) return;
-            const commaIdx = dataUrl.indexOf(",");
-            const base64Len = commaIdx >= 0 ? dataUrl.length - commaIdx - 1 : dataUrl.length;
-            const estimatedSize = base64Len * 3 / 4;
-            if (estimatedSize > FILE_MAX_SIZE) {
-              notifyError(`文件过大 (${(estimatedSize / 1024 / 1024).toFixed(1)}MB)，最大支持 50MB`);
-              return;
-            }
-            if (isVideo) {
-              const VIDEO_MAX_SIZE = 7 * 1024 * 1024;
-              if (estimatedSize > VIDEO_MAX_SIZE) {
-                notifyError(`视频文件过大 (${(estimatedSize / 1024 / 1024).toFixed(1)}MB)，最大支持 7MB（base64 编码后需 < 10MB）`);
-                return;
-              }
-            }
-            setPendingAttachments((prev) => [...prev, {
-              type: isImage ? "image" : isVideo ? "video" : "file",
-              name,
-              previewUrl: isImage ? dataUrl : undefined,
-              url: dataUrl,
-              mimeType,
-            }]);
-          })
-          .catch((err) => {
-            notifyError(`文件读取失败: ${name}`);
-            logger.error("Chat", "DragDrop read_file_base64 failed", { name, error: String(err) });
-          });
-      }
-    };
-
-    onDragDrop({
-      onEnter: () => { if (!cancelled) setDragOver(true); },
-      onOver: () => { if (!cancelled) setDragOver(true); },
-      onLeave: () => { if (!cancelled) setDragOver(false); },
-      onDrop: (paths) => {
-        if (cancelled) return;
-        setDragOver(false);
-        handleDroppedPaths(paths);
-      },
-    }).then((unsub) => { unlisten = unsub; });
-
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
-  }, []);
-
-  // ── 语音录制 ──
-  const [recordingDuration, setRecordingDuration] = useState(0);
-  const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const toggleRecording = useCallback(async () => {
-    if (isRecording) {
-      mediaRecorderRef.current?.stop();
-      setIsRecording(false);
-      if (recordingTimerRef.current) { clearInterval(recordingTimerRef.current); recordingTimerRef.current = null; }
-      setRecordingDuration(0);
-      return;
-    }
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mimeType = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm"
-        : MediaRecorder.isTypeSupported("audio/mp4") ? "audio/mp4"
-        : MediaRecorder.isTypeSupported("audio/ogg") ? "audio/ogg" : "";
-      const ext = mimeType.includes("mp4") ? "m4a" : mimeType.includes("ogg") ? "ogg" : "webm";
-      const opts: MediaRecorderOptions = mimeType ? { mimeType } : {};
-      const mediaRecorder = new MediaRecorder(stream, opts);
-      const uploadId = genId();
-      audioChunksRef.current = [];
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) audioChunksRef.current.push(e.data);
-      };
-      mediaRecorder.onstop = () => {
-        const blob = new Blob(audioChunksRef.current, { type: mimeType || "audio/webm" });
-        const localPreview = URL.createObjectURL(blob);
-        blobUrlsRef.current.push(localPreview);
-        const filename = `voice-${Date.now()}.${ext}`;
-        const tempAtt: ChatAttachment = {
-          type: "voice", name: filename, previewUrl: localPreview,
-          size: blob.size, mimeType: mimeType || "audio/webm", _uploadId: uploadId,
-        };
-        setPendingAttachments((prev) => [...prev, tempAtt]);
-        uploadFile(blob, filename)
-          .then((serverUrl) => {
-            setPendingAttachments((prev) =>
-              prev.map((a) => a._uploadId === uploadId ? { ...a, url: `${apiBaseRef.current}${serverUrl}` } : a)
-            );
-          })
-          .catch(() => {
-            notifyError(t("chat.voiceUploadFailed", "语音上传失败"));
-            setPendingAttachments((prev) => prev.filter((a) => a._uploadId !== uploadId || a.url));
-          });
-        stream.getTracks().forEach((t) => t.stop());
-      };
-      mediaRecorderRef.current = mediaRecorder;
-      mediaRecorder.start();
-      setIsRecording(true);
-      setRecordingDuration(0);
-      recordingTimerRef.current = setInterval(() => setRecordingDuration(d => d + 1), 1000);
-    } catch (err: any) {
-      const name = err?.name || "";
-      if (name === "NotAllowedError" || name === "PermissionDeniedError") {
-        notifyError(t("chat.micPermissionDenied", "麦克风权限被拒绝，请在浏览器/系统设置中允许访问"));
-      } else if (name === "NotFoundError") {
-        notifyError(t("chat.micNotFound", "未检测到麦克风设备"));
-      } else {
-        notifyError(t("chat.micError", "无法访问麦克风，请检查浏览器权限设置"));
-      }
-    }
-  }, [isRecording]);
+  // dragOver, Tauri drag-drop — moved to useAttachments hook
 
   const [atAgentOpen, setAtAgentOpen] = useState(false);
   const [atAgentFilter, setAtAgentFilter] = useState("");
@@ -3442,6 +3418,8 @@ export function ChatView({
             onEdit={handleEditMessage}
             onRegenerate={handleRegenerate}
             onRewind={handleRewind}
+            onFork={handleForkConversation}
+            onSaveMemory={handleSaveAsMemory}
             onSkipStep={handleSkipStep}
             onImagePreview={handleImagePreview}
           />
@@ -4029,6 +4007,26 @@ export function ChatView({
                           <span style={{ fontSize: 10, opacity: 0.5 }}>{m.desc}</span>
                         </div>
                       ))}
+                      <div className="chatModeMenuSection" style={{ marginTop: 6 }}>
+                        <IconShield size={12} style={{ display: "inline", verticalAlign: "middle", marginRight: 4 }} />
+                        {t("chat.permissionMode", "权限模式")}
+                      </div>
+                      {([
+                        { key: "cautious" as PermissionMode, label: t("chat.permCautious", "谨慎"), desc: t("chat.permCautiousDesc", "所有操作均需确认") },
+                        { key: "smart" as PermissionMode, label: t("chat.permSmart", "智能"), desc: t("chat.permSmartDesc", "低风险自动放行") },
+                        { key: "trust" as PermissionMode, label: t("chat.permTrust", "信任"), desc: t("chat.permTrustDesc", "仅高风险需确认") },
+                      ]).map((m) => (
+                        <div
+                          key={m.key}
+                          className={`chatModeMenuItem ${permissionMode === m.key ? "chatModeMenuItemActive" : ""}`}
+                          onClick={() => { setPermissionMode(m.key); }}
+                        >
+                          <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            <span style={{ fontWeight: 600 }}>{m.label}</span>
+                          </span>
+                          <span style={{ fontSize: 10, opacity: 0.5 }}>{m.desc}</span>
+                        </div>
+                      ))}
                     </div>
                   )}
                 </div>
@@ -4090,14 +4088,14 @@ export function ChatView({
               </div>
 
               <div className="chatInputToolbarRight">
-                {/* Context usage ring — only show when we have real usage data */}
-                {contextLimit > 0 && contextTokens > 0 && (() => {
-                  const pct = Math.min(contextTokens / contextLimit, 1);
+                {/* Context usage ring — show when limit is known */}
+                {contextLimit > 0 && (() => {
+                  const pct = contextLimit > 0 ? Math.min(contextTokens / contextLimit, 1) : 0;
                   const pctLabel = (pct * 100).toFixed(1);
                   const fmtK = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n);
                   const r = 9; const sw = 2; const circ = 2 * Math.PI * r;
                   const offset = circ * (1 - pct);
-                  const color = pct > 0.95 ? "#ef4444" : pct > 0.8 ? "#f59e0b" : pct > 0.5 ? "#3b82f6" : "#999";
+                  const color = pct > 0.95 ? "#ef4444" : pct > 0.8 ? "#f59e0b" : pct > 0.5 ? "#3b82f6" : "var(--muted2, #999)";
                   return (
                     <div
                       style={{ position: "relative", display: "inline-flex", alignItems: "center", cursor: "default", marginRight: 4 }}
@@ -4106,9 +4104,11 @@ export function ChatView({
                     >
                       <svg width={22} height={22} viewBox="0 0 22 22">
                         <circle cx={11} cy={11} r={r} fill="none" stroke="var(--line)" strokeWidth={sw} />
-                        <circle cx={11} cy={11} r={r} fill="none" stroke={color} strokeWidth={sw}
-                          strokeDasharray={circ} strokeDashoffset={offset}
-                          strokeLinecap="round" transform="rotate(-90 11 11)" style={{ transition: "stroke-dashoffset 0.4s ease" }} />
+                        {pct > 0 && (
+                          <circle cx={11} cy={11} r={r} fill="none" stroke={color} strokeWidth={sw}
+                            strokeDasharray={circ} strokeDashoffset={offset}
+                            strokeLinecap="round" transform="rotate(-90 11 11)" style={{ transition: "stroke-dashoffset 0.4s ease" }} />
+                        )}
                       </svg>
                       {contextTooltipVisible && (
                         <div style={{
@@ -4117,7 +4117,9 @@ export function ChatView({
                           padding: "4px 8px", borderRadius: 6, whiteSpace: "nowrap", pointerEvents: "none",
                           zIndex: 100,
                         }}>
-                          {pctLabel}% · {fmtK(contextTokens)} / {fmtK(contextLimit)} context used
+                          {contextTokens > 0
+                            ? `${pctLabel}% · ${fmtK(contextTokens)} / ${fmtK(contextLimit)} ${t("chat.contextUsed", "context used")}`
+                            : `${fmtK(contextLimit)} ${t("chat.contextAvailable", "可用上下文")}`}
                         </div>
                       )}
                     </div>
@@ -4280,11 +4282,15 @@ export function ChatView({
 
       {securityConfirm && createPortal(
         <SecurityConfirmModal
+          key={securityConfirm.toolId || securityConfirm.tool}
           data={securityConfirm}
           apiBase={apiBaseUrl}
           onClose={handleSecurityClose}
           timerRef={securityTimerRef}
           setData={setSecurityConfirm}
+          onAllow={recordAllow}
+          onDeny={recordDeny}
+          sessionTrustInfo={getSessionTrustInfo(securityConfirm.tool)}
         />,
         document.body,
       )}

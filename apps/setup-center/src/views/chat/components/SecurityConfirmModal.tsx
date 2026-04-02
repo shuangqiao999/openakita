@@ -2,17 +2,21 @@ import { useRef, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { safeFetch } from "../../../providers";
 import { getAccessToken } from "../../../platform/auth";
-import { IS_TAURI } from "../../../platform";
+import { IS_TAURI, logger } from "../../../platform";
 import { IconShield, IconAlertCircle } from "../../../icons";
 
 export function SecurityConfirmModal({
   data, apiBase, onClose, timerRef, setData,
+  onAllow, onDeny, sessionTrustInfo,
 }: {
   data: { tool: string; args: Record<string, unknown>; reason: string; riskLevel: string; needsSandbox: boolean; toolId?: string; countdown: number };
   apiBase: string;
   onClose: () => void;
   timerRef: React.MutableRefObject<ReturnType<typeof setInterval> | null>;
   setData: React.Dispatch<React.SetStateAction<typeof data | null>>;
+  onAllow?: (toolName: string) => void;
+  onDeny?: (toolName: string) => void;
+  sessionTrustInfo?: { toolAllows: number; globalAllows: number; isEscalated: boolean };
 }) {
   const { t } = useTranslation();
   const pausedRef = useRef(false);
@@ -26,6 +30,7 @@ export function SecurityConfirmModal({
         if (prev.countdown <= 1) {
           clearInterval(timerRef.current!);
           timerRef.current = null;
+          logger.info("Chat.Security", "confirm.timeout", { confirmId: prev.toolId });
           handleDecision("allow");
           return null;
         }
@@ -39,22 +44,28 @@ export function SecurityConfirmModal({
 
   const handleDecision = useCallback(async (decision: "allow" | "deny" | "sandbox") => {
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+    logger.info("Chat.Security", "confirm.decision", { confirmId: data.toolId, decision });
     try {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       if (!IS_TAURI) {
         const token = getAccessToken();
         if (token) headers["Authorization"] = `Bearer ${token}`;
       }
-      await safeFetch(`${apiBase}/api/security/decision`, {
+      await safeFetch(`${apiBase}/api/chat/security-confirm`, {
         method: "POST",
         headers,
-        body: JSON.stringify({ tool_call_id: data.toolId, decision }),
+        body: JSON.stringify({ confirm_id: data.toolId || "", decision }),
       });
     } catch (err) {
       console.error("[SecurityConfirm] decision failed:", err);
     }
+    if (decision === "allow" || decision === "sandbox") {
+      onAllow?.(data.tool);
+    } else {
+      onDeny?.(data.tool);
+    }
     onClose();
-  }, [apiBase, data.toolId, onClose, timerRef]);
+  }, [apiBase, data.toolId, data.tool, onClose, onAllow, onDeny, timerRef]);
 
   const riskColors: Record<string, string> = {
     critical: "#ef4444",
@@ -63,6 +74,13 @@ export function SecurityConfirmModal({
     low: "#10b981",
   };
   const riskColor = riskColors[data.riskLevel] || riskColors.medium;
+
+  const trustHint = sessionTrustInfo && sessionTrustInfo.toolAllows > 0
+    ? t("chat.securityTrustHint", {
+        count: sessionTrustInfo.toolAllows,
+        defaultValue: `本次会话中此工具已被允许 ${sessionTrustInfo.toolAllows} 次`,
+      })
+    : null;
 
   return (
     <div
@@ -102,6 +120,12 @@ export function SecurityConfirmModal({
             {JSON.stringify(data.args, null, 2)}
           </pre>
         </div>
+
+        {trustHint && (
+          <div style={{ fontSize: 12, color: "#10b981", marginBottom: 10, padding: "4px 8px", background: "#10b98110", borderRadius: 6 }}>
+            {trustHint}
+          </div>
+        )}
 
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <button

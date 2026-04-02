@@ -49,18 +49,37 @@ async def clear_chat(request: Request):
     body = await request.json()
     conversation_id = body.get("conversation_id", "")
     if not conversation_id:
-        return {"ok": False, "error": "missing conversation_id"}
+        return JSONResponse(
+            status_code=400,
+            content={"ok": False, "error": "missing conversation_id"},
+        )
 
     session_manager = getattr(request.app.state, "session_manager", None)
-    if session_manager:
-        cleared = session_manager.clear_history(
-            channel="desktop",
-            chat_id=conversation_id,
-            user_id="desktop_user",
+    if not session_manager:
+        return JSONResponse(
+            status_code=503,
+            content={"ok": False, "error": "session manager not available"},
         )
-        if cleared:
-            return {"ok": True}
-    return {"ok": False, "error": "session not found"}
+
+    cleared = session_manager.clear_history(
+        channel="desktop",
+        chat_id=conversation_id,
+        user_id="desktop_user",
+    )
+    if cleared:
+        return {"ok": True}
+
+    # Fallback: search by Session.id (handles wrapped IDs from API clients)
+    session = session_manager.get_session_by_id(conversation_id)
+    if session:
+        session.context.clear_messages()
+        session_manager.mark_dirty()
+        return {"ok": True}
+
+    return JSONResponse(
+        status_code=404,
+        content={"ok": False, "error": "session not found"},
+    )
 
 
 async def _broadcast_chat_event(event: str, data: dict) -> None:
@@ -365,6 +384,7 @@ async def _stream_chat(
                     session=session,
                     gateway=None,
                     plan_mode=chat_request.plan_mode,
+                    mode=chat_request.mode,
                     endpoint_override=chat_request.endpoint,
                     attachments=chat_request.attachments,
                     thinking_mode=chat_request.thinking_mode,
@@ -779,7 +799,20 @@ async def chat(request: Request, body: ChatRequest):
     - done (with optional usage payload)
     """
     import uuid as _uuid
-    conversation_id = body.conversation_id or f"api_{_uuid.uuid4().hex[:12]}"
+
+    pool = getattr(request.app.state, "agent_pool", None)
+    if not body.conversation_id:
+        if pool is not None:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": "missing_conversation_id",
+                    "message": "conversation_id is required in pool mode to avoid agent instance leaks",
+                },
+            )
+        body.conversation_id = f"api_{_uuid.uuid4().hex[:12]}"
+
+    conversation_id = body.conversation_id
     client_id = body.client_id or ""
 
     # ── Busy-lock check (via lifecycle manager) ──
@@ -814,6 +847,22 @@ async def chat(request: Request, body: ChatRequest):
 
     msg_preview = (body.message or "")[:100]
     att_count = len(body.attachments) if body.attachments else 0
+
+    # Detect likely client-side encoding corruption: if the message is mostly
+    # '?' characters mixed with sparse ASCII, the client probably encoded
+    # Chinese/CJK text as ASCII with errors="replace" before sending.
+    _msg = body.message or ""
+    if len(_msg) > 2:
+        _q = _msg.count("?")
+        _non_ascii = sum(1 for c in _msg if ord(c) > 127)
+        if _q > len(_msg) * 0.4 and _non_ascii == 0:
+            logger.warning(
+                "[Chat API] 疑似编码损坏: 消息含 %d/%d 个问号且无非ASCII字符, "
+                "客户端可能在发送前将中文编码为ASCII(errors=replace)。"
+                "请确认客户端使用 UTF-8 编码 JSON body | conv=%s",
+                _q, len(_msg), conversation_id,
+            )
+
     logger.info(
         f"[Chat API] 收到消息: \"{msg_preview}\""
         + (f" (+{att_count}个附件)" if att_count else "")

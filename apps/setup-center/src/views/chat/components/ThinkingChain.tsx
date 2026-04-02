@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import type { ChainGroup, ChainEntry, ChatToolCall } from "../utils/chatTypes";
+import { summarizeToolResult } from "../utils/chatHelpers";
 import {
   IconChevronRight, IconCheck, IconX, IconLoader, IconCircle,
 } from "../../../icons";
@@ -182,9 +183,11 @@ function ChainEntryLine({ entry, onSkipStep }: { entry: ChainEntry; onSkipStep?:
       const isError = entry.status === "error";
       const icon = isError ? <IconX size={11} /> : <IconCheck size={11} />;
       const cls = isError ? "chainNarrToolEnd chainNarrToolError" : "chainNarrToolEnd";
+      const summary = summarizeToolResult(entry.tool, entry.result, isError, t);
       return (
         <div className={cls}>
           {icon}
+          <span className="chainNarrToolSummary">{summary}</span>
           <ToolResultBlock result={entry.result} />
         </div>
       );

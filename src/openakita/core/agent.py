@@ -1735,6 +1735,7 @@ class Agent:
         session_type: str = "cli",
         tools_enabled: bool = True,
         session: "Session | None" = None,
+        mode: str | None = None,
     ) -> str:
         """
         使用编译管线构建系统提示词 (v2)
@@ -1784,9 +1785,9 @@ class Agent:
             except Exception:
                 pass
 
-        _mode = "agent"
+        _mode = mode or "agent"
         _skip_catalogs = False
-        if intent:
+        if not mode and intent:
             from .intent_analyzer import IntentType
             if intent.intent == IntentType.CHAT:
                 _mode = "ask"
@@ -3992,6 +3993,7 @@ create_agent(name="名称", description="描述", skills=["技能"], custom_prom
                 task_description=task_description,
                 session_type=session_type,
                 session=session,
+                mode=mode,
             )
 
             # 注入 TaskDefinition
@@ -4038,7 +4040,7 @@ create_agent(name="名称", description="描述", skills=["技能"], custom_prom
             if session and hasattr(session, "context"):
                 _agent_profile_id = getattr(session.context, "agent_profile_id", "default") or "default"
 
-            if _intent and _intent.intent == _IT.CHAT:
+            if _intent and _intent.intent == _IT.CHAT and mode != "agent":
                 if getattr(_intent, "fast_reply", False):
                     # Ultra-fast path: use compiler/lightweight model for obvious greetings
                     try:
@@ -4059,15 +4061,15 @@ create_agent(name="名称", description="描述", skills=["技能"], custom_prom
                         _reply_text = clean_llm_response(
                             _fast_response.content if _fast_response.content else ""
                         )
-                        if _reply_text:
-                            yield {"type": "text_delta", "content": _reply_text}
-                        else:
-                            yield {"type": "text_delta", "content": "你好！有什么我可以帮你的吗？"}
+                        if not _reply_text:
                             _reply_text = "你好！有什么我可以帮你的吗？"
                     except Exception as e:
                         logger.error(f"[FastReply] Failed: {e}")
-                        yield {"type": "text_delta", "content": "你好！有什么我可以帮你的吗？"}
                         _reply_text = "你好！有什么我可以帮你的吗？"
+                    _chunk_size = 20
+                    for _ci in range(0, len(_reply_text), _chunk_size):
+                        yield {"type": "text_delta", "content": _reply_text[_ci:_ci + _chunk_size]}
+                        await asyncio.sleep(0.01)
                     yield {"type": "done"}
 
                     await self._finalize_session(
@@ -4081,7 +4083,7 @@ create_agent(name="名称", description="描述", skills=["技能"], custom_prom
                 # Normal CHAT path (non-fast): uses main model, no tools
                 _chat_prompt = await self._build_system_prompt_compiled(
                     task_description="", session_type=session_type, tools_enabled=False,
-                    session=session,
+                    session=session, mode=mode,
                 )
                 try:
                     response = await self.brain.messages_create_async(

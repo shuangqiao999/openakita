@@ -106,6 +106,9 @@ export type SubAgentTask = {
   elapsed_s: number;
   last_progress_s: number;
   started_at: number;
+  tokens_used?: number;
+  current_tool_summary?: string;
+  queue_count?: number;
 };
 
 /** Per-session streaming context (supports concurrent streams across conversations) */
