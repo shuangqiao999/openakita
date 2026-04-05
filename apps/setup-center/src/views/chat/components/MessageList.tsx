@@ -36,6 +36,7 @@ export interface MessageListProps {
   onSaveMemory?: (msgId: string) => void;
   onSkipStep?: () => void;
   onImagePreview?: (displayUrl: string, downloadUrl: string, name: string) => void;
+  onAtBottomChange?: (atBottom: boolean) => void;
 }
 
 function applySearchHighlights(container: HTMLElement, query: string) {
@@ -80,6 +81,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
     onSaveMemory,
     onSkipStep,
     onImagePreview,
+    onAtBottomChange,
   },
   ref,
 ) {
@@ -92,7 +94,8 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
 
   const handleAtBottomChange = useCallback((atBottom: boolean) => {
     atBottomRef.current = atBottom;
-  }, []);
+    onAtBottomChange?.(atBottom);
+  }, [onAtBottomChange]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -144,23 +147,26 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
   }), [scrollToAbsoluteBottom]);
 
   const followOutput = useCallback((isAtBottom: boolean) => {
-    if (forceFollowRef.current) {
+    if (forceFollowRef.current && isStreaming) {
       return "auto";
     }
     if (isAtBottom) return isStreaming ? "auto" : "smooth";
     return false;
   }, [isStreaming]);
 
-  // Explicit scroll-to-bottom when messages count changes while forceFollow is active.
-  // Two attempts: immediate (rAF) + delayed (250ms) to catch the loading indicator
-  // after it has been fully laid out by the browser.
   useEffect(() => {
-    if (forceFollowRef.current && messages.length > 0) {
-      requestAnimationFrame(() => scrollToAbsoluteBottom());
-      const timer = setTimeout(() => { if (forceFollowRef.current) scrollToAbsoluteBottom(); }, 250);
-      return () => clearTimeout(timer);
+    if (!isStreaming) {
+      forceFollowRef.current = false;
     }
-  }, [messages.length, scrollToAbsoluteBottom]);
+  }, [isStreaming]);
+
+  // Explicit scroll-to-bottom when messages count changes while forceFollow is active.
+  // Keep this lightweight to avoid fighting the user's manual scroll.
+  useEffect(() => {
+    if (forceFollowRef.current && isStreaming && messages.length > 0) {
+      requestAnimationFrame(() => scrollToAbsoluteBottom());
+    }
+  }, [messages.length, isStreaming, scrollToAbsoluteBottom]);
 
   // Keep scroll pinned to bottom during streaming content updates (same message count,
   // but content grows). Throttled via rAF to avoid layout thrashing.
@@ -224,7 +230,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
         increaseViewportBy={{ top: 400, bottom: 200 }}
         itemContent={itemContent}
         components={{ Footer }}
-        style={{ flex: 1, minHeight: 0 }}
+        style={{ flex: 1, minHeight: 0, overscrollBehavior: "contain" }}
       />
     </div>
   );

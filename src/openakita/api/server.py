@@ -13,6 +13,8 @@ FastAPI HTTP API server for OpenAkita.
 
 from __future__ import annotations
 
+import openakita._ensure_utf8  # noqa: F401  # Windows UTF-8 编码保护
+
 import asyncio
 import logging
 import os

@@ -190,6 +190,18 @@ class ResponseHandler:
         self._brain = brain
         self._memory_manager = memory_manager
 
+    @staticmethod
+    def _request_expects_artifact(user_request: str | None) -> bool:
+        text = (user_request or "").lower()
+        return any(
+            key in text
+            for key in (
+                "图片", "照片", "图像", "海报", "壁纸", "配图", "截图",
+                "附件", "文件", "下载", "发我", "发给我", "给我一张", "给我发",
+                "image", "photo", "picture", "file", "attachment", "download", "send me",
+            )
+        )
+
     async def verify_task_completion(
         self,
         user_request: str,
@@ -259,11 +271,21 @@ class ResponseHandler:
         except Exception as e:
             logger.debug(f"[TaskVerify] Deterministic validation skipped: {e}")
 
+        expects_artifact = self._request_expects_artifact(user_request)
+
         # 宣称已交付但无证据
         if any(
-            k in (assistant_response or "") for k in ("已发送", "已交付", "已发给你", "已发给您")
+            k in (assistant_response or "") for k in (
+                "已发送", "已交付", "已发给你", "已发给您",
+                "下面是图片", "给你一张", "给您一张", "我给你发", "我给您发",
+                "我为你生成了图片", "我为您生成了图片", "图片如下", "附件如下",
+            )
         ) and not delivery_receipts and "deliver_artifacts" not in (executed_tools or []):
             logger.info("[TaskVerify] delivery claim without receipts, INCOMPLETE")
+            return False
+
+        if expects_artifact and not delivery_receipts and "deliver_artifacts" not in (executed_tools or []):
+            logger.info("[TaskVerify] artifact requested but no delivery receipts/tools, INCOMPLETE")
             return False
 
         # LLM 判断

@@ -116,10 +116,12 @@ class AgentFactory:
             pa._mcp_catalog = agent.mcp_catalog
 
         # Rebuild the initial system prompt so it reflects the filtered catalogs.
+        # INCLUSIVE 模式无论 skills 是否为空都需要重建（空列表 = 隐藏全部非必要技能）。
         needs_rebuild = (
             (profile.tools_mode != "all" and profile.tools)
             or (profile.mcp_mode != "all" and profile.mcp_servers)
-            or (profile.skills_mode != SkillsMode.ALL and profile.skills)
+            or profile.skills_mode == SkillsMode.INCLUSIVE
+            or (profile.skills_mode == SkillsMode.EXCLUSIVE and profile.skills)
         )
         if needs_rebuild and hasattr(agent, "_context"):
             base_prompt = agent.identity.get_system_prompt()
@@ -208,37 +210,52 @@ class AgentFactory:
 
     @staticmethod
     def _apply_skill_filter(agent: Agent, profile: AgentProfile) -> None:
-        if profile.skills_mode == SkillsMode.ALL or not profile.skills:
+        if profile.skills_mode == SkillsMode.ALL:
+            return
+
+        # EXCLUSIVE with empty list → nothing to exclude
+        if profile.skills_mode == SkillsMode.EXCLUSIVE and not profile.skills:
             return
 
         registry = agent.skill_registry
         all_skills = [skill.skill_id for skill in registry.list_all(include_disabled=True)]
+        changed = 0
 
-        removed = 0
         if profile.skills_mode == SkillsMode.INCLUSIVE:
-            exact, short = AgentFactory._build_skill_match_set(profile.skills)
+            # INCLUSIVE: 渐进式披露 — 未勾选的技能从 L1（系统提示目录）隐藏，
+            # 但保留在注册表中，LLM 可通过 list_skills / get_skill_info 按需发现。
+            if profile.skills:
+                exact, short = AgentFactory._build_skill_match_set(profile.skills)
+            else:
+                exact, short = set(), set()
+
             for skill_name in all_skills:
                 if AgentFactory._is_essential(skill_name):
                     continue
                 if not AgentFactory._skill_in_set(skill_name, exact, short):
-                    registry.unregister(skill_name)
-                    removed += 1
+                    registry.set_catalog_hidden(skill_name, True)
+                    changed += 1
 
-            # 子 Agent 显式选择的技能即使全局 disabled 也应在此 Agent 上可用
-            for skill in registry.list_all(include_disabled=True):
-                if skill.disabled:
-                    skill.disabled = False
+            # 显式选择的技能即使全局 disabled 也应在此 Agent 上可用
+            if profile.skills:
+                for skill in registry.list_all(include_disabled=True):
+                    if (
+                        skill.disabled
+                        and AgentFactory._skill_in_set(skill.skill_id, exact, short)
+                    ):
+                        skill.disabled = False
 
         elif profile.skills_mode == SkillsMode.EXCLUSIVE:
+            # EXCLUSIVE: 完全移除黑名单中的技能（不可发现）
             exact, short = AgentFactory._build_skill_match_set(profile.skills)
             for skill_name in all_skills:
                 if AgentFactory._is_essential(skill_name):
                     continue
                 if AgentFactory._skill_in_set(skill_name, exact, short):
                     registry.unregister(skill_name)
-                    removed += 1
+                    changed += 1
 
-        if removed:
+        if changed:
             agent.skill_catalog.invalidate_cache()
             agent.skill_catalog.generate_catalog()
             agent._update_skill_tools()

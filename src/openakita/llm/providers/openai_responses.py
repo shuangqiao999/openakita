@@ -34,7 +34,6 @@ from ..types import (
     TextBlock,
     Usage,
 )
-from .base import parse_sse_field
 from .openai import OpenAIProvider
 
 logger = logging.getLogger(__name__)
@@ -415,9 +414,8 @@ class OpenAIResponsesProvider(OpenAIProvider):
                     if not line.strip():
                         continue
 
-                    parsed = parse_sse_field(line)
-                    if parsed is not None and parsed[0] == "data":
-                        data = parsed[1]
+                    if line.startswith("data: "):
+                        data = line[6:]
                         if data.strip() and data != "[DONE]":
                             try:
                                 event = json.loads(data)

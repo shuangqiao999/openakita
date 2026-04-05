@@ -1943,6 +1943,8 @@ class Agent:
             if intent.intent == IntentType.CHAT:
                 _effective_mode = "ask"
                 _skip_catalogs = True
+            elif intent.intent == IntentType.QUERY:
+                _skip_catalogs = True
 
         prompt = await self.prompt_assembler.build_system_prompt_compiled(
             task_description, session_type=session_type, context_window=ctx_window,
@@ -3668,15 +3670,12 @@ class Agent:
             f"trace_iterations={len(_trace)}"
         )
         outbound_attachments = self._extract_outbound_attachments(_all_tool_calls, _all_tool_results)
-        if response_text and response_text.strip():
-            self.memory_manager.record_turn(
-                "assistant", response_text,
-                tool_calls=_all_tool_calls,
-                tool_results=_all_tool_results,
-                attachments=outbound_attachments or None,
-            )
-        else:
-            logger.debug(f"[Session:{session_id}] Skipping record_turn for empty response")
+        self.memory_manager.record_turn(
+            "assistant", response_text,
+            tool_calls=_all_tool_calls,
+            tool_results=_all_tool_results,
+            attachments=outbound_attachments or None,
+        )
         try:
             logger.info(f"[Session:{session_id}] Agent: {response_text}")
         except (UnicodeEncodeError, OSError):
@@ -3944,6 +3943,44 @@ class Agent:
                 except Exception as e:
                     logger.error(f"[FastReply] Failed: {e}")
                     response_text = "你好！有什么我可以帮你的吗？"
+            elif (
+                _intent
+                and _intent.intent == _IT.QUERY
+                and getattr(_intent, "fast_reply", False)
+            ):
+                # Fast-path for simple factual queries (math, date, definitions)
+                # No tools passed → LLM answers directly
+                try:
+                    _runtime_info = ""
+                    try:
+                        from ..prompt.builder import _build_runtime_section
+                        _runtime_info = _build_runtime_section() or ""
+                    except Exception:
+                        pass
+
+                    _identity_snippet = ""
+                    if hasattr(self, "identity") and hasattr(self.identity, "get_system_prompt"):
+                        _identity_snippet = (self.identity.get_system_prompt(include_active_task=False) or "")[:500]
+
+                    _fast_system = (
+                        f"{_identity_snippet}\n\n"
+                        f"{_runtime_info}\n\n"
+                        "用户提出了一个简单的知识/计算/日期问题。"
+                        "请直接给出准确、简洁的回答。不要使用任何工具。"
+                        "如果涉及日期/时间，请根据上面的运行环境信息回答。"
+                    ).strip()
+
+                    logger.info(f"[FastQuery] Answering '{message}' without tools")
+                    _fast_resp = await self.brain.think_lightweight(
+                        prompt=message,
+                        system=_fast_system,
+                    )
+                    response_text = clean_llm_response(
+                        _fast_resp.content if _fast_resp.content else ""
+                    ) or "抱歉，我无法回答这个问题。"
+                except Exception as e:
+                    logger.error(f"[FastQuery] Failed: {e}")
+                    response_text = "抱歉，我无法回答这个问题。"
             else:
                 # All non-fast paths (CHAT/TASK/QUERY/COMMAND/FOLLOW_UP) → ReasoningEngine
                 response_text = await self._chat_with_tools_and_context(
@@ -4190,6 +4227,60 @@ class Agent:
                     logger.error(f"[FastReply] Failed: {e}")
                     yield {"type": "text_delta", "content": "你好！有什么我可以帮你的吗？"}
                     _reply_text = "你好！有什么我可以帮你的吗？"
+                yield {"type": "done"}
+
+                await self._finalize_session(
+                    response_text=_reply_text,
+                    session=session,
+                    session_id=session_id,
+                    task_monitor=task_monitor,
+                )
+                return
+
+            if (
+                _intent
+                and _intent.intent == _IT.QUERY
+                and getattr(_intent, "fast_reply", False)
+            ):
+                # Fast-path for simple factual queries (math, date, definitions)
+                # No tools passed → LLM answers directly
+                try:
+                    _runtime_info = ""
+                    try:
+                        from ..prompt.builder import _build_runtime_section
+                        _runtime_info = _build_runtime_section() or ""
+                    except Exception:
+                        pass
+
+                    _identity_snippet = ""
+                    if hasattr(self, "identity") and hasattr(self.identity, "get_system_prompt"):
+                        _identity_snippet = (self.identity.get_system_prompt(include_active_task=False) or "")[:500]
+
+                    _fast_system = (
+                        f"{_identity_snippet}\n\n"
+                        f"{_runtime_info}\n\n"
+                        "用户提出了一个简单的知识/计算/日期问题。"
+                        "请直接给出准确、简洁的回答。不要使用任何工具。"
+                        "如果涉及日期/时间，请根据上面的运行环境信息回答。"
+                    ).strip()
+
+                    logger.info(f"[FastQuery-Stream] Answering '{message}' without tools")
+                    _fast_response = await self.brain.think_lightweight(
+                        prompt=message,
+                        system=_fast_system,
+                    )
+                    _reply_text = clean_llm_response(
+                        _fast_response.content if _fast_response.content else ""
+                    )
+                    if _reply_text:
+                        yield {"type": "text_delta", "content": _reply_text}
+                    else:
+                        yield {"type": "text_delta", "content": "抱歉，我无法回答这个问题。"}
+                        _reply_text = "抱歉，我无法回答这个问题。"
+                except Exception as e:
+                    logger.error(f"[FastQuery-Stream] Failed: {e}")
+                    yield {"type": "text_delta", "content": "抱歉，我无法回答这个问题。"}
+                    _reply_text = "抱歉，我无法回答这个问题。"
                 yield {"type": "done"}
 
                 await self._finalize_session(
@@ -6165,10 +6256,7 @@ NEXT: 建议的下一步（如有）"""
                     # 只有在没有工具调用时才保存文本作为最终响应
                     # 如果有工具调用，这个文本可能是 LLM 的思考过程
                     if not tool_calls and cleaned_text:
-                        # ForceToolCall 重试时，LLM 常返回短确认（"好的，已完成"），
-                        # 不能用它覆盖前一轮已生成的完整内容（如新闻/热搜等）。
-                        if not final_response or len(cleaned_text) >= len(final_response):
-                            final_response = cleaned_text
+                        final_response = cleaned_text
 
                 # 如果没有工具调用，检查是否需要强制要求调用工具
                 if not tool_calls:
@@ -6268,23 +6356,15 @@ NEXT: 建议的下一步（如有）"""
                     await self.agent_state.current_task.process_post_tool_signals(messages)
 
                 # 注意：不在工具执行后检查 stop_reason，让循环继续获取 LLM 的最终总结
-            # 循环结束后，如果 final_response 内容不够充实，让 LLM 生成详细总结
-            # 阈值 30：中文单字=1 char，大多数"状态确认"型回复 <20 chars
-            if not final_response or len(final_response.strip()) < 30:
-                logger.info(
-                    f"Task completed but final_response too short "
-                    f"({len(final_response.strip()) if final_response else 0} chars), "
-                    f"requesting detailed summary..."
-                )
+            # 循环结束后，如果 final_response 为空，尝试让 LLM 生成一个总结
+            if not final_response or len(final_response.strip()) < 10:
+                logger.info("Task completed but no final response, requesting summary...")
                 try:
+                    # 请求 LLM 生成任务完成总结
                     messages.append(
                         {
                             "role": "user",
-                            "content": (
-                                "任务已执行完毕，但你的回复内容太简短了。"
-                                "请把具体的执行结果完整地告诉用户——"
-                                "用户将直接看到你返回的文字，确保包含关键数据和结论。"
-                            ),
+                            "content": "任务执行完毕。请简要总结一下执行结果和完成情况。",
                         }
                     )
                     _tt_sum = set_tracking_context(TokenTrackingContext(

@@ -149,6 +149,7 @@ export function ChatView({
   const [msgSearchIdx, setMsgSearchIdx] = useState(0);
   const msgSearchRef = useRef<HTMLInputElement | null>(null);
   const messageListRef = useRef<MessageListHandle>(null);
+  const isMessageListAtBottomRef = useRef(true);
   const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([]);
   const [lightbox, setLightbox] = useState<{ url: string; downloadUrl: string; name: string } | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<{ message: string; onConfirm: () => void } | null>(null);
@@ -1018,9 +1019,16 @@ export function ChatView({
   useEffect(() => {
     if (convSwitchScrollRef.current && messages.length > 0) {
       requestAnimationFrame(() => messageListRef.current?.scrollToBottom("auto"));
+      isMessageListAtBottomRef.current = true;
       convSwitchScrollRef.current = false;
     }
   }, [messages]);
+
+  useEffect(() => {
+    if (!isCurrentConvStreaming) {
+      messageListRef.current?.cancelFollow();
+    }
+  }, [isCurrentConvStreaming]);
 
   useEffect(() => {
     if (!visible) {
@@ -1031,9 +1039,17 @@ export function ChatView({
       requestAnimationFrame(() => {
         messageListRef.current?.scrollToBottom("auto");
       });
+      isMessageListAtBottomRef.current = true;
       needsScrollOnVisible.current = false;
     }
   }, [visible]);
+
+  useEffect(() => {
+    if (!visible) return;
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
+  }, [visible, messages.length]);
 
   // ── 思维链: 流式结束后自动折叠 ──
   useEffect(() => {
@@ -1661,8 +1677,10 @@ export function ChatView({
       pollingTimer: null,
     };
     streamContexts.current.set(thisConvId, sctx);
-    // User just sent a message — ensure Virtuoso follows regardless of scroll position
-    messageListRef.current?.forceFollow();
+    // Only force-follow if the user was already at the bottom.
+    if (isMessageListAtBottomRef.current) {
+      messageListRef.current?.forceFollow();
+    }
     // Functional updater chains with any pending setMessages (e.g. handleAskAnswer's answered flag)
     if (thisConvId === activeConvIdRef.current) {
       setMessages((prev) => {
@@ -3577,6 +3595,7 @@ export function ChatView({
             apiBaseUrl={apiBaseUrl}
             mdModules={mdModules}
             isStreaming={isCurrentConvStreaming}
+            onAtBottomChange={(atBottom) => { isMessageListAtBottomRef.current = atBottom; }}
             onAskAnswer={handleAskAnswer}
             onRetry={handleRegenerate}
             onEdit={handleEditMessage}
@@ -3587,13 +3606,14 @@ export function ChatView({
           />
           </ErrorBoundary>
           )}
-
-          {/* Sub-agent progress cards */}
-          {displaySubAgentTasks.length > 0 && (
-            <SubAgentCards tasks={displaySubAgentTasks} />
-          )}
-
         </div>
+
+        {/* Sub-agent progress cards */}
+        {displaySubAgentTasks.length > 0 && (
+          <div style={{ flexShrink: 0, padding: "0 20px 8px" }}>
+            <SubAgentCards tasks={displaySubAgentTasks} />
+          </div>
+        )}
 
         {/* Plan 审批面板 —— exit_plan_mode 后弹出，等待用户批准或修改 */}
         {pendingApproval && (
@@ -3694,7 +3714,9 @@ export function ChatView({
             margin: "0 16px 8px", borderRadius: 12,
             border: "1px solid var(--border, rgba(255,255,255,0.1))",
             background: "var(--card, rgba(0,0,0,0.03))",
-            overflow: "hidden", transition: "all 0.3s ease",
+            overflow: "hidden",
+            transition: "opacity 0.2s ease",
+            flexShrink: 0,
           }}>
             <button
               onClick={() => setOrgFlowPanelOpen(p => !p)}
@@ -3711,7 +3733,7 @@ export function ChatView({
               </span>
             </button>
             {orgFlowPanelOpen && (
-              <div style={{ padding: "4px 14px 12px", display: "flex", flexWrap: "wrap", gap: 8 }}>
+              <div style={{ padding: "4px 14px 12px", display: "flex", flexWrap: "wrap", gap: 8, maxHeight: 120, overflowY: "auto" }}>
                 {Array.from(orgNodeStates.entries()).map(([nid, ns]) => {
                   const color = ns.status === "busy" ? "#22c55e" : ns.status === "done" || ns.status === "idle" ? "#3b82f6" : ns.status === "error" ? "#ef4444" : ns.status === "timeout" ? "#f59e0b" : "#6b7280";
                   const icon = ns.status === "busy" ? "🟢" : ns.status === "done" || ns.status === "idle" ? "🔵" : ns.status === "error" ? "🔴" : ns.status === "timeout" ? "🟡" : "⚪";

@@ -122,6 +122,10 @@ complexity:
 用户: "搜索一下最新的AI新闻" → intent: task, task_type: action, goal: 搜索AI新闻, tool_hints: [Web Search]
 用户: "Python的GIL是什么" → intent: query, task_type: question, goal: 解释Python GIL机制, tool_hints: []
 用户: "推荐3本产品经理的书" → intent: query, task_type: question, goal: 推荐产品经理书籍, tool_hints: []
+用户: "1+1等于几" → intent: query, task_type: question, goal: 简单数学计算, tool_hints: []
+用户: "今天几号" → intent: query, task_type: question, goal: 询问当前日期, tool_hints: []
+用户: "现在几点" → intent: query, task_type: question, goal: 询问当前时间, tool_hints: []
+用户: "什么是微服务架构" → intent: query, task_type: question, goal: 解释微服务架构概念, tool_hints: []
 用户: "你好" → intent: chat, task_type: other, goal: 用户打招呼, tool_hints: []
 用户: "改成UTF-8编码" → intent: follow_up, task_type: action, goal: 修改编码为UTF-8, tool_hints: [File System]
 
@@ -215,6 +219,11 @@ complexity:
   suggest_plan: true
 ```
 
+关键判断原则：
+- 数学计算、日期时间、概念解释、常识问答 → 一律是 query，不是 task
+- 只有需要**实际操作外部系统**（读写文件、执行命令、搜索网络、发送消息）的请求才是 task
+- 不确定时，如果不需要工具就能回答，选 query
+
 重要：你必须分析用户的实际消息内容来判断意图，不要复制上面的示例。"""
 
 
@@ -246,6 +255,45 @@ _SAFE_WITH_HISTORY: frozenset[str] = frozenset({
 })
 
 _FAST_CHAT_MAX_LEN = 12
+
+# Rule-based patterns for QUERY intent (no tools needed)
+_QUERY_PATTERNS = re.compile(
+    r"^(?:"
+    r"\d+\s*[+\-*/×÷]\s*\d+"           # math: 1+1, 3*4
+    r"|.*等于[几多少什么]"                # X等于几
+    r"|今天几[号日]"                      # 今天几号
+    r"|现在几[点时]"                      # 现在几点
+    r"|(?:什么|啥)(?:时间|日期|时候)"     # 什么时间
+    r"|几月几[号日]"                      # 几月几号
+    r"|今天(?:是|星期|周)[几什么]"        # 今天星期几
+    r"|什么是\S+"                         # 什么是X
+    r"|\S+是什么"                         # X是什么
+    r").*$",
+    re.IGNORECASE,
+)
+
+
+def _try_fast_query_shortcut(message: str) -> IntentResult | None:
+    """Rule-based shortcut for obvious query messages (math, date, definitions).
+    Returns QUERY intent immediately without LLM call."""
+    stripped = message.strip().rstrip("？?。.!！")
+    if len(stripped) > 50:
+        return None
+    if _QUERY_PATTERNS.match(stripped):
+        logger.info(f"[IntentAnalyzer] Fast-path: '{stripped}' matched as QUERY (rule-based)")
+        return IntentResult(
+            intent=IntentType.QUERY,
+            confidence=1.0,
+            task_definition="",
+            task_type="question",
+            tool_hints=[],
+            memory_keywords=[],
+            force_tool=False,
+            todo_required=False,
+            raw_output="[fast-query-shortcut]",
+            fast_reply=True,
+        )
+    return None
 
 
 def _try_fast_chat_shortcut(message: str, has_history: bool = False) -> IntentResult | None:
@@ -316,12 +364,12 @@ class IntentAnalyzer:
         session_context: Any = None,
         has_history: bool = False,
     ) -> IntentResult:
-        """Analyze user message intent. Rule-based shortcut for obvious greetings,
-        LLM analysis for everything else."""
-        # fast_reply 快捷路径已禁用，所有消息统一走 LLM 意图分析
-        # fast_result = _try_fast_chat_shortcut(message, has_history=has_history)
-        # if fast_result is not None:
-        #     return fast_result
+        """Analyze user message intent. Rule-based shortcut for obvious greetings
+        and simple queries, LLM analysis for everything else."""
+        # Rule-based fast-path for simple queries (math, date, definitions)
+        query_result = _try_fast_query_shortcut(message)
+        if query_result is not None:
+            return query_result
 
         try:
             response = await self.brain.compiler_think(

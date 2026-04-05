@@ -317,7 +317,7 @@ class WeWorkWsConfig:
     max_reconnect_attempts: int = -1
     reconnect_base_delay: float = 1.0
     reconnect_max_delay: float = 30.0
-    reply_ack_timeout: float = 5.0
+    reply_ack_timeout: float = 15.0
     max_reply_queue_size: int = 100
 
     def __post_init__(self) -> None:
@@ -1192,7 +1192,7 @@ class WeWorkWsAdapter(ChannelAdapter):
             "stream": {
                 "id": stream_id,
                 "finish": False,
-                "content": "思考中...",
+                "content": "<think>等待模型响应 1s</think>",
             },
         }
         try:
@@ -1236,7 +1236,7 @@ class WeWorkWsAdapter(ChannelAdapter):
                 if count >= MAX_INTERMEDIATE_STREAM_MSGS:
                     logger.debug(f"[thinking] Stream {stream_id[:8]} hit intermediate limit, stopping counter")
                     break
-                content = "思考中..."
+                content = f"<think>等待模型响应 {seconds}s</think>"
                 body: dict = {
                     "msgtype": "stream",
                     "stream": {"id": stream_id, "finish": False, "content": content},
@@ -2099,11 +2099,21 @@ class WeWorkWsAdapter(ChannelAdapter):
             return local_path
 
     async def upload_media(self, path: Path, mime_type: str) -> MediaFile:
-        """Public generic upload is not exposed for this adapter."""
-        raise NotImplementedError(
-            "WeWorkWsAdapter does not expose generic upload_media; "
-            "use send_image/send_file/send_voice/send_video instead."
+        """Upload temporary media via WebSocket chunked upload protocol.
+
+        Returns a MediaFile with file_id set to the media_id from the server.
+        The media_id is valid for 3 days.
+        """
+        media_id = await self._ws_upload_media(path, mime_type)
+        media = MediaFile.create(
+            filename=path.name,
+            mime_type=mime_type,
+            file_id=media_id,
+            size=path.stat().st_size,
         )
+        media.status = MediaStatus.READY
+        media.local_path = str(path)
+        return media
 
     async def _ws_upload_media(self, path: Path, mime_type: str) -> str:
         """Low-level WebSocket chunked upload: init -> chunks -> finish -> media_id."""

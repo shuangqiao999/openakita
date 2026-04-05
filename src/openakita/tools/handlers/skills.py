@@ -86,7 +86,7 @@ class SkillsHandler:
             return f"❌ 技能操作失败: {e}"
 
     def _list_skills(self, params: dict) -> str:
-        """列出所有技能，区分启用/禁用状态"""
+        """列出所有技能，区分启用/禁用/可发现状态"""
         all_skills = self.agent.skill_registry.list_all(include_disabled=True)
         if not all_skills:
             return (
@@ -96,13 +96,22 @@ class SkillsHandler:
             )
 
         system_skills = [s for s in all_skills if s.system]
-        enabled_external = [s for s in all_skills if not s.system and not s.disabled]
+        enabled_external = [
+            s for s in all_skills
+            if not s.system and not s.disabled and not s.catalog_hidden
+        ]
+        discoverable_external = [
+            s for s in all_skills
+            if not s.system and not s.disabled and s.catalog_hidden
+        ]
         disabled_external = [s for s in all_skills if not s.system and s.disabled]
 
         enabled_total = len(system_skills) + len(enabled_external)
         output = (
             f"已安装 {len(all_skills)} 个技能 "
-            f"({enabled_total} 启用, {len(disabled_external)} 禁用):\n\n"
+            f"({enabled_total} 预加载, "
+            f"{len(discoverable_external)} 可发现, "
+            f"{len(disabled_external)} 禁用):\n\n"
         )
 
         if system_skills:
@@ -130,6 +139,23 @@ class SkillsHandler:
                 zh_name = skill.name_i18n.get("zh", "")
                 name_part = f"{skill.name} ({zh_name})" if zh_name else skill.name
                 output += f"- {name_part} [{auto}]\n"
+                output += f"  {skill.description}\n"
+                output += (
+                    f"  source={exposed.origin_label}"
+                    + (f", path={exposed.skill_dir}" if exposed.skill_dir else "")
+                    + "\n\n"
+                )
+
+        if discoverable_external:
+            output += (
+                f"**可发现技能 ({len(discoverable_external)})** "
+                "[未预加载 — 使用 get_skill_info(skill_name) 加载指令后即可使用]:\n"
+            )
+            for skill in discoverable_external:
+                exposed = build_skill_exposure(skill)
+                zh_name = skill.name_i18n.get("zh", "")
+                name_part = f"{skill.name} ({zh_name})" if zh_name else skill.name
+                output += f"- {name_part} [可发现]\n"
                 output += f"  {skill.description}\n"
                 output += (
                     f"  source={exposed.origin_label}"

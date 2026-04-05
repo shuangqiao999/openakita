@@ -45,7 +45,7 @@ class ConnectionManager:
         """Send an event to all connected clients concurrently."""
         if not self._connections:
             return
-        message = json.dumps({"event": event, "data": data, "ts": time.time()})
+        message = json.dumps({"event": event, "data": data, "ts": time.time()}, ensure_ascii=False)
 
         async with self._lock:
             connections = list(self._connections)

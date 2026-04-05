@@ -218,16 +218,27 @@ class SecurityConfirmRequest(BaseModel):
 
 @router.get("/api/config/workspace-info")
 async def workspace_info():
-    """Return current workspace path and basic info."""
+    """Return current workspace path and basic info.
+
+    路径脱敏：对外只返回相对路径，不暴露用户名和完整目录结构。
+    """
     root = _project_root()
     ep_path = _endpoints_config_path()
     return {
-        "workspace_path": str(root),
+        "workspace_path": f"~/{root.name}",
         "workspace_name": root.name,
         "env_exists": (root / ".env").exists(),
         "endpoints_exists": ep_path.exists(),
-        "endpoints_path": str(ep_path),
+        "endpoints_path": _sanitize_path(ep_path, root),
     }
+
+
+def _sanitize_path(full_path: Path, workspace_root: Path) -> str:
+    """将绝对路径转换为相对于工作区的路径，避免泄露系统目录结构。"""
+    try:
+        return str(full_path.relative_to(workspace_root))
+    except ValueError:
+        return full_path.name
 
 
 @router.get("/api/config/env")

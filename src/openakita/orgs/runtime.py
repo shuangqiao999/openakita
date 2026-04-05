@@ -104,7 +104,6 @@ class OrgRuntime:
 
         self._watchdog_tasks: dict[str, asyncio.Task] = {}
         self._node_busy_since: dict[str, float] = {}
-        self._node_last_activity: dict[str, float] = {}
 
         self._running_tasks: dict[str, dict[str, asyncio.Task]] = {}
 
@@ -206,7 +205,6 @@ class OrgRuntime:
         self._org_semaphores.clear()
         self._save_locks.clear()
         self._node_busy_since.clear()
-        self._node_last_activity.clear()
         self._node_current_chain.clear()
         self._chain_delegation_depth.clear()
 
@@ -612,7 +610,6 @@ class OrgRuntime:
             agent._org_context["current_chain_id"] = chain_id or ""
 
         self._set_node_status(org, node, NodeStatus.BUSY, "task_started")
-        self._node_last_activity[cache_key] = time.monotonic()
         await self._save_org(org)
 
         if org.id not in self._active_orgs:
@@ -1368,9 +1365,6 @@ class OrgRuntime:
         for k in list(self._node_busy_since.keys()):
             if k.startswith(f"{org_id}:"):
                 self._node_busy_since.pop(k, None)
-        for k in list(self._node_last_activity.keys()):
-            if k.startswith(f"{org_id}:"):
-                self._node_last_activity.pop(k, None)
         for k in list(self._node_current_chain.keys()):
             if k.startswith(f"{org_id}:"):
                 self._node_current_chain.pop(k, None)
@@ -1883,7 +1877,6 @@ class OrgRuntime:
         tool_handler = self._tool_handler
 
         async def _patched_execute(tool_name: str, tool_input: dict, **kwargs) -> str:
-            self._node_last_activity[f"{org_id}:{node_id}"] = time.monotonic()
             if tool_name.startswith("org_"):
                 return await tool_handler.handle(tool_name, tool_input, org_id, node_id)
             result = await original_execute(tool_name, tool_input, **kwargs)

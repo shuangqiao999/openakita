@@ -939,7 +939,7 @@ async def chat(request: Request, body: ChatRequest):
 
     return StreamingResponse(
         sse_gen,
-        media_type="text/event-stream",
+        media_type="text/event-stream; charset=utf-8",
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",

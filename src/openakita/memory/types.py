@@ -183,9 +183,6 @@ class SemanticMemory:
     # v2: retention / TTL
     expires_at: datetime | None = None
 
-    def __post_init__(self):
-        self.tags = normalize_tags(self.tags)
-
     def to_dict(self) -> dict:
         d = {
             "id": self.id,
@@ -326,9 +323,6 @@ class Episode:
     importance_score: float = 0.5
     access_count: int = 0
     source: str = "session_end"  # session_end / context_compress / daily_consolidation
-
-    def __post_init__(self):
-        self.tags = normalize_tags(self.tags)
 
     def to_dict(self) -> dict:
         return {
@@ -488,9 +482,6 @@ class Attachment:
     linked_memory_ids: list[str] = field(default_factory=list)
 
     created_at: datetime = field(default_factory=datetime.now)
-
-    def __post_init__(self):
-        self.tags = normalize_tags(self.tags)
 
     def to_dict(self) -> dict:
         return {

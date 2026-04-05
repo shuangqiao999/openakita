@@ -72,10 +72,14 @@ Do not infer filesystem paths from the workspace map; `get_skill_info` is author
         self._cached_compact: str | None = None
 
     def _list_model_visible(self) -> list:
-        """Return enabled skills that are also visible to the model, sorted by usage."""
+        """Return enabled skills that are also visible to the model, sorted by usage.
+
+        Respects catalog_hidden: INCLUSIVE 模式下未勾选的技能不出现在 L1 目录中，
+        但仍保留在注册表中供 list_skills / get_skill_info 按需发现。
+        """
         skills = [
             s for s in self.registry.list_enabled()
-            if not s.disable_model_invocation
+            if not s.disable_model_invocation and not s.catalog_hidden
         ]
         if self._usage_tracker:
             scores = self._usage_tracker.get_all_scores()
@@ -85,15 +89,28 @@ Do not infer filesystem paths from the workspace map; `get_skill_info` is author
     def generate_catalog(self) -> str:
         """
         生成已启用技能清单（disabled 和 disable_model_invocation 技能不出现在系统提示中）
+
+        INCLUSIVE 模式下 catalog_hidden 的技能不出现在 L1 目录中，
+        但会附加发现提示，引导 LLM 通过 list_skills 按需加载。
         """
         with self._lock:
             skills = self._list_model_visible()
+            hidden_count = self.registry.count_catalog_hidden()
 
             if not skills:
-                empty_catalog = (
-                    "\n## Available Skills\n\n"
-                    "No skills installed. Use the skill creation workflow to add new skills.\n"
-                )
+                if hidden_count > 0:
+                    empty_catalog = (
+                        "\n## Available Skills\n\n"
+                        "No skills are pre-loaded for this agent profile.\n"
+                        f"However, {hidden_count} additional skill(s) are installed. "
+                        "Use `list_skills` to discover them, then `get_skill_info(skill_name)` "
+                        "to load instructions when the task requires a specific skill.\n"
+                    )
+                else:
+                    empty_catalog = (
+                        "\n## Available Skills\n\n"
+                        "No skills installed. Use the skill creation workflow to add new skills.\n"
+                    )
                 self._cached_catalog = empty_catalog
                 return empty_catalog
 
@@ -120,10 +137,19 @@ Do not infer filesystem paths from the workspace map; `get_skill_info` is author
 
             skill_list = "\n".join(skill_entries)
 
+            if hidden_count > 0:
+                skill_list += (
+                    f"\n\n_({hidden_count} more skill(s) available — "
+                    "use `list_skills` to discover all installed skills)_"
+                )
+
             catalog = self._safe_format(self.CATALOG_TEMPLATE, skill_list=skill_list)
             self._cached_catalog = catalog
 
-            logger.info(f"Generated skill catalog with {len(skills)} skills")
+            logger.info(
+                "Generated skill catalog with %d skills (%d hidden)",
+                len(skills), hidden_count,
+            )
             return catalog
 
     def get_catalog(self, refresh: bool = False) -> str:
@@ -153,13 +179,21 @@ Do not infer filesystem paths from the workspace map; `get_skill_info` is author
         """
         获取已启用技能的"全量索引"（仅名称，尽量短，但完整）。
 
-        disabled 和 disable_model_invocation 技能不会出现在索引中。
+        disabled、disable_model_invocation 和 catalog_hidden 技能不会出现在索引中。
         按 system / external / plugin 三组输出。
         """
         with self._lock:
             skills = self._list_model_visible()
+            hidden_count = self.registry.count_catalog_hidden()
             if not skills:
-                result = "## Skills Index (complete)\n\nNo skills installed."
+                if hidden_count > 0:
+                    result = (
+                        "## Skills Index\n\n"
+                        "No skills pre-loaded for this profile. "
+                        f"{hidden_count} more skill(s) available via `list_skills`."
+                    )
+                else:
+                    result = "## Skills Index (complete)\n\nNo skills installed."
                 self._cached_index = result
                 return result
 

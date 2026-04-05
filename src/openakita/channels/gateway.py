@@ -1436,7 +1436,7 @@ class MessageGateway:
         if not msg_id:
             return
         try:
-            await adapter.add_reaction(message.chat_id, msg_id, emoji="✅")
+            await adapter.add_reaction(msg_id, emoji_type="DONE")
         except Exception as e:
             logger.debug(f"[Smart] Failed to add reaction: {e}")
 
@@ -2556,7 +2556,7 @@ class MessageGateway:
                 return
 
             # /feishu 命令族（仅飞书渠道生效）
-            if _cmd_lower.startswith("/feishu") and message.channel.split(":")[0] == "feishu":
+            if _cmd_lower.startswith("/feishu") and message.channel.split(":")[0] in ("feishu", "lark"):
                 feishu_resp = await self._handle_feishu_command(_cmd_lower, message)
                 if feishu_resp is not None:
                     await self._send_response(message, feishu_resp)
@@ -3020,6 +3020,8 @@ class MessageGateway:
         sem = asyncio.Semaphore(4)
 
         async def _process_voice(voice) -> None:
+            if voice.status == MediaStatus.FAILED:
+                return
             try:
                 async with sem:
                     if not voice.local_path:
@@ -3047,7 +3049,7 @@ class MessageGateway:
 
         async def _process_image(img) -> None:
             try:
-                if img.local_path:
+                if img.local_path or img.status == MediaStatus.FAILED:
                     return
                 async with sem:
                     local_path = await adapter.download_media(img)
@@ -3061,7 +3063,7 @@ class MessageGateway:
 
         async def _process_video(vid) -> None:
             try:
-                if vid.local_path:
+                if vid.local_path or vid.status == MediaStatus.FAILED:
                     return
                 async with sem:
                     local_path = await adapter.download_media(vid)
@@ -3075,7 +3077,7 @@ class MessageGateway:
 
         async def _process_file(fil) -> None:
             try:
-                if fil.local_path:
+                if fil.local_path or fil.status == MediaStatus.FAILED:
                     return
                 async with sem:
                     local_path = await adapter.download_media(fil)
@@ -3704,6 +3706,7 @@ class MessageGateway:
         "wework":   0,       # 0 = 不分片，整条发送
         "dingtalk":  18000,
         "feishu":    28000,
+        "lark":      28000,
         "onebot":    20000,
         "qqbot":     20000,
         "wechat":    4000,

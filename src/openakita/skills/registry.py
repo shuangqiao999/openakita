@@ -155,6 +155,12 @@ class SkillEntry:
     # 而子 Agent INCLUSIVE 模式仍可通过 profile.skills 显式引用并重新启用。
     disabled: bool = False
 
+    # L1 目录隐藏标记（渐进式披露控制）
+    # INCLUSIVE 模式下未勾选的技能标记 catalog_hidden=True，
+    # 不出现在系统提示词目录（L1）中，但仍保留在注册表中，
+    # LLM 可通过 list_skills / get_skill_info 发现并按需加载（L2+）。
+    catalog_hidden: bool = False
+
     # 完整技能对象引用 (延迟加载)
     _parsed_skill: Optional["ParsedSkill"] = field(default=None, repr=False)
 
@@ -524,6 +530,25 @@ class SkillRegistry:
             skill.disabled = disabled
             return True
         return False
+
+    def set_catalog_hidden(self, key: str, hidden: bool = True) -> bool:
+        """设置技能的 catalog_hidden 标记（L1 渐进式披露控制）。
+
+        catalog_hidden 的技能不出现在系统提示词目录中，
+        但仍可通过 list_skills / get_skill_info 按需发现和加载。
+        """
+        skill = self._resolve(key)
+        if skill is not None:
+            skill.catalog_hidden = hidden
+            return True
+        return False
+
+    def count_catalog_hidden(self) -> int:
+        """统计被 catalog_hidden 但仍启用的技能数量。"""
+        return sum(
+            1 for s in self._skills.values()
+            if not s.disabled and s.catalog_hidden
+        )
 
     def list_all(self, include_disabled: bool = True) -> list[SkillEntry]:
         """列出所有技能。
