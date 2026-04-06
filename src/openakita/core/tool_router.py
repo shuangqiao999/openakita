@@ -268,10 +268,48 @@ class ToolRouter:
         self.tools["web_search"] = ToolConfig(
             name="web_search",
             category=ToolCategory.WEB_SEARCH,
-            keywords=["搜索", "查找", "查一下", "百度", "google", "搜一下", "查资料", "问一下"],
-            param_patterns={"query": r"(?:搜索|查找|查一下|百度|google|搜|问)\s+(.+?)(?:[?。.]|$)"},
+            keywords=[
+                "搜索",
+                "查找",
+                "查一下",
+                "百度",
+                "google",
+                "搜一下",
+                "查资料",
+                "问一下",
+                # 增强搜索关键词
+                "自主能动",
+                "机器人",
+                "机器狗",
+                "无人机",
+                "自动驾驶",
+                "AI",
+                "科技",
+                "产品",
+                "介绍",
+                "什么是",
+                "有哪些",
+                "推荐",
+                "最新",
+                "动态",
+                "趋势",
+                "分析",
+                "对比",
+                "区别",
+                "哪个好",
+                "怎么样",
+                "值得",
+                "了解",
+                "web search",
+                "search for",
+                "find information",
+                "look up",
+            ],
+            param_patterns={
+                "query": r"(?:搜索|查找|查一下|百度|google|搜|问|介绍|什么是|有哪些|推荐|了解|分析)\s*(.+?)(?:[?。.]|$)|^(.+?)(?:产品|动态|趋势|哪个好|怎么样)$"
+            },
             description="网络搜索",
-            priority=6,
+            priority=8,  # 提高优先级
             negative_keywords=[
                 "不要搜",
                 "别搜",
@@ -853,6 +891,39 @@ class ToolRouter:
                         break
 
         return params
+
+    def diagnose(self, text: str) -> dict:
+        """诊断工具路由结果，返回详细匹配信息"""
+        text_lower = text.lower()
+        results = []
+
+        for tool_name, tool in self.tools.items():
+            score = 0
+            matched_keywords = []
+            for keyword in tool.keywords:
+                if keyword in text_lower:
+                    score += 1
+                    matched_keywords.append(keyword)
+            if score > 0:
+                # 计算加权分数
+                weighted_score = score
+                if len(matched_keywords) > 1:
+                    weighted_score += 0.5
+                weighted_score += tool.priority * 0.1
+
+                results.append(
+                    {
+                        "tool": tool_name,
+                        "score": score,
+                        "weighted_score": weighted_score,
+                        "matched_keywords": matched_keywords,
+                        "priority": tool.priority,
+                    }
+                )
+
+        results.sort(key=lambda x: x["weighted_score"], reverse=True)
+
+        return {"input": text, "matches": results[:5], "best": results[0] if results else None}
 
     def get_tool(self, name: str) -> Optional[ToolConfig]:
         """获取工具配置"""

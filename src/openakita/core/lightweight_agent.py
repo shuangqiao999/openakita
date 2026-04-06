@@ -108,7 +108,51 @@ class LightweightAgent:
         if params is None:
             params = {}
 
+        # run_shell 错误命令检测与转发
+        if tool_name == "run_shell":
+            command = params.get("command", "").lower()
+
+            # 检测 web_search 错误调用
+            if "web_search" in command or "search" in command:
+                import re
+
+                match = re.search(r'["\']?(\w+)["\']?\s*(?:["\'])(.+?)["\']', command)
+                if match:
+                    query = match.group(2)
+                    logger.info(f"[LightweightAgent] 转发 run_shell -> web_search: {query}")
+                    return await self.execute("web_search", {"query": query})
+
+            # 检测 browser_open 错误调用
+            if (
+                "browser_open" in command
+                or "open_browser" in command
+                or "import browser" in command
+            ):
+                import re
+
+                match = re.search(r"(?:open_browser|url|https?://[^\s'\"]+)", command)
+                if match:
+                    url_match = re.search(r"https?://[^\s'\"]+", command)
+                    if url_match:
+                        url = url_match.group()
+                        logger.info(f"[LightweightAgent] 转发 run_shell -> browser_open: {url}")
+                        return await self.execute("browser_open", {"url": url})
+
+            # 检测 curl/wget 错误调用
+            if "curl" in command or "wget" in command:
+                import re
+
+                url_match = re.search(r"(?:curl|wget)\s+(https?://[^\s]+)", command)
+                if url_match:
+                    url = url_match.group(1)
+                    logger.info(f"[LightweightAgent] 转发 run_shell -> web_fetch: {url}")
+                    return await self.execute("web_fetch", {"url": url})
+
         return await self.tool_executor.execute(tool_name, params)
+
+    def diagnose(self, text: str) -> dict:
+        """诊断工具路由结果"""
+        return self.tool_router.diagnose(text)
 
     def get_stats(self) -> dict[str, Any]:
         """获取统计信息"""

@@ -450,6 +450,9 @@ class Agent:
 
         self.lightweight_agent = LightweightAgent()
 
+        # 诊断关键 Skill 是否可用
+        self._check_skills_available()
+
         # 定时任务调度器
         self.task_scheduler = None  # 在 initialize() 中启动
 
@@ -596,6 +599,9 @@ class Agent:
         self.handler_registry = SystemHandlerRegistry()
         self._init_handlers()
         self._core_tool_names: set[str] = set(self.handler_registry.list_tools())
+
+        # 检查关键 Skill 是否可用
+        self._check_skills_available()
 
         # === 工具并行执行基础设施（默认不开启并行，tool_max_parallel=1）===
         # 并行执行只影响“同一轮模型返回多个 tool_use/tool_calls”的工具批处理阶段。
@@ -1369,6 +1375,28 @@ class Agent:
         logger.info(
             f"Initialized {len(self.handler_registry._handlers)} handlers with {len(self.handler_registry._tool_to_handler)} tools"
         )
+
+    def _check_skills_available(self) -> None:
+        """检查关键 Skill 是否可用"""
+        critical_handlers = ["web_search", "filesystem", "browser", "run_shell"]
+
+        available_handlers = set(self.handler_registry._handlers.keys())
+
+        for handler_name in critical_handlers:
+            if handler_name not in available_handlers:
+                logger.warning(f"[Agent] 关键 Handler '{handler_name}' 未加载")
+            else:
+                logger.info(f"[Agent] Handler '{handler_name}' 可用")
+
+        # 列出所有可用工具
+        all_tools = list(self.handler_registry._tool_to_handler.keys())
+        logger.info(f"[Agent] 共 {len(all_tools)} 个工具可用")
+
+        # 检查 web_search 是否在工具列表中
+        if "web_search" in all_tools or "search" in all_tools:
+            logger.info("[Agent] web_search 工具已注册")
+        else:
+            logger.warning("[Agent] web_search 工具未注册，可能无法进行网络搜索")
 
     async def _load_installed_skills(self) -> None:
         """
