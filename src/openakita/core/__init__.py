@@ -28,6 +28,10 @@ __all__ = [
     "Identity",
     "RalphLoop",
     "UserCancelledError",
+    "LightweightAgent",
+    "QuickReplyHandler",
+    "ToolRouter",
+    "SmartToolCache",
 ]
 
 _LAZY_IMPORTS = {
@@ -39,6 +43,10 @@ _LAZY_IMPORTS = {
     "Identity": (".identity", "Identity"),
     "RalphLoop": (".ralph", "RalphLoop"),
     "UserCancelledError": (".errors", "UserCancelledError"),
+    "LightweightAgent": (".lightweight_agent", "LightweightAgent"),
+    "QuickReplyHandler": (".quick_reply", "QuickReplyHandler"),
+    "ToolRouter": (".tool_router", "ToolRouter"),
+    "SmartToolCache": (".tool_cache", "SmartToolCache"),
 }
 
 
