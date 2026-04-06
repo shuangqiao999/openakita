@@ -84,7 +84,26 @@ class Settings(BaseSettings):
 
     allow_parallel_tools_with_interrupt_checks: bool = Field(
         default=False,
-        description="是否允许在启用“工具间中断检查”时也并行执行工具（会降低中断插入粒度，默认关闭）",
+        description='是否允许在启用"工具间中断检查"时也并行执行工具（会降低中断插入粒度，默认关闭）',
+    )
+
+    # === 异步与并行优化 ===
+    async_task_timeout: int = Field(default=30, description="异步任务超时时间（秒）")
+
+    parallel_tool_workers: int = Field(default=4, description="并行工具执行的工作线程数")
+
+    parallel_search_engines: int = Field(default=3, description="并行搜索的搜索引擎数量")
+
+    websocket_reconnect_attempts: int = Field(default=5, description="WebSocket 最大重连次数")
+
+    websocket_reconnect_delay: int = Field(default=1, description="WebSocket 重连初始延迟（秒）")
+
+    llm_retry_count: int = Field(default=3, description="LLM 调用失败重试次数")
+
+    llm_retry_delay: float = Field(default=1.0, description="LLM 重试间隔（秒）")
+
+    structured_output_schema: str = Field(
+        default="intent", description="结构化输出 Schema 类型: intent / memory / selfcheck"
     )
 
     # Thinking 模式配置
@@ -225,15 +244,11 @@ class Settings(BaseSettings):
 
     # === MCP 配置 ===
     mcp_enabled: bool = Field(default=True, description="是否启用 MCP (Model Context Protocol)")
-    mcp_timeout: int = Field(
-        default=60, description="MCP 工具调用超时时间（秒），默认 60 秒"
-    )
+    mcp_timeout: int = Field(default=60, description="MCP 工具调用超时时间（秒），默认 60 秒")
     mcp_connect_timeout: int = Field(
         default=30, description="MCP 服务器连接超时时间（秒），默认 30 秒"
     )
-    mcp_auto_connect: bool = Field(
-        default=False, description="启动时是否自动连接所有 MCP 服务器"
-    )
+    mcp_auto_connect: bool = Field(default=False, description="启动时是否自动连接所有 MCP 服务器")
 
     # === 调度器配置 ===
     scheduler_timezone: str = Field(default="Asia/Shanghai", description="调度器时区")
@@ -310,7 +325,9 @@ class Settings(BaseSettings):
     wework_ws_enabled: bool = Field(default=False, description="是否启用企业微信 WebSocket 长连接")
     wework_ws_bot_id: str = Field(default="", description="企业微信机器人 ID（后台获取）")
     wework_ws_secret: str = Field(default="", description="企业微信机器人 Secret（后台获取）")
-    wework_ws_thinking_indicator: bool = Field(default=True, description="收到消息后立即发送'思考中'流式首帧提示")
+    wework_ws_thinking_indicator: bool = Field(
+        default=True, description="收到消息后立即发送'思考中'流式首帧提示"
+    )
     wework_ws_msg_item_images: bool = Field(
         default=False,
         description="流式回复中使用 msg_item 发送图片（当前企业微信版本可能不渲染，默认关闭）",
@@ -323,7 +340,9 @@ class Settings(BaseSettings):
     # 钉钉
     dingtalk_enabled: bool = Field(default=False, description="是否启用钉钉")
     dingtalk_client_id: str = Field(default="", description="钉钉 Client ID（原 App Key）")
-    dingtalk_client_secret: str = Field(default="", description="钉钉 Client Secret（原 App Secret）")
+    dingtalk_client_secret: str = Field(
+        default="", description="钉钉 Client Secret（原 App Secret）"
+    )
 
     # OneBot 协议（通用）
     onebot_enabled: bool = Field(default=False, description="是否启用 OneBot")
@@ -331,7 +350,9 @@ class Settings(BaseSettings):
         default="reverse",
         description="OneBot 连接模式: reverse（反向WS，推荐）或 forward（正向WS）",
     )
-    onebot_ws_url: str = Field(default="ws://127.0.0.1:8080", description="OneBot 正向 WS 地址（仅 forward 模式）")
+    onebot_ws_url: str = Field(
+        default="ws://127.0.0.1:8080", description="OneBot 正向 WS 地址（仅 forward 模式）"
+    )
     onebot_reverse_host: str = Field(default="0.0.0.0", description="OneBot 反向 WS 监听地址")
     onebot_reverse_port: int = Field(default=6700, description="OneBot 反向 WS 监听端口")
     onebot_access_token: str = Field(default="", description="OneBot 访问令牌（可选）")
@@ -372,16 +393,21 @@ class Settings(BaseSettings):
 
     # === 人格系统配置 ===
     persona_name: str = Field(
-        default="default", description="当前激活的人格预设名称 (default/business/tech_expert/butler/girlfriend/boyfriend/family/jarvis)"
+        default="default",
+        description="当前激活的人格预设名称 (default/business/tech_expert/butler/girlfriend/boyfriend/family/jarvis)",
     )
 
     # === 活人感引擎配置 ===
     proactive_enabled: bool = Field(default=True, description="是否启用活人感模式")
     proactive_max_daily_messages: int = Field(default=3, description="每日最多主动消息数")
-    proactive_min_interval_minutes: int = Field(default=120, description="两条主动消息最短间隔（分钟）")
+    proactive_min_interval_minutes: int = Field(
+        default=120, description="两条主动消息最短间隔（分钟）"
+    )
     proactive_quiet_hours_start: int = Field(default=23, description="安静时段开始（小时，0-23）")
     proactive_quiet_hours_end: int = Field(default=7, description="安静时段结束（小时，0-23）")
-    proactive_idle_threshold_hours: int = Field(default=3, description="用户空闲多久后触发闲聊问候（小时），AI 会根据反馈动态调整")
+    proactive_idle_threshold_hours: int = Field(
+        default=3, description="用户空闲多久后触发闲聊问候（小时），AI 会根据反馈动态调整"
+    )
 
     # === UI 偏好配置 ===
     ui_theme: str = Field(
@@ -473,15 +499,25 @@ class Settings(BaseSettings):
     )
 
     # === Harness 配置 ===
-    supervisor_enabled: bool = Field(default=True, description="是否启用运行时监督器 (RuntimeSupervisor)")
+    supervisor_enabled: bool = Field(
+        default=True, description="是否启用运行时监督器 (RuntimeSupervisor)"
+    )
     task_budget_tokens: int = Field(default=0, description="单次任务最大 token 消耗 (0=不限制)")
     task_budget_cost: float = Field(default=0.0, description="单次任务最大成本 USD (0=不限制)")
-    task_budget_duration: int = Field(default=600, description="单次任务最大时长秒 (0=不限制，默认 600=10分钟)")
-    task_budget_iterations: int = Field(default=50, description="单次任务最大迭代次数 (0=不限制，默认 50)")
-    task_budget_tool_calls: int = Field(default=30, description="单次任务最大工具调用次数 (0=不限制，默认 30)")
+    task_budget_duration: int = Field(
+        default=600, description="单次任务最大时长秒 (0=不限制，默认 600=10分钟)"
+    )
+    task_budget_iterations: int = Field(
+        default=50, description="单次任务最大迭代次数 (0=不限制，默认 50)"
+    )
+    task_budget_tool_calls: int = Field(
+        default=30, description="单次任务最大工具调用次数 (0=不限制，默认 30)"
+    )
 
     # === 追踪配置 ===
-    tracing_enabled: bool = Field(default=True, description="是否启用 Agent 追踪（轻量模式默认开启）")
+    tracing_enabled: bool = Field(
+        default=True, description="是否启用 Agent 追踪（轻量模式默认开启）"
+    )
     tracing_export_dir: str = Field(default="data/traces", description="追踪导出目录")
     tracing_console_export: bool = Field(default=False, description="是否同时导出到控制台")
 
@@ -496,7 +532,9 @@ class Settings(BaseSettings):
             logger.warning(
                 "[Config] max_iterations=%d is too low (minimum %d). "
                 "Resetting to %d. Please update your .env file.",
-                self.max_iterations, MIN_ITERATIONS, MIN_ITERATIONS,
+                self.max_iterations,
+                MIN_ITERATIONS,
+                MIN_ITERATIONS,
             )
             self.max_iterations = MIN_ITERATIONS
         return self
@@ -516,9 +554,7 @@ class Settings(BaseSettings):
             return values
         cleaned: dict = {}
         for k, v in values.items():
-            if isinstance(v, str) and not (
-                len(v) >= 2 and v[0] == v[-1] and v[0] in ('"', "'")
-            ):
+            if isinstance(v, str) and not (len(v) >= 2 and v[0] == v[-1] and v[0] in ('"', "'")):
                 for sep in (" #", "\t#"):
                     idx = v.find(sep)
                     if idx != -1:
@@ -601,6 +637,7 @@ class Settings(BaseSettings):
     def openakita_home(self) -> Path:
         """用户数据根目录，优先使用 OPENAKITA_ROOT 环境变量，默认 ~/.openakita"""
         import os
+
         env_root = os.environ.get("OPENAKITA_ROOT", "").strip()
         if env_root:
             return Path(env_root)

@@ -2,6 +2,7 @@
 Web Search 处理器
 
 直接使用 ddgs 库执行网络搜索，无需通过 MCP。
+支持并行搜索优化。
 """
 
 import asyncio
@@ -80,6 +81,7 @@ class WebSearchHandler:
             from ddgs import DDGS  # noqa: F401
         except ImportError:
             from openakita.tools._import_helper import import_or_hint
+
             return f"错误：{import_or_hint('ddgs')}"
 
         try:
@@ -93,9 +95,7 @@ class WebSearchHandler:
             return self._format_web_results(results)
         except Exception as e:
             tb = traceback.format_exc()
-            logger.error(
-                f"Web search failed: {type(e).__name__}: {e}\n{tb}"
-            )
+            logger.error(f"Web search failed: {type(e).__name__}: {e}\n{tb}")
             return f"搜索失败: {type(e).__name__}: {e}"
 
     async def _news_search(self, params: dict[str, Any]) -> str:
@@ -113,6 +113,7 @@ class WebSearchHandler:
             from ddgs import DDGS  # noqa: F401
         except ImportError:
             from openakita.tools._import_helper import import_or_hint
+
             return f"错误：{import_or_hint('ddgs')}"
 
         try:
@@ -127,9 +128,7 @@ class WebSearchHandler:
             return self._format_news_results(results)
         except Exception as e:
             tb = traceback.format_exc()
-            logger.error(
-                f"News search failed: {type(e).__name__}: {e}\n{tb}"
-            )
+            logger.error(f"News search failed: {type(e).__name__}: {e}\n{tb}")
             return f"新闻搜索失败: {type(e).__name__}: {e}"
 
     @staticmethod
@@ -168,6 +167,33 @@ class WebSearchHandler:
             output.append(f"{header}\n{url}\n{body}\n")
 
         return "\n".join(output)
+
+    async def _parallel_search(self, queries: list[str], max_results: int = 5) -> str:
+        """并行搜索多个查询"""
+        tasks = []
+        for query in queries:
+            task = asyncio.to_thread(
+                _sync_web_search,
+                query=query,
+                max_results=max_results,
+                region="wt-wt",
+                safesearch="moderate",
+            )
+            tasks.append(task)
+
+        results_list = await asyncio.gather(*tasks, return_exceptions=True)
+
+        all_results = []
+        for i, result in enumerate(results_list):
+            if isinstance(result, Exception):
+                logger.warning(f"Search for '{queries[i]}' failed: {result}")
+            else:
+                all_results.extend(result)
+
+        if not all_results:
+            return "所有搜索请求均失败"
+
+        return self._format_web_results(all_results)
 
 
 def create_handler(agent: Any = None):
