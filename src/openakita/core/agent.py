@@ -450,9 +450,6 @@ class Agent:
 
         self.lightweight_agent = LightweightAgent()
 
-        # 诊断关键 Skill 是否可用
-        self._check_skills_available()
-
         # 定时任务调度器
         self.task_scheduler = None  # 在 initialize() 中启动
 
