@@ -131,7 +131,16 @@ class ToolRouter:
             param_patterns={"path": r"(?:读取|打开|查看|显示|读|cat|看)\s*[`'\" ]*([^\s`'\"]+)"},
             description="读取文件内容",
             priority=5,
-            negative_keywords=["不要", "别读", "不显示"],
+            negative_keywords=[
+                "dont read",
+                "dont show",
+                "no read",
+                "no show",
+                "别读",
+                "不显示",
+                "不要读",
+                "不要显示",
+            ],
         )
 
         self.tools["write_file"] = ToolConfig(
@@ -263,7 +272,7 @@ class ToolRouter:
             param_patterns={"query": r"(?:搜索|查找|查一下|百度|google|搜|问)\s+(.+?)(?:[?。.]|$)"},
             description="网络搜索",
             priority=6,
-            negative_keywords=["不要搜", "别搜"],
+            negative_keywords=["不要搜", "别搜", "no search", "dont search", "dont search"],
         )
 
         self.tools["web_fetch"] = ToolConfig(
@@ -318,10 +327,69 @@ class ToolRouter:
         self.tools["get_date_time"] = ToolConfig(
             name="get_date_time",
             category=ToolCategory.DATE_TIME,
-            keywords=["现在几点", "当前时间", "今天日期", "几点了", "星期几", "日期", "时间"],
-            param_patterns={"timezone": r"(?:时间|日期)\s+(?:in\s+)?(.+)"},
+            keywords=[
+                "现在几点",
+                "当前时间",
+                "今天日期",
+                "几点了",
+                "星期几",
+                "日期",
+                "时间",
+                "what time",
+                "current time",
+                "time now",
+                "date today",
+            ],
+            param_patterns={"timezone": r"(?:时间|日期|time|date)\s+(?:in\s+)?(.+)"},
             description="获取日期时间",
             priority=8,
+        )
+
+        self.tools["calculator"] = ToolConfig(
+            name="calculator",
+            category=ToolCategory.CALCULATOR,
+            keywords=[
+                "计算",
+                "等于",
+                "加减乘除",
+                "数学",
+                "运算",
+                "多少",
+                "算一下",
+                "calculate",
+                "compute",
+                "what is",
+                "how much",
+            ],
+            param_patterns={
+                "expression": r"(?:计算|等于|算一下|calculate|compute|what is)\s+(.+?)(?:[?。.]|$)"
+            },
+            description="数学计算",
+            priority=8,
+        )
+
+        self.tools["web_search"] = ToolConfig(
+            name="web_search",
+            category=ToolCategory.WEB_SEARCH,
+            keywords=[
+                "搜索",
+                "查找",
+                "查一下",
+                "百度",
+                "google",
+                "搜一下",
+                "查资料",
+                "问一下",
+                "search",
+                "find",
+                "lookup",
+                "look up",
+            ],
+            param_patterns={
+                "query": r"(?:搜索|查找|查一下|百度|google|搜|问|search|find)\s+(.+?)(?:[?。.]|$)"
+            },
+            description="网络搜索",
+            priority=7,
         )
 
         self.tools["unit_convert"] = ToolConfig(
@@ -548,7 +616,18 @@ class ToolRouter:
         self.tools["random_number"] = ToolConfig(
             name="random_number",
             category=ToolCategory.UTILITY,
-            keywords=["随机数", "随机数字", "抽一个", "随机", "摇号", "随机抽取"],
+            keywords=[
+                "随机数",
+                "随机数字",
+                "抽一个",
+                "随机",
+                "摇号",
+                "随机抽取",
+                "random number",
+                "random num",
+                "roll dice",
+                "dice",
+            ],
             param_patterns={"min": r"从\s*(\d+)", "max": r"到\s*(\d+)"},
             description="生成随机数",
             priority=6,
@@ -748,7 +827,7 @@ class ToolRouter:
         best_score = scores[best_tool]
 
         # 4. 阈值过滤
-        if best_score < 1.5:
+        if best_score < 0.8:
             return None
 
         return (best_tool, matched_params.get(best_tool, {}))

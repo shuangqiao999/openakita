@@ -106,6 +106,7 @@ class QuickReplyHandler:
             QuickReplyRule(
                 patterns=[
                     r"^(你是谁|你叫什么|你是什么|介绍一下你自己)$",
+                    r"^(who are you|what are you|who is this)$",
                 ],
                 intent=IntentType.QUESTION,
                 response="我是 Open Akita，你的智能助手！可以帮你处理代码、搜索信息、管理文件等～ 😊",
@@ -117,6 +118,7 @@ class QuickReplyHandler:
             QuickReplyRule(
                 patterns=[
                     r"^(你能做什么|你会什么|有什么功能|能帮我什么)$",
+                    r"^(what can you do|what do you do|what are your capabilities)$",
                 ],
                 intent=IntentType.QUESTION,
                 response="""我能帮你做很多事情：
