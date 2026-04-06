@@ -7,7 +7,7 @@ from typing import Any
 
 from .quick_reply import QuickReplyHandler
 from .tool_cache import SmartToolCache
-from .tool_router import ToolRouter
+from .tool_router import ToolRouter, ToolExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +24,7 @@ class LightweightAgent:
         self.llm = llm_client
         self.quick_reply = QuickReplyHandler()
         self.tool_router = ToolRouter()
+        self.tool_executor = ToolExecutor()
         self.tool_cache = SmartToolCache(similarity_threshold=0.6)
 
         self._stats = {"quick_replies": 0, "tool_calls": 0, "llm_calls": 0, "cache_hits": 0}
@@ -92,6 +93,22 @@ class LightweightAgent:
             "from_cache": False,
             "raw_input": user_input,
         }
+
+    async def execute(self, tool_name: str, params: dict[str, Any] | None = None) -> str:
+        """
+        执行已路由的工具
+
+        Args:
+            tool_name: 工具名称
+            params: 参数字典
+
+        Returns:
+            执行结果字符串
+        """
+        if params is None:
+            params = {}
+
+        return await self.tool_executor.execute(tool_name, params)
 
     def get_stats(self) -> dict[str, Any]:
         """获取统计信息"""
