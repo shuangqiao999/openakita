@@ -272,7 +272,14 @@ class ToolRouter:
             param_patterns={"query": r"(?:搜索|查找|查一下|百度|google|搜|问)\s+(.+?)(?:[?。.]|$)"},
             description="网络搜索",
             priority=6,
-            negative_keywords=["不要搜", "别搜", "no search", "dont search", "dont search"],
+            negative_keywords=[
+                "不要搜",
+                "别搜",
+                "no search",
+                "dont search",
+                "never search",
+                "不要搜索",
+            ],
         )
 
         self.tools["web_fetch"] = ToolConfig(
