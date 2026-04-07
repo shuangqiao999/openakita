@@ -344,14 +344,14 @@ class TestToolContext:
         assert context.user_id == "test_user"
 
     def test_tool_context_get_set(self):
-        """验证get/set方法"""
+        """验证get_extra/set_extra方法"""
         from openakita.tools.context import ToolContext
 
         context = ToolContext()
-        context.set("custom_key", "custom_value")
+        context.set_extra("custom_key", "custom_value")
 
-        assert context.get("custom_key") == "custom_value"
-        assert context.get("missing_key", "default") == "default"
+        assert context.get_extra("custom_key") == "custom_value"
+        assert context.get_extra("missing_key", "default") == "default"
 
     def test_browser_context(self):
         """验证BrowserContext"""

@@ -377,6 +377,9 @@ class Settings(BaseSettings):
     session_max_history: int = Field(default=50, description="会话最大历史消息数")
     session_storage_path: str = Field(default="data/sessions", description="会话存储路径")
 
+    # === 流式配置 ===
+    streaming_enabled: bool = Field(default=True, description="是否启用流式输出")
+
     # === 多 Agent 模式 (Beta) ===
     multi_agent_enabled: bool = Field(
         default=False,
