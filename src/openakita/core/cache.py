@@ -159,7 +159,7 @@ class UnifiedCache:
         removed = 0
         keys_to_remove = []
 
-        for key in cache.keys():
+        for key in cache:
             if "*" in pattern:
                 import fnmatch
 

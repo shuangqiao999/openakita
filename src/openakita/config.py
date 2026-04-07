@@ -830,15 +830,15 @@ def get_channel_config(channel: str) -> dict:
             "app_secret": settings.feishu_app_secret,
         },
         "telegram": {
-            "token": settings.telegram_token,
+            "token": settings.telegram_bot_token,
         },
         "dingtalk": {
-            "app_key": settings.dingtalk_app_key,
-            "app_secret": settings.dingtalk_app_secret,
+            "app_key": settings.dingtalk_client_id,
+            "app_secret": settings.dingtalk_client_secret,
         },
         "wework": {
-            "agent_id": settings.wework_agent_id,
-            "agent_secret": settings.wework_agent_secret,
+            "agent_id": settings.wework_corp_id,
+            "agent_secret": settings.wework_token,
         },
     }
     return configs.get(channel, {})
