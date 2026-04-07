@@ -818,6 +818,42 @@ settings = Settings()
 runtime_state = RuntimeState()
 
 # ---------------------------------------------------------------------------
+# 便捷配置访问函数
+# ---------------------------------------------------------------------------
+
+
+def get_channel_config(channel: str) -> dict:
+    """获取特定渠道的配置（便捷函数）"""
+    configs = {
+        "feishu": {
+            "app_id": settings.feishu_app_id,
+            "app_secret": settings.feishu_app_secret,
+        },
+        "telegram": {
+            "token": settings.telegram_token,
+        },
+        "dingtalk": {
+            "app_key": settings.dingtalk_app_key,
+            "app_secret": settings.dingtalk_app_secret,
+        },
+        "wework": {
+            "agent_id": settings.wework_agent_id,
+            "agent_secret": settings.wework_agent_secret,
+        },
+    }
+    return configs.get(channel, {})
+
+
+def is_streaming_enabled(channel: str = None) -> bool:
+    """检查流式是否启用"""
+    if channel:
+        # 渠道特定的流式配置
+        key = f"{channel}_streaming_enabled"
+        return getattr(settings, key, settings.streaming_enabled)
+    return settings.streaming_enabled
+
+
+# ---------------------------------------------------------------------------
 # 重启信号标志
 # ---------------------------------------------------------------------------
 # 由 /api/config/restart 端点设置，main.py serve() 循环检测此标志决定是否重启。

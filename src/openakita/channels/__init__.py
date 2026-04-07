@@ -8,8 +8,8 @@
 - 媒体处理
 """
 
-from .base import ChannelAdapter
-from .gateway import MessageGateway
+from .base import ChannelAdapter, CLIAdapter
+from .gateway import MessageGateway  # 从gateway.py直接导入
 from .types import (
     MediaFile,
     MessageContent,
@@ -27,6 +27,7 @@ __all__ = [
     "OutgoingMessage",
     # 适配器
     "ChannelAdapter",
+    "CLIAdapter",
     # 网关
     "MessageGateway",
 ]

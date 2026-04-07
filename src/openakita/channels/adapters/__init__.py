@@ -12,6 +12,8 @@ IM 通道适配器
 - 微信个人号（iLink Bot API）
 """
 
+from ..base import ChannelAdapter, CLIAdapter  # 从base导入
+
 from .dingtalk import DingTalkAdapter
 from .feishu import FeishuAdapter
 from .onebot import OneBotAdapter
@@ -22,6 +24,8 @@ from .wework_bot import WeWorkBotAdapter
 from .wework_ws import WeWorkWsAdapter
 
 __all__ = [
+    "ChannelAdapter",  # 导出抽象基类
+    "CLIAdapter",  # 导出CLI适配器
     "TelegramAdapter",
     "FeishuAdapter",
     "WeWorkBotAdapter",
