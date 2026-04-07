@@ -8,6 +8,7 @@
 - 系统环境信息注入
 """
 
+import asyncio
 import logging
 import os
 import platform
@@ -203,13 +204,17 @@ class PromptAssembler:
         """同步版本：启动时构建初始系统提示词"""
         from ..prompt.budget import BudgetConfig
         from ..prompt.builder import build_system_prompt
-        from ..prompt.compiler import check_compiled_outdated, compile_all
+        from ..prompt.compiler import check_compiled_outdated
 
         identity_dir = settings.identity_path
 
         if check_compiled_outdated(identity_dir):
             logger.info("Compiled identity files outdated, recompiling...")
-            compile_all(identity_dir)
+            from ..prompt.coordinator import CompileCoordinator
+
+            asyncio.get_event_loop().run_until_complete(
+                CompileCoordinator.ensure_compiled(identity_dir)
+            )
 
         budget_config = (
             BudgetConfig.for_context_window(context_window) if context_window > 0 else None

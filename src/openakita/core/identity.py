@@ -491,6 +491,7 @@ class Identity:
 
         if check_compiled_outdated(identity_dir):
             logger.info("Compiling identity documents...")
+            # 使用同步的编译入口，保持向后兼容性
             compile_all(identity_dir)
             return True
 

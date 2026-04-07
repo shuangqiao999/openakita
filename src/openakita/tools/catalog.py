@@ -261,15 +261,14 @@ Use `get_tool_info(tool_name)` to see full parameters before calling.
         return catalog
 
     def get_direct_tool_schemas(self) -> list[dict]:
-        """
-        获取高频工具的完整 schema，用于直接注入 LLM tools 参数。
+        """获取高频工具的完整 schema，用于直接注入 LLM tools 参数。"""
+        from openakita.core.cache import UnifiedCache, CacheType
 
-        这些工具（run_shell, read_file, write_file, list_directory）
-        跳过渐进式披露，直接以 {name, description, input_schema} 提供给 LLM。
+        cache_key = "direct_tool_schemas"
+        cached = UnifiedCache.get(CacheType.TOOL_SCHEMA, cache_key)
+        if cached is not None:
+            return cached  # type: ignore[return-value]
 
-        Returns:
-            高频工具的完整 schema 列表
-        """
         schemas = []
         for tool_name in CATALOG_EXCLUDED_TOOLS:
             tool = self._tools.get(tool_name)
@@ -281,6 +280,8 @@ Use `get_tool_info(tool_name)` to see full parameters before calling.
                         "input_schema": tool.get("input_schema", {}),
                     }
                 )
+
+        UnifiedCache.set(CacheType.TOOL_SCHEMA, cache_key, schemas)
         return schemas
 
     def is_high_freq_tool(self, tool_name: str) -> bool:

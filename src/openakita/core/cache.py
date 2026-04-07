@@ -39,6 +39,7 @@ class CacheType(Enum):
     MCP_CATALOG = "mcp_catalog"
     AGENTS_MD = "agents_md"
     RUNTIME = "runtime"
+    TOOL_SCHEMA = "tool_schema"
 
 
 @dataclass
@@ -56,6 +57,7 @@ _CACHE_CONFIGS: dict[CacheType, CacheConfig] = {
     CacheType.MCP_CATALOG: CacheConfig(maxsize=50, ttl=30),
     CacheType.AGENTS_MD: CacheConfig(maxsize=20, ttl=60),
     CacheType.RUNTIME: CacheConfig(maxsize=100, ttl=30),
+    CacheType.TOOL_SCHEMA: CacheConfig(maxsize=200, ttl=300),
 }
 
 

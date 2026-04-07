@@ -2554,6 +2554,18 @@ class MessageGateway:
             f'text="{user_text[:100]}"'
         )
 
+        # ==================== 快速响应通道 ====================
+        # 在所有处理之前，优先检查是否可以直接响应（不走 LLM）
+        if user_text:
+            from ..core.fast_response import try_fast_response
+
+            fast_resp = try_fast_response(user_text)
+            if fast_resp:
+                logger.info(f"[FastResponse] 快速响应命中: {user_text[:20]}...")
+                await self._send_response(message, fast_resp)
+                return
+        # ==================== /快速响应通道 ====================
+
         typing_task: asyncio.Task | None = None
         session = None
         try:
@@ -3947,14 +3959,9 @@ class MessageGateway:
         """
         发送响应（带重试、按渠道分割长消息、分片间限流保护）
 
-        分片失败策略：
-        - 首次以 Markdown 分片发送
-        - 任一分片 3 次重试仍失败 → 中止剩余分片，改用纯文本整体重发
-        - 纯文本重发也失败 → 发送失败通知
-
-        媒体补发：
-        - 在发送文本前解析回复中的 ![](path)、MEDIA: 行、裸路径
-        - 先发清理后的文本，再逐个补发图片/文件
+        Args:
+            original: 原始消息
+            response: 响应文本（字符串）
         """
         import asyncio
 

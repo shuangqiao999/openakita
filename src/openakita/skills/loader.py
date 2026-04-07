@@ -5,11 +5,13 @@
 从标准目录结构加载 SKILL.md 定义的技能
 """
 
+import asyncio
 import logging
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Optional
 
 from .parser import ParsedSkill, SkillMetadata, SkillParser
 from .registry import SkillRegistry
@@ -225,7 +227,7 @@ class SkillLoader:
 
     def load_all(self, base_path: Path | None = None) -> int:
         """
-        从所有标准目录加载技能
+        从所有标准目录加载技能（并行加载以提升启动速度）
 
         Args:
             base_path: 基础路径
@@ -236,11 +238,27 @@ class SkillLoader:
         directories = self.discover_skill_directories(base_path)
         loaded = 0
 
-        for skill_dir in directories:
-            loaded += self.load_from_directory(skill_dir)
+        # 并行加载多个 skill 目录
+        def _load_dir(d: Path) -> int:
+            return self.load_from_directory(d)
+
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        with ThreadPoolExecutor(max_workers=min(8, max(1, len(directories)))) as executor:
+            futures = {executor.submit(_load_dir, d): d for d in directories}
+            for future in as_completed(futures):
+                skill_dir = futures[future]
+                try:
+                    count = future.result()
+                    loaded += count
+                except Exception as e:
+                    logger.error(f"Failed to load skill directory {skill_dir}: {e}")
 
         loaded += self._load_cli_anything_skills()
 
+        logger.info(
+            f"[SkillLoader] 并行加载完成: 共 {len(directories)} 个目录, 加载 {loaded} 个技能"
+        )
         return loaded
 
     def _load_cli_anything_skills(self) -> int:

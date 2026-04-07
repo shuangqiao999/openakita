@@ -84,10 +84,10 @@ class Settings(BaseSettings):
 
     # === 工具并行执行 ===
     # 单轮模型返回多个 tool_use/tool_calls 时，Agent 可选择并行执行工具以提升吞吐。
-    # 默认 1：保持现有串行语义（最安全，尤其是带“思维链连续性”的工具链）。
+    # 默认 4：启用并行执行以提升吞吐量，可通过配置调整为 1（串行，最安全）
     tool_max_parallel: int = Field(
-        default=1,
-        description="单轮并行工具调用最大并发数（默认 1=串行；>1 启用并行）",
+        default=4,
+        description="单轮并行工具调用最大并发数（默认 4=并行；1=串行）",
     )
 
     allow_parallel_tools_with_interrupt_checks: bool = Field(
