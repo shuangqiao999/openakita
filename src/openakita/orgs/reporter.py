@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -32,7 +32,7 @@ class OrgReporter:
             raise ValueError(f"Organization not found: {org_id}")
 
         es = self._runtime.get_event_store(org_id)
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today = datetime.now(UTC).strftime("%Y-%m-%d")
         events = es.query(since=today, limit=500)
 
         node_summaries: dict[str, list[str]] = {}
@@ -42,7 +42,9 @@ class OrgReporter:
             data = evt.get("data", {})
             if actor not in node_summaries:
                 node_summaries[actor] = []
-            node_summaries[actor].append(f"- [{etype}] {json.dumps(data, ensure_ascii=False)[:120]}")
+            node_summaries[actor].append(
+                f"- [{etype}] {json.dumps(data, ensure_ascii=False)[:120]}"
+            )
 
         lines = [
             f"# 晨会纪要 — {today}",
@@ -80,7 +82,7 @@ class OrgReporter:
             raise ValueError(f"Organization not found: {org_id}")
 
         es = self._runtime.get_event_store(org_id)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         week_end = now - timedelta(weeks=weeks_back)
         week_start = week_end - timedelta(days=7)
 
@@ -139,13 +141,17 @@ class OrgReporter:
             lines.append("## 管理层决策")
             for dec in decisions[:10]:
                 data = dec.get("data", {})
-                lines.append(f"- {data.get('decision', json.dumps(data, ensure_ascii=False)[:100])}")
+                lines.append(
+                    f"- {data.get('decision', json.dumps(data, ensure_ascii=False)[:100])}"
+                )
             lines.append("")
 
         if scalings:
             lines.append("## 人事变动")
             for sc in scalings[:10]:
-                lines.append(f"- [{sc.get('event_type', '')}] {json.dumps(sc.get('data', {}), ensure_ascii=False)[:100]}")
+                lines.append(
+                    f"- [{sc.get('event_type', '')}] {json.dumps(sc.get('data', {}), ensure_ascii=False)[:100]}"
+                )
             lines.append("")
 
         content = "\n".join(lines)
@@ -163,7 +169,8 @@ class OrgReporter:
         events = es.query(limit=2000)
 
         task_events = [
-            e for e in events
+            e
+            for e in events
             if e.get("data", {}).get("task_id") == task_id
             or e.get("metadata", {}).get("trace_id") == task_id
         ]
@@ -197,7 +204,7 @@ class OrgReporter:
         es = self._runtime.get_event_store(org_id)
         log = es.get_audit_log(days=days)
 
-        date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        date_str = datetime.now(UTC).strftime("%Y-%m-%d")
         lines = [
             f"# 审计日志 — 最近 {days} 天",
             f"\n生成时间: {date_str}",
@@ -205,9 +212,16 @@ class OrgReporter:
         ]
 
         important_types = {
-            "org_started", "org_stopped", "scaling_approved", "scaling_rejected",
-            "node_frozen", "node_unfrozen", "policy_proposed", "conflict_detected",
-            "task_failed", "user_command",
+            "org_started",
+            "org_stopped",
+            "scaling_approved",
+            "scaling_rejected",
+            "node_frozen",
+            "node_unfrozen",
+            "policy_proposed",
+            "conflict_detected",
+            "task_failed",
+            "user_command",
         }
 
         for entry in log:

@@ -13,7 +13,6 @@ import logging
 import time
 import uuid
 from datetime import UTC
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
@@ -798,10 +797,8 @@ async def preview_node_prompt(request: Request, org_id: str, node_id: str):
 
     from openakita.orgs.tool_categories import expand_tool_categories
 
-    _ORG_CONFLICT = {"delegate_to_agent", "spawn_agent",
-                     "delegate_parallel", "create_agent"}
-    _KEEP = {"get_tool_info", "create_todo", "update_todo_step",
-             "get_todo_status", "complete_todo"}
+    _ORG_CONFLICT = {"delegate_to_agent", "spawn_agent", "delegate_parallel", "create_agent"}
+    _KEEP = {"get_tool_info", "create_todo", "update_todo_step", "get_todo_status", "complete_todo"}
     allowed_external = expand_tool_categories(node.external_tools) - _ORG_CONFLICT
 
     tool_summary = {
@@ -1739,7 +1736,7 @@ async def list_projects(request: Request, org_id: str):
 
 @router.post("/{org_id}/projects")
 async def create_project(request: Request, org_id: str):
-    from openakita.orgs.models import OrgProject, ProjectType, ProjectStatus
+    from openakita.orgs.models import OrgProject, ProjectStatus, ProjectType
 
     body = await request.json()
     proj = OrgProject(

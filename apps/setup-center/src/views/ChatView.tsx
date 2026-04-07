@@ -67,6 +67,7 @@ import { useMessageReducer, useConversationReducer } from "./chat/hooks/useMessa
 import type { MessageAction, ConversationAction } from "./chat/hooks/useMessages";
 import { useQueryGuard } from "./chat/hooks/useQueryGuard";
 import type { QueryState } from "./chat/hooks/useQueryGuard";
+import { useSecurityPolicy } from "./chat/hooks/useSecurityPolicy";
 import {
   SpinnerTipDisplay, AttachmentPreview, ErrorCard,
   ThinkingBlock, ToolCallDetail, ToolCallsGroup, ThinkingChain,
@@ -102,6 +103,7 @@ export function ChatView({
   const { messages, dispatch: msgDispatch, messagesRef: latestMessagesRef } = useMessageReducer();
   const { conversations, dispatch: convDispatch, conversationsRef: latestConversationsRef } = useConversationReducer();
   const queryGuard = useQueryGuard();
+  const securityPolicy = useSecurityPolicy(apiBaseUrl);
 
   // 向后兼容别名：逐步迁移后可移除
   const setMessages = useCallback((arg: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[])) => {
@@ -2271,13 +2273,30 @@ export function ChatView({
                 pendingApprovalRef.current = event.data as PlanApprovalEvent;
                 break;
               case "security_confirm": {
-                const newConfirm: SecurityConfirmData = {
+                const scEvt = {
                   tool: (event.tool_name || event.tool) as string,
                   args: event.args as Record<string, unknown>,
                   reason: event.reason as string,
-                  riskLevel: event.risk_level as string,
-                  needsSandbox: event.needs_sandbox as boolean,
-                  toolId: ((event.confirm_id || event.call_id || event.id) ?? "") as string,
+                  risk_level: event.risk_level as string,
+                  needs_sandbox: event.needs_sandbox as boolean,
+                  id: ((event.confirm_id || event.call_id || event.id) ?? "") as string,
+                };
+                if (securityPolicy.checkAutoAllow(scEvt)) {
+                  securityPolicy.recordAllow(scEvt.tool);
+                  fetch(`${apiBaseUrl}/api/chat/security-confirm`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ confirm_id: scEvt.id, decision: "allow_once" }),
+                  }).catch(() => {});
+                  break;
+                }
+                const newConfirm: SecurityConfirmData = {
+                  tool: scEvt.tool,
+                  args: scEvt.args,
+                  reason: scEvt.reason,
+                  riskLevel: scEvt.risk_level,
+                  needsSandbox: scEvt.needs_sandbox,
+                  toolId: scEvt.id,
                   countdown: 120,
                 };
                 setSecurityConfirm((prev) => {

@@ -13,7 +13,6 @@ import httpx
 from ..cache import (
     add_message_cache_breakpoints,
     add_tools_cache_control,
-    build_cached_system_blocks,
     sort_tools_for_cache_stability,
 )
 from ..converters.tools import (
@@ -70,9 +69,15 @@ class AnthropicProvider(LLMProvider):
     def _is_local_endpoint(self) -> bool:
         """检查是否为本地端点"""
         url = self.base_url.lower()
-        return any(host in url for host in (
-            "localhost", "127.0.0.1", "0.0.0.0", "[::1]",
-        ))
+        return any(
+            host in url
+            for host in (
+                "localhost",
+                "127.0.0.1",
+                "0.0.0.0",
+                "[::1]",
+            )
+        )
 
     def _get_validated_api_key(self) -> str:
         """获取并验证 API Key，空 key 时提前抛出有意义的错误而非让 API 返回模糊 401。"""
@@ -181,7 +186,9 @@ class AnthropicProvider(LLMProvider):
                     raise AuthenticationError(f"Authentication failed: {body}", status_code=401)
                 if response.status_code == 429:
                     raise RateLimitError(f"Rate limit exceeded: {body}", status_code=429)
-                raise LLMError(f"API error ({response.status_code}): {body}", status_code=response.status_code)
+                raise LLMError(
+                    f"API error ({response.status_code}): {body}", status_code=response.status_code
+                )
 
             data = response.json()
             self.mark_healthy()
@@ -224,10 +231,15 @@ class AnthropicProvider(LLMProvider):
                 error_body = await response.aread()
                 error_text = error_body.decode(errors="replace")[:500]
                 if response.status_code == 401:
-                    raise AuthenticationError(f"Authentication failed: {error_text}", status_code=401)
+                    raise AuthenticationError(
+                        f"Authentication failed: {error_text}", status_code=401
+                    )
                 if response.status_code == 429:
                     raise RateLimitError(f"Rate limit exceeded: {error_text}", status_code=429)
-                raise LLMError(f"API error ({response.status_code}): {error_text}", status_code=response.status_code)
+                raise LLMError(
+                    f"API error ({response.status_code}): {error_text}",
+                    status_code=response.status_code,
+                )
 
             # 使用符合 SSE 规范的解析器
             async for event in parse_sse_stream(response):
@@ -258,6 +270,26 @@ class AnthropicProvider(LLMProvider):
             "anthropic-version": self.ANTHROPIC_VERSION,
         }
 
+    @staticmethod
+    def _build_system_blocks(system: str) -> list[dict]:
+        """Split system prompt into static + dynamic blocks for Anthropic prompt caching.
+
+        Uses the '## Developer' section boundary as the split point.
+        The static part (System section) gets cache_control to enable
+        cross-turn prompt caching, reducing token costs significantly.
+        """
+        _BOUNDARY = "\n\n---\n\n## Developer"
+        idx = system.find(_BOUNDARY)
+        if idx == -1:
+            return [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+        static_part = system[:idx]
+        dynamic_part = system[idx:]
+        blocks = [
+            {"type": "text", "text": static_part, "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": dynamic_part},
+        ]
+        return blocks
+
     def _build_request_body(self, request: LLMRequest) -> dict:
         """构建请求体。
 
@@ -279,7 +311,7 @@ class AnthropicProvider(LLMProvider):
         # 系统提示: 分段缓存 (静态部分标记 cache_control)
         if request.system:
             if caps.supports_cache:
-                body["system"] = build_cached_system_blocks(request.system)
+                body["system"] = self._build_system_blocks(request.system)
             else:
                 body["system"] = request.system
 
@@ -407,7 +439,11 @@ class AnthropicProvider(LLMProvider):
                     f"[TEXT_TOOL_PARSE] Detected tool calls embedded inside thinking block from {self.name}"
                 )
 
-        if not has_tool_calls and combined_text_for_tool_check and has_text_tool_calls(combined_text_for_tool_check):
+        if (
+            not has_tool_calls
+            and combined_text_for_tool_check
+            and has_text_tool_calls(combined_text_for_tool_check)
+        ):
             logger.info(f"[TEXT_TOOL_PARSE] Detected text-based tool calls from {self.name}")
             clean_text, text_tool_calls = parse_text_tool_calls(combined_text_for_tool_check)
 

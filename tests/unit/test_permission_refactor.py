@@ -19,6 +19,9 @@ class _DummyRegistry:
     def get_handler_name_for_tool(self, tool_name: str) -> str:
         return "dummy"
 
+    def get_permission_check(self, tool_name: str):
+        return None
+
     def list_tools(self) -> list[str]:
         return ["read_file"]
 

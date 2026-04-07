@@ -9,83 +9,92 @@
 """
 
 # 核心工具 — 始终加载完整 schema（参考 CC 的 alwaysLoad: true）
-ALWAYS_LOAD_TOOLS: frozenset[str] = frozenset({
-    # 文件系统（最基础的 I/O 操作）
-    "run_shell",
-    "read_file",
-    "write_file",
-    "edit_file",
-    "list_directory",
-    "grep",
-    "glob",
-    "delete_file",
-    # PowerShell（Windows 核心）
-    "run_powershell",
-    # 用户交互 + 元工具
-    "ask_user",
-    "get_tool_info",
-    "tool_search",
-    # 代理委派
-    "delegate_to_agent",
-    # 任务管理
-    "create_todo",
-    "update_todo_step",
-    "get_todo_status",
-    "complete_todo",
-})
+ALWAYS_LOAD_TOOLS: frozenset[str] = frozenset(
+    {
+        # 文件系统（最基础的 I/O 操作）
+        "run_shell",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "list_directory",
+        "grep",
+        "glob",
+        "delete_file",
+        # PowerShell（Windows 核心）
+        "run_powershell",
+        # 用户交互 + 元工具
+        "ask_user",
+        "get_tool_info",
+        "tool_search",
+        # 代理委派
+        "delegate_to_agent",
+        "delegate_parallel",
+        # MCP 入口（prompt 中 MCP Catalog 引导用户调用，必须常驻）
+        "call_mcp_tool",
+        "list_mcp_servers",
+        # 任务管理
+        "create_todo",
+        "update_todo_step",
+        "get_todo_status",
+        "complete_todo",
+    }
+)
 
 # 延迟加载的分类 — 这些分类下的所有工具默认 defer
-DEFER_CATEGORIES: frozenset[str] = frozenset({
-    "Browser",
-    "Desktop",
-    "Scheduled",
-    "IM Channel",
-    "Agent Package",
-    "Persona",
-    "Sticker",
-    "Config",
-    "Agent Hub",
-    "Skill Store",
-    "Profile",
-    "Plugin",
-    "Org Setup",
-    "OpenCLI",
-    "CLI Anything",
-})
+DEFER_CATEGORIES: frozenset[str] = frozenset(
+    {
+        "Browser",
+        "Desktop",
+        "Scheduled",
+        "IM Channel",
+        "Agent Package",
+        "Persona",
+        "Sticker",
+        "Config",
+        "Agent Hub",
+        "Skill Store",
+        "Profile",
+        "Plugin",
+        "Org Setup",
+        "OpenCLI",
+        "CLI Anything",
+    }
+)
 
 # 非延迟分类中需要延迟的个别工具
-DEFER_INDIVIDUAL_TOOLS: frozenset[str] = frozenset({
-    "edit_notebook",
-    "switch_mode",
-    "generate_image",
-    "enable_thinking",
-    "get_session_logs",
-    "set_task_timeout",
-    "get_workspace_map",
-    "read_lints",
-    "news_search",
-    "semantic_search",
-    "spawn_agent",
-    "delegate_parallel",
-    "create_agent",
-    "get_agent_status",
-    "list_active_agents",
-    "cancel_agent",
-    "task_stop",
-    "send_agent_message",
-    "search_relational_memory",
-    "create_plan_file",
-    "exit_plan_mode",
-    "set_persona_trait",
-    "get_persona_traits",
-    "reset_persona",
-    # Phase 3 新增工具（非核心，按需发现）
-    "lsp",
-    "sleep",
-    "structured_output",
-    "enter_worktree",
-    "exit_worktree",
-})
+DEFER_INDIVIDUAL_TOOLS: frozenset[str] = frozenset(
+    {
+        "edit_notebook",
+        "switch_mode",
+        "generate_image",
+        "enable_thinking",
+        "get_session_logs",
+        "set_task_timeout",
+        "get_workspace_map",
+        "read_lints",
+        "news_search",
+        "semantic_search",
+        "spawn_agent",
+        "create_agent",
+        "get_agent_status",
+        "list_active_agents",
+        "cancel_agent",
+        "task_stop",
+        "send_agent_message",
+        "search_relational_memory",
+        "create_plan_file",
+        "exit_plan_mode",
+        "set_persona_trait",
+        "get_persona_traits",
+        "reset_persona",
+        # Phase 3 新增工具（非核心，按需发现）
+        "lsp",
+        "sleep",
+        "structured_output",
+        "enter_worktree",
+        "exit_worktree",
+    }
+)
 
 
 def is_always_load(tool_name: str) -> bool:
@@ -93,16 +102,27 @@ def is_always_load(tool_name: str) -> bool:
     return tool_name in ALWAYS_LOAD_TOOLS
 
 
-def should_defer(tool_name: str, category: str | None = None) -> bool:
+def should_defer(
+    tool_name: str,
+    category: str | None = None,
+    *,
+    user_always_load: frozenset[str] | None = None,
+    user_always_load_cats: frozenset[str] | None = None,
+) -> bool:
     """判断工具是否应该延迟加载。
 
-    规则:
-    1. always_load 工具永不延迟
-    2. 在 DEFER_CATEGORIES 分类下的工具延迟
+    规则（按优先级）:
+    1. ALWAYS_LOAD_TOOLS 中的工具永不延迟
+    2. 用户配置的 always_load_tools / always_load_categories 豁免
     3. 在 DEFER_INDIVIDUAL_TOOLS 中的工具延迟
-    4. 其余工具不延迟
+    4. 在 DEFER_CATEGORIES 分类下的工具延迟
+    5. 其余工具不延迟
     """
     if tool_name in ALWAYS_LOAD_TOOLS:
+        return False
+    if user_always_load and tool_name in user_always_load:
+        return False
+    if user_always_load_cats and category and category in user_always_load_cats:
         return False
     if tool_name in DEFER_INDIVIDUAL_TOOLS:
         return True

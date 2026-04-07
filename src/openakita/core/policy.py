@@ -20,6 +20,7 @@ import logging
 import platform
 import re
 from dataclasses import dataclass, field
+from datetime import UTC
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -31,8 +32,10 @@ logger = logging.getLogger(__name__)
 # Enums
 # ---------------------------------------------------------------------------
 
+
 class PolicyDecision(StrEnum):
     """策略判定结果"""
+
     ALLOW = "allow"
     DENY = "deny"
     CONFIRM = "confirm"
@@ -40,6 +43,7 @@ class PolicyDecision(StrEnum):
 
 class Zone(StrEnum):
     """安全区域"""
+
     WORKSPACE = "workspace"
     CONTROLLED = "controlled"
     PROTECTED = "protected"
@@ -48,6 +52,7 @@ class Zone(StrEnum):
 
 class OpType(StrEnum):
     """操作类型"""
+
     READ = "read"
     CREATE = "create"
     EDIT = "edit"
@@ -58,6 +63,7 @@ class OpType(StrEnum):
 
 class RiskLevel(StrEnum):
     """Shell 命令风险等级"""
+
     CRITICAL = "critical"
     HIGH = "high"
     MEDIUM = "medium"
@@ -134,6 +140,8 @@ _HIGH_RISK_SHELL_PATTERNS: list[str] = [
     r"del\s+/[sS]",
     r"rd\s+/[sS]",
     r"rmdir\s+/[sS]\s*/[qQ]",
+    # Write operations targeting system directories
+    r"(?:copy|move|del|rd|rmdir|echo|Set-Content|Add-Content|New-Item).*(?:System32|Windows|Program Files)",
     r"Get-ChildItem.*\|\s*Remove-Item",
     r"Clear-RecycleBin",
     r"wmic\s+product.*uninstall",
@@ -194,29 +202,49 @@ _MEDIUM_RISK_SHELL_PATTERNS: list[str] = [
 
 # Default blocked shell commands (direct DENY)
 _DEFAULT_BLOCKED_COMMANDS: list[str] = [
-    "reg", "regedit", "netsh", "schtasks", "sc",
-    "wmic", "bcdedit", "shutdown", "taskkill",
+    "reg",
+    "regedit",
+    "netsh",
+    "schtasks",
+    "sc",
+    "wmic",
+    "bcdedit",
+    "shutdown",
+    "taskkill",
 ]
 
 # ---------------------------------------------------------------------------
 # Default zone paths per platform
 # ---------------------------------------------------------------------------
 
+
 def _default_protected_paths() -> list[str]:
     """Platform-specific default protected paths."""
     paths = []
     if platform.system() == "Windows":
-        paths.extend([
-            "C:/Program Files/**",
-            "C:/Program Files (x86)/**",
-            "C:/Windows/**",
-            "C:/ProgramData/**",
-        ])
+        paths.extend(
+            [
+                "C:/Program Files/**",
+                "C:/Program Files (x86)/**",
+                "C:/Windows/**",
+                "C:/ProgramData/**",
+            ]
+        )
     else:
-        paths.extend([
-            "/usr/**", "/bin/**", "/sbin/**", "/lib/**", "/lib64/**",
-            "/boot/**", "/etc/**", "/dev/**", "/proc/**", "/sys/**",
-        ])
+        paths.extend(
+            [
+                "/usr/**",
+                "/bin/**",
+                "/sbin/**",
+                "/lib/**",
+                "/lib64/**",
+                "/boot/**",
+                "/etc/**",
+                "/dev/**",
+                "/proc/**",
+                "/sys/**",
+            ]
+        )
         if platform.system() == "Darwin":
             paths.extend(["/System/**", "/Library/**"])
     return paths
@@ -236,9 +264,11 @@ def _default_forbidden_paths() -> list[str]:
 # Data classes
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class PolicyResult:
     """策略引擎判定结果"""
+
     decision: PolicyDecision
     reason: str = ""
     policy_name: str = ""
@@ -248,6 +278,7 @@ class PolicyResult:
 @dataclass
 class ZonePolicyConfig:
     """四区路径配置"""
+
     enabled: bool = True
     workspace: list[str] = field(default_factory=list)
     controlled: list[str] = field(default_factory=list)
@@ -259,15 +290,39 @@ class ZonePolicyConfig:
 @dataclass
 class ConfirmationConfig:
     """确认门配置"""
+
     enabled: bool = True
     timeout_seconds: int = 60
     default_on_timeout: str = "deny"
     auto_confirm: bool = False
+    mode: str = "smart"  # cautious | smart | yolo
+    confirm_ttl: float = 120.0  # seconds for single-confirm TTL cache
+
+
+@dataclass
+class UserAllowlistEntry:
+    """持久化白名单条目"""
+
+    pattern: str = ""
+    name: str = ""
+    zone: str = ""
+    entry_type: str = "command"  # "command" | "tool"
+    added_at: str = ""
+    needs_sandbox: bool = False
+
+
+@dataclass
+class UserAllowlistConfig:
+    """用户白名单配置"""
+
+    commands: list[dict[str, Any]] = field(default_factory=list)
+    tools: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
 class CommandPatternConfig:
     """命令模式拦截配置"""
+
     enabled: bool = True
     custom_critical: list[str] = field(default_factory=list)
     custom_high: list[str] = field(default_factory=list)
@@ -278,6 +333,7 @@ class CommandPatternConfig:
 @dataclass
 class CheckpointConfig:
     """文件快照配置"""
+
     enabled: bool = True
     max_snapshots: int = 50
     snapshot_dir: str = "data/checkpoints"
@@ -286,6 +342,7 @@ class CheckpointConfig:
 @dataclass
 class SelfProtectionConfig:
     """自保护配置"""
+
     enabled: bool = True
     protected_dirs: list[str] = field(
         default_factory=lambda: ["data/", "identity/", "logs/", "src/"]
@@ -293,11 +350,13 @@ class SelfProtectionConfig:
     audit_to_file: bool = True
     audit_path: str = "data/audit/policy_decisions.jsonl"
     death_switch_threshold: int = 3
+    death_switch_total_multiplier: int = 3
 
 
 @dataclass
 class SandboxConfig:
     """沙箱配置"""
+
     enabled: bool = True
     backend: str = "auto"
     sandbox_risk_levels: list[str] = field(default_factory=lambda: ["HIGH"])
@@ -309,6 +368,7 @@ class SandboxConfig:
 @dataclass
 class ToolPolicyRule:
     """工具策略规则 (backward compat)"""
+
     tool_name: str
     decision: PolicyDecision = PolicyDecision.ALLOW
     dangerous_patterns: list[str] = field(default_factory=list)
@@ -320,6 +380,7 @@ class ToolPolicyRule:
 @dataclass
 class SecurityConfig:
     """完整六层安全配置"""
+
     enabled: bool = True
     zones: ZonePolicyConfig = field(default_factory=ZonePolicyConfig)
     confirmation: ConfirmationConfig = field(default_factory=ConfirmationConfig)
@@ -327,6 +388,7 @@ class SecurityConfig:
     checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
     self_protection: SelfProtectionConfig = field(default_factory=SelfProtectionConfig)
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
+    user_allowlist: UserAllowlistConfig = field(default_factory=UserAllowlistConfig)
     # Legacy compat
     tool_policies: list[ToolPolicyRule] = field(default_factory=list)
 
@@ -334,6 +396,7 @@ class SecurityConfig:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _expand_home(p: str) -> str:
     """Expand ~ to user home, normalise separators."""
@@ -374,16 +437,31 @@ def _tool_to_optype(tool_name: str, params: dict[str, Any]) -> OpType:
     安全原则：未知工具默认归为 CREATE（有副作用），避免误放行。
     """
     _READ_TOOLS = (
-        "read_file", "list_directory", "grep", "glob",
-        "search_files", "web_search", "news_search",
-        "browser_screenshot", "view_image",
-        "get_tool_info", "get_skill_info", "list_skills",
-        "get_workspace_map", "get_session_logs",
-        "get_todo_status", "get_user_profile", "get_persona_profile",
-        "list_mcp_servers", "get_mcp_instructions",
-        "list_scheduled_tasks", "search_memory",
-        "list_recent_tasks", "trace_memory",
-        "search_conversation_traces", "get_memory_stats",
+        "read_file",
+        "list_directory",
+        "grep",
+        "glob",
+        "search_files",
+        "web_search",
+        "news_search",
+        "browser_screenshot",
+        "view_image",
+        "get_tool_info",
+        "get_skill_info",
+        "list_skills",
+        "get_workspace_map",
+        "get_session_logs",
+        "get_todo_status",
+        "get_user_profile",
+        "get_persona_profile",
+        "list_mcp_servers",
+        "get_mcp_instructions",
+        "list_scheduled_tasks",
+        "search_memory",
+        "list_recent_tasks",
+        "trace_memory",
+        "search_conversation_traces",
+        "get_memory_stats",
     )
     if tool_name in _READ_TOOLS:
         return OpType.READ
@@ -402,20 +480,39 @@ def _tool_to_optype(tool_name: str, params: dict[str, Any]) -> OpType:
     if tool_name in ("delete_file", "rename_file"):
         return OpType.DELETE
     if tool_name in (
-        "run_shell", "run_powershell", "call_mcp_tool",
-        "browser_navigate", "browser_use", "browser_click", "browser_type",
-        "desktop_click", "desktop_type",
+        "run_shell",
+        "run_powershell",
+        "call_mcp_tool",
+        "browser_navigate",
+        "browser_use",
+        "browser_click",
+        "browser_type",
+        "desktop_click",
+        "desktop_type",
     ):
         return OpType.CREATE
     return OpType.CREATE
 
 
+_ZONE_LABELS = {
+    "workspace": "工作区",
+    "controlled": "受控区",
+    "protected": "受保护区",
+    "forbidden": "禁止访问区",
+}
+_OP_LABELS = {
+    "read": "读取",
+    "create": "创建",
+    "edit": "编辑",
+    "overwrite": "覆盖写入",
+    "delete": "删除",
+    "recursive_delete": "批量删除",
+}
 
-_ZONE_LABELS = {"workspace": "工作区", "controlled": "受控区", "protected": "受保护区", "forbidden": "禁止访问区"}
-_OP_LABELS = {"read": "读取", "create": "创建", "edit": "编辑", "overwrite": "覆盖写入", "delete": "删除", "recursive_delete": "批量删除"}
 
 def _zone_label(zone: Zone) -> str:
     return _ZONE_LABELS.get(zone.value, zone.value)
+
 
 def _op_label(op: OpType) -> str:
     return _OP_LABELS.get(op.value, op.value)
@@ -424,6 +521,7 @@ def _op_label(op: OpType) -> str:
 # ---------------------------------------------------------------------------
 # Policy Engine
 # ---------------------------------------------------------------------------
+
 
 class PolicyEngine:
     """
@@ -437,19 +535,20 @@ class PolicyEngine:
         self._config = config or self._make_default_config()
         self._audit_log: list[dict[str, Any]] = []
         self._consecutive_denials = 0
-        self._total_denials = 0  # P1-8: 累计拒绝次数（不随 ALLOW 重置）
+        self._total_denials = 0
         self._readonly_mode = False
-        # Confirmation cache: (tool_name, param_hash) → expiry timestamp
-        self._confirmed_cache: dict[str, float] = {}
-        self._confirm_ttl = 120.0  # seconds
+        # TTL confirmation cache: key → {expiry, needs_sandbox}
+        self._confirmed_cache: dict[str, dict[str, Any]] = {}
+        # Session allowlist: cache_key → {needs_sandbox, pattern}
+        self._session_allowlist: dict[str, dict[str, Any]] = {}
         # P1-5: 并发保护锁
         self._cache_lock = asyncio.Lock()
-        # Pending UI confirmations: tool_id → {tool_name, params}
+        # Pending UI confirmations: tool_id → {tool_name, params, ...}
         self._pending_ui_confirms: dict[str, dict[str, Any]] = {}
         self._pending_lock = asyncio.Lock()
         # F7: Temporary allowlists granted by skill activation.
         self._skill_allowlists: dict[str, set[str]] = {}
-        # P3-3: 前端安全模式（cautious/smart/trust）
+        # P3-3: 前端安全模式 (synced to confirmation.mode)
         self._frontend_mode: str = "smart"
 
     @property
@@ -502,6 +601,7 @@ class PolicyEngine:
 
         try:
             import yaml
+
             with open(path, encoding="utf-8") as f:
                 data = yaml.safe_load(f)
             if not data or not isinstance(data, dict):
@@ -551,7 +651,17 @@ class PolicyEngine:
             cc.enabled = c.get("enabled", True)
             cc.timeout_seconds = c.get("timeout_seconds", 60)
             cc.default_on_timeout = c.get("default_on_timeout", "deny")
-            cc.auto_confirm = c.get("auto_confirm", False)
+            cc.confirm_ttl = float(c.get("confirm_ttl", 120.0))
+            # mode: cautious | smart | yolo
+            mode = c.get("mode", "")
+            if mode in ("cautious", "smart", "yolo"):
+                cc.mode = mode
+                cc.auto_confirm = mode == "yolo"
+            else:
+                # backward compat: auto_confirm boolean → mode
+                cc.auto_confirm = c.get("auto_confirm", False)
+                cc.mode = "yolo" if cc.auto_confirm else "smart"
+            self._frontend_mode = cc.mode
 
         # command_patterns
         cp = sec.get("command_patterns", {})
@@ -580,6 +690,10 @@ class PolicyEngine:
             spc.audit_to_file = sp.get("audit_to_file", True)
             spc.audit_path = sp.get("audit_path", spc.audit_path)
             spc.death_switch_threshold = sp.get("death_switch_threshold", 3)
+            spc.death_switch_total_multiplier = sp.get(
+                "death_switch_total_multiplier",
+                3,
+            )
 
         # sandbox
         sb = sec.get("sandbox", {})
@@ -593,6 +707,14 @@ class PolicyEngine:
             if net:
                 sbc.network_allow_in_sandbox = net.get("allow_in_sandbox", False)
                 sbc.network_allowed_domains = net.get("allowed_domains", []) or []
+
+        # user_allowlist (persistent allow rules)
+        ua = sec.get("user_allowlist", {})
+        if ua and isinstance(ua, dict):
+            self._config.user_allowlist = UserAllowlistConfig(
+                commands=ua.get("commands", []) or [],
+                tools=ua.get("tools", []) or [],
+            )
 
     def _load_legacy_format(self, data: dict) -> None:
         """Load the old POLICIES.yaml format for backward compatibility."""
@@ -611,8 +733,7 @@ class PolicyEngine:
                 existing = {r.tool_name for r in self._config.tool_policies}
                 if rule.tool_name in existing:
                     self._config.tool_policies = [
-                        r for r in self._config.tool_policies
-                        if r.tool_name != rule.tool_name
+                        r for r in self._config.tool_policies if r.tool_name != rule.tool_name
                     ]
                 self._config.tool_policies.append(rule)
 
@@ -628,7 +749,10 @@ class PolicyEngine:
             if sp.get("blocked_commands"):
                 self._config.command_patterns.blocked_commands = sp["blocked_commands"]
 
-        self._config.confirmation.auto_confirm = data.get("auto_confirm", False)
+        auto = data.get("auto_confirm", False)
+        self._config.confirmation.auto_confirm = auto
+        self._config.confirmation.mode = "yolo" if auto else "smart"
+        self._frontend_mode = self._config.confirmation.mode
 
     # ----- Main entry point -------------------------------------------------
 
@@ -654,12 +778,13 @@ class PolicyEngine:
         if not self._config.enabled:
             return PolicyResult(decision=PolicyDecision.ALLOW, reason="安全策略已禁用")
 
-        # Bypass CONFIRM if user recently approved an identical action
-        if self._is_recently_confirmed(tool_name, params):
+        # Bypass CONFIRM if user approved via any allowlist tier
+        allowlist_meta = self._check_allowlists(tool_name, params)
+        if allowlist_meta is not None:
             return PolicyResult(
                 decision=PolicyDecision.ALLOW,
-                reason="用户刚刚确认过此操作",
-                metadata={"confirmed_bypass": True},
+                reason="用户已确认此操作",
+                metadata=allowlist_meta,
             )
 
         # Death switch: readonly mode (NOT bypassable by skill allowlists)
@@ -711,8 +836,14 @@ class PolicyEngine:
 
         # L1: Zone × OpType matrix for file operations
         file_tools = {
-            "read_file", "write_file", "edit_file", "delete_file",
-            "list_directory", "grep", "glob", "search_replace",
+            "read_file",
+            "write_file",
+            "edit_file",
+            "delete_file",
+            "list_directory",
+            "grep",
+            "glob",
+            "search_replace",
         }
         if tool_name in file_tools:
             zone_result = self._check_zone_policy(tool_name, params)
@@ -726,10 +857,7 @@ class PolicyEngine:
 
     def _is_skill_allowed(self, tool_name: str) -> bool:
         """Check if tool_name is temporarily allowed by any active skill."""
-        for allowed_set in self._skill_allowlists.values():
-            if tool_name in allowed_set:
-                return True
-        return False
+        return any(tool_name in allowed_set for allowed_set in self._skill_allowlists.values())
 
     def add_skill_allowlist(self, skill_id: str, tool_names: list[str]) -> None:
         """Grant temporary tool access for a skill context."""
@@ -737,7 +865,8 @@ class PolicyEngine:
             self._skill_allowlists[skill_id] = set(tool_names)
             logger.debug(
                 "[Policy] Skill '%s' granted temporary access to: %s",
-                skill_id, tool_names,
+                skill_id,
+                tool_names,
             )
 
     def remove_skill_allowlist(self, skill_id: str) -> None:
@@ -746,7 +875,8 @@ class PolicyEngine:
         if removed:
             logger.debug(
                 "[Policy] Revoked skill '%s' temporary access to: %s",
-                skill_id, removed,
+                skill_id,
+                removed,
             )
 
     def clear_skill_allowlists(self) -> None:
@@ -780,9 +910,7 @@ class PolicyEngine:
 
         return self._config.zones.default_zone
 
-    def _check_zone_policy(
-        self, tool_name: str, params: dict[str, Any]
-    ) -> PolicyResult | None:
+    def _check_zone_policy(self, tool_name: str, params: dict[str, Any]) -> PolicyResult | None:
         """L1: Check file operation against zone × op_type matrix."""
         if not self._config.zones.enabled:
             return None
@@ -839,8 +967,7 @@ class PolicyEngine:
             return PolicyResult(
                 decision=PolicyDecision.ALLOW,
                 reason="",
-                metadata={"needs_checkpoint": True, "zone": zone.value,
-                          "op_type": op_type.value},
+                metadata={"needs_checkpoint": True, "zone": zone.value, "op_type": op_type.value},
             )
         return None
 
@@ -884,9 +1011,7 @@ class PolicyEngine:
 
         return RiskLevel.LOW
 
-    def _check_shell_command(
-        self, tool_name: str, params: dict[str, Any]
-    ) -> PolicyResult | None:
+    def _check_shell_command(self, tool_name: str, params: dict[str, Any]) -> PolicyResult | None:
         """L3: Check shell command for blocked commands and risk patterns."""
         command = str(params.get("command", ""))
         if not command:
@@ -933,35 +1058,35 @@ class PolicyEngine:
             self._on_deny(tool_name, params, result)
             return result
 
+        mode = self._config.confirmation.mode
+
         if risk == RiskLevel.HIGH:
-            if self._config.confirmation.auto_confirm:
+            if mode == "yolo":
                 self._on_allow(tool_name, params)
                 return PolicyResult(
                     decision=PolicyDecision.ALLOW,
-                    metadata={
-                        "risk_level": risk.value,
-                        "needs_sandbox": needs_sandbox,
-                    },
+                    metadata={"risk_level": risk.value, "needs_sandbox": needs_sandbox},
                 )
             result = PolicyResult(
                 decision=PolicyDecision.CONFIRM,
                 reason=f"高风险命令，执行前需要您的确认: {command[:120]}",
                 policy_name="RiskClassification",
-                metadata={
-                    "risk_level": risk.value,
-                    "needs_sandbox": needs_sandbox,
-                },
+                metadata={"risk_level": risk.value, "needs_sandbox": needs_sandbox},
             )
             self._audit(tool_name, params, result)
             return result
 
         if risk == RiskLevel.MEDIUM:
-            if self._config.confirmation.auto_confirm:
+            if mode == "yolo":
                 self._on_allow(tool_name, params)
                 return PolicyResult(
                     decision=PolicyDecision.ALLOW,
                     metadata={"risk_level": risk.value},
                 )
+            if mode == "smart":
+                # smart mode: auto-allow MEDIUM (backend side).
+                # Session trust escalation handled by frontend checkAutoAllow.
+                pass
             result = PolicyResult(
                 decision=PolicyDecision.CONFIRM,
                 reason=f"此命令可能修改系统配置或安装软件，需要确认: {command[:120]}",
@@ -975,9 +1100,7 @@ class PolicyEngine:
 
     # ----- L5: Self-protection ----------------------------------------------
 
-    def _check_self_protection(
-        self, tool_name: str, params: dict[str, Any]
-    ) -> PolicyResult | None:
+    def _check_self_protection(self, tool_name: str, params: dict[str, Any]) -> PolicyResult | None:
         """L5: Prevent deletion of agent's own critical directories."""
         if not self._config.self_protection.enabled:
             return None
@@ -1047,18 +1170,23 @@ class PolicyEngine:
                 self._on_deny(tool_name, params, result)
                 return result
 
+            if getattr(rule, "require_confirmation", False):
+                return PolicyResult(
+                    decision=PolicyDecision.CONFIRM,
+                    reason=f"工具 '{tool_name}' 的安全策略要求用户确认后执行",
+                    policy_name="ToolPolicy",
+                )
+
         return None
 
     # ----- Death switch & audit helpers -------------------------------------
 
-    def _on_deny(
-        self, tool_name: str, params: dict[str, Any], result: PolicyResult
-    ) -> None:
+    def _on_deny(self, tool_name: str, params: dict[str, Any], result: PolicyResult) -> None:
         self._consecutive_denials += 1
         self._total_denials += 1
-        # 双阈值逻辑（P1-8）：连续拒绝 或 累计拒绝过多
         consecutive_threshold = self._config.self_protection.death_switch_threshold
-        total_threshold = consecutive_threshold * 3 if consecutive_threshold > 0 else 0
+        multiplier = self._config.self_protection.death_switch_total_multiplier
+        total_threshold = consecutive_threshold * multiplier if consecutive_threshold > 0 else 0
         should_trigger = (
             self._config.self_protection.enabled
             and not self._readonly_mode
@@ -1088,87 +1216,275 @@ class PolicyEngine:
         self._consecutive_denials = 0
         logger.info("[Policy] 只读模式已重置")
 
-    # ----- Confirmation cache -----------------------------------------------
+    # ----- Confirmation cache & allowlists -----------------------------------
 
     def _confirm_cache_key(self, tool_name: str, params: dict[str, Any]) -> str:
         """Generate a cache key for a confirmed action."""
         import hashlib
+
         param_str = f"{tool_name}:{params.get('command', '')}{params.get('path', '')}"
         return hashlib.md5(param_str.encode()).hexdigest()
 
-    def mark_confirmed(self, tool_name: str, params: dict[str, Any]) -> None:
+    @staticmethod
+    def _command_to_pattern(command: str) -> str:
+        """Extract a glob-matchable pattern from a command string.
+
+        For session/persistent allowlists we match the base command (first
+        token + ``*``) so that ``npm install foo`` also matches later
+        ``npm install bar``.
+        """
+        parts = command.strip().split()
+        if not parts:
+            return command
+        if len(parts) >= 2:
+            return f"{parts[0]} {parts[1]}*"
+        return f"{parts[0]}*"
+
+    def mark_confirmed(
+        self,
+        tool_name: str,
+        params: dict[str, Any],
+        *,
+        scope: str = "once",
+        needs_sandbox: bool = False,
+    ) -> None:
         """Record that the user confirmed a specific tool call.
 
-        Subsequent identical calls within *_confirm_ttl* seconds will
-        be auto-allowed instead of triggering CONFIRM again.
+        *scope*: ``"once"`` (TTL cache), ``"session"`` (session lifetime),
+        or ``"always"`` (persisted to YAML allowlist).
         """
         import time
-        key = self._confirm_cache_key(tool_name, params)
-        self._confirmed_cache[key] = time.time() + self._confirm_ttl
 
-    def _is_recently_confirmed(self, tool_name: str, params: dict[str, Any]) -> bool:
-        """Check if an identical action was recently confirmed by the user."""
-        import time
         key = self._confirm_cache_key(tool_name, params)
-        expiry = self._confirmed_cache.get(key)
-        if expiry and time.time() < expiry:
+        ttl = self._config.confirmation.confirm_ttl
+        entry = {"needs_sandbox": needs_sandbox}
+
+        if scope == "always":
+            self._persist_allowlist_entry(tool_name, params, needs_sandbox)
+            self._session_allowlist[key] = entry
+        elif scope == "session":
+            self._session_allowlist[key] = entry
+        # Always write TTL cache as well for immediate bypass
+        self._confirmed_cache[key] = {
+            "expiry": time.time() + ttl,
+            "needs_sandbox": needs_sandbox,
+        }
+
+    def _persist_allowlist_entry(
+        self,
+        tool_name: str,
+        params: dict[str, Any],
+        needs_sandbox: bool,
+    ) -> None:
+        """Append an entry to the persistent user_allowlist in YAML."""
+        from datetime import datetime
+
+        now_str = datetime.now(UTC).isoformat()
+        command = params.get("command", "")
+
+        if tool_name in ("run_shell", "run_powershell") and command:
+            entry = {
+                "pattern": self._command_to_pattern(command),
+                "added_at": now_str,
+                "needs_sandbox": needs_sandbox,
+            }
+            self._config.user_allowlist.commands.append(entry)
+        else:
+            entry = {
+                "name": tool_name,
+                "zone": "workspace",
+                "added_at": now_str,
+                "needs_sandbox": needs_sandbox,
+            }
+            self._config.user_allowlist.tools.append(entry)
+
+        self._save_user_allowlist()
+
+    def _save_user_allowlist(self) -> None:
+        """Write the user_allowlist section back to POLICIES.yaml."""
+        try:
+            import yaml
+
+            from ..config import settings
+
+            yaml_path = settings.identity_path / "POLICIES.yaml"
+            if not yaml_path.exists():
+                return
+
+            with open(yaml_path, encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+
+            sec = data.setdefault("security", {})
+            sec["user_allowlist"] = {
+                "commands": self._config.user_allowlist.commands,
+                "tools": self._config.user_allowlist.tools,
+            }
+
+            with open(yaml_path, "w", encoding="utf-8") as f:
+                yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
+        except Exception as e:
+            logger.warning(f"[Policy] Failed to save user_allowlist: {e}")
+
+    def remove_allowlist_entry(self, entry_type: str, index: int) -> bool:
+        """Remove a persistent allowlist entry by type and index."""
+        al = self._config.user_allowlist
+        target = al.commands if entry_type == "command" else al.tools
+        if 0 <= index < len(target):
+            target.pop(index)
+            self._save_user_allowlist()
             return True
-        self._confirmed_cache.pop(key, None)
         return False
 
+    def get_user_allowlist(self) -> dict[str, list[dict[str, Any]]]:
+        """Return the current persistent allowlist for API/UI."""
+        al = self._config.user_allowlist
+        return {"commands": list(al.commands), "tools": list(al.tools)}
+
+    def _check_persistent_allowlist(
+        self,
+        tool_name: str,
+        params: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Check if tool call matches a persistent user allowlist entry.
+
+        Returns the entry metadata (including ``needs_sandbox``) or None.
+        """
+        command = params.get("command", "")
+        if tool_name in ("run_shell", "run_powershell") and command:
+            for entry in self._config.user_allowlist.commands:
+                pattern = entry.get("pattern", "")
+                if pattern and fnmatch.fnmatch(command, pattern):
+                    return entry
+        else:
+            for entry in self._config.user_allowlist.tools:
+                if entry.get("name") == tool_name:
+                    return entry
+        return None
+
+    def _check_allowlists(
+        self,
+        tool_name: str,
+        params: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Check all three allowlist tiers: persistent → session → TTL.
+
+        Returns metadata dict (with ``needs_sandbox``) if allowed, else None.
+        """
+        import time
+
+        # Tier 1: Persistent allowlist
+        persistent = self._check_persistent_allowlist(tool_name, params)
+        if persistent is not None:
+            return {
+                "confirmed_bypass": True,
+                "needs_sandbox": persistent.get("needs_sandbox", False),
+            }
+
+        key = self._confirm_cache_key(tool_name, params)
+
+        # Tier 2: Session allowlist
+        session_entry = self._session_allowlist.get(key)
+        if session_entry is not None:
+            return {
+                "confirmed_bypass": True,
+                "needs_sandbox": session_entry.get("needs_sandbox", False),
+            }
+
+        # Tier 3: TTL cache
+        cache_entry = self._confirmed_cache.get(key)
+        if cache_entry:
+            expiry = cache_entry.get("expiry", 0)
+            if time.time() < expiry:
+                return {
+                    "confirmed_bypass": True,
+                    "needs_sandbox": cache_entry.get("needs_sandbox", False),
+                }
+            self._confirmed_cache.pop(key, None)
+
+        return None
+
     def store_ui_pending(
-        self, tool_id: str, tool_name: str, params: dict[str, Any],
-        *, session_id: str = "",
+        self,
+        tool_id: str,
+        tool_name: str,
+        params: dict[str, Any],
+        *,
+        session_id: str = "",
+        needs_sandbox: bool = False,
     ) -> None:
         """Store a pending UI confirmation (SSE security_confirm sent)."""
         import time
+
         self._cleanup_expired_confirms()
         self._pending_ui_confirms[tool_id] = {
             "tool_name": tool_name,
             "params": params,
             "created_at": time.time(),
             "session_id": session_id,
+            "needs_sandbox": needs_sandbox,
         }
 
-    def _cleanup_expired_confirms(self, ttl: float = 120.0) -> None:
-        """Remove pending confirmations older than TTL seconds."""
+    def _cleanup_expired_confirms(self) -> None:
+        """Remove pending confirmations older than confirm_ttl seconds."""
         import time
+
+        ttl = self._config.confirmation.confirm_ttl
         now = time.time()
         expired = [
-            k for k, v in self._pending_ui_confirms.items()
-            if now - v.get("created_at", 0) > ttl
+            k for k, v in self._pending_ui_confirms.items() if now - v.get("created_at", 0) > ttl
         ]
         for k in expired:
             self._pending_ui_confirms.pop(k, None)
 
     def cleanup_session(self, session_id: str) -> None:
-        """Remove all pending confirmations associated with a session.
-        Call this when a session ends or is closed."""
+        """Remove all pending confirmations for a session and clear session allowlist."""
         to_remove = [
-            k for k, v in self._pending_ui_confirms.items()
-            if v.get("session_id") == session_id
+            k for k, v in self._pending_ui_confirms.items() if v.get("session_id") == session_id
         ]
         for k in to_remove:
             self._pending_ui_confirms.pop(k, None)
+        self._session_allowlist.clear()
 
     def resolve_ui_confirm(self, confirm_id: str, decision: str) -> bool:
         """Called by the /api/chat/security-confirm endpoint.
 
-        If *decision* is 'allow' or 'sandbox', marks the action as
-        confirmed so the next retry bypasses CONFIRM.
+        *decision*: ``allow_once`` | ``allow_session`` | ``allow_always`` |
+        ``deny`` | ``sandbox``.  Legacy ``allow`` maps to ``allow_once``.
         Returns True if the confirm_id was found.
         """
         pending = self._pending_ui_confirms.pop(confirm_id, None)
         if not pending:
             return False
-        if decision in ("allow", "sandbox"):
-            self.mark_confirmed(pending["tool_name"], pending["params"])
+
+        # Normalize legacy values
+        if decision == "allow":
+            decision = "allow_once"
+
+        needs_sandbox = pending.get("needs_sandbox", False)
+        if decision == "sandbox":
+            needs_sandbox = True
+
+        scope_map = {
+            "allow_once": "once",
+            "allow_session": "session",
+            "allow_always": "always",
+            "sandbox": "once",
+        }
+        scope = scope_map.get(decision)
+        if scope:
+            self.mark_confirmed(
+                pending["tool_name"],
+                pending["params"],
+                scope=scope,
+                needs_sandbox=needs_sandbox,
+            )
         return True
 
     # ----- Audit ------------------------------------------------------------
 
     def _audit(self, tool_name: str, params: dict, result: PolicyResult) -> None:
         import time
+
         entry = {
             "timestamp": time.time(),
             "tool_name": tool_name,
@@ -1183,12 +1499,11 @@ class PolicyEngine:
             self._audit_log = self._audit_log[-500:]
 
         if result.decision != PolicyDecision.ALLOW:
-            logger.info(
-                f"[Policy] {result.decision.value}: {tool_name} — {result.reason}"
-            )
+            logger.info(f"[Policy] {result.decision.value}: {tool_name} — {result.reason}")
 
         try:
             from .audit_logger import get_audit_logger
+
             get_audit_logger().log(
                 tool_name=tool_name,
                 decision=result.decision.value,
@@ -1202,6 +1517,7 @@ class PolicyEngine:
 
         try:
             from ..tracing.tracer import get_tracer
+
             tracer = get_tracer()
             tracer.record_decision(
                 decision_type="policy_check",
@@ -1231,6 +1547,7 @@ def get_policy_engine() -> PolicyEngine:
         _global_policy_engine = PolicyEngine()
         try:
             from ..config import settings
+
             yaml_path = settings.identity_path / "POLICIES.yaml"
         except Exception:
             yaml_path = Path("identity/POLICIES.yaml")

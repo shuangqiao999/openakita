@@ -83,15 +83,38 @@ class SessionContext:
     sub_agent_records: list[dict] = field(default_factory=list)
     _msg_lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
+    _DEDUP_WINDOW = 8
+
     def add_message(self, role: str, content: str, **metadata) -> None:
-        """添加消息（含连续重复检测）"""
+        """添加消息（含滑动窗口去重，防止重试/重连导致的重复消息）"""
         with self._msg_lock:
             if self.messages:
                 last = self.messages[-1]
                 if last.get("role") == role and last.get("content") == content:
                     return
+
+            import hashlib
+
+            fingerprint = hashlib.md5(
+                f"{role}:{content[:200]}".encode(errors="replace")
+            ).hexdigest()
+            window = self.messages[-self._DEDUP_WINDOW :]
+            for msg in window:
+                fp = hashlib.md5(
+                    f"{msg.get('role', '')}:{(msg.get('content', '') or '')[:200]}".encode(
+                        errors="replace"
+                    )
+                ).hexdigest()
+                if fp == fingerprint:
+                    return
+
             self.messages.append(
-                {"role": role, "content": content, "timestamp": datetime.now().isoformat(), **metadata}
+                {
+                    "role": role,
+                    "content": content,
+                    "timestamp": datetime.now().isoformat(),
+                    **metadata,
+                }
             )
 
     def mark_topic_boundary(self) -> None:
@@ -107,17 +130,17 @@ class SessionContext:
         """获取当前话题的消息（从最后一个边界开始）。"""
         if self.current_topic_start >= len(self.messages):
             return []
-        return self.messages[self.current_topic_start:]
+        return self.messages[self.current_topic_start :]
 
     def get_pre_topic_messages(self) -> list[dict]:
         """获取当前话题边界之前的消息。"""
-        return self.messages[:self.current_topic_start]
+        return self.messages[: self.current_topic_start]
 
     def get_messages(self, limit: int | None = None) -> list[dict]:
         """获取消息历史"""
         if limit is not None:
             try:
-                return self.messages[-int(limit):]
+                return self.messages[-int(limit) :]
             except (ValueError, TypeError):
                 pass
         return self.messages
@@ -347,8 +370,18 @@ class Session:
             self._truncate_history()
 
     _RULE_SIGNAL_WORDS = (
-        "不要", "必须", "禁止", "每次", "规则", "永远不要", "务必",
-        "永远", "always", "never", "must", "rule",
+        "不要",
+        "必须",
+        "禁止",
+        "每次",
+        "规则",
+        "永远不要",
+        "务必",
+        "永远",
+        "always",
+        "never",
+        "must",
+        "rule",
     )
 
     def _truncate_history(self) -> None:
@@ -382,15 +415,19 @@ class Session:
                 is_rule = any(w in content for w in self._RULE_SIGNAL_WORDS)
                 if is_rule and rules_len < max_rules_len:
                     snippet, _ = smart_truncate(
-                        content.replace("\n", " ").strip(), 300,
-                        save_full=False, label="rule_hist",
+                        content.replace("\n", " ").strip(),
+                        300,
+                        save_full=False,
+                        label="rule_hist",
                     )
                     rule_snippets.append(snippet)
                     rules_len += len(snippet)
                 else:
                     preview, _ = smart_truncate(
-                        content.replace("\n", " ").strip(), 150,
-                        save_full=False, label="msg_hist",
+                        content.replace("\n", " ").strip(),
+                        150,
+                        save_full=False,
+                        label="msg_hist",
                     )
                     keywords.append(preview)
 

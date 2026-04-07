@@ -113,7 +113,7 @@ BASE_TOOLS = (
 # 平台连接工具（Agent Hub + Skill Store），仅在 hub_enabled=True 时注册
 HUB_TOOLS = AGENT_HUB_TOOLS + SKILL_STORE_TOOLS
 
-_ALL_TOOLS = list(BASE_TOOLS) + list(HUB_TOOLS)
+_ALL_TOOLS = list(BASE_TOOLS) + list(HUB_TOOLS) + list(AGENT_TOOLS)
 _TOOL_DEFINITIONS_BY_NAME = {tool["name"]: tool for tool in _ALL_TOOLS}
 
 
@@ -127,6 +127,7 @@ def get_tool_input_schema(tool_name: str) -> dict:
     tool = get_tool_definition(tool_name)
     schema = tool.get("input_schema") if tool else None
     return schema if isinstance(schema, dict) else {}
+
 
 __all__ = [
     # 基础类型和工具

@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from enum import Enum
+from datetime import UTC, datetime
+from enum import StrEnum
 
 from openakita.memory.types import normalize_tags
 
@@ -18,7 +18,8 @@ from openakita.memory.types import normalize_tags
 # Enums
 # ---------------------------------------------------------------------------
 
-class OrgStatus(str, Enum):
+
+class OrgStatus(StrEnum):
     DORMANT = "dormant"
     ACTIVE = "active"
     RUNNING = "running"
@@ -26,7 +27,7 @@ class OrgStatus(str, Enum):
     ARCHIVED = "archived"
 
 
-class NodeStatus(str, Enum):
+class NodeStatus(StrEnum):
     IDLE = "idle"
     BUSY = "busy"
     WAITING = "waiting"
@@ -35,14 +36,14 @@ class NodeStatus(str, Enum):
     FROZEN = "frozen"
 
 
-class EdgeType(str, Enum):
+class EdgeType(StrEnum):
     HIERARCHY = "hierarchy"
     COLLABORATE = "collaborate"
     ESCALATE = "escalate"
     CONSULT = "consult"
 
 
-class MsgType(str, Enum):
+class MsgType(StrEnum):
     TASK_ASSIGN = "task_assign"
     TASK_RESULT = "task_result"
     TASK_DELIVERED = "task_delivered"
@@ -58,13 +59,13 @@ class MsgType(str, Enum):
     HANDSHAKE = "handshake"
 
 
-class MemoryScope(str, Enum):
+class MemoryScope(StrEnum):
     ORG = "org"
     DEPARTMENT = "department"
     NODE = "node"
 
 
-class MemoryType(str, Enum):
+class MemoryType(StrEnum):
     FACT = "fact"
     DECISION = "decision"
     RULE = "rule"
@@ -73,13 +74,13 @@ class MemoryType(str, Enum):
     RESOURCE = "resource"
 
 
-class ScheduleType(str, Enum):
+class ScheduleType(StrEnum):
     CRON = "cron"
     INTERVAL = "interval"
     ONCE = "once"
 
 
-class InboxPriority(str, Enum):
+class InboxPriority(StrEnum):
     INFO = "info"
     NOTICE = "notice"
     WARNING = "warning"
@@ -88,12 +89,12 @@ class InboxPriority(str, Enum):
     ALERT = "alert"
 
 
-class ProjectType(str, Enum):
+class ProjectType(StrEnum):
     TEMPORARY = "temporary"
     PERMANENT = "permanent"
 
 
-class ProjectStatus(str, Enum):
+class ProjectStatus(StrEnum):
     PLANNING = "planning"
     ACTIVE = "active"
     PAUSED = "paused"
@@ -101,7 +102,7 @@ class ProjectStatus(str, Enum):
     ARCHIVED = "archived"
 
 
-class TaskStatus(str, Enum):
+class TaskStatus(StrEnum):
     TODO = "todo"
     IN_PROGRESS = "in_progress"
     DELIVERED = "delivered"
@@ -114,8 +115,9 @@ class TaskStatus(str, Enum):
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _new_id(prefix: str = "") -> str:
@@ -126,6 +128,7 @@ def _new_id(prefix: str = "") -> str:
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class OrgNode:
@@ -292,13 +295,17 @@ class OrgEdge:
 @dataclass
 class UserPersona:
     """The human user's identity within an organization."""
+
     title: str = "负责人"
     display_name: str = ""
     description: str = ""
 
     def to_dict(self) -> dict:
-        return {"title": self.title, "display_name": self.display_name,
-                "description": self.description}
+        return {
+            "title": self.title,
+            "display_name": self.display_name,
+            "description": self.description,
+        }
 
     @classmethod
     def from_dict(cls, d: dict | None) -> UserPersona:
@@ -458,10 +465,7 @@ class Organization:
         filtered = {k: v for k, v in d.items() if k in known and k not in ("nodes", "edges")}
         org = cls(**filtered)
         org.nodes = [OrgNode.from_dict(n) for n in raw_nodes]
-        org.edges = [
-            OrgEdge.from_dict(e) for e in raw_edges
-            if e.get("source") != e.get("target")
-        ]
+        org.edges = [OrgEdge.from_dict(e) for e in raw_edges if e.get("source") != e.get("target")]
         if isinstance(raw_persona, dict):
             org.user_persona = UserPersona.from_dict(raw_persona)
         return org
@@ -483,8 +487,9 @@ class Organization:
             title_norm = title.replace(" ", "").replace("　", "").lower()
             if query == title or query in title or title in query:
                 return n
-            if query_norm and (query_norm == title_norm or query_norm in title_norm
-                              or title_norm in query_norm):
+            if query_norm and (
+                query_norm == title_norm or query_norm in title_norm or title_norm in query_norm
+            ):
                 return n
         if len(query_norm) >= 3:
             for n in self.nodes:
@@ -503,15 +508,13 @@ class Organization:
     def get_children(self, node_id: str) -> list[OrgNode]:
         child_ids: set[str] = set()
         for e in self.edges:
-            if (e.edge_type == EdgeType.HIERARCHY
-                    and e.source == node_id and e.target != node_id):
+            if e.edge_type == EdgeType.HIERARCHY and e.source == node_id and e.target != node_id:
                 child_ids.add(e.target)
         return [n for n in self.nodes if n.id in child_ids]
 
     def get_parent(self, node_id: str) -> OrgNode | None:
         for e in self.edges:
-            if (e.edge_type == EdgeType.HIERARCHY
-                    and e.target == node_id and e.source != node_id):
+            if e.edge_type == EdgeType.HIERARCHY and e.target == node_id and e.source != node_id:
                 return self.get_node(e.source)
         return None
 
@@ -688,6 +691,7 @@ class InboxMessage:
 # ---------------------------------------------------------------------------
 # Project / Task tracking
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class ProjectTask:

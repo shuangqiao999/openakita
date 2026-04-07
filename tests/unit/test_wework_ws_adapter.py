@@ -93,7 +93,7 @@ class TestConfig:
         assert cfg.max_reconnect_attempts == -1
         assert cfg.reconnect_base_delay == 1.0
         assert cfg.reconnect_max_delay == 30.0
-        assert cfg.reply_ack_timeout == 5.0
+        assert cfg.reply_ack_timeout == 15.0
 
     def test_custom(self):
         cfg = WeWorkWsConfig(
@@ -573,7 +573,7 @@ class TestThinkingIndicator:
             f for f in sent_frames
             if f.get("cmd") == CMD_RESPONSE
             and f.get("body", {}).get("stream", {}).get("finish") is False
-            and f.get("body", {}).get("stream", {}).get("content") == "思考中..."
+            and "<think>" in (f.get("body", {}).get("stream", {}).get("content") or "")
         ]
         assert len(thinking_frames) == 1
         assert "req_think_1" in adapter._pre_streams
@@ -962,8 +962,8 @@ class TestAdapterProperties:
     def test_supports_streaming(self, adapter):
         assert adapter.supports_streaming is True
 
-    def test_upload_media_not_supported(self, adapter):
-        with pytest.raises(NotImplementedError):
+    def test_upload_media_requires_connection(self, adapter):
+        with pytest.raises(ConnectionError, match="WebSocket not connected"):
             asyncio.get_event_loop().run_until_complete(
                 adapter.upload_media(Path("test.jpg"), "image/jpeg")
             )

@@ -31,6 +31,7 @@ class IntentType(Enum):
 @dataclass
 class ComplexitySignal:
     """复杂任务信号，用于判断是否建议切换到 Plan 模式"""
+
     multi_file_change: bool = False
     cross_module: bool = False
     ambiguous_scope: bool = False
@@ -39,17 +40,25 @@ class ComplexitySignal:
 
     @property
     def score(self) -> int:
-        return sum([
-            self.multi_file_change,
-            self.cross_module,
-            self.ambiguous_scope * 2,
-            self.destructive_potential * 2,
-            self.multi_step_required,
-        ])
+        return sum(
+            [
+                self.multi_file_change,
+                self.cross_module,
+                self.ambiguous_scope,
+                self.destructive_potential * 2,
+                self.multi_step_required,
+            ]
+        )
 
     @property
     def should_suggest_plan(self) -> bool:
-        return self.score >= 4
+        from ..config import settings
+
+        threshold = getattr(settings, "plan_suggest_threshold", 5)
+        llm_flag = getattr(self, "_llm_suggest_plan", False)
+        if llm_flag and self.score >= max(threshold - 2, 2):
+            return True
+        return self.score >= threshold
 
 
 @dataclass
@@ -77,7 +86,7 @@ _DEFAULT_RESULT = IntentResult(
 )
 
 INTENT_ANALYZER_SYSTEM = """\
-你是 Intent Analyzer。根据用户消息判断意图，只输出 YAML，不要解释。
+你是 Intent Analyzer。根据用户消息判断意图和复杂度，只输出 YAML，不要解释。
 
 意图类型：
 - task: 需要执行操作（写文件、搜索、查看目录、创建、发送消息、运行命令等）
@@ -90,31 +99,37 @@ task_type 可选值: question/action/creation/analysis/reminder/compound/other
 
 tool_hints 可选值: File System, Browser, Web Search, IM Channel, Desktop, Agent, Organization, Config（空列表=仅基础工具）
 
-输出格式（严格遵循，不要添加多余字段）：
+complexity 字段说明（仅 intent=task 时需要填写，其他意图可省略）：
+- destructive: 操作是否不可逆或影响系统关键资源。true 的典型场景：删除文件/数据、格式化磁盘、DROP TABLE、force push、修改系统配置文件（如 hosts）、终止进程、覆盖重要数据等
+- scope: narrow=仅影响单个文件或局部区域，broad=影响多文件/多模块/全局/整个项目
+- suggest_plan: 是否建议先制定计划再执行。当 destructive=true 或 scope=broad 时通常为 true
+
+输出格式（严格遵循）：
 ```yaml
 intent: <类型>
 task_type: <类型>
 goal: <一句话描述>
 tool_hints: [<工具分类>]
 memory_keywords: [<记忆关键词>]
+destructive: <true/false>
+scope: <narrow/broad>
+suggest_plan: <true/false>
 ```
 
 示例：
-用户: "帮我查看项目里有哪些Python文件" → intent: task, task_type: action, goal: 列出项目中的Python文件, tool_hints: [File System]
-用户: "搜索一下最新的AI新闻" → intent: task, task_type: action, goal: 搜索AI新闻, tool_hints: [Web Search]
+用户: "帮我查看项目里有哪些Python文件" → intent: task, task_type: action, goal: 列出项目中的Python文件, tool_hints: [File System], destructive: false, scope: narrow, suggest_plan: false
+用户: "帮我把所有 .bak 文件删掉" → intent: task, task_type: action, goal: 删除所有.bak文件, tool_hints: [File System], destructive: true, scope: broad, suggest_plan: true
+用户: "帮我修改 /etc/hosts" → intent: task, task_type: action, goal: 修改hosts文件, tool_hints: [File System], destructive: true, scope: narrow, suggest_plan: true
+用户: "git push --force origin main" → intent: task, task_type: action, goal: 强制推送到main分支, tool_hints: [File System], destructive: true, scope: broad, suggest_plan: true
 用户: "Python的GIL是什么" → intent: query, task_type: question, goal: 解释Python GIL机制, tool_hints: []
-用户: "推荐3本产品经理的书" → intent: query, task_type: question, goal: 推荐产品经理书籍, tool_hints: []
-用户: "1+1等于几" → intent: query, task_type: question, goal: 简单数学计算, tool_hints: []
-用户: "今天几号" → intent: query, task_type: question, goal: 询问当前日期, tool_hints: []
-用户: "现在几点" → intent: query, task_type: question, goal: 询问当前时间, tool_hints: []
-用户: "什么是微服务架构" → intent: query, task_type: question, goal: 解释微服务架构概念, tool_hints: []
 用户: "你好" → intent: chat, task_type: other, goal: 用户打招呼, tool_hints: []
-用户: "改成UTF-8编码" → intent: follow_up, task_type: action, goal: 修改编码为UTF-8, tool_hints: [File System]
+用户: "改成UTF-8编码" → intent: follow_up, task_type: action, goal: 修改编码为UTF-8, tool_hints: [File System], destructive: false, scope: narrow, suggest_plan: false
 
 关键判断原则：
 - 数学计算、日期时间、概念解释、常识问答 → 一律是 query，不是 task
 - 只有需要**实际操作外部系统**（读写文件、执行命令、搜索网络、发送消息）的请求才是 task
 - 不确定时，如果不需要工具就能回答，选 query
+- destructive 判断要基于语义分析，理解操作的实际后果，而不是简单匹配关键词
 
 重要：你必须分析用户的实际消息内容来判断意图，不要复制上面的示例。"""
 
@@ -129,37 +144,99 @@ def _strip_thinking_tags(text: str) -> str:
 
 _GREETING_PATTERNS: set[str] = {
     # Chinese greetings / confirmations / farewells
-    "你好", "您好", "你好呀", "你好啊", "嗨", "哈喽", "hello", "hi", "hey",
-    "嗯", "嗯嗯", "好", "好的", "行", "ok", "可以", "收到", "了解",
-    "谢谢", "谢了", "感谢", "thanks", "thank you", "thx",
-    "再见", "拜拜", "bye", "晚安", "早安", "早", "早上好", "下午好", "晚上好",
-    "在吗", "在不在", "你在吗",
-    "哈哈", "哈哈哈", "笑死", "666", "牛", "厉害",
-    "?", "？", "!", "！",
+    "你好",
+    "您好",
+    "你好呀",
+    "你好啊",
+    "嗨",
+    "哈喽",
+    "hello",
+    "hi",
+    "hey",
+    "嗯",
+    "嗯嗯",
+    "好",
+    "好的",
+    "行",
+    "ok",
+    "可以",
+    "收到",
+    "了解",
+    "谢谢",
+    "谢了",
+    "感谢",
+    "thanks",
+    "thank you",
+    "thx",
+    "再见",
+    "拜拜",
+    "bye",
+    "晚安",
+    "早安",
+    "早",
+    "早上好",
+    "下午好",
+    "晚上好",
+    "在吗",
+    "在不在",
+    "你在吗",
+    "哈哈",
+    "哈哈哈",
+    "笑死",
+    "666",
+    "牛",
+    "厉害",
+    "?",
+    "？",
+    "!",
+    "！",
 }
 
 # When conversation history exists, only these unambiguous strings use the fast-path;
 # punctuation and short confirmations are analyzed by the LLM (may be follow-ups).
-_SAFE_WITH_HISTORY: frozenset[str] = frozenset({
-    "你好", "您好", "你好呀", "你好啊", "嗨", "哈喽", "hello", "hi", "hey",
-    "谢谢", "谢了", "感谢", "thanks", "thank you", "thx",
-    "再见", "拜拜", "bye", "晚安", "早安", "早", "早上好", "下午好", "晚上好",
-})
+_SAFE_WITH_HISTORY: frozenset[str] = frozenset(
+    {
+        "你好",
+        "您好",
+        "你好呀",
+        "你好啊",
+        "嗨",
+        "哈喽",
+        "hello",
+        "hi",
+        "hey",
+        "谢谢",
+        "谢了",
+        "感谢",
+        "thanks",
+        "thank you",
+        "thx",
+        "再见",
+        "拜拜",
+        "bye",
+        "晚安",
+        "早安",
+        "早",
+        "早上好",
+        "下午好",
+        "晚上好",
+    }
+)
 
 _FAST_CHAT_MAX_LEN = 12
 
 # Rule-based patterns for QUERY intent (no tools needed)
 _QUERY_PATTERNS = re.compile(
     r"^(?:"
-    r"\d+\s*[+\-*/×÷]\s*\d+"           # math: 1+1, 3*4
-    r"|.*等于[几多少什么]"                # X等于几
-    r"|今天几[号日]"                      # 今天几号
-    r"|现在几[点时]"                      # 现在几点
-    r"|(?:什么|啥)(?:时间|日期|时候)"     # 什么时间
-    r"|几月几[号日]"                      # 几月几号
-    r"|今天(?:是|星期|周)[几什么]"        # 今天星期几
-    r"|什么是\S+"                         # 什么是X
-    r"|\S+是什么"                         # X是什么
+    r"\d+\s*[+\-*/×÷]\s*\d+"  # math: 1+1, 3*4
+    r"|.*等于[几多少什么]"  # X等于几
+    r"|今天几[号日]"  # 今天几号
+    r"|现在几[点时]"  # 现在几点
+    r"|(?:什么|啥)(?:时间|日期|时候)"  # 什么时间
+    r"|几月几[号日]"  # 几月几号
+    r"|今天(?:是|星期|周)[几什么]"  # 今天星期几
+    r"|什么是\S+"  # 什么是X
+    r"|\S+是什么"  # X是什么
     r").*$",
     re.IGNORECASE,
 )
@@ -224,8 +301,10 @@ def _try_fast_chat_shortcut(message: str, has_history: bool = False) -> IntentRe
             fast_reply=True,
         )
 
-    if not has_history and len(stripped) <= 6 and all(
-        not c.isalnum() or c in "0123456789" for c in stripped
+    if (
+        not has_history
+        and len(stripped) <= 6
+        and all(not c.isalnum() or c in "0123456789" for c in stripped)
     ):
         logger.info(f"[IntentAnalyzer] Fast-path: '{stripped}' is pure punctuation/emoji → CHAT")
         return IntentResult(
@@ -269,11 +348,7 @@ class IntentAnalyzer:
                 system=INTENT_ANALYZER_SYSTEM,
             )
 
-            raw_output = (
-                _strip_thinking_tags(response.content).strip()
-                if response.content
-                else ""
-            )
+            raw_output = _strip_thinking_tags(response.content).strip() if response.content else ""
             if not raw_output:
                 logger.warning("[IntentAnalyzer] Empty LLM response, using default")
                 return _make_default(message)
@@ -316,8 +391,18 @@ def _parse_intent_output(raw_output: str, message: str) -> IntentResult:
 
         kv_match = re.match(r"^(\w[\w_]*):\s*(.*)", stripped)
         if kv_match and kv_match.group(1) in (
-            "intent", "task_type", "goal", "tool_hints", "memory_keywords",
-            "constraints", "inputs", "output_requirements", "risks_or_ambiguities",
+            "intent",
+            "task_type",
+            "goal",
+            "tool_hints",
+            "memory_keywords",
+            "constraints",
+            "inputs",
+            "output_requirements",
+            "risks_or_ambiguities",
+            "destructive",
+            "scope",
+            "suggest_plan",
         ):
             if current_key:
                 extracted[current_key] = "\n".join(current_lines).strip()
@@ -362,16 +447,28 @@ def _parse_intent_output(raw_output: str, message: str) -> IntentResult:
         raw_output=raw_output,
     )
 
-    # Complexity analysis for plan mode suggestion
+    # Complexity analysis — purely from LLM output, no keyword matching
     if result.intent in (IntentType.TASK,):
-        result.complexity = _analyze_complexity(message, result)
-        result.suggest_plan = result.complexity.should_suggest_plan
-        if result.complexity.score < 2:
+        signal = ComplexitySignal()
+        signal.destructive_potential = extracted.get("destructive", "").strip().lower() == "true"
+        signal.cross_module = extracted.get("scope", "").strip().lower() == "broad"
+        if extracted.get("suggest_plan", "").strip().lower() == "true":
+            signal._llm_suggest_plan = True  # type: ignore[attr-defined]
+        signal.multi_step_required = task_type == "compound"
+        result.complexity = signal
+
+        logger.info(
+            f"[IntentAnalyzer] Complexity: destructive={signal.destructive_potential}, "
+            f"score={signal.score}, suggest_plan={signal.should_suggest_plan}"
+        )
+
+        result.suggest_plan = signal.should_suggest_plan
+        if signal.score < 2:
             result.todo_required = False
             result.suppress_plan = True
         if result.suggest_plan:
             logger.info(
-                f"[IntentAnalyzer] Complex task detected (score={result.complexity.score}), "
+                f"[IntentAnalyzer] Complex task detected (score={signal.score}), "
                 f"suggesting Plan mode"
             )
 
@@ -411,62 +508,3 @@ def _parse_list(value: str) -> list[str]:
         elif line and line not in ("[]",):
             items.append(line.strip("'\""))
     return items
-
-
-# ---------------------------------------------------------------------------
-# Complex task detection
-# ---------------------------------------------------------------------------
-
-_REFACTOR_KEYWORDS = [
-    "重构", "refactor", "redesign", "改造", "迁移", "migration", "migrate",
-    "重写", "rewrite",
-]
-_GLOBAL_KEYWORDS = [
-    "全部", "所有", "整个项目", "across the codebase", "entire", "all files",
-    "批量", "全局",
-]
-_ARCHITECTURE_KEYWORDS = [
-    "架构", "设计方案", "技术选型", "architecture", "design",
-    "系统设计", "system design",
-]
-_RESEARCH_KEYWORDS = [
-    "调研", "分析", "对比", "evaluate", "compare", "research", "review",
-    "评估", "综合分析",
-]
-_MULTI_FILE_KEYWORDS = [
-    "多个文件", "multiple files", "所有文件", "每个文件",
-    "across files", "跨文件",
-]
-
-
-def _analyze_complexity(message: str, intent_result: IntentResult) -> ComplexitySignal:
-    """Analyze message complexity to determine if Plan mode should be suggested."""
-    msg = message.lower()
-    signal = ComplexitySignal()
-
-    # Multi-file change detection
-    if any(kw in msg for kw in _MULTI_FILE_KEYWORDS) or any(kw in msg for kw in _GLOBAL_KEYWORDS):
-        signal.multi_file_change = True
-
-    # Cross-module detection
-    if any(kw in msg for kw in _ARCHITECTURE_KEYWORDS):
-        signal.cross_module = True
-
-    # Ambiguous scope detection
-    if any(kw in msg for kw in _REFACTOR_KEYWORDS):
-        signal.ambiguous_scope = True
-    if any(kw in msg for kw in _RESEARCH_KEYWORDS):
-        signal.ambiguous_scope = True
-
-    # Destructive potential
-    destructive_words = ["删除", "清空", "重置", "drop", "delete all", "remove all", "清除"]
-    if any(kw in msg for kw in destructive_words):
-        signal.destructive_potential = True
-
-    # Multi-step required (from intent analysis)
-    # Only flag truly compound tasks; message length alone is not a reliable signal
-    # (users often send long context/requirements that are a single question).
-    if intent_result.task_type == "compound":
-        signal.multi_step_required = True
-
-    return signal

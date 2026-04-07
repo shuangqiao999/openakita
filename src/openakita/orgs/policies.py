@@ -43,13 +43,15 @@ class OrgPolicies:
                     continue
                 title = self._extract_title(f)
                 scope = base.name if base != self._policies_dir else "organization"
-                results.append({
-                    "filename": f.name,
-                    "title": title,
-                    "scope": scope,
-                    "size": f.stat().st_size,
-                    "path": str(f.relative_to(self._org_dir)),
-                })
+                results.append(
+                    {
+                        "filename": f.name,
+                        "title": title,
+                        "scope": scope,
+                        "size": f.stat().st_size,
+                        "path": str(f.relative_to(self._org_dir)),
+                    }
+                )
         return results
 
     def read_policy(self, filename: str, department: str | None = None) -> str | None:
@@ -59,13 +61,12 @@ class OrgPolicies:
         return None
 
     def write_policy(
-        self, filename: str, content: str,
+        self,
+        filename: str,
+        content: str,
         department: str | None = None,
     ) -> Path:
-        if department:
-            base = self._departments_dir / department
-        else:
-            base = self._policies_dir
+        base = self._departments_dir / department if department else self._policies_dir
         base.mkdir(parents=True, exist_ok=True)
 
         if ".." in filename or "/" in filename or "\\" in filename:
@@ -108,18 +109,18 @@ class OrgPolicies:
                     if query_lower not in content.lower() and query_lower not in f.name.lower():
                         continue
                     matched_lines = [
-                        line.strip()
-                        for line in content.split("\n")
-                        if query_lower in line.lower()
+                        line.strip() for line in content.split("\n") if query_lower in line.lower()
                     ][:5]
                     scope = base.name if base != self._policies_dir else "organization"
-                    results.append({
-                        "filename": f.name,
-                        "title": self._extract_title(f),
-                        "scope": scope,
-                        "matched_lines": matched_lines,
-                        "match_count": len(matched_lines),
-                    })
+                    results.append(
+                        {
+                            "filename": f.name,
+                            "title": self._extract_title(f),
+                            "scope": scope,
+                            "matched_lines": matched_lines,
+                            "match_count": len(matched_lines),
+                        }
+                    )
                 except Exception:
                     continue
 

@@ -80,7 +80,29 @@ const BACKEND_OPTIONS = [
   { value: "none", label: "None (Disabled)" },
 ];
 
-type TabId = "zones" | "commands" | "sandbox" | "audit" | "checkpoints";
+type ConfirmConfig = {
+  mode: string;
+  timeout_seconds: number;
+  default_on_timeout: string;
+  confirm_ttl: number;
+};
+
+type SelfProtectConfig = {
+  enabled: boolean;
+  protected_dirs: string[];
+  death_switch_threshold: number;
+  death_switch_total_multiplier: number;
+  audit_to_file: boolean;
+  audit_path: string;
+  readonly_mode: boolean;
+};
+
+type AllowlistData = {
+  commands: Array<Record<string, unknown>>;
+  tools: Array<Record<string, unknown>>;
+};
+
+type TabId = "zones" | "commands" | "sandbox" | "audit" | "checkpoints" | "confirmation" | "selfprotection";
 
 export default function SecurityView({ apiBaseUrl, serviceRunning }: SecurityViewProps) {
   const { t } = useTranslation();
@@ -91,6 +113,9 @@ export default function SecurityView({ apiBaseUrl, serviceRunning }: SecurityVie
   const [sandbox, setSandbox] = useState<SandboxConfig>({ enabled: true, backend: "auto", sandbox_risk_levels: ["HIGH"], exempt_commands: [] });
   const [audit, setAudit] = useState<AuditEntry[]>([]);
   const [checkpoints, setCheckpoints] = useState<CheckpointEntry[]>([]);
+  const [confirmConfig, setConfirmConfig] = useState<ConfirmConfig>({ mode: "smart", timeout_seconds: 60, default_on_timeout: "deny", confirm_ttl: 120 });
+  const [selfProtect, setSelfProtect] = useState<SelfProtectConfig>({ enabled: true, protected_dirs: [], death_switch_threshold: 3, death_switch_total_multiplier: 3, audit_to_file: true, audit_path: "", readonly_mode: false });
+  const [allowlist, setAllowlist] = useState<AllowlistData>({ commands: [], tools: [] });
   const [saving, setSaving] = useState(false);
 
   const api = useCallback(async (path: string, method = "GET", body?: unknown) => {
@@ -103,14 +128,20 @@ export default function SecurityView({ apiBaseUrl, serviceRunning }: SecurityVie
   const load = useCallback(async () => {
     if (!serviceRunning) return;
     try {
-      const [zRes, cRes, sRes] = await Promise.all([
+      const [zRes, cRes, sRes, cfRes, spRes, alRes] = await Promise.all([
         api("/api/config/security/zones"),
         api("/api/config/security/commands"),
         api("/api/config/security/sandbox"),
+        api("/api/config/security/confirmation"),
+        api("/api/config/security/self-protection"),
+        api("/api/config/security/allowlist"),
       ]);
       setZones(zRes);
       setCommands(cRes);
       setSandbox(sRes);
+      if (cfRes.mode) setConfirmConfig(cfRes);
+      if (spRes.enabled !== undefined) setSelfProtect(spRes);
+      if (alRes.commands || alRes.tools) setAllowlist(alRes);
     } catch { /* ignore */ }
   }, [api, serviceRunning]);
 
@@ -166,10 +197,36 @@ export default function SecurityView({ apiBaseUrl, serviceRunning }: SecurityVie
     );
   }
 
+  const loadAllowlist = useCallback(async () => {
+    if (!serviceRunning) return;
+    try {
+      const res = await api("/api/config/security/allowlist");
+      if (res.commands || res.tools) setAllowlist(res);
+    } catch { /* ignore */ }
+  }, [api, serviceRunning]);
+
+  const deleteAllowlistEntry = async (entryType: string, index: number) => {
+    try {
+      await api(`/api/config/security/allowlist/${entryType}/${index}`, "DELETE");
+      toast.success(t("security.allowlistDeleted", "已删除"));
+      loadAllowlist();
+    } catch { toast.error(t("security.saveFailed")); }
+  };
+
+  const resetDeathSwitch = async () => {
+    try {
+      await api("/api/config/security/death-switch/reset", "POST");
+      toast.success(t("security.deathSwitchReset", "死亡开关已重置"));
+      setSelfProtect((p) => ({ ...p, readonly_mode: false }));
+    } catch { toast.error(t("security.saveFailed")); }
+  };
+
   const TABS: { id: TabId; labelKey: string }[] = [
+    { id: "confirmation", labelKey: "security.confirmation" },
     { id: "zones", labelKey: "security.zones" },
     { id: "commands", labelKey: "security.commands" },
     { id: "sandbox", labelKey: "security.sandbox" },
+    { id: "selfprotection", labelKey: "security.selfProtection" },
     { id: "audit", labelKey: "security.audit" },
     { id: "checkpoints", labelKey: "security.checkpoints" },
   ];
@@ -209,6 +266,156 @@ export default function SecurityView({ apiBaseUrl, serviceRunning }: SecurityVie
           ))}
         </ToggleGroup>
       </div>
+
+      {/* Confirmation */}
+      {tab === "confirmation" && (
+        <Card className="p-0 gap-0 border-border/50 shadow-sm">
+          <CardHeader className="px-5 py-3 pb-3 border-b border-border/50">
+            <CardTitle className="text-sm font-semibold">{t("security.confirmation", "确认行为")}</CardTitle>
+          </CardHeader>
+          <CardContent className="px-5 pt-4 pb-5 space-y-5">
+            <p className="text-sm text-muted-foreground">{t("security.confirmationDesc", "配置安全确认弹窗的触发模式、超时行为和缓存策略。")}</p>
+            <div className="space-y-4 max-w-md">
+              {/* Mode selector */}
+              <div className="space-y-2">
+                <Label className="text-sm font-medium">{t("security.confirmMode", "确认模式")}</Label>
+                <Select value={confirmConfig.mode} onValueChange={(v) => setConfirmConfig((p) => ({ ...p, mode: v }))}>
+                  <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="cautious">{t("security.modeCautious", "谨慎 (cautious)")}</SelectItem>
+                    <SelectItem value="smart">{t("security.modeSmart", "智能 (smart)")}</SelectItem>
+                    <SelectItem value="yolo">{t("security.modeYolo", "信任 (yolo)")}</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  {confirmConfig.mode === "cautious" && t("security.modeCautiousDesc", "中高风险操作均需确认")}
+                  {confirmConfig.mode === "smart" && t("security.modeSmartDesc", "中风险连续允许后自动放行，高风险始终确认")}
+                  {confirmConfig.mode === "yolo" && t("security.modeYoloDesc", "仅拦截极高风险，其余自动允许")}
+                </p>
+              </div>
+              {/* Timeout */}
+              <div className="space-y-2">
+                <Label className="text-sm font-medium">{t("security.confirmTimeout", "确认超时 (秒)")}</Label>
+                <Input type="number" value={confirmConfig.timeout_seconds} onChange={(e) => setConfirmConfig((p) => ({ ...p, timeout_seconds: parseInt(e.target.value) || 60 }))} className="h-9 w-32" />
+              </div>
+              {/* Default on timeout */}
+              <div className="space-y-2">
+                <Label className="text-sm font-medium">{t("security.defaultOnTimeout", "超时默认行为")}</Label>
+                <Select value={confirmConfig.default_on_timeout} onValueChange={(v) => setConfirmConfig((p) => ({ ...p, default_on_timeout: v }))}>
+                  <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="deny">{t("security.deny", "拒绝")}</SelectItem>
+                    <SelectItem value="allow">{t("security.allow", "允许")}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {/* TTL */}
+              <div className="space-y-2">
+                <Label className="text-sm font-medium">{t("security.confirmTtl", "单次确认缓存 (秒)")}</Label>
+                <Input type="number" value={confirmConfig.confirm_ttl} onChange={(e) => setConfirmConfig((p) => ({ ...p, confirm_ttl: parseFloat(e.target.value) || 120 }))} className="h-9 w-32" />
+                <p className="text-xs text-muted-foreground">{t("security.confirmTtlDesc", "相同操作在此时间内不再重复弹窗")}</p>
+              </div>
+            </div>
+
+            {/* Persistent allowlist */}
+            <div className="border-t border-border/50 pt-4 mt-4 space-y-3">
+              <Label className="text-sm font-medium">{t("security.allowlist", "持久化白名单")}</Label>
+              <p className="text-xs text-muted-foreground">{t("security.allowlistDesc", "通过「始终允许」按钮添加的规则，重启后仍生效。")}</p>
+              {allowlist.commands.length === 0 && allowlist.tools.length === 0 ? (
+                <p className="text-xs text-muted-foreground italic py-2">{t("security.noAllowlist", "暂无白名单条目")}</p>
+              ) : (
+                <div className="space-y-2">
+                  {allowlist.commands.map((entry, i) => (
+                    <div key={`cmd-${i}`} className="flex items-center gap-2 group bg-muted/30 rounded-md px-3 py-2">
+                      <Badge variant="outline" className="text-[10px]">CMD</Badge>
+                      <code className="flex-1 text-xs font-mono">{String(entry.pattern || "")}</code>
+                      <Button variant="ghost" size="icon" className="size-6 opacity-0 group-hover:opacity-100 text-destructive" onClick={() => deleteAllowlistEntry("command", i)}>
+                        <IconTrash size={12} />
+                      </Button>
+                    </div>
+                  ))}
+                  {allowlist.tools.map((entry, i) => (
+                    <div key={`tool-${i}`} className="flex items-center gap-2 group bg-muted/30 rounded-md px-3 py-2">
+                      <Badge variant="outline" className="text-[10px]">TOOL</Badge>
+                      <code className="flex-1 text-xs font-mono">{String(entry.name || "")}</code>
+                      <Button variant="ghost" size="icon" className="size-6 opacity-0 group-hover:opacity-100 text-destructive" onClick={() => deleteAllowlistEntry("tool", i)}>
+                        <IconTrash size={12} />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end pt-2 border-t border-border/50 mt-6 pt-4">
+              <Button onClick={() => doSave("/api/config/security/confirmation", confirmConfig, "confirmationSaved")} disabled={saving}>
+                {saving ? <Loader2 className="size-4 animate-spin mr-2" /> : <Save size={14} className="mr-2" />}
+                {t("security.save")}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Self-protection */}
+      {tab === "selfprotection" && (
+        <Card className="p-0 gap-0 border-border/50 shadow-sm">
+          <CardHeader className="px-5 py-3 pb-3 border-b border-border/50">
+            <CardTitle className="text-sm font-semibold">{t("security.selfProtection", "自保护")}</CardTitle>
+          </CardHeader>
+          <CardContent className="px-5 pt-4 pb-5 space-y-5">
+            <p className="text-sm text-muted-foreground">{t("security.selfProtectionDesc", "配置 Agent 自保护机制，防止误操作破坏关键目录。")}</p>
+            <div className="space-y-4 max-w-lg">
+              {/* Enabled switch */}
+              <div className="flex items-center justify-between border border-border/50 p-4 rounded-lg bg-muted/20">
+                <div className="space-y-0.5">
+                  <Label className="text-sm font-medium">{t("security.selfProtectionEnabled", "启用自保护")}</Label>
+                </div>
+                <Switch checked={selfProtect.enabled} onCheckedChange={(v) => setSelfProtect((p) => ({ ...p, enabled: v }))} />
+              </div>
+              {/* Protected dirs */}
+              <div className="space-y-2">
+                <Label className="text-sm font-medium">{t("security.protectedDirs", "受保护目录")}</Label>
+                <TagEditor
+                  label=""
+                  items={selfProtect.protected_dirs}
+                  onChange={(v) => setSelfProtect((p) => ({ ...p, protected_dirs: v }))}
+                  placeholder="e.g. data/"
+                />
+              </div>
+              {/* Death switch threshold */}
+              <div className="space-y-2">
+                <Label className="text-sm font-medium">{t("security.deathSwitchThreshold", "死亡开关阈值（连续拒绝次数）")}</Label>
+                <Input type="number" value={selfProtect.death_switch_threshold} onChange={(e) => setSelfProtect((p) => ({ ...p, death_switch_threshold: parseInt(e.target.value) || 3 }))} className="h-9 w-32" />
+              </div>
+              {/* Total multiplier */}
+              <div className="space-y-2">
+                <Label className="text-sm font-medium">{t("security.deathSwitchMultiplier", "累计拒绝乘数")}</Label>
+                <Input type="number" value={selfProtect.death_switch_total_multiplier} onChange={(e) => setSelfProtect((p) => ({ ...p, death_switch_total_multiplier: parseInt(e.target.value) || 3 }))} className="h-9 w-32" />
+                <p className="text-xs text-muted-foreground">{t("security.deathSwitchMultiplierDesc", "累计拒绝次数 = 阈值 × 乘数 时也会触发死亡开关")}</p>
+              </div>
+              {/* Readonly mode indicator + reset */}
+              {selfProtect.readonly_mode && (
+                <div className="flex items-center gap-3 p-4 bg-destructive/10 border border-destructive/30 rounded-lg">
+                  <IconAlertCircle size={20} className="text-destructive shrink-0" />
+                  <div className="flex-1">
+                    <p className="text-sm font-medium text-destructive">{t("security.readonlyModeActive", "Agent 当前处于只读模式（死亡开关已触发）")}</p>
+                  </div>
+                  <Button variant="destructive" size="sm" onClick={resetDeathSwitch}>
+                    {t("security.resetDeathSwitch", "重置")}
+                  </Button>
+                </div>
+              )}
+            </div>
+            <div className="flex justify-end pt-2 border-t border-border/50 mt-6 pt-4">
+              <Button onClick={() => doSave("/api/config/security/self-protection", selfProtect, "selfProtectionSaved")} disabled={saving}>
+                {saving ? <Loader2 className="size-4 animate-spin mr-2" /> : <Save size={14} className="mr-2" />}
+                {t("security.save")}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Zones */}
       {tab === "zones" && (
@@ -290,11 +497,11 @@ export default function SecurityView({ apiBaseUrl, serviceRunning }: SecurityVie
           </CardHeader>
           <CardContent className="px-5 pt-4 pb-5 space-y-5">
             <p className="text-sm text-muted-foreground">{t("security.sandboxDesc")}</p>
-            <div className="space-y-4 max-w-md">
+            <div className="space-y-4 max-w-lg">
               <div className="flex items-center justify-between border border-border/50 p-4 rounded-lg bg-muted/20">
                 <div className="space-y-0.5">
                   <Label className="text-sm font-medium">{t("security.sandboxEnabled")}</Label>
-                  <p className="text-xs text-muted-foreground">启用或禁用命令执行沙箱</p>
+                  <p className="text-xs text-muted-foreground">{t("security.sandboxEnabledDesc", "启用或禁用命令执行沙箱")}</p>
                 </div>
                 <Switch
                   checked={sandbox.enabled}
@@ -303,21 +510,45 @@ export default function SecurityView({ apiBaseUrl, serviceRunning }: SecurityVie
               </div>
               <div className="space-y-2">
                 <Label className="text-sm font-medium">{t("security.sandboxBackend")}</Label>
-                <Select
-                  value={sandbox.backend}
-                  onValueChange={(v) => setSandbox((p) => ({ ...p, backend: v }))}
-                >
-                  <SelectTrigger className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
+                <Select value={sandbox.backend} onValueChange={(v) => setSandbox((p) => ({ ...p, backend: v }))}>
+                  <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {BACKEND_OPTIONS.map((o) => (
                       <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
-                <p className="text-xs text-muted-foreground pt-1">选择用于隔离执行环境的后端技术</p>
+                <p className="text-xs text-muted-foreground pt-1">{t("security.sandboxBackendDesc", "选择用于隔离执行环境的后端技术")}</p>
               </div>
+              {/* Risk levels */}
+              <div className="space-y-2">
+                <Label className="text-sm font-medium">{t("security.sandboxRiskLevels", "沙箱风险等级")}</Label>
+                <div className="flex gap-2 flex-wrap">
+                  {["HIGH", "MEDIUM"].map((lvl) => (
+                    <Badge
+                      key={lvl}
+                      variant={sandbox.sandbox_risk_levels.includes(lvl) ? "default" : "outline"}
+                      className="cursor-pointer select-none"
+                      onClick={() => {
+                        setSandbox((p) => {
+                          const has = p.sandbox_risk_levels.includes(lvl);
+                          return { ...p, sandbox_risk_levels: has ? p.sandbox_risk_levels.filter((l) => l !== lvl) : [...p.sandbox_risk_levels, lvl] };
+                        });
+                      }}
+                    >
+                      {lvl}
+                    </Badge>
+                  ))}
+                </div>
+                <p className="text-xs text-muted-foreground">{t("security.sandboxRiskLevelsDesc", "选中的风险等级命令将在沙箱中执行")}</p>
+              </div>
+              {/* Exempt commands */}
+              <TagEditor
+                label={t("security.exemptCommands", "豁免命令")}
+                items={sandbox.exempt_commands}
+                onChange={(v) => setSandbox((p) => ({ ...p, exempt_commands: v }))}
+                placeholder="e.g. npm test"
+              />
             </div>
             <div className="flex justify-end pt-2 border-t border-border/50 mt-6 pt-4">
               <Button onClick={() => doSave("/api/config/security/sandbox", sandbox, "sandboxSaved")} disabled={saving}>

@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 from collections import Counter
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from .models import _new_id
@@ -34,6 +34,7 @@ class OrgEventStore:
     def clear(self) -> None:
         """Remove all event files (used during org reset)."""
         import shutil
+
         for d in (self._events_dir, self._logs_dir):
             if d.exists():
                 shutil.rmtree(d, ignore_errors=True)
@@ -47,7 +48,7 @@ class OrgEventStore:
         metadata: dict | None = None,
     ) -> dict:
         """Append an immutable event to the event stream."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         event = {
             "event_id": _new_id("evt_"),
             "event_type": event_type,
@@ -134,7 +135,8 @@ class OrgEventStore:
                         continue
                     evt = json.loads(line)
                     if evt.get("actor") == node_id and evt.get("event_type") in (
-                        "task_started", "node_activated"
+                        "task_started",
+                        "node_activated",
                     ):
                         return evt
             except Exception:
@@ -152,21 +154,31 @@ class OrgEventStore:
     ) -> list[dict]:
         """Get an audit trail of important events."""
         important_types = event_types or [
-            "org_started", "org_stopped", "org_paused", "org_resumed",
-            "user_command", "task_completed", "task_failed",
-            "node_frozen", "node_unfrozen", "node_dismissed",
-            "scaling_requested", "scaling_approved", "scaling_rejected",
+            "org_started",
+            "org_stopped",
+            "org_paused",
+            "org_resumed",
+            "user_command",
+            "task_completed",
+            "task_failed",
+            "node_frozen",
+            "node_unfrozen",
+            "node_dismissed",
+            "scaling_requested",
+            "scaling_approved",
+            "scaling_rejected",
             "approval_resolved",
-            "heartbeat_decision", "standup_completed",
+            "heartbeat_decision",
+            "standup_completed",
         ]
-        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
         all_events = self.query(since=since, limit=1000)
         return [e for e in all_events if e.get("event_type") in important_types]
 
     def write_audit_log(self, days: int = 7) -> Path:
         """Generate and save a human-readable audit log file."""
         events = self.get_audit_log(days=days)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         log_file = self._logs_dir / f"audit_{now.strftime('%Y%m%d')}.md"
 
         lines = [
@@ -200,7 +212,7 @@ class OrgEventStore:
 
     def generate_summary_report(self, days: int = 7) -> dict:
         """Generate a statistical summary of org activity."""
-        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
         events = self.query(since=since, limit=5000)
 
         type_counts: Counter = Counter()
@@ -222,11 +234,13 @@ class OrgEventStore:
                 tasks_completed += 1
             elif etype == "task_failed":
                 tasks_failed += 1
-                errors.append({
-                    "time": evt.get("timestamp", ""),
-                    "node": evt.get("actor", ""),
-                    "error": evt.get("data", {}).get("error", "")[:100],
-                })
+                errors.append(
+                    {
+                        "time": evt.get("timestamp", ""),
+                        "node": evt.get("actor", ""),
+                        "error": evt.get("data", {}).get("error", "")[:100],
+                    }
+                )
             elif etype in ("message_sent", "task_assigned"):
                 messages_sent += 1
 
@@ -245,7 +259,7 @@ class OrgEventStore:
     def generate_report_markdown(self, days: int = 7) -> Path:
         """Generate and save a markdown report."""
         summary = self.generate_summary_report(days)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         report_path = self._reports_dir / f"report_{now.strftime('%Y%m%d')}.md"
 
         lines = [

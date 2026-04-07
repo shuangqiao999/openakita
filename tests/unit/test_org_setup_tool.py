@@ -234,7 +234,7 @@ class TestCreate:
         assert "✅" in result
         assert "测试组织" in result
         assert "节点数: 2" in result
-        assert "层级关系: 1" in result
+        assert "连线:" in result
 
     @pytest.mark.asyncio
     async def test_create_no_name_error(self, handler):
