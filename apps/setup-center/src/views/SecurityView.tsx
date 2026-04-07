@@ -320,7 +320,7 @@ export default function SecurityView({ apiBaseUrl, serviceRunning }: SecurityVie
             {/* Persistent allowlist */}
             <div className="border-t border-border/50 pt-4 mt-4 space-y-3">
               <Label className="text-sm font-medium">{t("security.allowlist", "持久化白名单")}</Label>
-              <p className="text-xs text-muted-foreground">{t("security.allowlistDesc", "通过"始终允许"按钮添加的规则，重启后仍生效。")}</p>
+              <p className="text-xs text-muted-foreground">{t("security.allowlistDesc", "通过「始终允许」按钮添加的规则，重启后仍生效。")}</p>
               {allowlist.commands.length === 0 && allowlist.tools.length === 0 ? (
                 <p className="text-xs text-muted-foreground italic py-2">{t("security.noAllowlist", "暂无白名单条目")}</p>
               ) : (
