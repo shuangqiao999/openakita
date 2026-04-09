@@ -2017,7 +2017,7 @@ export function ChatView({
                 currentThinking += event.content;
                 currentThinkingContent += event.content;
                 if (currentChainGroup) {
-                  const grp = currentChainGroup;
+                  const grp: ChainGroup = currentChainGroup;
                   const entries = [...grp.entries];
                   if (entries.length > 0 && entries[entries.length - 1].kind === "thinking") {
                     entries[entries.length - 1] = { kind: "thinking", content: currentThinkingContent };
@@ -2033,8 +2033,9 @@ export function ChatView({
                 const _thinkDuration = event.duration_ms || (Date.now() - thinkingStartTime);
                 const _hasThinking = event.has_thinking ?? (currentThinkingContent.length > 0);
                 if (currentChainGroup) {
+                  const prev: ChainGroup = currentChainGroup;
                   currentChainGroup = {
-                    ...currentChainGroup,
+                    ...prev,
                     durationMs: _thinkDuration,
                     hasThinking: _hasThinking,
                   };
