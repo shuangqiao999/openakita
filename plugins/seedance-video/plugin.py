@@ -517,10 +517,10 @@ class Plugin(PluginBase):
             updated = await self._tm.get_task(task_id)
             return {"ok": True, "task": updated}
 
-        # --- Config ---
+        # --- Config (use /settings to avoid collision with generic /config in routes/plugins.py) ---
 
-        @router.get("/config")
-        async def get_config() -> dict:
+        @router.get("/settings")
+        async def get_settings() -> dict:
             cfg = await self._tm.get_all_config()
             if "ark_api_key" in cfg and cfg["ark_api_key"]:
                 cfg["ark_api_key_masked"] = cfg["ark_api_key"][:4] + "****" + cfg["ark_api_key"][-4:]
@@ -529,8 +529,8 @@ class Plugin(PluginBase):
             cfg.pop("ark_api_key", None)
             return {"ok": True, "config": cfg}
 
-        @router.put("/config")
-        async def update_config(body: ConfigUpdateBody) -> dict:
+        @router.put("/settings")
+        async def update_settings(body: ConfigUpdateBody) -> dict:
             await self._tm.set_configs(body.updates)
             if "ark_api_key" in body.updates and body.updates["ark_api_key"]:
                 key = body.updates["ark_api_key"]

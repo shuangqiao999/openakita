@@ -1374,7 +1374,7 @@ function SettingsTab() {
   const [showKey, setShowKey] = useState(false);
 
   useEffect(() => {
-    pluginApi("GET", "/config").then(r => {
+    pluginApi("GET", "/settings").then(r => {
       if (r.body?.config) {
         setConfig(r.body.config);
       }
@@ -1383,7 +1383,7 @@ function SettingsTab() {
 
   const save = async (updates) => {
     setSaving(true);
-    await pluginApi("PUT", "/config", { updates });
+    await pluginApi("PUT", "/settings", { updates });
     setSaving(false);
   };
 
@@ -1524,7 +1524,7 @@ function App() {
   const [keyStatus, setKeyStatus] = useState("");
 
   useEffect(() => {
-    pluginApi("GET", "/config").then(r => {
+    pluginApi("GET", "/settings").then(r => {
       setConfigLoaded(true);
       if (r.body?.config?.ark_api_key_masked) setKeyStatus(r.body.config.ark_api_key_masked);
     }).catch(() => setConfigLoaded(true));
