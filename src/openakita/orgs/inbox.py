@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .runtime import OrgRuntime
@@ -60,6 +60,13 @@ class OrgInbox:
         if org:
             org_name = org.name
 
+        source_display = source_node
+        if org and source_node:
+            for n in org.nodes:
+                if n.id == source_node:
+                    source_display = n.role_title or source_node
+                    break
+
         msg = InboxMessage(
             id=_new_id("inbox_"),
             org_id=org_id,
@@ -67,7 +74,7 @@ class OrgInbox:
             title=title,
             body=body,
             priority=priority,
-            source_node=source_node,
+            source_node=source_display,
             category=category,
             requires_approval=requires_approval,
             approval_options=approval_options or (["approve", "reject"] if requires_approval else []),

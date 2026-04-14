@@ -44,25 +44,37 @@ class SubAgentStatus(enum.StrEnum):
     def is_terminal(self) -> bool:
         return self in self.terminal_states()
 
+
 logger = logging.getLogger(__name__)
 
 _VALID_TRANSITIONS: dict[SubAgentStatus, frozenset[SubAgentStatus]] = {
-    SubAgentStatus.STARTING: frozenset({
-        SubAgentStatus.RUNNING, SubAgentStatus.CANCELLED,
-        SubAgentStatus.ERROR, SubAgentStatus.TIMEOUT,
-    }),
-    SubAgentStatus.RUNNING: frozenset({
-        SubAgentStatus.COMPLETED, SubAgentStatus.CANCELLED,
-        SubAgentStatus.TIMEOUT, SubAgentStatus.ERROR,
-        SubAgentStatus.INTERRUPTED,
-    }),
-    SubAgentStatus.IDLE: frozenset({
-        SubAgentStatus.RUNNING, SubAgentStatus.CANCELLED,
-    }),
+    SubAgentStatus.STARTING: frozenset(
+        {
+            SubAgentStatus.RUNNING,
+            SubAgentStatus.CANCELLED,
+            SubAgentStatus.ERROR,
+            SubAgentStatus.TIMEOUT,
+        }
+    ),
+    SubAgentStatus.RUNNING: frozenset(
+        {
+            SubAgentStatus.COMPLETED,
+            SubAgentStatus.CANCELLED,
+            SubAgentStatus.TIMEOUT,
+            SubAgentStatus.ERROR,
+            SubAgentStatus.INTERRUPTED,
+        }
+    ),
+    SubAgentStatus.IDLE: frozenset(
+        {
+            SubAgentStatus.RUNNING,
+            SubAgentStatus.CANCELLED,
+        }
+    ),
 }
 
 MAX_DELEGATION_DEPTH = 5
-CHECK_INTERVAL = 3.0    # how often to poll progress (matches frontend polling)
+CHECK_INTERVAL = 3.0  # how often to poll progress (matches frontend polling)
 
 # Defaults — overridden at runtime by settings when available
 _DEFAULT_IDLE_TIMEOUT = 1200.0
@@ -115,13 +127,32 @@ class DelegationResult:
     exit_reason: str = "completed"  # "completed" | "max_turns" | "timeout" | "error" | "cancelled"
 
     def to_tool_response(self) -> str:
-        """Serialize for tool response, preserving backward compatibility."""
-        parts = [self.text]
+        """Serialize for tool response with structured metadata header.
+
+        Prepends a 2-line summary (agent id, exit reason, elapsed time,
+        tools used) before the raw text so that a coordinator-mode LLM
+        can make informed follow-up decisions.  The ``__ARTIFACT_RECEIPTS__``
+        sentinel format is unchanged for backward compatibility.
+        """
+        header = (
+            f"[任务完成通知] Agent: {self.agent_id}"
+            f" | 状态: {self.exit_reason}"
+            f" | 耗时: {self.elapsed_s}s"
+        )
+        if self.tools_used:
+            tools_line = (
+                f"工具调用: {len(self.tools_used)} 次"
+                f" ({', '.join(self.tools_used[:8])})"
+            )
+        else:
+            tools_line = "工具调用: 0 次"
+
+        parts = [header, tools_line, "", self.text]
         if self.artifacts:
             parts.append(
                 f"\n__ARTIFACT_RECEIPTS__{json.dumps(self.artifacts)}__ARTIFACT_RECEIPTS__"
             )
-        return "".join(parts)
+        return "\n".join(parts)
 
 
 class AgentMailbox:
@@ -137,7 +168,7 @@ class AgentMailbox:
     async def receive(self, timeout: float = 300.0) -> dict | None:
         try:
             return await asyncio.wait_for(self._queue.get(), timeout=timeout)
-        except asyncio.TimeoutError:
+        except (asyncio.TimeoutError, TimeoutError):
             return None
 
     async def drain_all(self) -> list[dict]:
@@ -184,8 +215,8 @@ class AgentOrchestrator:
 
         # Lazy-initialised dependencies
         self._profile_store = None  # ProfileStore
-        self._pool = None           # AgentInstancePool
-        self._fallback = None       # FallbackResolver
+        self._pool = None  # AgentInstancePool
+        self._fallback = None  # FallbackResolver
         self._gateway: MessageGateway | None = None
 
         # Delegation log directory (fixed path for easy debugging)
@@ -239,6 +270,7 @@ class AgentOrchestrator:
 
             if self._log_dir is None:
                 from openakita.config import settings as _s
+
                 self._log_dir = _s.data_dir / "delegation_logs"
                 self._log_dir.mkdir(parents=True, exist_ok=True)
         except Exception as e:
@@ -326,9 +358,7 @@ class AgentOrchestrator:
                 self._health.pop(aid, None)
                 self._mailboxes.pop(aid, None)
                 # Also clean matching _sub_agent_states entries
-                stale_state_keys = [
-                    k for k in self._sub_agent_states if aid in k
-                ]
+                stale_state_keys = [k for k in self._sub_agent_states if aid in k]
                 for k in stale_state_keys:
                     self._sub_agent_states.pop(k, None)
 
@@ -390,12 +420,14 @@ class AgentOrchestrator:
         if depth == 0:
             session.context.delegation_chain = []
         elif depth > 0:
-            session.context.delegation_chain.append({
-                "from": from_agent or "parent",
-                "to": agent_profile_id,
-                "depth": depth,
-                "timestamp": time.time(),
-            })
+            session.context.delegation_chain.append(
+                {
+                    "from": from_agent or "parent",
+                    "to": agent_profile_id,
+                    "depth": depth,
+                    "timestamp": time.time(),
+                }
+            )
 
         health = self._get_health(agent_profile_id)
         health.total_requests += 1
@@ -414,8 +446,10 @@ class AgentOrchestrator:
 
         try:
             result = await self._run_with_progress_timeout(
-                session, message, agent_profile_id,
-                pass_gateway=(depth == 0),
+                session,
+                message,
+                agent_profile_id,
+                pass_gateway=True,
                 depth=depth,
                 isolated_browser=isolated_browser,
                 pre_state_key=pre_state_key,
@@ -424,16 +458,19 @@ class AgentOrchestrator:
             health.successful += 1
             health.total_latency_ms += elapsed_ms
             self._fallback.record_success(agent_profile_id)
-            self._log_delegation({
-                **log_base,
-                "event": "dispatch_ok",
-                "elapsed_ms": round(elapsed_ms),
-                "result_preview": str(result)[:300],
-            })
+            self._log_delegation(
+                {
+                    **log_base,
+                    "event": "dispatch_ok",
+                    "elapsed_ms": round(elapsed_ms),
+                    "result_preview": str(result)[:300],
+                }
+            )
 
             # Agent Harness: record delegation completion
             try:
                 from openakita.tracing.tracer import get_tracer
+
                 tracer = get_tracer()
                 tracer.record_decision(
                     decision_type="delegation_complete",
@@ -447,7 +484,7 @@ class AgentOrchestrator:
 
             return result
 
-        except asyncio.TimeoutError:
+        except (asyncio.TimeoutError, TimeoutError):
             health.failed += 1
             health.last_error = "timeout_idle"
             self._fallback.record_failure(agent_profile_id)
@@ -456,17 +493,21 @@ class AgentOrchestrator:
                 f"[Orchestrator] Agent {agent_profile_id} terminated after "
                 f"{elapsed_s:.0f}s — no progress detected"
             )
-            self._log_delegation({
-                **log_base,
-                "event": "dispatch_timeout",
-                "elapsed_ms": round(elapsed_s * 1000),
-                "reason": "idle_no_progress",
-            })
+            self._log_delegation(
+                {
+                    **log_base,
+                    "event": "dispatch_timeout",
+                    "elapsed_ms": round(elapsed_s * 1000),
+                    "reason": "idle_no_progress",
+                }
+            )
             return await self._try_fallback_or(
-                session, message, agent_profile_id, depth,
+                session,
+                message,
+                agent_profile_id,
+                depth,
                 default=(
-                    f"⏱️ Agent `{agent_profile_id}` 已终止 — "
-                    f"运行 {elapsed_s:.0f}s 后长时间无新进展"
+                    f"⏱️ Agent `{agent_profile_id}` 已终止 — 运行 {elapsed_s:.0f}s 后长时间无新进展"
                 ),
             )
 
@@ -474,33 +515,30 @@ class AgentOrchestrator:
             elapsed_ms = round((time.monotonic() - start) * 1000)
             health.failed += 1
 
-            _main_agent = (
-                getattr(self._gateway, "agent_handler", None)
-                if self._gateway else None
-            )
-            _user_cancelled = (
-                session.id in self._cancelled_sessions
-                or (
-                    _main_agent is not None
-                    and getattr(_main_agent, "_task_cancelled", False)
-                )
+            _main_agent = getattr(self._gateway, "agent_handler", None) if self._gateway else None
+            _user_cancelled = session.id in self._cancelled_sessions or (
+                _main_agent is not None and getattr(_main_agent, "_task_cancelled", False)
             )
 
             if _user_cancelled:
                 health.last_error = "user_cancelled"
-                self._log_delegation({
-                    **log_base,
-                    "event": "dispatch_user_cancelled",
-                    "elapsed_ms": elapsed_ms,
-                })
+                self._log_delegation(
+                    {
+                        **log_base,
+                        "event": "dispatch_user_cancelled",
+                        "elapsed_ms": elapsed_ms,
+                    }
+                )
                 return "🚫 请求已取消"
             else:
                 health.last_error = "system_cancelled"
-                self._log_delegation({
-                    **log_base,
-                    "event": "dispatch_system_cancelled",
-                    "elapsed_ms": elapsed_ms,
-                })
+                self._log_delegation(
+                    {
+                        **log_base,
+                        "event": "dispatch_system_cancelled",
+                        "elapsed_ms": elapsed_ms,
+                    }
+                )
                 return "⚠️ 任务被系统中断，请稍后重试。"
 
         except Exception as e:
@@ -511,14 +549,19 @@ class AgentOrchestrator:
                 exc_info=True,
             )
             self._fallback.record_failure(agent_profile_id)
-            self._log_delegation({
-                **log_base,
-                "event": "dispatch_error",
-                "elapsed_ms": round((time.monotonic() - start) * 1000),
-                "error": str(e)[:500],
-            })
+            self._log_delegation(
+                {
+                    **log_base,
+                    "event": "dispatch_error",
+                    "elapsed_ms": round((time.monotonic() - start) * 1000),
+                    "error": str(e)[:500],
+                }
+            )
             return await self._try_fallback_or(
-                session, message, agent_profile_id, depth,
+                session,
+                message,
+                agent_profile_id,
+                depth,
                 default=f"❌ Agent `{agent_profile_id}` 处理失败: {e}",
             )
 
@@ -549,9 +592,7 @@ class AgentOrchestrator:
         idle_timeout = float(
             getattr(settings, "progress_timeout_seconds", 0) or _DEFAULT_IDLE_TIMEOUT
         )
-        hard_timeout = float(
-            getattr(settings, "hard_timeout_seconds", 0) or _DEFAULT_HARD_TIMEOUT
-        )
+        hard_timeout = float(getattr(settings, "hard_timeout_seconds", 0) or _DEFAULT_HARD_TIMEOUT)
 
         if self._profile_store is None or self._pool is None:
             return "⚠️ Orchestrator 未正确初始化，请检查日志"
@@ -584,7 +625,8 @@ class AgentOrchestrator:
                 )
 
         if isolated_browser and hasattr(agent, "browser_manager"):
-            from openakita.tools.browser import PlaywrightTools, BrowserUseRunner
+            from openakita.tools.browser import BrowserUseRunner, PlaywrightTools
+
             agent.browser_manager = isolated_browser
             agent.pw_tools = PlaywrightTools(isolated_browser)
             agent.bu_runner = BrowserUseRunner(isolated_browser)
@@ -635,7 +677,7 @@ class AgentOrchestrator:
                     except (asyncio.CancelledError, Exception):
                         pass
                     self._update_sub_state(state_key, "timeout", elapsed)
-                    raise asyncio.TimeoutError()
+                    raise TimeoutError()
 
                 fp = self._get_progress_fingerprint(agent, session.id, session)
                 if fp != last_fingerprint:
@@ -646,19 +688,34 @@ class AgentOrchestrator:
                         f"iter={fp[0]}, status={fp[1]}, tools={fp[2]}, "
                         f"elapsed={elapsed:.0f}s"
                     )
-                    self._log_delegation({
-                        "event": "progress",
-                        "agent": agent_profile_id,
-                        "session": str(getattr(session, "session_key", session.id)),
-                        "iter": fp[0],
-                        "status": fp[1],
-                        "tools_count": fp[2],
-                        "elapsed_s": round(elapsed),
-                    })
+                    self._log_delegation(
+                        {
+                            "event": "progress",
+                            "agent": agent_profile_id,
+                            "session": str(getattr(session, "session_key", session.id)),
+                            "iter": fp[0],
+                            "status": fp[1],
+                            "tools_count": fp[2],
+                            "elapsed_s": round(elapsed),
+                        }
+                    )
 
                 # Update live sub-agent state for frontend polling
                 tools_list = self._get_tools_executed(agent, session.id, session)
                 idle_s = time.monotonic() - last_progress_time
+
+                _current_tool = tools_list[-1] if tools_list else ""
+
+                _tokens_used = 0
+                try:
+                    _re = getattr(agent, "reasoning_engine", None)
+                    if _re is not None:
+                        _tokens_used = getattr(
+                            getattr(_re, "_budget", None), "tokens_used", 0
+                        )
+                except Exception:
+                    pass
+
                 self._sub_agent_states[state_key] = {
                     **self._sub_agent_states.get(state_key, {}),
                     "status": "running",
@@ -667,7 +724,13 @@ class AgentOrchestrator:
                     "tools_total": len(tools_list),
                     "elapsed_s": round(elapsed),
                     "last_progress_s": round(idle_s),
+                    "current_tool_summary": _current_tool,
+                    "tokens_used": _tokens_used,
                 }
+
+                self._broadcast_sub_state_change(
+                    state_key, "running", self._sub_agent_states[state_key]
+                )
 
                 if idle_s >= idle_timeout:
                     logger.warning(
@@ -683,7 +746,7 @@ class AgentOrchestrator:
                     except (asyncio.CancelledError, Exception):
                         pass
                     self._update_sub_state(state_key, "timeout", elapsed)
-                    raise asyncio.TimeoutError()
+                    raise TimeoutError()
 
             self._update_sub_state(state_key, "completed", time.monotonic() - start)
             return task.result()
@@ -716,7 +779,9 @@ class AgentOrchestrator:
                     if valid and new_e not in valid:
                         logger.warning(
                             "[Orchestrator] Unexpected state transition: %s -> %s (key=%s)",
-                            old_status, status, key,
+                            old_status,
+                            status,
+                            key,
                         )
             except ValueError:
                 pass
@@ -751,27 +816,40 @@ class AgentOrchestrator:
             self._sub_agent_states.pop(key, None)
 
     def _broadcast_sub_state_change(
-        self, key: str, status: str, state_entry: dict | None,
+        self,
+        key: str,
+        status: str,
+        state_entry: dict | None,
     ) -> None:
-        """Best-effort broadcast of sub-agent state via WebSocket."""
+        """Best-effort broadcast of sub-agent state via WebSocket.
+
+        The payload mirrors the ``SubAgentTask`` type on the frontend so
+        that WebSocket listeners can update progress cards directly without
+        needing to poll ``/api/agents/sub-tasks``.
+        """
         try:
             from openakita.api.routes.websocket import broadcast_event
 
-            parts = key.split(":", 1)
-            session_id = (
-                state_entry.get("session_id")
-                if state_entry and state_entry.get("session_id")
-                else (parts[0] if parts else key)
-            )
+            if not state_entry:
+                return
+
             payload: dict[str, Any] = {
-                "session_id": session_id,
+                "session_id": state_entry.get("session_id", ""),
+                "chat_id": state_entry.get("chat_id", ""),
+                "agent_id": state_entry.get("agent_id", ""),
+                "profile_id": state_entry.get("profile_id", ""),
+                "name": state_entry.get("name", ""),
+                "icon": state_entry.get("icon", ""),
                 "status": status,
+                "iteration": state_entry.get("iteration", 0),
+                "tools_executed": state_entry.get("tools_executed", []),
+                "tools_total": state_entry.get("tools_total", 0),
+                "elapsed_s": state_entry.get("elapsed_s", 0),
+                "last_progress_s": state_entry.get("last_progress_s", 0),
+                "started_at": state_entry.get("started_at", 0),
+                "current_tool_summary": state_entry.get("current_tool_summary", ""),
+                "tokens_used": state_entry.get("tokens_used", 0),
             }
-            if state_entry:
-                payload["agent_id"] = state_entry.get("agent_id", "")
-                payload["name"] = state_entry.get("name", "")
-                payload["elapsed_s"] = state_entry.get("elapsed_s", 0)
-                payload["chat_id"] = state_entry.get("chat_id", "")
 
             asyncio.ensure_future(broadcast_event("agents:sub_state", payload))
         except Exception:
@@ -785,9 +863,7 @@ class AgentOrchestrator:
             p = self._profile_store.get(profile_id)
             if p and getattr(p, "ephemeral", False):
                 self._profile_store.remove_ephemeral(profile_id)
-                logger.info(
-                    f"[Orchestrator] Cleaned up ephemeral profile: {profile_id}"
-                )
+                logger.info(f"[Orchestrator] Cleaned up ephemeral profile: {profile_id}")
         except Exception as e:
             logger.warning(f"[Orchestrator] Failed to cleanup ephemeral {profile_id}: {e}")
 
@@ -854,7 +930,9 @@ class AgentOrchestrator:
 
     @staticmethod
     def _get_progress_fingerprint(
-        agent: Any, session_id: str, session: Any = None,
+        agent: Any,
+        session_id: str,
+        session: Any = None,
     ) -> tuple[int, str, int]:
         """Return (iteration, status, tools_count) as a composite progress signal.
 
@@ -875,8 +953,12 @@ class AgentOrchestrator:
 
     @staticmethod
     async def _call_agent(
-        agent: Any, session: Any, message: str, *,
-        gateway: Any = None, is_sub_agent: bool = True,
+        agent: Any,
+        session: Any,
+        message: str,
+        *,
+        gateway: Any = None,
+        is_sub_agent: bool = True,
     ) -> str:
         """Thin wrapper around agent.chat_with_session for use as a task target.
 
@@ -887,7 +969,7 @@ class AgentOrchestrator:
         Top-level agents (depth == 0) keep _is_sub_agent_call = False so they
         CAN use delegation tools (delegate_to_agent, spawn_agent, etc.).
         """
-        if not hasattr(agent, '_execution_lock'):
+        if not hasattr(agent, "_execution_lock"):
             agent._execution_lock = asyncio.Lock()
 
         async with agent._execution_lock:
@@ -896,6 +978,7 @@ class AgentOrchestrator:
             _mode = "agent"
             try:
                 from openakita.config import settings as _cfg
+
                 _profile = getattr(agent, "_agent_profile", None)
                 if (
                     _profile
@@ -950,10 +1033,13 @@ class AgentOrchestrator:
                 # SSE stream can emit artifact events to the frontend.
                 artifacts: list[dict] = []
                 try:
-                    receipts = getattr(re_engine, "_last_delivery_receipts", None) if re_engine else None
+                    receipts = (
+                        getattr(re_engine, "_last_delivery_receipts", None) if re_engine else None
+                    )
                     if receipts:
                         delivered = [
-                            r for r in receipts
+                            r
+                            for r in receipts
                             if isinstance(r, dict)
                             and r.get("status") == "delivered"
                             and r.get("file_url")
@@ -995,7 +1081,11 @@ class AgentOrchestrator:
             path = self._log_dir.parent / "sub_agent_states.json"
             snapshot = {}
             for key, state in list(self._sub_agent_states.items()):
-                snapshot[key] = {k: v for k, v in state.items() if isinstance(v, (str, int, float, bool, list, dict, type(None)))}
+                snapshot[key] = {
+                    k: v
+                    for k, v in state.items()
+                    if isinstance(v, (str, int, float, bool, list, dict, type(None)))
+                }
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(snapshot, f, ensure_ascii=False, indent=2, default=str)
         except Exception:
@@ -1008,7 +1098,7 @@ class AgentOrchestrator:
         try:
             path = self._log_dir.parent / "sub_agent_states.json"
             if path.exists():
-                with open(path, "r", encoding="utf-8") as f:
+                with open(path, encoding="utf-8") as f:
                     data = json.load(f)
                 if isinstance(data, dict):
                     for key, state in data.items():
@@ -1037,11 +1127,13 @@ class AgentOrchestrator:
             effective_id = self._fallback.get_effective_profile(agent_profile_id)
             if effective_id != agent_profile_id:
                 logger.info(
-                    f"[Orchestrator] Falling back from "
-                    f"{agent_profile_id} to {effective_id}"
+                    f"[Orchestrator] Falling back from {agent_profile_id} to {effective_id}"
                 )
                 return await self._dispatch(
-                    session, message, effective_id, depth + 1,
+                    session,
+                    message,
+                    effective_id,
+                    depth + 1,
                     from_agent=agent_profile_id,
                 )
         return default
@@ -1070,13 +1162,12 @@ class AgentOrchestrator:
         - Context isolation (only task description passed, not full history)
         """
         self._ensure_deps()
-        logger.info(
-            f"[Orchestrator] Delegation: {from_agent} -> {to_agent} (depth={depth})"
-        )
+        logger.info(f"[Orchestrator] Delegation: {from_agent} -> {to_agent} (depth={depth})")
 
         # Agent Harness: Decision Trace — delegation span
         try:
             from openakita.tracing.tracer import get_tracer
+
             tracer = get_tracer()
             tracer.record_decision(
                 decision_type="delegation",
@@ -1118,15 +1209,23 @@ class AgentOrchestrator:
         # Emit handoff event for SSE stream (session.context.handoff_events)
         if session and hasattr(session, "context") and hasattr(session.context, "handoff_events"):
             _MAX_HANDOFF_EVENTS = 100
-            session.context.handoff_events.append({
-                "from_agent": from_agent,
-                "to_agent": to_agent,
-                "reason": reason or "",
-            })
+            session.context.handoff_events.append(
+                {
+                    "from_agent": from_agent,
+                    "to_agent": to_agent,
+                    "reason": reason or "",
+                }
+            )
             if len(session.context.handoff_events) > _MAX_HANDOFF_EVENTS:
-                session.context.handoff_events = session.context.handoff_events[-_MAX_HANDOFF_EVENTS:]
+                session.context.handoff_events = session.context.handoff_events[
+                    -_MAX_HANDOFF_EVENTS:
+                ]
         return await self._dispatch(
-            session, message, to_agent, depth + 1, from_agent=from_agent,
+            session,
+            message,
+            to_agent,
+            depth + 1,
+            from_agent=from_agent,
             isolated_browser=isolated_browser,
             pre_state_key=state_key,
         )
@@ -1197,14 +1296,17 @@ class AgentOrchestrator:
             # Broadcast the terminal state so the frontend updates instantly
             if entry and entry.get("status") not in SubAgentStatus.terminal_states():
                 self._broadcast_sub_state_change(
-                    key, SubAgentStatus.CANCELLED, entry,
+                    key,
+                    SubAgentStatus.CANCELLED,
+                    entry,
                 )
 
         if to_remove:
             self._persist_sub_states()
             logger.info(
                 "[Orchestrator] Purged %d sub-agent states for session %s",
-                len(to_remove), session_id,
+                len(to_remove),
+                session_id,
             )
         return len(to_remove)
 
@@ -1223,9 +1325,7 @@ class AgentOrchestrator:
                 "avg_latency_ms": round(h.avg_latency_ms, 1),
                 "last_error": h.last_error,
                 "pending_messages": (
-                    self._mailboxes[agent_id].pending
-                    if agent_id in self._mailboxes
-                    else 0
+                    self._mailboxes[agent_id].pending if agent_id in self._mailboxes else 0
                 ),
             }
             for agent_id, h in self._health.items()
@@ -1241,7 +1341,10 @@ class AgentOrchestrator:
         self._load_sub_states()
         await self._pool.start()
         await self._task_queue.start()
-        logger.info("[Orchestrator] Started (task_queue max_concurrent=%d)", self._task_queue._max_concurrent)
+        logger.info(
+            "[Orchestrator] Started (task_queue max_concurrent=%d)",
+            self._task_queue._max_concurrent,
+        )
 
     async def shutdown(self) -> None:
         """Clean shutdown: cancel active tasks, stop task queue, release pool, persist states."""
@@ -1271,6 +1374,7 @@ def _cleanup_sub_agent_resources(agent: Any, session: Any) -> None:
     # 1. Clean todo state for this session
     try:
         from openakita.tools.handlers.todo_state import cleanup_session
+
         if sid:
             cleanup_session(sid)
     except Exception as e:
@@ -1318,16 +1422,14 @@ def _cleanup_sub_agent_resources(agent: Any, session: Any) -> None:
     except Exception as e:
         logger.debug(f"[Orchestrator] Sub-agent cleanup: agent_state task: {e}")
 
-    logger.debug(
-        "[Orchestrator] Sub-agent resource cleanup done for session %s", sid
-    )
+    logger.debug("[Orchestrator] Sub-agent resource cleanup done for session %s", sid)
 
 
 def _extract_file_paths_from_text(text: str) -> list[str]:
     """Extract file paths from plain text using regex (Windows & Unix)."""
     patterns = [
-        r'[A-Za-z]:[/\\][\w./\\_\u4e00-\u9fff -]+\.\w{2,5}',
-        r'/(?:home|tmp|var|opt|usr)/[\w./_ -]+\.\w{2,5}',
+        r"[A-Za-z]:[/\\][\w./\\_\u4e00-\u9fff -]+\.\w{2,5}",
+        r"/(?:home|tmp|var|opt|usr)/[\w./_ -]+\.\w{2,5}",
     ]
     results: list[str] = []
     for pat in patterns:
@@ -1357,13 +1459,7 @@ def _extract_output_files(record: dict) -> list[str]:
         name = tool.get("name", "")
         preview = tool.get("input_preview", "")
 
-        if name == "deliver_artifacts":
-            for m in re.finditer(r"'path'\s*:\s*'([^']+)'", preview):
-                _add(m.group(1))
-            for m in re.finditer(r'"path"\s*:\s*"([^"]+)"', preview):
-                _add(m.group(1))
-
-        elif name == "write_file":
+        if name in ("deliver_artifacts", "write_file"):
             for m in re.finditer(r"'path'\s*:\s*'([^']+)'", preview):
                 _add(m.group(1))
             for m in re.finditer(r'"path"\s*:\s*"([^"]+)"', preview):
@@ -1388,9 +1484,9 @@ def _build_work_summary(record: dict) -> str:
     elapsed = record.get("elapsed_s", 0)
     tools_total = record.get("tools_total", 0)
 
-    tool_names = list(dict.fromkeys(
-        t.get("name", "") for t in record.get("tools_used", []) if t.get("name")
-    ))
+    tool_names = list(
+        dict.fromkeys(t.get("name", "") for t in record.get("tools_used", []) if t.get("name"))
+    )
     tools_str = ", ".join(tool_names[:8]) if tool_names else "无"
 
     result_preview = record.get("result_preview", "")
@@ -1399,8 +1495,10 @@ def _build_work_summary(record: dict) -> str:
     status = "❌ 失败" if failed else "✅ 完成"
 
     result_brief, _ = smart_truncate(
-        result_preview.replace("\n", " ").strip(), 600,
-        save_full=False, label="ws_result",
+        result_preview.replace("\n", " ").strip(),
+        600,
+        save_full=False,
+        label="ws_result",
     )
 
     output_files = record.get("output_files") or []
@@ -1418,7 +1516,11 @@ def _build_work_summary(record: dict) -> str:
 
 
 def _persist_sub_agent_record(
-    agent: Any, session: Any, message: str, result: str, start_time: float,
+    agent: Any,
+    session: Any,
+    message: str,
+    result: str,
+    start_time: float,
 ) -> None:
     """Save a sub-agent's full work record into the parent session.
 
@@ -1438,10 +1540,12 @@ def _persist_sub_agent_record(
         for tc in it.get("tool_calls", []):
             inp_str = str(tc.get("input", tc.get("input_preview", "")))
             inp_trunc, _ = smart_truncate(inp_str, 400, save_full=False, label="sub_tool_input")
-            tools_used.append({
-                "name": tc.get("name", ""),
-                "input_preview": inp_trunc,
-            })
+            tools_used.append(
+                {
+                    "name": tc.get("name", ""),
+                    "input_preview": inp_trunc,
+                }
+            )
 
     thinking_preview = ""
     for it in trace_raw:
@@ -1455,7 +1559,9 @@ def _persist_sub_agent_record(
 
     record = {
         "agent_id": profile.id if profile else "unknown",
-        "agent_name": profile.get_display_name() if profile and hasattr(profile, "get_display_name") else (profile.name if profile else "unknown"),
+        "agent_name": profile.get_display_name()
+        if profile and hasattr(profile, "get_display_name")
+        else (profile.name if profile else "unknown"),
         "agent_icon": (profile.icon if profile else "🤖") or "🤖",
         "task_message": task_truncated,
         "result_preview": result_truncated,

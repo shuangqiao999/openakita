@@ -4,7 +4,6 @@
 使用 LLM 自动生成符合 Agent Skills 规范 (SKILL.md) 的技能。
 """
 
-import json
 import logging
 import re
 from dataclasses import dataclass
@@ -231,6 +230,7 @@ if __name__ == "__main__":
         """生成中文翻译，写入 agents/openai.yaml i18n 字段。"""
         try:
             from ..skills.i18n import auto_translate_skill
+
             await auto_translate_skill(skill_dir, name, description, self.brain)
         except Exception as e:
             logger.warning(f"Failed to generate i18n for {name}: {e}")

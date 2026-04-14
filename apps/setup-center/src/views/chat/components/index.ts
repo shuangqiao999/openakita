@@ -9,6 +9,7 @@ export { ArtifactList } from "./Artifacts";
 export { SlashCommandPanel } from "./SlashCommandPanel";
 export { RenderIcon, SubAgentCards } from "./SubAgentCards";
 export { SecurityConfirmModal } from "./SecurityConfirmModal";
+export type { SecurityCloseInfo } from "./SecurityConfirmModal";
 export { ContextMenuInner } from "./ContextMenu";
 export { LightboxOverlay } from "./LightboxOverlay";
 export { MessageBubble } from "./MessageBubble";

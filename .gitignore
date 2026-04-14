@@ -217,6 +217,11 @@ scripts/apply_agent_changes.py
 scripts/refactor_agent_tools.py
 scripts/update_version.py
 
+# Local dev scripts (not for GitHub)
+scripts/clean-all.ps1
+scripts/start-backend.ps1
+scripts/start-frontend.ps1
+
 # Tauri signing keys (NEVER commit private keys)
 .tauri/
 
@@ -235,7 +240,6 @@ apps/setup-center/android/.gradle/
 apps/setup-center/android/app/src/main/assets/public/
 apps/setup-center/android/app/src/main/assets/capacitor.config.json
 $null
-botpy.log*
 OPENAKITA_RESEARCH_REPORT.md
 openakita-release.keystore
 ppt_build/
@@ -246,3 +250,6 @@ claude_code/
 # Cursor commit message drafts
 .commitmsg
 .commitmsg_responses
+
+# QQ Bot SDK logs
+botpy.log*

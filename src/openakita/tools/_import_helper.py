@@ -64,7 +64,6 @@ _PACKAGE_MODULE_MAP: dict[str, tuple[str | None, str | None, str]] = {
     "dingtalk_stream": (None, None, "dingtalk-stream"),
     "Crypto": (None, None, "pycryptodome"),
     "Cryptodome": (None, None, "pycryptodome"),
-    "botpy": (None, None, "qq-botpy"),
     "pilk": (None, None, "pilk"),
     # -- 其他 --
     "telegram": (None, None, "python-telegram-bot"),

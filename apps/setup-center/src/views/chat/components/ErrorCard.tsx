@@ -1,7 +1,18 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
+import { IconKey, IconBarChart, IconClock, IconShield, IconGlobe, IconAlertCircle, IconXCircle } from "../../../icons";
 import type { ChatErrorInfo } from "../utils/chatTypes";
 import { ERROR_META } from "../utils/chatHelpers";
+
+const ERROR_ICON_MAP: Record<string, React.ReactNode> = {
+  auth: <IconKey size={16} />,
+  quota: <IconBarChart size={16} />,
+  timeout: <IconClock size={16} />,
+  content_filter: <IconShield size={16} />,
+  network: <IconGlobe size={16} />,
+  server: <IconAlertCircle size={16} />,
+  unknown: <IconXCircle size={16} />,
+};
 
 export function ErrorCard({ error, onRetry }: { error: ChatErrorInfo; onRetry?: () => void }) {
   const { t } = useTranslation();
@@ -49,7 +60,7 @@ export function ErrorCard({ error, onRetry }: { error: ChatErrorInfo; onRetry?: 
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 600, marginBottom: 4 }}>
-        <span>{meta.icon}</span>
+        <span>{ERROR_ICON_MAP[error.category] || ERROR_ICON_MAP.unknown}</span>
         <span style={{ color: meta.color }}>{error.message}</span>
       </div>
       {meta.hint && (

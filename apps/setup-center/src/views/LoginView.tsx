@@ -4,6 +4,7 @@ import { useState, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { login } from "../platform/auth";
 import { IS_CAPACITOR } from "../platform/detect";
+import { IconLink } from "../icons";
 import logoUrl from "../assets/logo.png";
 
 export function LoginView({
@@ -107,7 +108,7 @@ export function LoginView({
             marginBottom: 16, padding: "6px 12px", borderRadius: 8,
             background: "var(--bg, #f1f5f9)", fontSize: 12, color: "var(--text3, #64748b)",
           }}>
-            <span style={{ opacity: 0.6 }}>🔗</span>
+            <IconLink size={13} style={{ opacity: 0.6, flexShrink: 0 }} />
             <span style={{ fontFamily: "monospace", wordBreak: "break-all" }}>{serverDisplay}</span>
           </div>
         )}

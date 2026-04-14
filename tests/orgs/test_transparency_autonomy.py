@@ -377,6 +377,11 @@ def _mock_stats_deps(mock_runtime, persisted_org):
     mock_runtime.get_scaler = MagicMock(return_value=MagicMock(
         get_pending_requests=MagicMock(return_value=[]),
     ))
+    mock_runtime._node_last_activity = {}
+    mock_runtime._node_busy_since = {}
+    mock_runtime._agent_cache = {}
+    mock_runtime._running_tasks = {}
+    mock_runtime._anomaly_inbox_ts = {}
 
 
 class TestStatsEndpointEnhancements:

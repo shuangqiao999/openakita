@@ -173,7 +173,7 @@ class TestUserPersonaInPrompt:
         resolved = identity.resolve(root, org)
         prompt = identity.build_org_context_prompt(root, org, resolved)
         assert "客户A" in prompt
-        assert "直属上级" in prompt
+        assert "指挥者" in prompt
 
     def test_non_root_shows_parent_as_superior(self, identity: OrgIdentity):
         org = make_org()

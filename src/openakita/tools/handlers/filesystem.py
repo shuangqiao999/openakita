@@ -35,6 +35,7 @@ def _get_terminal_manager(agent: "Agent") -> Any:
     clean up on next access.
     """
     from ..terminal import TerminalSessionManager
+
     agent_id = id(agent)
     mgr = _terminal_mgr_strong_refs.get(agent_id)
     if mgr is not None:
@@ -184,13 +185,44 @@ class FilesystemHandler:
         tmp.write(code)
         tmp.close()
 
-        logger.info(
-            "[Windows fix] Multiline python -c → temp file: %s", tmp.name
-        )
+        logger.info("[Windows fix] Multiline python -c → temp file: %s", tmp.name)
         return f'python "{tmp.name}"'
 
     # run_shell 成功输出最大行数
     SHELL_MAX_LINES = 200
+
+    _EXIT_CODE_SEMANTICS: dict[str, dict[int, str]] = {
+        "grep": {1: "无匹配结果（非错误）"},
+        "egrep": {1: "无匹配结果（非错误）"},
+        "fgrep": {1: "无匹配结果（非错误）"},
+        "rg": {1: "无匹配结果（非错误）"},
+        "diff": {1: "文件存在差异（非错误）"},
+        "test": {1: "条件不成立（非错误）"},
+        "find": {1: "部分路径无法访问（非错误）"},
+        "cmp": {1: "文件不同（非错误）"},
+        "where": {1: "未找到命令（非错误）"},
+    }
+
+    @classmethod
+    def _interpret_exit_code(cls, command: str, exit_code: int) -> str | None:
+        """Return a human-readable meaning if the exit code is a known
+        non-error for the given command, or ``None`` otherwise."""
+        stripped = command.strip()
+        if not stripped:
+            return None
+        # Extract the first command segment, handling pipes / && / ;
+        first_segment = (
+            stripped.split("|")[0].strip().split("&&")[0].strip().split(";")[0].strip()
+        )
+        # Split into tokens; skip leading env-var assignments (VAR=val)
+        tokens = first_segment.split()
+        while tokens and "=" in tokens[0]:
+            tokens = tokens[1:]
+        if not tokens:
+            return None
+        cmd_name = Path(tokens[0]).stem
+        meanings = cls._EXIT_CODE_SEMANTICS.get(cmd_name, {})
+        return meanings.get(exit_code)
 
     async def _run_shell(self, params: dict) -> str:
         """Execute shell command with persistent session + background support."""
@@ -214,6 +246,7 @@ class FilesystemHandler:
                     continue
 
         import platform
+
         if platform.system() == "Windows":
             command = self._fix_windows_python_c(command)
 
@@ -241,6 +274,7 @@ class FilesystemHandler:
         )
 
         from ...logging import get_session_log_buffer
+
         log_buffer = get_session_log_buffer()
 
         if result.backgrounded:
@@ -265,6 +299,22 @@ class FilesystemHandler:
             full_text = f"命令执行成功 (exit code: 0):\n{output}"
             return self._truncate_shell_output(full_text)
         else:
+            # Check for known non-error exit codes before treating as failure
+            exit_meaning = self._interpret_exit_code(command, result.returncode)
+            if exit_meaning:
+                log_buffer.add_log(
+                    level="INFO",
+                    module="shell",
+                    message=f"$ {command}\n[exit: {result.returncode}, {exit_meaning}]\n{result.stdout}",
+                )
+                output = result.stdout or ""
+                if result.stderr:
+                    output += f"\n[信息]:\n{result.stderr}"
+                full_text = (
+                    f"命令执行完成 (exit code: {result.returncode}, {exit_meaning}):\n{output}"
+                )
+                return self._truncate_shell_output(full_text)
+
             log_buffer.add_log(
                 level="ERROR",
                 module="shell",
@@ -323,6 +373,7 @@ class FilesystemHandler:
 
         total_lines = len(lines)
         from ...core.tool_executor import save_overflow
+
         overflow_path = save_overflow("run_shell", text)
         truncated = "\n".join(lines[: self.SHELL_MAX_LINES])
         truncated += (
@@ -377,15 +428,22 @@ class FilesystemHandler:
                 logger.warning(msg)
                 return msg
         await self.agent.file_tool.write(path, content)
-        result = f"文件已写入: {path}"
+        try:
+            file_path = self.agent.file_tool._resolve_path(path)
+            size = file_path.stat().st_size
+            result = f"文件已写入: {path} ({size} bytes)"
+        except OSError:
+            result = f"文件已写入: {path}"
 
         from ...core.im_context import get_im_session
+
         if not get_im_session():
             result += (
                 "\n\n💡 当前为 Desktop 模式，用户无法直接访问服务器文件。"
                 "请将文件的关键内容直接包含在回复中，"
                 "或调用 deliver_artifacts(artifacts=[{type: 'file', path: '"
-                + str(path) + "'}]) 使文件在前端可下载。"
+                + str(path)
+                + "'}]) 使文件在前端可下载。"
             )
         return result
 
@@ -440,15 +498,15 @@ class FilesystemHandler:
             )
 
         shown = "\n".join(lines[start:end])
-        result = f"文件内容 (第 {start+1}-{end} 行，共 {total_lines} 行):\n{shown}"
+        result = f"文件内容 (第 {start + 1}-{end} 行，共 {total_lines} 行):\n{shown}"
 
         # 如果还有更多内容，附加分页提示
         if end < total_lines:
             remaining = total_lines - end
             result += (
                 f"\n\n[OUTPUT_TRUNCATED] 文件共 {total_lines} 行，"
-                f"当前显示第 {start+1}-{end} 行，剩余 {remaining} 行。\n"
-                f'使用 read_file(path="{path}", offset={end+1}, limit={limit}) '
+                f"当前显示第 {start + 1}-{end} 行，剩余 {remaining} 行。\n"
+                f'使用 read_file(path="{path}", offset={end + 1}, limit={limit}) '
                 f"查看后续内容。"
             )
 
@@ -477,10 +535,7 @@ class FilesystemHandler:
             target = self._resolve_to_abs(path)
             write_roots = policy.get("write_roots") or []
             if not self._is_under_any_root(target, write_roots):
-                msg = (
-                    "❌ 自检自动修复护栏：禁止编辑该路径。"
-                    f"\n目标: {target}"
-                )
+                msg = f"❌ 自检自动修复护栏：禁止编辑该路径。\n目标: {target}"
                 logger.warning(msg)
                 return msg
 
@@ -488,12 +543,21 @@ class FilesystemHandler:
 
         try:
             result = await self.agent.file_tool.edit(
-                path, old_string, new_string, replace_all=replace_all,
+                path,
+                old_string,
+                new_string,
+                replace_all=replace_all,
             )
             replaced = result["replaced"]
+            try:
+                file_path = self.agent.file_tool._resolve_path(path)
+                size = file_path.stat().st_size
+                size_info = f" ({size} bytes)"
+            except OSError:
+                size_info = ""
             if replace_all and replaced > 1:
-                return f"文件已编辑: {path}（替换了 {replaced} 处匹配）"
-            return f"文件已编辑: {path}"
+                return f"文件已编辑: {path}（替换了 {replaced} 处匹配）{size_info}"
+            return f"文件已编辑: {path}{size_info}"
         except FileNotFoundError:
             return f"❌ 文件不存在: {path}"
         except ValueError as e:
@@ -517,7 +581,9 @@ class FilesystemHandler:
         pattern = params.get("pattern", "*")
         recursive = params.get("recursive", False)
         files = await self.agent.file_tool.list_dir(
-            path, pattern=pattern, recursive=recursive,
+            path,
+            pattern=pattern,
+            recursive=recursive,
         )
 
         max_items = params.get("max_items", self.LIST_DIR_DEFAULT_MAX)
@@ -528,16 +594,19 @@ class FilesystemHandler:
 
         total = len(files)
         if total <= max_items:
-            return f"目录内容 ({total} 条):\n" + "\n".join(files)
+            result = f"目录内容 ({total} 条):\n" + "\n".join(files)
+        else:
+            shown = files[:max_items]
+            result = f"目录内容 (显示前 {max_items} 条，共 {total} 条):\n" + "\n".join(shown)
+            result += (
+                f"\n\n[OUTPUT_TRUNCATED] 目录共 {total} 条目，已显示前 {max_items} 条。\n"
+                f'如需查看更多，请使用 list_directory(path="{path}", max_items={total}) '
+                f"或缩小查询范围。"
+            )
 
-        shown = files[:max_items]
-        result = f"目录内容 (显示前 {max_items} 条，共 {total} 条):\n" + "\n".join(shown)
-        result += (
-            f"\n\n[OUTPUT_TRUNCATED] 目录共 {total} 条目，已显示前 {max_items} 条。\n"
-            f"如需查看更多，请使用 list_directory(path=\"{path}\", max_items={total}) "
-            f"或缩小查询范围。"
-        )
-        return result
+        from ...utils.subdir_context import inject_subdir_context
+
+        return inject_subdir_context(result, path)
 
     # grep 最大结果条目数
     GREP_MAX_RESULTS = 200
@@ -565,7 +634,8 @@ class FilesystemHandler:
 
         try:
             results = await self.agent.file_tool.grep(
-                pattern, path,
+                pattern,
+                path,
                 include=include,
                 context_lines=context_lines,
                 max_results=max_results,
@@ -600,8 +670,9 @@ class FilesystemHandler:
 
         if len(output.split("\n")) > self.SHELL_MAX_LINES:
             from ...core.tool_executor import save_overflow
+
             overflow_path = save_overflow("grep", output)
-            truncated = "\n".join(output.split("\n")[:self.SHELL_MAX_LINES])
+            truncated = "\n".join(output.split("\n")[: self.SHELL_MAX_LINES])
             truncated += (
                 f"\n\n[OUTPUT_TRUNCATED] 完整结果已保存到: {overflow_path}\n"
                 f'使用 read_file(path="{overflow_path}", offset={self.SHELL_MAX_LINES + 1}) '
@@ -660,9 +731,7 @@ class FilesystemHandler:
         output = f"找到 {total} 个文件（按修改时间排序）:\n" + "\n".join(file_list)
 
         if total > max_show:
-            output += (
-                f"\n\n[OUTPUT_TRUNCATED] 共 {total} 个文件，已显示前 {max_show} 个。"
-            )
+            output += f"\n\n[OUTPUT_TRUNCATED] 共 {total} 个文件，已显示前 {max_show} 个。"
 
         return output
 
@@ -697,9 +766,12 @@ class FilesystemHandler:
                     f"请确认是否确实需要删除此目录及其所有内容。"
                 )
 
+        is_dir = file_path.is_dir()
         success = await self.agent.file_tool.delete(path)
         if success:
-            kind = "目录" if file_path.is_dir() else "文件"
+            if file_path.exists():
+                return f"⚠️ 删除操作返回成功但路径仍存在: {path}"
+            kind = "目录" if is_dir else "文件"
             return f"{kind}已删除: {path}"
         return f"❌ 删除失败: {path}"
 

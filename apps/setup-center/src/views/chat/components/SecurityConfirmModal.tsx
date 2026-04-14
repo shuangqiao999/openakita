@@ -21,15 +21,22 @@ function humanizeArgs(tool: string, args: Record<string, unknown>): string {
 
 type Decision = "allow_once" | "allow_session" | "allow_always" | "deny" | "sandbox";
 
+export interface SecurityCloseInfo {
+  decision: string;
+  tool: string;
+  command: string;
+}
+
 export function SecurityConfirmModal({
   data, apiBase, onClose, timerRef, setData,
 }: {
   data: {
     tool: string; args: Record<string, unknown>; reason: string;
     riskLevel: string; needsSandbox: boolean; toolId?: string; countdown: number;
+    defaultOnTimeout?: string;
   };
   apiBase: string;
-  onClose: () => void;
+  onClose: (info?: SecurityCloseInfo) => void;
   timerRef: React.MutableRefObject<ReturnType<typeof setInterval> | null>;
   setData: React.Dispatch<React.SetStateAction<typeof data | null>>;
 }) {
@@ -40,6 +47,7 @@ export function SecurityConfirmModal({
 
   useEffect(() => {
     if (timerRef.current) clearInterval(timerRef.current);
+    const timeoutDecision = data.defaultOnTimeout === "allow" ? "allow_once" : "deny";
     timerRef.current = setInterval(() => {
       if (pausedRef.current) return;
       setData((prev) => {
@@ -47,7 +55,7 @@ export function SecurityConfirmModal({
         if (prev.countdown <= 1) {
           clearInterval(timerRef.current!);
           timerRef.current = null;
-          handleDecision("deny");
+          handleDecision(timeoutDecision as Decision);
           return null;
         }
         return { ...prev, countdown: prev.countdown - 1 };
@@ -72,7 +80,7 @@ export function SecurityConfirmModal({
         headers,
         body: JSON.stringify({ confirm_id: data.toolId, decision }),
       });
-      onClose();
+      onClose({ decision, tool: data.tool, command: String(data.args.command ?? "") });
     } catch (err) {
       console.error("[SecurityConfirm] decision failed:", err);
       setPostError("网络请求失败，请重试");

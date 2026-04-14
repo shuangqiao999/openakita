@@ -179,7 +179,8 @@ pip install python-telegram-bot>=21.0
 ### QQ 官方机器人
 
 ```bash
-pip install qq-botpy>=1.0
+pip install openakita[qqbot]
+# 包含: websockets, aiohttp, pilk
 ```
 
 ### OneBot（通用协议）

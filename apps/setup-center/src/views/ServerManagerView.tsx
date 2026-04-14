@@ -10,6 +10,7 @@ import {
   setActiveServer, testConnection,
 } from "../platform/servers";
 import type { ServerEntry } from "../platform/servers";
+import { IconEdit, IconTrash } from "../icons";
 
 export function ServerManagerView({
   activeServerId,
@@ -261,7 +262,7 @@ export function ServerManagerView({
                     }}
                     title={t("server.edit", { defaultValue: "编辑" })}
                   >
-                    ✏️
+                    <IconEdit size={13} />
                   </button>
                   <button
                     onClick={(e) => { e.stopPropagation(); handleDelete(s.id); }}
@@ -271,7 +272,7 @@ export function ServerManagerView({
                     }}
                     title={t("server.delete", { defaultValue: "删除" })}
                   >
-                    🗑️
+                    <IconTrash size={13} />
                   </button>
                 </div>
               </div>

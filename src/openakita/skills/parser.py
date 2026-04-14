@@ -73,6 +73,7 @@ class SkillMetadata:
     paths: list[str] = field(default_factory=list)
     hooks: dict = field(default_factory=dict)
     model: str | None = None
+    fallback_for_toolsets: list[str] = field(default_factory=list)
 
     # 国际化（由 agents/openai.yaml i18n 字段注入，兼容旧的 .openakita-i18n.json）
     # key 为语言代码 (如 "zh")，value 为该语言的显示名/描述
@@ -152,8 +153,7 @@ class ParsedSkill:
         if self.scripts_dir and self.scripts_dir.exists():
             return list(self.scripts_dir.iterdir())
         return [
-            f for f in self.skill_dir.iterdir()
-            if f.is_file() and f.suffix in self._SCRIPT_SUFFIXES
+            f for f in self.skill_dir.iterdir() if f.is_file() and f.suffix in self._SCRIPT_SUFFIXES
         ]
 
     def get_references(self) -> list[Path]:
@@ -307,17 +307,19 @@ class SkillParser:
         if isinstance(config_raw, list):
             for item in config_raw:
                 if isinstance(item, dict) and "key" in item:
-                    config.append({
-                        "key": str(item["key"]),
-                        "label": str(item.get("label", item["key"])),
-                        "type": str(item.get("type", "text")),
-                        "required": bool(item.get("required", False)),
-                        "help": str(item.get("help", "")),
-                        "default": item.get("default"),
-                        "options": item.get("options"),
-                        "min": item.get("min"),
-                        "max": item.get("max"),
-                    })
+                    config.append(
+                        {
+                            "key": str(item["key"]),
+                            "label": str(item.get("label", item["key"])),
+                            "type": str(item.get("type", "text")),
+                            "required": bool(item.get("required", False)),
+                            "help": str(item.get("help", "")),
+                            "default": item.get("default"),
+                            "options": item.get("options"),
+                            "min": item.get("min"),
+                            "max": item.get("max"),
+                        }
+                    )
 
         # Extract metadata.openakita structured fields
         raw_metadata = data.get("metadata", {})
@@ -355,7 +357,11 @@ class SkillParser:
         else:
             keywords = []
         arguments_raw = data.get("arguments", [])
-        arguments = [a for a in arguments_raw if isinstance(a, dict)] if isinstance(arguments_raw, list) else []
+        arguments = (
+            [a for a in arguments_raw if isinstance(a, dict)]
+            if isinstance(arguments_raw, list)
+            else []
+        )
         argument_hint = str(data.get("argument-hint", "") or "")
         execution_context = str(data.get("execution-context", "inline") or "inline")
         if execution_context not in ("inline", "fork"):
@@ -366,6 +372,10 @@ class SkillParser:
         hooks_raw = data.get("hooks", {})
         hooks = hooks_raw if isinstance(hooks_raw, dict) else {}
         model = data.get("model") or None
+        fbt_raw = data.get("fallback-for-toolsets", [])
+        fallback_for_toolsets = (
+            [str(t) for t in fbt_raw] if isinstance(fbt_raw, list) else []
+        )
 
         return SkillMetadata(
             name=name,
@@ -393,6 +403,7 @@ class SkillParser:
             paths=paths,
             hooks=hooks,
             model=model if isinstance(model, str) else None,
+            fallback_for_toolsets=fallback_for_toolsets,
         )
 
     def parse_directory(self, skill_dir: Path) -> ParsedSkill:
@@ -416,6 +427,7 @@ class SkillParser:
             错误消息列表 (空列表表示验证通过)
         """
         import shutil as _shutil
+
         errors = []
         meta = skill.metadata
 
@@ -423,15 +435,12 @@ class SkillParser:
         if len(meta.name) > 64:
             logger.warning(
                 "Skill name '%s...' exceeds recommended 64 characters (%d)",
-                meta.name[:30], len(meta.name),
+                meta.name[:30],
+                len(meta.name),
             )
 
         # Directory name vs expected
-        expected_dir = (
-            meta.name.split("@", 1)[-1]
-            if "@" in meta.name
-            else meta.name
-        )
+        expected_dir = meta.name.split("@", 1)[-1] if "@" in meta.name else meta.name
         if skill.skill_dir and skill.skill_dir.name != expected_dir:
             errors.append(
                 f"Directory name '{skill.skill_dir.name}' should match "
@@ -459,17 +468,20 @@ class SkillParser:
 
         # required_env availability
         import os as _os
+
         for env_name in meta.required_env:
             if not _os.environ.get(env_name):
                 errors.append(f"Required environment variable '{env_name}' not set")
 
         # Config schema basic validation
-        for item in (meta.config or []):
+        for item in meta.config or []:
             if isinstance(item, dict):
                 if "key" not in item:
                     errors.append(f"Config item missing 'key': {item}")
                 if "type" in item and item["type"] not in ("string", "number", "boolean", "select"):
-                    errors.append(f"Config item '{item.get('key', '?')}' has unknown type: {item['type']}")
+                    errors.append(
+                        f"Config item '{item.get('key', '?')}' has unknown type: {item['type']}"
+                    )
 
         return errors
 

@@ -20,17 +20,25 @@ from ..core.capabilities import (
 )
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from .parser import ParsedSkill
 
 logger = logging.getLogger(__name__)
 
 _MARKETPLACE_HOSTS = {"github.com/openakita", "openakita.com", "skill.openakita.com"}
 
-_RESTRICTED_TOOLS_FOR_UNTRUSTED = frozenset({
-    "run_shell", "run_command", "execute_command",
-    "write_file", "delete_file",
-    "run_skill_script", "execute_skill",
-})
+_RESTRICTED_TOOLS_FOR_UNTRUSTED = frozenset(
+    {
+        "run_shell",
+        "run_command",
+        "execute_command",
+        "write_file",
+        "delete_file",
+        "run_skill_script",
+        "execute_skill",
+    }
+)
 
 
 def _infer_trust_level(skill: "ParsedSkill", source_url: str | None) -> str:
@@ -41,6 +49,7 @@ def _infer_trust_level(skill: "ParsedSkill", source_url: str | None) -> str:
         # Check if the skill is from the builtin directory
         if skill.path:
             from pathlib import Path
+
             path_str = str(Path(skill.path)).replace("\\", "/").lower()
             if "/builtin/" in path_str or "/site-packages/" in path_str:
                 return "builtin"
@@ -131,6 +140,9 @@ class SkillEntry:
     # 技能配置 schema（从 SKILL.md frontmatter 传递）
     config: list[dict] = field(default_factory=list)
 
+    # Exposure level for profile-aware filtering
+    exposure_level: str = "recommended"  # "core" | "recommended" | "hidden"
+
     # F1: 扩展 frontmatter 字段
     when_to_use: str = ""
     keywords: list[str] = field(default_factory=list)
@@ -141,6 +153,7 @@ class SkillEntry:
     paths: list[str] = field(default_factory=list)
     hooks: dict = field(default_factory=dict)
     model: str | None = None
+    fallback_for_toolsets: list[str] = field(default_factory=list)
 
     # F12: 信任等级 ("builtin" | "local" | "marketplace" | "remote")
     # builtin: 随安装包分发的内置技能
@@ -176,6 +189,7 @@ class SkillEntry:
     def skill_dir(self) -> "Path":
         """Return the skill's directory path."""
         from pathlib import Path
+
         if self.skill_path:
             p = Path(self.skill_path)
             return p.parent if p.name.upper() == "SKILL.MD" else p
@@ -223,9 +237,20 @@ class SkillEntry:
         origin = _infer_origin(skill, source_url, plugin_source)
         effective_skill_id = skill_id or meta.name
         namespace = build_namespace(origin, plugin_id=plugin_source or "")
-        permission_profile = "trusted" if trust_level in ("builtin", "local", "marketplace") else "restricted"
+        permission_profile = (
+            "trusted" if trust_level in ("builtin", "local", "marketplace") else "restricted"
+        )
+
+        # Infer exposure_level from metadata or trust level
+        _exposure = getattr(meta, "exposure_level", "") or ""
+        if not _exposure:
+            if meta.system or trust_level == "builtin":
+                _exposure = "core"
+            else:
+                _exposure = "recommended"
 
         return cls(
+            exposure_level=_exposure,
             skill_id=effective_skill_id,
             name=meta.name,
             description=meta.description,
@@ -252,6 +277,7 @@ class SkillEntry:
             paths=list(meta.paths),
             hooks=dict(meta.hooks) if meta.hooks else {},
             model=meta.model,
+            fallback_for_toolsets=list(meta.fallback_for_toolsets),
             trust_level=trust_level,
             skill_path=str(skill.path),
             source_url=source_url,
@@ -361,7 +387,8 @@ class SkillEntry:
             return None
         param_match = re.search(
             r"^##\s+(?:Parameters|参数)\s*\n(.*?)(?=\n##\s|\Z)",
-            body, re.MULTILINE | re.DOTALL,
+            body,
+            re.MULTILINE | re.DOTALL,
         )
         if not param_match:
             return None
@@ -427,7 +454,9 @@ class SkillRegistry:
         if len(matches) > 1:
             logger.warning(
                 "Ambiguous skill name '%s' matches %d entries: %s — refusing fuzzy resolution",
-                key, len(matches), [m.skill_id for m in matches],
+                key,
+                len(matches),
+                [m.skill_id for m in matches],
             )
             return None
         return matches[0] if matches else None
@@ -440,7 +469,9 @@ class SkillRegistry:
         if len(matches) > 1:
             logger.warning(
                 "Ambiguous skill name '%s' matches %d entries: %s — refusing fuzzy resolution",
-                key, len(matches), matches,
+                key,
+                len(matches),
+                matches,
             )
             return None
         if matches:
@@ -545,10 +576,7 @@ class SkillRegistry:
 
     def count_catalog_hidden(self) -> int:
         """统计被 catalog_hidden 但仍启用的技能数量。"""
-        return sum(
-            1 for s in self._skills.values()
-            if not s.disabled and s.catalog_hidden
-        )
+        return sum(1 for s in self._skills.values() if not s.disabled and s.catalog_hidden)
 
     def list_all(self, include_disabled: bool = True) -> list[SkillEntry]:
         """列出所有技能。
@@ -617,24 +645,146 @@ class SkillRegistry:
 
         return results
 
-    _STOP_WORDS = frozenset({
-        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-        "have", "has", "had", "do", "does", "did", "will", "would", "could",
-        "should", "may", "might", "shall", "can", "need", "dare", "ought",
-        "used", "to", "of", "in", "for", "on", "with", "at", "by", "from",
-        "as", "into", "through", "during", "before", "after", "above",
-        "below", "between", "out", "off", "over", "under", "again",
-        "further", "then", "once", "here", "there", "when", "where", "why",
-        "how", "all", "each", "every", "both", "few", "more", "most",
-        "other", "some", "such", "no", "nor", "not", "only", "own", "same",
-        "so", "than", "too", "very", "just", "about", "also", "and", "but",
-        "or", "if", "this", "that", "these", "those", "it", "its",
-        "file", "files", "tool", "tools", "use", "using", "data", "work",
-        "make", "like", "new", "way", "help", "get", "set",
-        "的", "了", "和", "是", "在", "有", "不", "与", "或", "及",
-        "对", "将", "从", "到", "等", "用", "为", "把", "被", "让",
-        "可以", "使用", "通过", "支持", "提供", "进行", "功能", "操作",
-    })
+    _STOP_WORDS = frozenset(
+        {
+            "the",
+            "a",
+            "an",
+            "is",
+            "are",
+            "was",
+            "were",
+            "be",
+            "been",
+            "being",
+            "have",
+            "has",
+            "had",
+            "do",
+            "does",
+            "did",
+            "will",
+            "would",
+            "could",
+            "should",
+            "may",
+            "might",
+            "shall",
+            "can",
+            "need",
+            "dare",
+            "ought",
+            "used",
+            "to",
+            "of",
+            "in",
+            "for",
+            "on",
+            "with",
+            "at",
+            "by",
+            "from",
+            "as",
+            "into",
+            "through",
+            "during",
+            "before",
+            "after",
+            "above",
+            "below",
+            "between",
+            "out",
+            "off",
+            "over",
+            "under",
+            "again",
+            "further",
+            "then",
+            "once",
+            "here",
+            "there",
+            "when",
+            "where",
+            "why",
+            "how",
+            "all",
+            "each",
+            "every",
+            "both",
+            "few",
+            "more",
+            "most",
+            "other",
+            "some",
+            "such",
+            "no",
+            "nor",
+            "not",
+            "only",
+            "own",
+            "same",
+            "so",
+            "than",
+            "too",
+            "very",
+            "just",
+            "about",
+            "also",
+            "and",
+            "but",
+            "or",
+            "if",
+            "this",
+            "that",
+            "these",
+            "those",
+            "it",
+            "its",
+            "file",
+            "files",
+            "tool",
+            "tools",
+            "use",
+            "using",
+            "data",
+            "work",
+            "make",
+            "like",
+            "new",
+            "way",
+            "help",
+            "get",
+            "set",
+            "的",
+            "了",
+            "和",
+            "是",
+            "在",
+            "有",
+            "不",
+            "与",
+            "或",
+            "及",
+            "对",
+            "将",
+            "从",
+            "到",
+            "等",
+            "用",
+            "为",
+            "把",
+            "被",
+            "让",
+            "可以",
+            "使用",
+            "通过",
+            "支持",
+            "提供",
+            "进行",
+            "功能",
+            "操作",
+        }
+    )
 
     def find_relevant(self, context: str) -> list[SkillEntry]:
         """
@@ -670,7 +820,8 @@ class SkillRegistry:
                     score += 5
 
             if skill.when_to_use and any(
-                w in context_lower for w in skill.when_to_use.lower().split()
+                w in context_lower
+                for w in skill.when_to_use.lower().split()
                 if len(w) > 3 and w not in self._STOP_WORDS
             ):
                 score += 3

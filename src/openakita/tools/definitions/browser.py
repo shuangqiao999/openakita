@@ -70,7 +70,10 @@ BROWSER_TOOLS = [
             },
         ],
         "related_tools": [
-            {"name": "browser_navigate", "relation": "打开后导航到目标 URL（搜索任务推荐直接拼 URL 参数）"},
+            {
+                "name": "browser_navigate",
+                "relation": "打开后导航到目标 URL（搜索任务推荐直接拼 URL 参数）",
+            },
             {"name": "browser_click", "relation": "点击页面元素进行交互"},
             {"name": "browser_close", "relation": "使用完毕后关闭"},
         ],
@@ -144,7 +147,10 @@ BROWSER_TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "url": {"type": "string", "description": "要访问的 URL（必须包含协议）。搜索类任务直接在 URL 中带参数"},
+                "url": {
+                    "type": "string",
+                    "description": "要访问的 URL（必须包含协议）。搜索类任务直接在 URL 中带参数",
+                },
             },
             "required": ["url"],
         },
@@ -244,6 +250,7 @@ BROWSER_TOOLS = [
                 "仅截取浏览器页面内容",
                 "如需截取桌面或其他应用，请使用 desktop_screenshot",
                 "full_page=True 会截取页面的完整内容（包含需要滚动才能看到的部分）",
+                "IM 场景下截图保存在服务器本地，需通过 `deliver_artifacts` 交付给用户才可见",
             ],
         ),
         "triggers": [
@@ -538,7 +545,9 @@ BROWSER_TOOLS = [
             },
             {
                 "scenario": "获取所有链接",
-                "params": {"script": "Array.from(document.querySelectorAll('a')).map(a => ({text: a.textContent.trim(), href: a.href})).slice(0, 20)"},
+                "params": {
+                    "script": "Array.from(document.querySelectorAll('a')).map(a => ({text: a.textContent.trim(), href: a.href})).slice(0, 20)"
+                },
                 "expected": "Returns first 20 links with text and href",
             },
         ],
@@ -584,12 +593,20 @@ BROWSER_TOOLS = [
         "prerequisites": ["Browser must be running with multiple tabs"],
         "warnings": [],
         "examples": [
-            {"scenario": "切换到第二个标签", "params": {"index": 1}, "expected": "Switches to tab at index 1"},
+            {
+                "scenario": "切换到第二个标签",
+                "params": {"index": 1},
+                "expected": "Switches to tab at index 1",
+            },
         ],
         "input_schema": {
             "type": "object",
             "properties": {
-                "index": {"type": "integer", "description": "标签页索引（从 0 开始）", "default": 0},
+                "index": {
+                    "type": "integer",
+                    "description": "标签页索引（从 0 开始）",
+                    "default": 0,
+                },
             },
             "required": ["index"],
         },
@@ -608,7 +625,11 @@ BROWSER_TOOLS = [
         "prerequisites": ["Browser must be running"],
         "warnings": [],
         "examples": [
-            {"scenario": "新标签打开页面", "params": {"url": "https://www.baidu.com"}, "expected": "Opens Baidu in new tab"},
+            {
+                "scenario": "新标签打开页面",
+                "params": {"url": "https://www.baidu.com"},
+                "expected": "Opens Baidu in new tab",
+            },
         ],
         "input_schema": {
             "type": "object",
@@ -665,7 +686,10 @@ BROWSER_TOOLS = [
             },
         ],
         "related_tools": [
-            {"name": "browser_screenshot", "relation": "take screenshot first, then view_image to analyze"},
+            {
+                "name": "browser_screenshot",
+                "relation": "take screenshot first, then view_image to analyze",
+            },
         ],
         "input_schema": {
             "type": "object",

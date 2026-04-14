@@ -48,10 +48,10 @@ export function CliManager() {
     setCliMsg("");
     try {
       const result = await invoke<string>("register_cli", { commands: cmds, addToPath: cliRegPath });
-      setCliMsg(`✓ ${result}`);
+      setCliMsg(`[OK] ${result}`);
       await loadCliStatus();
     } catch (e) {
-      setCliMsg(`✗ ${t("config.cliRegisterFailed")} ${String(e)}`);
+      setCliMsg(`[ERR] ${t("config.cliRegisterFailed")} ${String(e)}`);
     } finally {
       setCliLoading(false);
     }
@@ -62,10 +62,10 @@ export function CliManager() {
     setCliMsg("");
     try {
       const result = await invoke<string>("unregister_cli");
-      setCliMsg(`✓ ${result}`);
+      setCliMsg(`[OK] ${result}`);
       await loadCliStatus();
     } catch (e) {
-      setCliMsg(`✗ ${t("config.cliUnregisterFailed")} ${String(e)}`);
+      setCliMsg(`[ERR] ${t("config.cliUnregisterFailed")} ${String(e)}`);
     } finally {
       setCliLoading(false);
     }
@@ -126,9 +126,9 @@ export function CliManager() {
 
       {cliMsg && (
         <div className={`rounded-md px-3 py-2 text-xs ${
-          cliMsg.startsWith("✓")
+          cliMsg.startsWith("[OK]")
             ? "bg-emerald-50 text-emerald-600 border border-emerald-200 dark:bg-emerald-950/30 dark:text-emerald-400 dark:border-emerald-500/30"
-            : cliMsg.startsWith("✗")
+            : cliMsg.startsWith("[ERR]")
               ? "bg-red-50 text-red-600 border border-red-200 dark:bg-red-950/30 dark:text-red-400 dark:border-red-500/30"
               : "bg-amber-50 text-amber-600 border border-amber-200 dark:bg-amber-950/30 dark:text-amber-400 dark:border-amber-500/30"
         }`}>

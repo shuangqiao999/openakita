@@ -15,10 +15,10 @@ from typing import TYPE_CHECKING, Any
 
 from .todo_state import (
     _session_handlers,
+    force_close_plan,
+    has_active_todo,
     register_active_todo,
     register_plan_handler,
-    has_active_todo,
-    force_close_plan,
     unregister_active_todo,
 )
 from .todo_store import TodoStore
@@ -76,7 +76,9 @@ class PlanHandler:
                 old_todo = old_handler._todos_by_session.get(cid)
                 if old_todo is not None:
                     self._todos_by_session[cid] = old_todo
-                    logger.info(f"[Todo] Recovered todo {old_todo.get('id')} from previous handler for {cid}")
+                    logger.info(
+                        f"[Todo] Recovered todo {old_todo.get('id')} from previous handler for {cid}"
+                    )
                     return old_todo
             # Fallback: recover from persistent store
             stored = self._store.get(cid)
@@ -177,22 +179,23 @@ class PlanHandler:
             return f"❌ Unknown plan tool: {tool_name}"
 
     async def _create_todo(self, params: dict) -> str:
-        """创建任务计划"""
+        """创建任务计划（支持多计划共存）"""
         if "task_summary" not in params and "goal" in params:
             params["task_summary"] = params.pop("goal")
 
         _plan = self._get_current_todo()
         if _plan and _plan.get("status") == "in_progress":
-            plan_id = _plan["id"]
-            status = self._get_status()
-            return (
-                f"⚠️ 已有活跃计划（{plan_id}），请先完成当前计划再创建新的。\n"
-                f"如需继续，请逐步更新步骤状态。\n\n{status}"
+            existing_plan_id = _plan["id"]
+            logger.info(
+                f"[Plan] Creating new plan while existing plan {existing_plan_id} "
+                f"is still in progress (multi-plan mode)"
             )
 
         cid = self._get_conversation_id()
         if cid and has_active_todo(cid) and _plan is None:
-            logger.warning(f"[Plan] Inconsistent state: active_todo registered but no plan data for {cid}, force-closing")
+            logger.warning(
+                f"[Plan] Inconsistent state: active_todo registered but no plan data for {cid}, force-closing"
+            )
             force_close_plan(cid)
 
         plan_id = f"plan_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{secrets.token_hex(3)}"
@@ -272,7 +275,7 @@ class PlanHandler:
             self._store.upsert(conversation_id, _new_plan)
         for step in steps:
             logger.info(
-                f"[Plan] Step {step.get('id')} tool={step.get('tool','-')} skills={step.get('skills', [])}"
+                f"[Plan] Step {step.get('id')} tool={step.get('tool', '-')} skills={step.get('skills', [])}"
             )
 
         plan_message = self._format_plan_message()
@@ -299,7 +302,9 @@ class PlanHandler:
         if not _plan:
             cid = self._get_conversation_id()
             if cid and has_active_todo(cid):
-                logger.warning(f"[Todo] update_step: todo data lost for {cid}, force-closing stale registration")
+                logger.warning(
+                    f"[Todo] update_step: todo data lost for {cid}, force-closing stale registration"
+                )
                 force_close_plan(cid)
             return "❌ 当前没有活动的计划，请先创建一个任务计划"
 
@@ -342,7 +347,9 @@ class PlanHandler:
                     if deps:
                         _DONE = {"completed", "skipped", "cancelled"}
                         steps_map = {s["id"]: s for s in _plan["steps"]}
-                        blocked = [d for d in deps if steps_map.get(d, {}).get("status") not in _DONE]
+                        blocked = [
+                            d for d in deps if steps_map.get(d, {}).get("status") not in _DONE
+                        ]
                         if blocked:
                             return (
                                 f"⚠️ 步骤 {step_id} 依赖于 {', '.join(blocked)}，"
@@ -362,7 +369,7 @@ class PlanHandler:
 
                 step_found = True
                 logger.info(
-                    f"[Plan] Step update {step_id} status={status} tool={step.get('tool','-')} skills={step.get('skills', [])}"
+                    f"[Plan] Step update {step_id} status={status} tool={step.get('tool', '-')} skills={step.get('skills', [])}"
                 )
                 break
 
@@ -472,7 +479,9 @@ class PlanHandler:
         if not _plan:
             cid = self._get_conversation_id()
             if cid and has_active_todo(cid):
-                logger.warning(f"[Plan] complete_todo: plan data lost for {cid}, force-closing stale registration")
+                logger.warning(
+                    f"[Plan] complete_todo: plan data lost for {cid}, force-closing stale registration"
+                )
                 force_close_plan(cid)
                 return "⚠️ 旧计划数据已丢失，已强制清除死锁状态。可以开始新任务。"
             return "❌ 当前没有活动的计划"
@@ -547,6 +556,7 @@ class PlanHandler:
                 return "❌ todos 参数格式错误，需要 JSON 数组"
 
         import hashlib as _hashlib
+
         _slug = name[:30].replace(" ", "_").replace("/", "_")
         _hash = _hashlib.md5(name.encode()).hexdigest()[:8]
         filename = f"{_slug}_{_hash}.plan.md"
@@ -563,9 +573,37 @@ class PlanHandler:
             """YAML 安全转义：含特殊字符时加引号并转义内部双引号"""
             if not val:
                 return '""'
-            needs_quote = any(c in val for c in (':', '#', '"', "'", '\n', '{', '}', '[', ']', ',', '&', '*', '?', '|', '-', '<', '>', '=', '!', '%', '@', '`'))
+            needs_quote = any(
+                c in val
+                for c in (
+                    ":",
+                    "#",
+                    '"',
+                    "'",
+                    "\n",
+                    "{",
+                    "}",
+                    "[",
+                    "]",
+                    ",",
+                    "&",
+                    "*",
+                    "?",
+                    "|",
+                    "-",
+                    "<",
+                    ">",
+                    "=",
+                    "!",
+                    "%",
+                    "@",
+                    "`",
+                )
+            )
             if needs_quote:
-                return '"' + val.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n') + '"'
+                return (
+                    '"' + val.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n") + '"'
+                )
             return val
 
         yaml_lines = ["---"]
@@ -592,15 +630,17 @@ class PlanHandler:
         plan_id = f"planfile_{_hash}"
         steps = []
         for todo in todos:
-            steps.append({
-                "id": todo.get("id", f"step_{secrets.token_hex(3)}"),
-                "description": todo.get("content", ""),
-                "status": todo.get("status", "pending"),
-                "result": "",
-                "started_at": None,
-                "completed_at": None,
-                "skills": [],
-            })
+            steps.append(
+                {
+                    "id": todo.get("id", f"step_{secrets.token_hex(3)}"),
+                    "description": todo.get("content", ""),
+                    "status": todo.get("status", "pending"),
+                    "result": "",
+                    "started_at": None,
+                    "completed_at": None,
+                    "skills": [],
+                }
+            )
 
         _new_plan = {
             "id": plan_id,
@@ -664,12 +704,16 @@ class PlanHandler:
 
         try:
             from ...api.routes.websocket import broadcast_event
-            await broadcast_event("plan:ready_for_approval", {
-                "conversation_id": conversation_id,
-                "summary": summary,
-                "plan_id": plan_id,
-                "plan_file": plan_file_path,
-            })
+
+            await broadcast_event(
+                "plan:ready_for_approval",
+                {
+                    "conversation_id": conversation_id,
+                    "summary": summary,
+                    "plan_id": plan_id,
+                    "plan_file": plan_file_path,
+                },
+            )
         except Exception:
             pass
 
@@ -817,8 +861,10 @@ class PlanHandler:
         def _esc(val: str) -> str:
             if not val:
                 return '""'
-            if any(c in val for c in (':', '#', '"', "'", '\n', '{', '}', '[', ']')):
-                return '"' + val.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n') + '"'
+            if any(c in val for c in (":", "#", '"', "'", "\n", "{", "}", "[", "]")):
+                return (
+                    '"' + val.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n") + '"'
+                )
             return val
 
         _name = plan.get("task_summary", "")
@@ -857,9 +903,7 @@ completed_at: {plan.get("completed_at") or ""}
             sid = _md_escape_cell(step["id"])
             desc = _md_escape_cell(step["description"])
 
-            content += (
-                f"| {sid} | {desc} | {skills} | {tool} | {status_emoji} | {result} |\n"
-            )
+            content += f"| {sid} | {desc} | {skills} | {tool} | {status_emoji} | {result} |\n"
 
         content += "\n## 执行日志\n\n"
         for log in plan.get("logs", []):

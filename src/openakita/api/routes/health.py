@@ -48,6 +48,83 @@ def _get_lan_ip() -> str:
     return ip
 
 
+def _safe_int(val: str, default: int) -> int:
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return default
+
+
+_VIRTUAL_PREFIXES = (
+    "26.",       # Radmin VPN
+    "25.",       # Hamachi
+    "100.64.",   # CGNAT / Tailscale
+    "172.17.",   # Docker default bridge
+    "172.18.",   # Docker user-defined
+    "172.19.",   # Docker user-defined
+)
+
+
+def _ip_score(ip: str) -> int:
+    """Higher score = more likely to be the real LAN IP the user wants.
+
+    - Virtual adapter prefixes (VPN, Docker, etc.)  → 0
+    - Ends in .1 in private range (likely VM host / bridge)  → 1
+    - 172.16-31.x.x (Hyper-V, Docker host range)   → 2
+    - 10.x.x.x (often corporate/real but also VPN)  → 3
+    - 192.168.x.x with DHCP-like last octet         → 4  (best guess)
+    """
+    for prefix in _VIRTUAL_PREFIXES:
+        if ip.startswith(prefix):
+            return 0
+
+    octets = ip.split(".")
+    last = int(octets[3]) if len(octets) == 4 else 0
+    second = int(octets[1]) if len(octets) >= 2 else 0
+
+    if ip.startswith("192.168."):
+        return 2 if last == 1 else 4
+    if ip.startswith("10."):
+        return 2 if last == 1 else 3
+    if ip.startswith("172.") and 16 <= second <= 31:
+        return 1 if last == 1 else 2
+    return 1
+
+
+_all_ips_cache: tuple[list[str], float] | None = None
+
+
+def _get_all_lan_ips() -> list[str]:
+    """Return all non-loopback IPv4 addresses, sorted by likelihood of being
+    the real LAN IP (highest score first). Cached 60s."""
+    global _all_ips_cache
+    now = time.time()
+    if _all_ips_cache and (now - _all_ips_cache[1]) < _LAN_IP_TTL:
+        return _all_ips_cache[0]
+
+    import socket
+
+    raw: list[str] = []
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            addr = info[4][0]
+            if addr.startswith("127.") or addr.startswith("169.254."):
+                continue
+            if addr not in raw:
+                raw.append(addr)
+    except Exception:
+        pass
+
+    primary = _get_lan_ip()
+    if primary not in raw and primary != "127.0.0.1":
+        raw.append(primary)
+
+    ordered = sorted(raw, key=_ip_score, reverse=True)
+
+    _all_ips_cache = (ordered, now)
+    return ordered
+
+
 @router.get("/api/health")
 async def health(request: Request):
     """Basic health check - returns 200 if server is running."""
@@ -64,8 +141,12 @@ async def health(request: Request):
         "version_full": get_version_string(),
         "pid": os.getpid(),
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "agent_initialized": hasattr(request.app.state, "agent") and request.app.state.agent is not None,
+        "agent_initialized": hasattr(request.app.state, "agent")
+        and request.app.state.agent is not None,
         "local_ip": _get_lan_ip(),
+        "all_ips": _get_all_lan_ips(),
+        "api_host": os.environ.get("API_HOST", "127.0.0.1"),
+        "api_port": _safe_int(os.environ.get("API_PORT", "18900"), 18900),
     }
 
 
@@ -123,9 +204,10 @@ async def _check_with_timeout(name: str, provider, timeout: float = 30) -> Healt
     """Wrap _check_endpoint_readonly with a per-endpoint timeout."""
     try:
         return await asyncio.wait_for(
-            _check_endpoint_readonly(name, provider), timeout=timeout,
+            _check_endpoint_readonly(name, provider),
+            timeout=timeout,
         )
-    except TimeoutError:
+    except (asyncio.TimeoutError, TimeoutError):
         return HealthResult(
             name=name,
             status="unhealthy",
@@ -152,6 +234,7 @@ async def orchestrator_state(request: Request):
     if orchestrator is None:
         try:
             from openakita.main import _orchestrator
+
             orchestrator = _orchestrator
         except (ImportError, AttributeError):
             pass
@@ -185,62 +268,74 @@ async def diagnostics():
 
     # C1: Runtime
     runtime_type = "bundled" if getattr(sys, "frozen", False) else "venv"
-    checks.append({
-        "id": "C1_BUNDLED_RUNTIME",
-        "title": "内置运行时",
-        "status": "pass",
-        "code": "RUNTIME_OK",
-        "evidence": [f"Python {platform.python_version()}, {runtime_type}"],
-        "autoFix": False,
-        "fixHint": None,
-    })
+    checks.append(
+        {
+            "id": "C1_BUNDLED_RUNTIME",
+            "title": "内置运行时",
+            "status": "pass",
+            "code": "RUNTIME_OK",
+            "evidence": [f"Python {platform.python_version()}, {runtime_type}"],
+            "autoFix": False,
+            "fixHint": None,
+        }
+    )
 
     # C2: pip availability
     try:
         import pip
+
         pip_ver = pip.__version__
-        checks.append({
-            "id": "C2_PIP",
-            "title": "包管理器",
-            "status": "pass",
-            "code": "PIP_OK",
-            "evidence": [f"pip {pip_ver}"],
-            "autoFix": False,
-            "fixHint": None,
-        })
+        checks.append(
+            {
+                "id": "C2_PIP",
+                "title": "包管理器",
+                "status": "pass",
+                "code": "PIP_OK",
+                "evidence": [f"pip {pip_ver}"],
+                "autoFix": False,
+                "fixHint": None,
+            }
+        )
     except Exception:
-        checks.append({
-            "id": "C2_PIP",
-            "title": "包管理器",
-            "status": "warn",
-            "code": "PIP_UNAVAILABLE",
-            "evidence": ["pip not importable — optional module installation disabled"],
-            "autoFix": False,
-            "fixHint": None,
-        })
+        checks.append(
+            {
+                "id": "C2_PIP",
+                "title": "包管理器",
+                "status": "warn",
+                "code": "PIP_UNAVAILABLE",
+                "evidence": ["pip not importable — optional module installation disabled"],
+                "autoFix": False,
+                "fixHint": None,
+            }
+        )
 
     # C3: Core package integrity
     try:
         from openakita.setup_center import bridge  # noqa: F401
-        checks.append({
-            "id": "C3_CORE",
-            "title": "核心引擎",
-            "status": "pass",
-            "code": "CORE_OK",
-            "evidence": [f"openakita {backend_version}"],
-            "autoFix": False,
-            "fixHint": None,
-        })
+
+        checks.append(
+            {
+                "id": "C3_CORE",
+                "title": "核心引擎",
+                "status": "pass",
+                "code": "CORE_OK",
+                "evidence": [f"openakita {backend_version}"],
+                "autoFix": False,
+                "fixHint": None,
+            }
+        )
     except Exception as exc:
-        checks.append({
-            "id": "C3_CORE",
-            "title": "核心引擎",
-            "status": "fail",
-            "code": "CORE_IMPORT_ERROR",
-            "evidence": [str(exc)[:300]],
-            "autoFix": False,
-            "fixHint": "核心模块损坏，建议重装 OpenAkita",
-        })
+        checks.append(
+            {
+                "id": "C3_CORE",
+                "title": "核心引擎",
+                "status": "fail",
+                "code": "CORE_IMPORT_ERROR",
+                "evidence": [str(exc)[:300]],
+                "autoFix": False,
+                "fixHint": "核心模块损坏，建议重装 OpenAkita",
+            }
+        )
 
     failing = [c for c in checks if c["status"] not in ("pass", "warn")]
     summary = "broken" if failing else "healthy"
@@ -286,10 +381,7 @@ async def health_check(request: Request, body: HealthCheckRequest):
         results.append(result)
     else:
         # Check all endpoints concurrently with per-endpoint timeout
-        tasks = [
-            _check_with_timeout(name, p)
-            for name, p in llm_client._providers.items()
-        ]
+        tasks = [_check_with_timeout(name, p) for name, p in llm_client._providers.items()]
         results = list(await asyncio.gather(*tasks))
 
     return {"results": [r.model_dump() for r in results]}
@@ -329,4 +421,3 @@ async def health_loop(request: Request):
         "llm_concurrent": llm_stats,
         "org_concurrency": org_stats,
     }
-

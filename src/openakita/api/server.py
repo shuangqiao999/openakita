@@ -13,8 +13,6 @@ FastAPI HTTP API server for OpenAkita.
 
 from __future__ import annotations
 
-import openakita._ensure_utf8  # noqa: F401  # Windows UTF-8 编码保护
-
 import asyncio
 import logging
 import os
@@ -28,6 +26,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+import openakita._ensure_utf8  # noqa: F401  # Windows UTF-8 编码保护
+
 from .auth import WebAccessConfig, create_auth_middleware
 from .routes import (
     agents,
@@ -37,9 +37,6 @@ from .routes import (
     config,
     feishu_onboard,
     files,
-    qqbot_onboard,
-    wechat_onboard,
-    wecom_onboard,
     health,
     hub,
     identity,
@@ -48,13 +45,17 @@ from .routes import (
     mcp,
     memory,
     orgs,
+    qqbot_onboard,
     scheduler,
     sessions,
     skills,
     token_stats,
     upload,
+    wechat_onboard,
+    wecom_onboard,
     workspace_io,
 )
+
 try:
     from .routes import plugins as plugins_routes
 except ImportError:
@@ -128,10 +129,7 @@ def _find_docs_dist() -> Path | None:
     if (pkg_docs / "index.html").exists():
         return pkg_docs
 
-    dev_docs = (
-        Path(__file__).parent.parent.parent.parent
-        / "docs-site" / ".vitepress" / "dist"
-    )
+    dev_docs = Path(__file__).parent.parent.parent.parent / "docs-site" / ".vitepress" / "dist"
     if (dev_docs / "index.html").exists():
         return dev_docs
 
@@ -257,7 +255,7 @@ def create_app(
         so the frontend never receives raw error objects."""
         msgs = []
         for err in exc.errors():
-            loc = " → ".join(str(l) for l in err.get("loc", []))
+            loc = " → ".join(str(part) for part in err.get("loc", []))
             msg = err.get("msg", "validation error")
             msgs.append(f"{loc}: {msg}" if loc else msg)
         return JSONResponse(
@@ -270,6 +268,7 @@ def create_app(
     # responses (including 401) carry proper CORS headers.
     try:
         from openakita.config import settings
+
         data_dir = Path(settings.project_root) / "data"
     except Exception:
         data_dir = Path.cwd() / "data"
@@ -285,11 +284,11 @@ def create_app(
     # allow_origin_regex which matches any origin, achieving the same permissive
     # behaviour while satisfying the spec.
     cors_origins = os.environ.get("CORS_ORIGINS", "").strip()
-    cors_kwargs: dict[str, Any] = dict(
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    cors_kwargs: dict[str, Any] = {
+        "allow_credentials": True,
+        "allow_methods": ["*"],
+        "allow_headers": ["*"],
+    }
     if cors_origins:
         origins = [o.strip() for o in cors_origins.split(",") if o.strip()]
         # Always include Capacitor mobile origins so mobile apps work
@@ -320,7 +319,9 @@ def create_app(
                     app.include_router(router, prefix=f"/api/plugins/{plugin_id}")
                     logger.info("Mounted pending plugin routes for '%s'", plugin_id)
                 except Exception as e:
-                    logger.warning("Failed to mount pending routes for plugin '%s': %s", plugin_id, e)
+                    logger.warning(
+                        "Failed to mount pending routes for plugin '%s': %s", plugin_id, e
+                    )
 
             pending_ui = pm._host_refs.pop("_pending_plugin_ui_mounts", [])
             for plugin_id, ui_dist_dir in pending_ui:
@@ -333,6 +334,7 @@ def create_app(
     from openakita.orgs.manager import OrgManager
     from openakita.orgs.runtime import OrgRuntime
     from openakita.orgs.templates import ensure_builtin_templates
+
     org_manager = OrgManager(data_dir)
     ensure_builtin_templates(data_dir / "org_templates")
     app.state.org_manager = org_manager
@@ -376,6 +378,7 @@ def create_app(
         web_dist = _find_web_dist()
         if web_dist:
             from fastapi.responses import RedirectResponse
+
             return RedirectResponse(url="/web/")
         return {
             "service": "openakita",
@@ -385,18 +388,21 @@ def create_app(
 
     # ── Serve uploaded avatar files ──
     from fastapi.staticfiles import StaticFiles as _StaticFiles
+
     from openakita.config import settings as _settings
+
     _avatar_dir = _settings.data_dir / "avatars"
     _avatar_dir.mkdir(parents=True, exist_ok=True)
     app.mount("/api/avatars", _StaticFiles(directory=str(_avatar_dir)), name="avatars")
 
     # ── Serve versioned user docs ──
     from openakita import get_version_string as _get_ver
+
     _docs_ver = _get_ver().split("+")[0]
     _docs_root = _deploy_docs(data_dir, _docs_ver)
     if _docs_root:
-        from fastapi.staticfiles import StaticFiles as _DocsStatic
         from fastapi.responses import RedirectResponse as _Redirect
+        from fastapi.staticfiles import StaticFiles as _DocsStatic
 
         @app.get("/user-docs", include_in_schema=False)
         @app.get("/user-docs/", include_in_schema=False)
@@ -422,6 +428,7 @@ def create_app(
         path as SIGINT/SIGTERM (sessions saved, IM adapters stopped, etc.).
         """
         from .auth import get_client_ip
+
         trust_proxy = os.environ.get("TRUST_PROXY", "").lower() in ("1", "true", "yes")
         real_ip = get_client_ip(request, trust_proxy=trust_proxy)
         is_local = real_ip in ("127.0.0.1", "::1", "localhost") or (
@@ -488,8 +495,7 @@ def create_app(
                     )
                 else:
                     logger.info(
-                        f"[Startup] Compiler endpoints all healthy: "
-                        f"{list(comp_result.keys())}"
+                        f"[Startup] Compiler endpoints all healthy: {list(comp_result.keys())}"
                     )
         except Exception as e:
             logger.debug(f"[Startup] Compiler health check skipped: {e}")
@@ -594,7 +600,9 @@ async def start_api_server(
                 pass
 
     api_thread = threading.Thread(
-        target=_api_thread, daemon=True, name="openakita-api",
+        target=_api_thread,
+        daemon=True,
+        name="openakita-api",
     )
     api_thread.start()
 

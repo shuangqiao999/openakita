@@ -9,7 +9,7 @@ to shared resources by multiple agent instances.
 import asyncio
 import logging
 import time
-from typing import AsyncContextManager
+from contextlib import AbstractAsyncContextManager as AsyncContextManager
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +61,9 @@ class LockManager:
                     self._locks[resource] = ResourceLock(resource)
         return self._locks[resource]
 
-    def lock(self, resource: str, *, holder: str = "", timeout: float | None = None) -> AsyncContextManager:
+    def lock(
+        self, resource: str, *, holder: str = "", timeout: float | None = None
+    ) -> AsyncContextManager:
         """
         Get an async context manager for a resource lock.
 
@@ -85,15 +87,15 @@ class LockManager:
     def get_stats(self) -> dict:
         return {
             "total_locks": len(self._locks),
-            "active_locks": sum(1 for l in self._locks.values() if l.locked),
+            "active_locks": sum(1 for lk in self._locks.values() if lk.locked),
             "locks": {
                 name: {
-                    "locked": l.locked,
-                    "holder": l.holder,
-                    "acquire_count": l.acquire_count,
+                    "locked": lk.locked,
+                    "holder": lk.holder,
+                    "acquire_count": lk.acquire_count,
                 }
-                for name, l in self._locks.items()
-                if l.locked
+                for name, lk in self._locks.items()
+                if lk.locked
             },
         }
 
@@ -108,7 +110,9 @@ class LockManager:
                     lock.release()
                     released += 1
                 except RuntimeError:
-                    logger.warning(f"[LockManager] Cannot release lock {name} — not owned by current task")
+                    logger.warning(
+                        f"[LockManager] Cannot release lock {name} — not owned by current task"
+                    )
         # Clean up unused lock entries to prevent memory growth
         async with self._meta_lock:
             stale_keys = [k for k, v in self._locks.items() if not v.locked and v.acquire_count > 0]

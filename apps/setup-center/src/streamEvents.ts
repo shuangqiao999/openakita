@@ -33,6 +33,7 @@ export const StreamEventType = {
 
   // ── Security / Interaction ──
   SECURITY_CONFIRM: "security_confirm",
+  DEATH_SWITCH: "death_switch",
   ASK_USER: "ask_user",
 
   // ── Todo / Plan ──

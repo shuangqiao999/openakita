@@ -144,6 +144,8 @@ _REGISTRY: dict[str, ModelCapabilities] = {
         context_window=131_072,
         max_output_tokens=16_384,
         default_output_tokens=8_192,
+        supports_thinking=True,
+        thinking_budget_range=(1024, 38_000),
     ),
     "qwen-max-thinking": ModelCapabilities(
         context_window=128_000,

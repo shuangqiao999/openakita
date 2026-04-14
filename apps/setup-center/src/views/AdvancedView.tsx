@@ -8,6 +8,7 @@
 
 import { Fragment, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { IconFolder, IconFile, IconClipboard, IconLightbulb, IconCheck } from "../icons";
 import { invoke, IS_TAURI, saveFileDialog } from "../platform";
 import { safeFetch } from "../providers";
 import { joinPath, envGet, envSet } from "../utils";
@@ -444,7 +445,7 @@ export function AdvancedView(props: AdvancedViewProps) {
           </p>
         </Section>
 
-        {IS_TAURI && !!serviceStatus?.running && dataMode !== "remote" && (
+        {!!serviceStatus?.running && (
           <Section title={t("adv.webPasswordTitle")} className="mt-2">
             <div className="cardHint" style={{ marginBottom: 4 }}>{t("adv.webPasswordHint")}</div>
             <WebPasswordManager apiBase={httpApiBase()} />
@@ -719,7 +720,7 @@ export function AdvancedView(props: AdvancedViewProps) {
                       <div className="flex flex-col gap-0.5 mt-1">
                         {migratePreflight.entries.map((e) => (
                           <div key={e.name} className="flex justify-between text-xs py-0.5 px-2 rounded bg-muted/30">
-                            <span className="font-mono">{e.isDir ? "📁" : "📄"} {e.name}{e.existsAtTarget ? ` (${t("adv.migrateConflictHint")})` : ""}</span>
+                            <span className="font-mono">{e.isDir ? <IconFolder size={12} /> : <IconFile size={12} />} {e.name}{e.existsAtTarget ? ` (${t("adv.migrateConflictHint")})` : ""}</span>
                             <span className="text-muted-foreground">{e.sizeMb.toFixed(1)} MB</span>
                           </div>
                         ))}
@@ -966,7 +967,7 @@ function ExtensionsCard({
               background: ext.installed ? "var(--ok, #22c55e)" : "var(--line)",
               color: ext.installed ? "#fff" : "var(--muted)",
             }}>
-              {ext.installed ? `✓ ${t("adv.extInstalled")}` : t("adv.extNotInstalled")}
+              {ext.installed ? <><IconCheck size={10} /> {t("adv.extInstalled")}</> : t("adv.extNotInstalled")}
             </span>
           </div>
 
@@ -986,7 +987,7 @@ function ExtensionsCard({
               {ext.install_cmd}
             </code>
             <Button variant="ghost" size="xs" onClick={() => copyCmd(ext.install_cmd)} style={{ padding: "2px 6px", fontSize: 11 }}>
-              📋
+              <IconClipboard size={12} />
             </Button>
 
             <span className="text-muted-foreground">{t("adv.extUpgrade")}:</span>
@@ -994,7 +995,7 @@ function ExtensionsCard({
               {ext.upgrade_cmd}
             </code>
             <Button variant="ghost" size="xs" onClick={() => copyCmd(ext.upgrade_cmd)} style={{ padding: "2px 6px", fontSize: 11 }}>
-              📋
+              <IconClipboard size={12} />
             </Button>
 
             {ext.setup_cmd && (
@@ -1004,7 +1005,7 @@ function ExtensionsCard({
                   {ext.setup_cmd}
                 </code>
                 <Button variant="ghost" size="xs" onClick={() => copyCmd(ext.setup_cmd!)} style={{ padding: "2px 6px", fontSize: 11 }}>
-                  📋
+                  <IconClipboard size={12} />
                 </Button>
               </>
             )}
@@ -1023,7 +1024,7 @@ function ExtensionsCard({
       {exts && exts.length > 0 && (
         <div style={{ marginTop: 8, padding: "8px 0", borderTop: "1px solid var(--line)" }}>
           <p className="text-xs text-muted-foreground" style={{ marginBottom: 4 }}>
-            💡 {t("adv.extChatHint")}
+            <IconLightbulb size={12} /> {t("adv.extChatHint")}
           </p>
           <p className="text-xs text-muted-foreground" style={{ fontStyle: "italic" }}>
             {t("adv.extCreditsHint")}

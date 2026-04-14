@@ -1,33 +1,38 @@
 import { useEffect, useState } from "react";
 import type { MdModules } from "../utils/chatTypes";
 
-let _mdModules: MdModules | null = null;
-let _mdLoadAttempted = false;
+let _cached: MdModules | null = null;
+let _loading: Promise<MdModules | null> | null = null;
+
+function loadMdModules(): Promise<MdModules | null> {
+  if (_cached) return Promise.resolve(_cached);
+  if (_loading) return _loading;
+
+  _loading = Promise.all([
+    import("react-markdown"),
+    import("remark-gfm"),
+    import("rehype-highlight"),
+  ]).then(([md, gfm, hl]) => {
+    _cached = {
+      ReactMarkdown: md.default,
+      remarkPlugins: [gfm.default],
+      rehypePlugins: [hl.default],
+    };
+    return _cached;
+  }).catch((err) => {
+    console.warn("[useMdModules] load failed:", err);
+    _loading = null;
+    return null;
+  });
+
+  return _loading;
+}
 
 export function useMdModules(): MdModules | null {
-  const [mods, setMods] = useState<MdModules | null>(() => _mdModules);
+  const [mods, setMods] = useState<MdModules | null>(() => _cached);
   useEffect(() => {
-    if (_mdModules) { setMods(_mdModules); return; }
-    if (_mdLoadAttempted) return;
-    _mdLoadAttempted = true;
-    try {
-      new RegExp("\\p{ID_Start}", "u");
-      new RegExp("(?<=a)b");
-    } catch { return; }
-    Promise.all([
-      import("react-markdown"),
-      import("remark-gfm"),
-      import("rehype-highlight"),
-    ]).then(([md, gfm, hl]) => {
-      _mdModules = {
-        ReactMarkdown: md.default,
-        remarkPlugins: [gfm.default],
-        rehypePlugins: [hl.default],
-      };
-      setMods(_mdModules);
-    }).catch((err) => {
-      console.warn("[ChatView] markdown modules unavailable:", err);
-    });
+    if (_cached) { setMods(_cached); return; }
+    loadMdModules().then((m) => { if (m) setMods(m); });
   }, []);
   return mods;
 }

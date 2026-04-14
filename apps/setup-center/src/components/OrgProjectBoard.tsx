@@ -75,6 +75,7 @@ const STATUS_META: Record<string, { label: string; color: string; order: number 
   rejected:    { label: "已打回", color: "#f97316", order: 3 },
   accepted:    { label: "已验收", color: "#22c55e", order: 4 },
   blocked:     { label: "已阻塞", color: "#ef4444", order: 5 },
+  cancelled:   { label: "已取消", color: "#94a3b8", order: 6 },
 };
 
 const COLUMNS = Object.entries(STATUS_META).map(([key, v]) => ({ key, ...v }));
@@ -101,6 +102,7 @@ export function OrgProjectBoard({ orgId, apiBaseUrl, nodes = [], compact = false
   const [newTaskDesc, setNewTaskDesc] = useState("");
   const [newTaskAssignee, setNewTaskAssignee] = useState("");
   const [dispatchingTaskId, setDispatchingTaskId] = useState<string | null>(null);
+  const [cancellingTaskId, setCancellingTaskId] = useState<string | null>(null);
   const [selectedTask, setSelectedTask] = useState<any>(null);
   const [taskDetail, setTaskDetail] = useState<any>(null);
   const [taskTimeline, setTaskTimeline] = useState<any[]>([]);
@@ -289,6 +291,15 @@ export function OrgProjectBoard({ orgId, apiBaseUrl, nodes = [], compact = false
       if (res.ok) fetchProjects();
     } catch { /* ignore */ }
     finally { setDispatchingTaskId(null); }
+  };
+
+  const cancelTask = async (projectId: string, taskId: string) => {
+    setCancellingTaskId(taskId);
+    try {
+      const res = await safeFetch(`${apiBaseUrl}/api/orgs/${orgId}/projects/${projectId}/tasks/${taskId}/cancel`, { method: "POST" });
+      if (res.ok) fetchProjects();
+    } catch { /* ignore */ }
+    finally { setCancellingTaskId(null); }
   };
 
   const selectedProject = projects.find(p => p.id === selectedProjectId);
@@ -785,8 +796,10 @@ export function OrgProjectBoard({ orgId, apiBaseUrl, nodes = [], compact = false
             onTaskClick={openTaskDetail}
             onStatusChange={(tid, st) => updateTaskStatus(selectedProject.id, tid, st)}
             onDispatch={(tid) => dispatchTask(selectedProject.id, tid)}
+            onCancel={(tid) => cancelTask(selectedProject.id, tid)}
             onDelete={(task) => requestTaskDelete(selectedProject.id, task)}
             dispatchingTaskId={dispatchingTaskId}
+            cancellingTaskId={cancellingTaskId}
           />
         ) : (
           <KanbanView
@@ -795,8 +808,10 @@ export function OrgProjectBoard({ orgId, apiBaseUrl, nodes = [], compact = false
             onTaskClick={openTaskDetail}
             onStatusChange={(tid, st) => updateTaskStatus(selectedProject.id, tid, st)}
             onDispatch={(tid) => dispatchTask(selectedProject.id, tid)}
+            onCancel={(tid) => cancelTask(selectedProject.id, tid)}
             onDelete={(task) => requestTaskDelete(selectedProject.id, task)}
             dispatchingTaskId={dispatchingTaskId}
+            cancellingTaskId={cancellingTaskId}
           />
         )
       ) : (
@@ -986,15 +1001,17 @@ export function OrgProjectBoard({ orgId, apiBaseUrl, nodes = [], compact = false
 /* ═══════════════════ Gantt View ═══════════════════ */
 
 function GanttView({
-  tasks, nodeMap, onTaskClick, onStatusChange, onDispatch, onDelete, dispatchingTaskId,
+  tasks, nodeMap, onTaskClick, onStatusChange, onDispatch, onCancel, onDelete, dispatchingTaskId, cancellingTaskId,
 }: {
   tasks: ProjectTask[];
   nodeMap: Map<string, { id: string; role_title?: string; avatar?: string | null }>;
   onTaskClick: (t: ProjectTask) => void;
   onStatusChange: (tid: string, status: string) => void;
   onDispatch: (tid: string) => void;
+  onCancel: (tid: string) => void;
   onDelete: (task: ProjectTask) => void;
   dispatchingTaskId: string | null;
+  cancellingTaskId: string | null;
 }) {
   const sorted = useMemo(() =>
     [...tasks].sort((a, b) => {
@@ -1080,13 +1097,15 @@ function GanttView({
                       )}
                       {task.status === "in_progress" && (<>
                         <Button
-                          variant="ghost"
+                          variant="destructive"
                           size="xs"
-                          className="h-6 px-2 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                          onClick={() => onStatusChange(task.id, "blocked")}
-                          title="中止"
+                          className="h-6 px-2"
+                          onClick={() => onCancel(task.id)}
+                          disabled={cancellingTaskId === task.id}
+                          title="终止正在执行的任务"
                         >
-                          中止
+                          <X className="h-3 w-3" />
+                          {cancellingTaskId === task.id ? "终止中…" : "终止"}
                         </Button>
                       </>)}
                       {task.status === "delivered" && (<>
@@ -1099,7 +1118,7 @@ function GanttView({
                           打回
                         </Button>
                       </>)}
-                      {(task.status === "rejected" || task.status === "blocked") && (
+                      {(task.status === "rejected" || task.status === "blocked" || task.status === "cancelled") && (
                         <button data-slot="opb" className="opb-act opb-act--ghost"
                           onClick={() => onDispatch(task.id)} disabled={dispatchingTaskId === task.id}>
                           {dispatchingTaskId === task.id ? "…" : "重新派发"}
@@ -1158,15 +1177,17 @@ function GanttView({
 /* ═══════════════════ Kanban View ═══════════════════ */
 
 function KanbanView({
-  tasks, nodeMap, onTaskClick, onStatusChange, onDispatch, onDelete, dispatchingTaskId,
+  tasks, nodeMap, onTaskClick, onStatusChange, onDispatch, onCancel, onDelete, dispatchingTaskId, cancellingTaskId,
 }: {
   tasks: ProjectTask[];
   nodeMap: Map<string, { id: string; role_title?: string; avatar?: string | null }>;
   onTaskClick: (t: ProjectTask) => void;
   onStatusChange: (tid: string, status: string) => void;
   onDispatch: (tid: string) => void;
+  onCancel: (tid: string) => void;
   onDelete: (task: ProjectTask) => void;
   dispatchingTaskId: string | null;
+  cancellingTaskId: string | null;
 }) {
   return (
     <div className="opb-kanban">
@@ -1199,12 +1220,15 @@ function KanbanView({
                         )}
                         {col.key === "in_progress" && (<>
                           <Button
-                            variant="ghost"
+                            variant="destructive"
                             size="xs"
-                            className="h-6 px-2 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                            onClick={() => onStatusChange(task.id, "blocked")}
+                            className="h-6 px-2"
+                            onClick={() => onCancel(task.id)}
+                            disabled={cancellingTaskId === task.id}
+                            title="终止正在执行的任务"
                           >
-                            中止
+                            <X className="h-3 w-3" />
+                            {cancellingTaskId === task.id ? "…" : "终止"}
                           </Button>
                         </>)}
                         {col.key === "delivered" && (<>
@@ -1217,7 +1241,7 @@ function KanbanView({
                             打回
                           </Button>
                         </>)}
-                        {(col.key === "rejected" || col.key === "blocked") && (
+                        {(col.key === "rejected" || col.key === "blocked" || col.key === "cancelled") && (
                           <button data-slot="opb" className="opb-act opb-act--ghost"
                             onClick={() => onDispatch(task.id)} disabled={dispatchingTaskId === task.id}>
                             {dispatchingTaskId === task.id ? "…" : "↻"}

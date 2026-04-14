@@ -34,7 +34,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { LogoTelegram, LogoFeishu, LogoWework, LogoDingtalk, LogoQQ, LogoOneBot, LogoWechat } from "../icons";
-import { AlertCircle, ArrowLeft, ArrowRight, Bot, BotOff, Check, Dices, Loader2, MoreHorizontal, Pencil, RefreshCw, Sparkles, Trash2, X } from "lucide-react";
+import { AlertCircle, ArrowLeft, ArrowRight, Bot, BotOff, Check, Dices, Loader2, MoreHorizontal, Pencil, RefreshCw, Sparkles, Terminal, Trash2, X } from "lucide-react";
 
 // ─── Types ──────────────────────────────────────────────────────────────
 
@@ -119,6 +119,13 @@ const BOT_TYPE_LABEL_KEYS: Record<string, string> = {
 
 const WEWORK_TYPES = new Set(["wework", "wework_ws"]);
 const ONEBOT_TYPES = new Set(["onebot", "onebot_reverse"]);
+
+const CLI_SKILL_HINTS: Record<string, { name: string; cmd: string }> = {
+  feishu: { name: "飞书 CLI (lark-cli)", cmd: "npm install -g @larksuite/cli && npx skills add larksuite/cli -y -g" },
+  dingtalk: { name: "钉钉 CLI (dws)", cmd: "npm install -g dingtalk-workspace-cli && npx skills add DingTalk-Real-AI/dingtalk-workspace-cli -y -g" },
+  wework: { name: "企微 CLI (wecom-cli)", cmd: "npm install -g @wecom/cli && npx skills add WeComTeam/wecom-cli -y -g" },
+  wework_ws: { name: "企微 CLI (wecom-cli)", cmd: "npm install -g @wecom/cli && npx skills add WeComTeam/wecom-cli -y -g" },
+};
 
 const CREDENTIAL_FIELDS: Record<string, { key: string; label: string; secret?: boolean; placeholder?: string }[]> = {
   feishu: [
@@ -311,6 +318,7 @@ function MessagesTab({ serviceRunning, apiBase }: { serviceRunning: boolean; api
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const topSentinelRef = useRef<HTMLDivElement>(null);
   const isFirstLoad = useRef(true);
+  const isNearBottomRef = useRef(true);
   const oldestLoadedOffset = useRef(0);
 
   const [inlineEditSessionId, setInlineEditSessionId] = useState<string | null>(null);
@@ -380,7 +388,10 @@ function MessagesTab({ serviceRunning, apiBase }: { serviceRunning: boolean; api
       setMessages(data.messages || []);
       setTotalMessages(data.total || 0);
       oldestLoadedOffset.current = data.offset ?? 0;
-    } catch { /* ignore */ }
+    } catch {
+      setMessages([]);
+      setTotalMessages(0);
+    }
   }, [serviceRunning, apiBase]);
 
   const deleteSession = useCallback(async (sessionId: string) => {
@@ -457,20 +468,25 @@ function MessagesTab({ serviceRunning, apiBase }: { serviceRunning: boolean; api
     setSelectedChannel(ch);
     setSelectedSessionId(null);
     setMessages([]);
+    setTotalMessages(0);
     const list = await fetchSessions(ch);
     if (list.length > 0) {
       const first = list[0];
       setSelectedSessionId(first.sessionId);
       isFirstLoad.current = true;
+      isNearBottomRef.current = true;
       fetchMessages(first.sessionId, 50, 0, undefined, undefined, true);
     }
   }, [fetchSessions, fetchMessages]);
 
   const handleSelectSession = useCallback((sid: string) => {
     setSelectedSessionId(sid);
+    setMessages([]);
+    setTotalMessages(0);
     setSelectMode(false);
     setSelectedMsgIds(new Set());
     isFirstLoad.current = true;
+    isNearBottomRef.current = true;
     fetchMessages(sid, 50, 0, undefined, undefined, true);
   }, [fetchMessages]);
 
@@ -534,12 +550,20 @@ function MessagesTab({ serviceRunning, apiBase }: { serviceRunning: boolean; api
     });
   }, []);
 
+  const handleMessagesScroll = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 150;
+  }, []);
+
   useEffect(() => {
-    if (isFirstLoad.current && messages.length > 0 && scrollContainerRef.current) {
+    const el = scrollContainerRef.current;
+    if (!el || messages.length === 0) return;
+    if (isFirstLoad.current || isNearBottomRef.current) {
       isFirstLoad.current = false;
       requestAnimationFrame(() => {
-        const el = scrollContainerRef.current;
-        if (el) el.scrollTop = el.scrollHeight;
+        const container = scrollContainerRef.current;
+        if (container) container.scrollTop = container.scrollHeight;
       });
     }
   }, [messages]);
@@ -779,7 +803,7 @@ function MessagesTab({ serviceRunning, apiBase }: { serviceRunning: boolean; api
                       )}
                   onClick={() => handleSelectSession(s.sessionId)}
                       title={[
-                        s.alias ? `✏ ${s.alias}` : null,
+                        s.alias ? `[${s.alias}]` : null,
                         s.chatType === "group"
                           ? (s.chatName || s.chatId || s.sessionId)
                           : (s.displayName || s.userId || s.chatId || s.sessionId),
@@ -936,7 +960,7 @@ function MessagesTab({ serviceRunning, apiBase }: { serviceRunning: boolean; api
                 )}
               </div>
               {/* Messages list */}
-              <div ref={scrollContainerRef} className="flex-1 overflow-auto px-4 py-3 space-y-3">
+              <div ref={scrollContainerRef} onScroll={handleMessagesScroll} className="flex-1 overflow-auto px-4 py-3 space-y-3">
                 {/* Top sentinel for infinite scroll */}
                 <div ref={topSentinelRef} className="h-px" />
                 {oldestLoadedOffset.current > 0 && (
@@ -1509,7 +1533,9 @@ export function BotConfigTab({ apiBase, multiAgentEnabled, onRequestRestart, ven
                 </Badge>
               </div>
               <div className="flex items-center gap-2.5 mb-1.5">
-                <span className="text-2xl leading-none shrink-0">{agentProfile?.icon || "🤖"}</span>
+                <span className="inline-flex items-center justify-center shrink-0 text-2xl leading-none">
+                  {agentProfile?.icon ? agentProfile.icon : <IconBot size={22} />}
+                </span>
                 <div className="min-w-0">
                   <div className="font-bold text-sm truncate" title={bot.name || bot.id}>{bot.name || bot.id}</div>
                   <div className="text-[11px] text-muted-foreground/45 font-mono truncate" title={bot.id}>{bot.id}</div>
@@ -1732,6 +1758,22 @@ export function BotConfigTab({ apiBase, multiAgentEnabled, onRequestRestart, ven
               <Button variant="outline" className="w-full border-dashed border-primary text-primary" onClick={() => setShowPluginOnboard(true)}>
                 {t("im.waQrScan", { defaultValue: "Scan QR to connect WhatsApp" })}
               </Button>
+            )}
+
+            {/* 6b. CLI Skill recommendation */}
+            {CLI_SKILL_HINTS[editingBot.type] && (
+              <div className="rounded-lg border border-blue-200 bg-blue-50/50 dark:border-blue-800/50 dark:bg-blue-950/30 p-3 space-y-1.5">
+                <p className="text-xs font-medium text-blue-800 dark:text-blue-300 flex items-center gap-1.5">
+                  <Terminal size={13} />
+                  {t("im.cliSkillHint")}
+                </p>
+                <p className="text-[11px] text-blue-700/80 dark:text-blue-400/80">
+                  {CLI_SKILL_HINTS[editingBot.type].name}
+                </p>
+                <code className="block text-[10px] bg-blue-100/80 dark:bg-blue-900/40 rounded px-2 py-1.5 text-blue-900 dark:text-blue-200 select-all break-all leading-relaxed">
+                  {CLI_SKILL_HINTS[editingBot.type].cmd}
+                </code>
+              </div>
             )}
 
             {/* 7. Credentials */}

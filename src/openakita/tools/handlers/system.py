@@ -171,6 +171,11 @@ class SystemHandler:
 
         return "\n".join(line for line in lines if line is not None)
 
+    _GENERATE_IMAGE_FAIL_HINT = (
+        "\n[行为指引] 图片生成接口暂时不可用，请直接将上述失败原因告知用户。"
+        "不要尝试用 run_shell、pip install 或任何其他方式替代生成图片。"
+    )
+
     async def _generate_image(self, params: dict) -> str:
         """
         文生图：调用 Qwen-Image 同步接口，下载图片并落盘。
@@ -184,13 +189,15 @@ class SystemHandler:
 
         from ...config import settings
 
+        _hint = self._GENERATE_IMAGE_FAIL_HINT
+
         prompt = (params.get("prompt") or "").strip()
         if not prompt:
             return "❌ prompt 不能为空"
 
         api_key = (getattr(settings, "dashscope_api_key", "") or "").strip()
         if not api_key:
-            return "❌ 未配置 DASHSCOPE_API_KEY，无法生成图片"
+            return f"❌ 未配置 DASHSCOPE_API_KEY，无法生成图片{_hint}"
 
         model = (params.get("model") or "qwen-image-max").strip()
         negative_prompt = (params.get("negative_prompt") or "").strip()
@@ -231,18 +238,45 @@ class SystemHandler:
             "Authorization": f"Bearer {api_key}",
         }
 
+        from ...channels.retry import async_with_retry
+        from ...llm.providers.proxy_utils import extract_connection_error, get_httpx_client_kwargs
+
+        _dl_headers = {"User-Agent": "OpenAkita/1.0 (image-download)"}
+
+        async def _download_image(url: str) -> bytes:
+            """先直连后代理下载：国内 CDN 通常无需代理，直连更快更稳定。"""
+            # 第一次：不使用代理直连下载
+            try:
+                async with httpx.AsyncClient(
+                    timeout=60, trust_env=False, follow_redirects=True
+                ) as dl_client:
+                    resp = await dl_client.get(url, headers=_dl_headers)
+                    resp.raise_for_status()
+                    return resp.content
+            except Exception as direct_err:
+                logger.debug("generate_image: direct download failed: %s", direct_err)
+            # 第二次：使用全局代理配置重试
+            async with httpx.AsyncClient(
+                **get_httpx_client_kwargs(timeout=60), follow_redirects=True
+            ) as dl_client:
+                resp = await dl_client.get(url, headers=_dl_headers)
+                resp.raise_for_status()
+                return resp.content
+
         # 1) 生成图片（返回临时 URL）
         t0 = time.time()
         try:
-            async with httpx.AsyncClient(timeout=180, follow_redirects=True) as client:
+            async with httpx.AsyncClient(
+                **get_httpx_client_kwargs(timeout=180), follow_redirects=True
+            ) as client:
                 resp = await client.post(api_url, headers=headers, json=body)
                 if resp.status_code >= 400:
-                    return f"❌ 图片生成失败: HTTP {resp.status_code}\n{(resp.text or '')[:800]}"
+                    return f"❌ 图片生成失败: HTTP {resp.status_code}\n{(resp.text or '')[:800]}{_hint}"
                 try:
                     data = resp.json()
                 except Exception as e:
                     preview = (resp.text or "")[:800]
-                    return f"❌ 图片生成返回非 JSON（{type(e).__name__}: {e}）\n{preview}"
+                    return f"❌ 图片生成返回非 JSON（{type(e).__name__}: {e}）\n{preview}{_hint}"
 
                 # 兼容响应结构：output.choices[0].message.content[0].image
                 image_url = None
@@ -260,34 +294,38 @@ class SystemHandler:
                 request_id = data.get("request_id") or data.get("requestId")
 
                 if not image_url:
-                    # 失败结构：code/message
                     code = data.get("code")
                     msg = data.get("message")
-                    return f"❌ 图片生成返回异常：未找到 image 字段（code={code}, message={msg}）"
+                    return f"❌ 图片生成返回异常：未找到 image 字段（code={code}, message={msg}）{_hint}"
 
-                # 2) 下载并落盘
-                if output_path:
-                    out_path = Path(output_path)
-                else:
-                    out_dir = Path("data") / "generated_images"
-                    out_dir.mkdir(parents=True, exist_ok=True)
-                    suffix = request_id or str(int(time.time()))
-                    out_path = out_dir / f"{model}_{suffix}.png"
+            # 2) 下载并落盘（独立客户端，每次重试全新连接）
+            if output_path:
+                out_path = Path(output_path)
+            else:
+                out_dir = Path("data") / "generated_images"
+                out_dir.mkdir(parents=True, exist_ok=True)
+                suffix = request_id or str(int(time.time()))
+                out_path = out_dir / f"{model}_{suffix}.png"
 
-                out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
 
-                try:
-                    img_resp = await client.get(image_url)
-                    if img_resp.status_code >= 400:
-                        return f"❌ 图片下载失败: HTTP {img_resp.status_code}"
-                    out_path.write_bytes(img_resp.content)
-                except httpx.HTTPError as e:
-                    return f"❌ 图片下载失败（网络错误）：{type(e).__name__}: {e}"
+            try:
+                img_bytes = await async_with_retry(
+                    _download_image, image_url,
+                    max_retries=3, base_delay=2.0, operation_name="download_generated_image",
+                )
+                out_path.write_bytes(img_bytes)
+            except Exception as e:
+                detail = extract_connection_error(e)
+                from urllib.parse import urlparse
+                host = urlparse(image_url).hostname or image_url[:60]
+                return f"❌ 图片下载失败（网络错误，目标: {host}）: {detail}{_hint}"
 
         except httpx.HTTPError as e:
-            return f"❌ 图片生成请求失败（网络错误）：{type(e).__name__}: {e}"
+            detail = extract_connection_error(e)
+            return f"❌ 图片生成请求失败（网络错误）: {detail}{_hint}"
         except Exception as e:
-            return f"❌ 图片生成失败（异常）：{type(e).__name__}: {e}"
+            return f"❌ 图片生成失败（异常）：{type(e).__name__}: {e}{_hint}"
 
         elapsed_ms = int((time.time() - t0) * 1000)
         return json.dumps(

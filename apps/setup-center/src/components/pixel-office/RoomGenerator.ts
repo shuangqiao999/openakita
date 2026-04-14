@@ -33,7 +33,9 @@ const HALL_HEIGHT = 2;
 const DEPT_COLS = 3;
 
 function createEmptyMap(w: number, h: number): number[][] {
-  return Array.from({ length: h }, () => new Array(w).fill(TILE.EMPTY));
+  const safeW = Math.max(1, Math.ceil(w)) || 1;
+  const safeH = Math.max(1, Math.ceil(h)) || 1;
+  return Array.from({ length: safeH }, () => new Array(safeW).fill(TILE.EMPTY));
 }
 
 function fillRect(map: number[][], x: number, y: number, w: number, h: number, tile: number) {
@@ -84,7 +86,7 @@ export function generateLayout(
   const specialW = Math.max(MIN_ROOM_W, 10);
   const specialH = 7;
 
-  const meetingW = Math.max(MIN_ROOM_W + 2, cols * (deptRoomW / 2) + 4);
+  const meetingW = Math.max(MIN_ROOM_W + 2, Math.ceil(cols * (deptRoomW / 2)) + 4);
   const meetingH = 8;
 
   const deptRowW = cols * (deptRoomW + ROOM_PADDING) + ROOM_PADDING;

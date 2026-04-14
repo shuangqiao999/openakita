@@ -625,10 +625,10 @@ export function MCPView({
           if (cr.connected) {
             connMsg = `, ${t("mcp.autoConnected", { count: cr.tool_count ?? 0 })}`;
           } else {
-            connMsg = `\n⚠️ ${t("mcp.autoConnectFailed")}: ${cr.error || t("mcp.unknownError")}`;
+            connMsg = `\n[!] ${t("mcp.autoConnectFailed")}: ${cr.error || t("mcp.unknownError")}`;
           }
         }
-        showMsg(`✅ 已添加 ${name}${connMsg}`, !cr || cr.connected !== false);
+        showMsg(`[OK] 已添加 ${name}${connMsg}`, !cr || cr.connected !== false);
         setForm({ ...emptyForm });
         setShowAdd(false);
         await fetchServers();

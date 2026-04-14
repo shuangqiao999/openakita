@@ -108,10 +108,10 @@ class TestZoneOpMatrix:
         result = engine.assert_tool_allowed("read_file", {"path": path})
         assert result.decision == PolicyDecision.ALLOW
 
-    def test_workspace_delete_allowed(self, engine, tmp_workspace):
+    def test_workspace_delete_requires_confirm(self, engine, tmp_workspace):
         path = str(tmp_workspace / "workspace" / "old.txt")
         result = engine.assert_tool_allowed("delete_file", {"path": path})
-        assert result.decision == PolicyDecision.ALLOW
+        assert result.decision == PolicyDecision.CONFIRM
 
     def test_controlled_read_allowed(self, engine, tmp_workspace):
         path = str(tmp_workspace / "controlled" / "data.csv")

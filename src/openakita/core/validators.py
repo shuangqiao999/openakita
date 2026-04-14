@@ -8,22 +8,24 @@
 - PlanValidator: 验证 Plan 所有步骤状态
 - ArtifactValidator: 验证交付物是否完整（基于 delivery_receipts）
 - ToolSuccessValidator: 验证关键工具是否执行成功
-- FileValidator: 验证文件操作结果
+- FileValidator: 验证文件操作结果（磁盘存在性/大小校验）
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any
+from enum import StrEnum
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 
-class ValidationResult(str, Enum):
+class ValidationResult(StrEnum):
     """验证结果"""
+
     PASS = "pass"
     WARN = "warn"
     FAIL = "fail"
@@ -33,6 +35,7 @@ class ValidationResult(str, Enum):
 @dataclass
 class ValidatorOutput:
     """单个验证器的输出"""
+
     name: str
     result: ValidationResult
     reason: str = ""
@@ -42,12 +45,17 @@ class ValidatorOutput:
 @dataclass
 class ValidationReport:
     """综合验证报告"""
+
     outputs: list[ValidatorOutput] = field(default_factory=list)
 
     @property
     def all_passed(self) -> bool:
         applicable = [o for o in self.outputs if o.result != ValidationResult.SKIP]
-        return all(o.result in (ValidationResult.PASS, ValidationResult.WARN) for o in applicable) if applicable else True
+        return (
+            all(o.result in (ValidationResult.PASS, ValidationResult.WARN) for o in applicable)
+            if applicable
+            else True
+        )
 
     @property
     def any_failed(self) -> bool:
@@ -71,7 +79,11 @@ class ValidationReport:
         for o in self.outputs:
             if o.result == ValidationResult.SKIP:
                 continue
-            icon = "✓" if o.result == ValidationResult.PASS else ("⚠" if o.result == ValidationResult.WARN else "✗")
+            icon = (
+                "✓"
+                if o.result == ValidationResult.PASS
+                else ("⚠" if o.result == ValidationResult.WARN else "✗")
+            )
             parts.append(f"{icon} {o.name}: {o.reason}")
         return "\n".join(parts) if parts else "No applicable validators"
 
@@ -81,17 +93,16 @@ class BaseValidator(ABC):
 
     @property
     @abstractmethod
-    def name(self) -> str:
-        ...
+    def name(self) -> str: ...
 
     @abstractmethod
-    def validate(self, context: ValidationContext) -> ValidatorOutput:
-        ...
+    def validate(self, context: ValidationContext) -> ValidatorOutput: ...
 
 
 @dataclass
 class ValidationContext:
     """验证上下文（传递给所有验证器的数据）"""
+
     user_request: str = ""
     assistant_response: str = ""
     executed_tools: list[str] = field(default_factory=list)
@@ -135,7 +146,9 @@ class PlanValidator(BaseValidator):
             failed = sum(1 for s in steps if s.get("status") == "failed")
 
             if pending > 0:
-                pending_ids = [s.get("id", "?") for s in steps if s.get("status") in ("pending", "in_progress")]
+                pending_ids = [
+                    s.get("id", "?") for s in steps if s.get("status") in ("pending", "in_progress")
+                ]
                 return ValidatorOutput(
                     name=self.name,
                     result=ValidationResult.FAIL,
@@ -252,14 +265,15 @@ class CompletePlanValidator(BaseValidator):
 
     def validate(self, context: ValidationContext) -> ValidatorOutput:
         if "complete_todo" in context.executed_tools:
-                return ValidatorOutput(
-                    name=self.name,
-                    result=ValidationResult.PASS,
-                    reason="complete_todo was called",
-                )
+            return ValidatorOutput(
+                name=self.name,
+                result=ValidationResult.PASS,
+                reason="complete_todo was called",
+            )
 
         try:
             from ..tools.handlers.plan import has_active_todo
+
             if context.conversation_id and has_active_todo(context.conversation_id):
                 return ValidatorOutput(
                     name=self.name,
@@ -276,12 +290,97 @@ class CompletePlanValidator(BaseValidator):
         )
 
 
+class FileValidator(BaseValidator):
+    """文件操作结果验证（磁盘级确定性校验）
+
+    从 tool_results 文本中提取路径，校验文件在磁盘上的实际状态：
+    - write_file / edit_file: 文件应存在且大小 > 0
+    - delete_file: 文件应已不存在
+    """
+
+    _WRITE_PATH_RE = re.compile(
+        r"文件已[写编][入辑][:：]\s*(.+?)(?:\s+\(\d+\s*bytes\)|（|$)", re.MULTILINE
+    )
+    _DELETE_PATH_RE = re.compile(r"(?:文件|目录)已删除[:：]\s*(.+?)\s*$", re.MULTILINE)
+
+    @property
+    def name(self) -> str:
+        return "FileValidator"
+
+    def validate(self, context: ValidationContext) -> ValidatorOutput:
+        file_tools = {"write_file", "edit_file", "delete_file"}
+        if not (file_tools & set(context.executed_tools)):
+            return ValidatorOutput(
+                name=self.name,
+                result=ValidationResult.SKIP,
+                reason="No file operations executed",
+            )
+
+        issues: list[str] = []
+        checked = 0
+
+        for tr in context.tool_results:
+            if not isinstance(tr, dict):
+                continue
+            content = str(tr.get("content", ""))
+            if tr.get("is_error"):
+                continue
+
+            # write / edit: 文件应存在
+            m = self._WRITE_PATH_RE.search(content)
+            if m:
+                fpath = m.group(1).strip()
+                checked += 1
+                try:
+                    p = Path(fpath)
+                    if not p.exists():
+                        issues.append(f"write/edit 目标不存在: {fpath}")
+                    elif p.stat().st_size == 0:
+                        issues.append(f"write/edit 目标为空文件: {fpath}")
+                except OSError as e:
+                    issues.append(f"无法检查 {fpath}: {e}")
+                continue
+
+            # delete: 文件应已不存在
+            m = self._DELETE_PATH_RE.search(content)
+            if m:
+                fpath = m.group(1).strip()
+                checked += 1
+                try:
+                    if Path(fpath).exists():
+                        issues.append(f"delete 目标仍存在: {fpath}")
+                except OSError:
+                    pass
+                continue
+
+        if checked == 0:
+            return ValidatorOutput(
+                name=self.name,
+                result=ValidationResult.SKIP,
+                reason="No parseable file paths in tool results",
+            )
+
+        if issues:
+            return ValidatorOutput(
+                name=self.name,
+                result=ValidationResult.WARN,
+                reason=f"{len(issues)} issue(s): {'; '.join(issues[:3])}",
+            )
+
+        return ValidatorOutput(
+            name=self.name,
+            result=ValidationResult.PASS,
+            reason=f"All {checked} file operation(s) verified on disk",
+        )
+
+
 # ==================== 验证器注册表 ====================
 
 _DEFAULT_VALIDATORS: list[BaseValidator] = [
     PlanValidator(),
     ArtifactValidator(),
     ToolSuccessValidator(),
+    FileValidator(),
     CompletePlanValidator(),
 ]
 
@@ -305,15 +404,18 @@ class ValidatorRegistry:
                 report.outputs.append(output)
             except Exception as e:
                 logger.warning(f"[Validator] {validator.name} error: {e}")
-                report.outputs.append(ValidatorOutput(
-                    name=validator.name,
-                    result=ValidationResult.SKIP,
-                    reason=f"Validator error: {e}",
-                ))
+                report.outputs.append(
+                    ValidatorOutput(
+                        name=validator.name,
+                        result=ValidationResult.SKIP,
+                        reason=f"Validator error: {e}",
+                    )
+                )
 
         # Decision Trace
         try:
             from ..tracing.tracer import get_tracer
+
             tracer = get_tracer()
             tracer.record_decision(
                 decision_type="deterministic_validation",

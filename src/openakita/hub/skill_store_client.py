@@ -11,19 +11,17 @@ SkillStoreClient — 与 OpenAkita Platform Skill Store 交互的客户端
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import os
+import random
 import shutil
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-
-import json
-from datetime import datetime, timezone
-
-import asyncio
-import random
 
 import httpx
 
@@ -64,10 +62,14 @@ async def _retry_request(
                 await asyncio.sleep(wait)
                 continue
             if resp.status_code in _RETRY_STATUS_CODES and attempt < max_retries:
-                wait = _BASE_BACKOFF * (2 ** attempt) + random.uniform(0, 0.5)
+                wait = _BASE_BACKOFF * (2**attempt) + random.uniform(0, 0.5)
                 logger.warning(
                     "Server error %d on %s, retry %d/%d in %.1fs",
-                    resp.status_code, url, attempt + 1, max_retries, wait,
+                    resp.status_code,
+                    url,
+                    attempt + 1,
+                    max_retries,
+                    wait,
                 )
                 await asyncio.sleep(wait)
                 continue
@@ -75,10 +77,14 @@ async def _retry_request(
         except (httpx.TimeoutException, httpx.ConnectError) as e:
             last_exc = e
             if attempt < max_retries:
-                wait = _BASE_BACKOFF * (2 ** attempt) + random.uniform(0, 0.5)
+                wait = _BASE_BACKOFF * (2**attempt) + random.uniform(0, 0.5)
                 logger.warning(
                     "Request to %s failed (%s), retry %d/%d in %.1fs",
-                    url, type(e).__name__, attempt + 1, max_retries, wait,
+                    url,
+                    type(e).__name__,
+                    attempt + 1,
+                    max_retries,
+                    wait,
                 )
                 await asyncio.sleep(wait)
             else:
@@ -123,6 +129,7 @@ class SkillStoreClient:
     def _get_version() -> str:
         try:
             from .._bundled_version import __version__
+
             return __version__
         except Exception:
             return "dev"
@@ -162,13 +169,14 @@ class SkillStoreClient:
             origin = {
                 "source": install_url,
                 "type": "platform_store",
-                "installed_at": datetime.now(timezone.utc).isoformat(),
+                "installed_at": datetime.now(UTC).isoformat(),
             }
             skill_md = skill_dir / "SKILL.md"
             if skill_md.exists():
                 import re
 
                 import yaml
+
                 m = re.match(r"^---\s*\n(.*?)\n---", skill_md.read_text("utf-8"), re.DOTALL)
                 if m:
                     fm = yaml.safe_load(m.group(1)) or {}
@@ -255,7 +263,9 @@ class SkillStoreClient:
 
         client = await self._get_client()
         resp = await _retry_request(
-            client, "GET", f"/skills/{skill_id}/download",
+            client,
+            "GET",
+            f"/skills/{skill_id}/download",
             follow_redirects=True,
             timeout=60.0,
         )
@@ -271,7 +281,9 @@ class SkillStoreClient:
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
             for member in zf.namelist():
                 member_path = os.path.normpath(os.path.join(skill_dir.resolve(), member))
-                if not member_path.startswith(abs_target) and member_path != abs_target.rstrip(os.sep):
+                if not member_path.startswith(abs_target) and member_path != abs_target.rstrip(
+                    os.sep
+                ):
                     raise RuntimeError(
                         f"Zip Slip detected: member '{member}' escapes target directory"
                     )
@@ -351,13 +363,17 @@ class SkillStoreClient:
         finally:
             shutil.rmtree(str(tmp_parent), ignore_errors=True)
 
-    async def rate(self, skill_id: str, score: int, comment: str = "", token: str = "") -> dict[str, Any]:
+    async def rate(
+        self, skill_id: str, score: int, comment: str = "", token: str = ""
+    ) -> dict[str, Any]:
         client = await self._get_client()
         headers = {}
         if token:
             headers["Authorization"] = f"Bearer {token}"
         resp = await _retry_request(
-            client, "POST", f"/skills/{skill_id}/rate",
+            client,
+            "POST",
+            f"/skills/{skill_id}/rate",
             json={"score": score, "comment": comment},
             headers=headers,
         )
@@ -367,7 +383,9 @@ class SkillStoreClient:
     async def submit_repo(self, repo_url: str) -> dict[str, Any]:
         client = await self._get_client()
         resp = await _retry_request(
-            client, "POST", "/skills/submit-repo",
+            client,
+            "POST",
+            "/skills/submit-repo",
             json={"repoUrl": repo_url},
         )
         resp.raise_for_status()

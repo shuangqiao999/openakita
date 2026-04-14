@@ -83,16 +83,45 @@ class SessionContext:
     sub_agent_records: list[dict] = field(default_factory=list)
     _msg_lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
-    def add_message(self, role: str, content: str, **metadata) -> None:
-        """添加消息（含连续重复检测）"""
+    _DEDUP_TIME_WINDOW_SECONDS = 30
+
+    def add_message(self, role: str, content: str, **metadata) -> bool:
+        """添加消息（含去重：连续相同 + 时间窗口内相同）。
+
+        Returns:
+            True if the message was actually added, False if deduped.
+        """
         with self._msg_lock:
             if self.messages:
                 last = self.messages[-1]
                 if last.get("role") == role and last.get("content") == content:
-                    return
+                    return False
+
+            now = datetime.now()
+            for msg in reversed(self.messages[-8:]):
+                if msg.get("role") != role:
+                    continue
+                msg_content = msg.get("content", "") or ""
+                if msg_content != content:
+                    continue
+                ts_str = msg.get("timestamp", "")
+                if ts_str:
+                    try:
+                        msg_time = datetime.fromisoformat(ts_str)
+                        if (now - msg_time).total_seconds() < self._DEDUP_TIME_WINDOW_SECONDS:
+                            return False
+                    except (ValueError, TypeError):
+                        pass
+
             self.messages.append(
-                {"role": role, "content": content, "timestamp": datetime.now().isoformat(), **metadata}
+                {
+                    "role": role,
+                    "content": content,
+                    "timestamp": now.isoformat(),
+                    **metadata,
+                }
             )
+            return True
 
     def mark_topic_boundary(self) -> None:
         """在当前消息位置标记话题边界。
@@ -107,17 +136,17 @@ class SessionContext:
         """获取当前话题的消息（从最后一个边界开始）。"""
         if self.current_topic_start >= len(self.messages):
             return []
-        return self.messages[self.current_topic_start:]
+        return self.messages[self.current_topic_start :]
 
     def get_pre_topic_messages(self) -> list[dict]:
         """获取当前话题边界之前的消息。"""
-        return self.messages[:self.current_topic_start]
+        return self.messages[: self.current_topic_start]
 
     def get_messages(self, limit: int | None = None) -> list[dict]:
         """获取消息历史"""
         if limit is not None:
             try:
-                return self.messages[-int(limit):]
+                return self.messages[-int(limit) :]
             except (ValueError, TypeError):
                 pass
         return self.messages
@@ -337,18 +366,27 @@ class Session:
             key += f":{self.thread_id}"
         return key
 
-    def add_message(self, role: str, content: str, **metadata) -> None:
-        """添加消息并更新活跃时间"""
-        self.context.add_message(role, content, **metadata)
+    def add_message(self, role: str, content: str, **metadata) -> bool:
+        """添加消息并更新活跃时间。返回 True 表示消息被添加，False 表示被去重跳过。"""
+        added = self.context.add_message(role, content, **metadata)
         self.touch()
-
-        # 检查是否需要截断历史
-        if len(self.context.messages) > self.config.max_history:
+        if added and len(self.context.messages) > self.config.max_history:
             self._truncate_history()
+        return added
 
     _RULE_SIGNAL_WORDS = (
-        "不要", "必须", "禁止", "每次", "规则", "永远不要", "务必",
-        "永远", "always", "never", "must", "rule",
+        "不要",
+        "必须",
+        "禁止",
+        "每次",
+        "规则",
+        "永远不要",
+        "务必",
+        "永远",
+        "always",
+        "never",
+        "must",
+        "rule",
     )
 
     def _truncate_history(self) -> None:
@@ -382,15 +420,19 @@ class Session:
                 is_rule = any(w in content for w in self._RULE_SIGNAL_WORDS)
                 if is_rule and rules_len < max_rules_len:
                     snippet, _ = smart_truncate(
-                        content.replace("\n", " ").strip(), 300,
-                        save_full=False, label="rule_hist",
+                        content.replace("\n", " ").strip(),
+                        300,
+                        save_full=False,
+                        label="rule_hist",
                     )
                     rule_snippets.append(snippet)
                     rules_len += len(snippet)
                 else:
                     preview, _ = smart_truncate(
-                        content.replace("\n", " ").strip(), 150,
-                        save_full=False, label="msg_hist",
+                        content.replace("\n", " ").strip(),
+                        150,
+                        save_full=False,
+                        label="msg_hist",
                     )
                     keywords.append(preview)
 

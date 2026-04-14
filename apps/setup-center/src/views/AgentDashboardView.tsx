@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { IconRefresh } from "../icons";
+import { IconRefresh, IconBrain } from "../icons";
 import { safeFetch } from "../providers";
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -109,19 +109,19 @@ function isDark(): boolean {
 const now = () => performance.now() / 1000;
 
 const TOOL_ICONS: Record<string, string> = {
-  web_search: "🔍", browser_navigate: "🌐", browser_snapshot: "📸", browser: "🌐",
-  file_read: "📄", read_file: "📄", file_write: "✏️", write_file: "✏️",
-  execute_command: "⚡", create_agent: "🤖", delegate_to_agent: "🔗",
-  list_skills: "📋", memory_read: "🧠", memory_write: "💾",
-  create_todo: "📝", mcp_call: "🔌", send_message: "💬",
-  desktop_click: "🖱️", desktop_type: "⌨️", desktop_action: "🖥️",
+  web_search: "S", browser_navigate: "W", browser_snapshot: "C", browser: "W",
+  file_read: "F", read_file: "F", file_write: "W", write_file: "W",
+  execute_command: "!", create_agent: "A", delegate_to_agent: ">",
+  list_skills: "#", memory_read: "M", memory_write: "M",
+  create_todo: "T", mcp_call: "P", send_message: ">",
+  desktop_click: "D", desktop_type: "K", desktop_action: "D",
 };
 function toolIcon(name: string): string {
   const lc = name.toLowerCase();
   for (const [k, v] of Object.entries(TOOL_ICONS)) {
     if (lc.includes(k)) return v;
   }
-  return "⚙️";
+  return "*";
 }
 
 // SVG icon paths for canvas rendering (must match AgentManagerView)
@@ -1156,7 +1156,7 @@ export function AgentDashboardView({
   if (!multiAgentEnabled) {
     return (
       <div style={{ padding: 40, textAlign: "center", opacity: 0.5 }}>
-        <div style={{ fontSize: 48 }}>🧠</div>
+        <div style={{ fontSize: 48 }}><IconBrain size={48} /></div>
         <div style={{ marginTop: 12, fontWeight: 700 }}>{t("dashboard.disabled")}</div>
         <div style={{ fontSize: 13, marginTop: 4 }}>{t("dashboard.enableHint")}</div>
       </div>

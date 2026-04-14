@@ -1,7 +1,10 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { LogoTelegram, LogoFeishu, LogoWework, LogoDingtalk, LogoQQ, LogoOneBot, LogoWechat } from "../icons";
+import {
+  LogoTelegram, LogoFeishu, LogoWework, LogoDingtalk, LogoQQ, LogoOneBot, LogoWechat,
+  IconTarget, IconMessageCircle, IconBot, IconBrain, IconWrench, IconUsers, IconConfig,
+} from "../icons";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -185,11 +188,11 @@ export function IMConfigView(props: IMConfigViewProps) {
 /* ------------------------------------------------------------------ */
 
 type CmdEntry = { cmd: string; desc: string };
-type CmdCategory = { labelKey: string; icon: string; entries: CmdEntry[] };
+type CmdCategory = { labelKey: string; icon: ReactNode; entries: CmdEntry[] };
 
 const CMD_CATEGORIES: CmdCategory[] = [
   {
-    labelKey: "imCmdCatTask", icon: "🎯",
+    labelKey: "imCmdCatTask", icon: <IconTarget size={14} />,
     entries: [
       { cmd: "停止 / stop / /stop / kill", desc: "imCmdStop" },
       { cmd: "跳过 / skip / /skip", desc: "imCmdSkip" },
@@ -197,14 +200,14 @@ const CMD_CATEGORIES: CmdCategory[] = [
     ],
   },
   {
-    labelKey: "imCmdCatChat", icon: "💬",
+    labelKey: "imCmdCatChat", icon: <IconMessageCircle size={14} />,
     entries: [
       { cmd: "/new  /新话题", desc: "imCmdNew" },
       { cmd: "/help  /帮助", desc: "imCmdHelp" },
     ],
   },
   {
-    labelKey: "imCmdCatModel", icon: "🤖",
+    labelKey: "imCmdCatModel", icon: <IconBot size={14} />,
     entries: [
       { cmd: "/model", desc: "imCmdModel" },
       { cmd: "/switch [name]", desc: "imCmdSwitch" },
@@ -212,7 +215,7 @@ const CMD_CATEGORIES: CmdCategory[] = [
     ],
   },
   {
-    labelKey: "imCmdCatThinking", icon: "🧠",
+    labelKey: "imCmdCatThinking", icon: <IconBrain size={14} />,
     entries: [
       { cmd: "/thinking [on|off|auto]", desc: "imCmdThinking" },
       { cmd: "/thinking_depth [low|medium|high]", desc: "imCmdThinkingDepth" },
@@ -220,13 +223,13 @@ const CMD_CATEGORIES: CmdCategory[] = [
     ],
   },
   {
-    labelKey: "imCmdCatMode", icon: "🔧",
+    labelKey: "imCmdCatMode", icon: <IconWrench size={14} />,
     entries: [
       { cmd: "/模式  /mode", desc: "imCmdMode" },
     ],
   },
   {
-    labelKey: "imCmdCatMultiAgent", icon: "👥",
+    labelKey: "imCmdCatMultiAgent", icon: <IconUsers size={14} />,
     entries: [
       { cmd: "/切换  /switch", desc: "imCmdAgentSwitch" },
       { cmd: "/状态  /status", desc: "imCmdAgentStatus" },
@@ -234,7 +237,7 @@ const CMD_CATEGORIES: CmdCategory[] = [
     ],
   },
   {
-    labelKey: "imCmdCatSystem", icon: "⚙️",
+    labelKey: "imCmdCatSystem", icon: <IconConfig size={14} />,
     entries: [
       { cmd: "/restart  /重启", desc: "imCmdRestart" },
     ],
@@ -262,7 +265,7 @@ function QuickCommandsDialog({ open, onOpenChange }: { open: boolean; onOpenChan
               className="rounded-lg border bg-card px-4 py-3"
             >
               <div className="text-sm font-semibold mb-2 flex items-center gap-1.5">
-                <span>{cat.icon}</span>
+                <span className="inline-flex shrink-0 text-muted-foreground">{cat.icon}</span>
                 {t(`config.${cat.labelKey}`)}
               </div>
               <div className="space-y-1.5">

@@ -31,10 +31,12 @@ class BudgetConfig:
     """Token 预算配置"""
 
     # 各部分预算（tokens）
-    identity_budget: int = 6000   # SOUL.md(60%) + agent.core(25%) + user_policies(15%)
-    catalogs_budget: int = 8000   # tools(33%) + skills(55%) + mcp(10%) — 工具定义已通过 API tools 参数传递
-    user_budget: int = 300        # user.summary + runtime_facts
-    memory_budget: int = 2500     # retriever 输出（含 MEMORY.md + pinned rules + vector memory）
+    identity_budget: int = 6000  # SOUL.md(60%) + agent.core(25%) + user_policies(15%)
+    catalogs_budget: int = (
+        8000  # tools(33%) + skills(55%) + mcp(10%) — 工具定义已通过 API tools 参数传递
+    )
+    user_budget: int = 300  # user.summary + runtime_facts
+    memory_budget: int = 2500  # retriever 输出（含 MEMORY.md + pinned rules + vector memory）
 
     # 总预算（作为硬限制）
     total_budget: int = 18000
@@ -99,6 +101,37 @@ class BudgetConfig:
                 memory_budget=300,
                 total_budget=min(prompt_budget, 2000),
             )
+
+    @classmethod
+    def for_tier(cls, tier: "PromptTier", context_window: int = 0) -> "BudgetConfig":
+        """根据 PromptTier 分配预算（推荐使用，取代 for_context_window）。
+
+        PromptTier 由 resolve_tier() 判定，与此方法配合使用：
+            tier = resolve_tier(context_window)
+            budget = BudgetConfig.for_tier(tier, context_window)
+        """
+        from .builder import PromptTier
+
+        prompt_budget = int(context_window * 0.40) if context_window > 0 else 18000
+
+        if tier == PromptTier.SMALL:
+            return cls(
+                identity_budget=600,
+                catalogs_budget=800,
+                user_budget=100,
+                memory_budget=300,
+                total_budget=min(prompt_budget, 2000),
+            )
+        elif tier == PromptTier.MEDIUM:
+            return cls(
+                identity_budget=3000,
+                catalogs_budget=5000,
+                user_budget=250,
+                memory_budget=1500,
+                total_budget=min(prompt_budget, 10000),
+            )
+        else:
+            return cls()
 
 
 @dataclass
@@ -298,9 +331,9 @@ def apply_budget_to_sections(
         "soul": config.identity_budget * 60 // 100,
         "agent_core": config.identity_budget * 25 // 100,
         "user_policies": config.identity_budget * 15 // 100,
-        "tools": config.catalogs_budget // 3,            # 33%
-        "skills": config.catalogs_budget * 55 // 100,    # 55%
-        "mcp": config.catalogs_budget // 10,             # 10%
+        "tools": config.catalogs_budget // 3,  # 33%
+        "skills": config.catalogs_budget * 55 // 100,  # 55%
+        "mcp": config.catalogs_budget // 10,  # 10%
         "user": config.user_budget // 2,
         "runtime_facts": config.user_budget // 2,
         "memory": config.memory_budget,

@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from enum import Enum
+from datetime import UTC, datetime
+from enum import StrEnum
 
 from openakita.memory.types import normalize_tags
 
@@ -18,7 +18,7 @@ from openakita.memory.types import normalize_tags
 # Enums
 # ---------------------------------------------------------------------------
 
-class OrgStatus(str, Enum):
+class OrgStatus(StrEnum):
     DORMANT = "dormant"
     ACTIVE = "active"
     RUNNING = "running"
@@ -26,7 +26,7 @@ class OrgStatus(str, Enum):
     ARCHIVED = "archived"
 
 
-class NodeStatus(str, Enum):
+class NodeStatus(StrEnum):
     IDLE = "idle"
     BUSY = "busy"
     WAITING = "waiting"
@@ -35,14 +35,14 @@ class NodeStatus(str, Enum):
     FROZEN = "frozen"
 
 
-class EdgeType(str, Enum):
+class EdgeType(StrEnum):
     HIERARCHY = "hierarchy"
     COLLABORATE = "collaborate"
     ESCALATE = "escalate"
     CONSULT = "consult"
 
 
-class MsgType(str, Enum):
+class MsgType(StrEnum):
     TASK_ASSIGN = "task_assign"
     TASK_RESULT = "task_result"
     TASK_DELIVERED = "task_delivered"
@@ -58,13 +58,13 @@ class MsgType(str, Enum):
     HANDSHAKE = "handshake"
 
 
-class MemoryScope(str, Enum):
+class MemoryScope(StrEnum):
     ORG = "org"
     DEPARTMENT = "department"
     NODE = "node"
 
 
-class MemoryType(str, Enum):
+class MemoryType(StrEnum):
     FACT = "fact"
     DECISION = "decision"
     RULE = "rule"
@@ -73,13 +73,13 @@ class MemoryType(str, Enum):
     RESOURCE = "resource"
 
 
-class ScheduleType(str, Enum):
+class ScheduleType(StrEnum):
     CRON = "cron"
     INTERVAL = "interval"
     ONCE = "once"
 
 
-class InboxPriority(str, Enum):
+class InboxPriority(StrEnum):
     INFO = "info"
     NOTICE = "notice"
     WARNING = "warning"
@@ -88,12 +88,12 @@ class InboxPriority(str, Enum):
     ALERT = "alert"
 
 
-class ProjectType(str, Enum):
+class ProjectType(StrEnum):
     TEMPORARY = "temporary"
     PERMANENT = "permanent"
 
 
-class ProjectStatus(str, Enum):
+class ProjectStatus(StrEnum):
     PLANNING = "planning"
     ACTIVE = "active"
     PAUSED = "paused"
@@ -101,13 +101,14 @@ class ProjectStatus(str, Enum):
     ARCHIVED = "archived"
 
 
-class TaskStatus(str, Enum):
+class TaskStatus(StrEnum):
     TODO = "todo"
     IN_PROGRESS = "in_progress"
     DELIVERED = "delivered"
     ACCEPTED = "accepted"
     REJECTED = "rejected"
     BLOCKED = "blocked"
+    CANCELLED = "cancelled"
 
 
 # ---------------------------------------------------------------------------
@@ -115,7 +116,7 @@ class TaskStatus(str, Enum):
 # ---------------------------------------------------------------------------
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _new_id(prefix: str = "") -> str:
@@ -304,7 +305,14 @@ class UserPersona:
     def from_dict(cls, d: dict | None) -> UserPersona:
         if not d:
             return cls()
-        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
+        cleaned = {}
+        for k, v in d.items():
+            if k not in cls.__dataclass_fields__:
+                continue
+            if isinstance(v, str) and "\ufffd" in v:
+                v = v.replace("\ufffd", "")
+            cleaned[k] = v
+        return cls(**cleaned)
 
     @property
     def label(self) -> str:
@@ -345,7 +353,7 @@ class Organization:
     scaling_approval: str = "user"
 
     # Notifications
-    notify_enabled: bool = True
+    notify_enabled: bool = False
     notify_channel: str | None = None
     notify_webhook_url: str | None = None
     notify_im_channel: str | None = None
@@ -381,6 +389,9 @@ class Organization:
 
     # Operation mode
     operation_mode: str = "command"
+
+    # Workspace — custom output directory for file-producing tools
+    workspace_dir: str = ""
 
     # Watchdog
     watchdog_enabled: bool = True
@@ -437,6 +448,7 @@ class Organization:
             "token_budget": self.token_budget,
             "token_budget_period": self.token_budget_period,
             "operation_mode": self.operation_mode,
+            "workspace_dir": self.workspace_dir,
             "watchdog_enabled": self.watchdog_enabled,
             "watchdog_interval_s": self.watchdog_interval_s,
             "watchdog_stuck_threshold_s": self.watchdog_stuck_threshold_s,
@@ -574,6 +586,7 @@ class OrgMemoryEntry:
     source_node: str = ""
     source_message_id: str | None = None
     tags: list[str] = field(default_factory=list)
+    attachments: list[dict] = field(default_factory=list)
     importance: float = 0.5
     ttl_hours: int | None = None
     created_at: str = field(default_factory=_now_iso)
@@ -594,7 +607,7 @@ class OrgMemoryEntry:
                 self.ttl_hours = None
 
     def to_dict(self) -> dict:
-        return {
+        d: dict = {
             "id": self.id,
             "org_id": self.org_id,
             "scope": self.scope.value,
@@ -610,6 +623,9 @@ class OrgMemoryEntry:
             "last_accessed_at": self.last_accessed_at,
             "access_count": self.access_count,
         }
+        if self.attachments:
+            d["attachments"] = self.attachments
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> OrgMemoryEntry:

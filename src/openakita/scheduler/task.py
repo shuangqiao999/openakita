@@ -83,8 +83,7 @@ class TaskExecution:
     def finish(self, success: bool, result: str = None, error: str = None) -> None:
         if self.finished_at is not None:
             logger.warning(
-                f"TaskExecution {self.id}: finish() called again "
-                f"(already {self.status}), ignoring"
+                f"TaskExecution {self.id}: finish() called again (already {self.status}), ignoring"
             )
             return
         self.finished_at = datetime.now()
@@ -194,6 +193,11 @@ class ScheduledTask:
     # 时间戳
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
+
+    # Cron 增强配置
+    silent: bool = False  # [SILENT] 抑制：执行但不发送结果通知
+    no_schedule_tools: bool = False  # 防递归：禁止任务内部再创建定时任务
+    skill_ids: list[str] = field(default_factory=list)  # Skill 绑定：仅加载指定技能
 
     # 元数据
     metadata: dict = field(default_factory=dict)
@@ -320,11 +324,17 @@ class ScheduledTask:
             TaskStatus.DISABLED,
         },
         TaskStatus.SCHEDULED: {
-            TaskStatus.RUNNING, TaskStatus.DISABLED, TaskStatus.CANCELLED,
-            TaskStatus.COMPLETED, TaskStatus.MISSED,
+            TaskStatus.RUNNING,
+            TaskStatus.DISABLED,
+            TaskStatus.CANCELLED,
+            TaskStatus.COMPLETED,
+            TaskStatus.MISSED,
         },
         TaskStatus.RUNNING: {
-            TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.SCHEDULED, TaskStatus.CANCELLED,
+            TaskStatus.COMPLETED,
+            TaskStatus.FAILED,
+            TaskStatus.SCHEDULED,
+            TaskStatus.CANCELLED,
         },
         TaskStatus.COMPLETED: {TaskStatus.SCHEDULED, TaskStatus.DISABLED, TaskStatus.CANCELLED},
         TaskStatus.FAILED: {TaskStatus.SCHEDULED, TaskStatus.DISABLED, TaskStatus.CANCELLED},
@@ -397,8 +407,7 @@ class ScheduledTask:
             logger.info(f"Task {self.id}: force-reset to SCHEDULED, reason={reason}")
         else:
             logger.debug(
-                f"Task {self.id}: force_reset_to_scheduled called "
-                f"in {self.status.value}, no-op"
+                f"Task {self.id}: force_reset_to_scheduled called in {self.status.value}, no-op"
             )
 
     def mark_running(self) -> None:
@@ -412,8 +421,7 @@ class ScheduledTask:
         """标记执行完成"""
         if self.status != TaskStatus.RUNNING:
             logger.warning(
-                f"Task {self.id}: mark_completed called from {self.status.value}, "
-                f"expected RUNNING"
+                f"Task {self.id}: mark_completed called from {self.status.value}, expected RUNNING"
             )
             return
 
@@ -433,8 +441,7 @@ class ScheduledTask:
         """标记执行失败"""
         if self.status != TaskStatus.RUNNING:
             logger.warning(
-                f"Task {self.id}: mark_failed called from {self.status.value}, "
-                f"expected RUNNING"
+                f"Task {self.id}: mark_failed called from {self.status.value}, expected RUNNING"
             )
             return
 
@@ -496,6 +503,9 @@ class ScheduledTask:
             "fail_count": self.fail_count,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
+            "silent": self.silent,
+            "no_schedule_tools": self.no_schedule_tools,
+            "skill_ids": self.skill_ids,
             "metadata": self.metadata,
         }
 
@@ -587,6 +597,9 @@ class ScheduledTask:
             fail_count=_safe_int(data.get("fail_count"), 0),
             created_at=_parse_dt(data.get("created_at"), now_iso),
             updated_at=_parse_dt(data.get("updated_at"), now_iso),
+            silent=bool(data.get("silent", False)),
+            no_schedule_tools=bool(data.get("no_schedule_tools", False)),
+            skill_ids=data.get("skill_ids") or [],
             metadata=metadata,
         )
 

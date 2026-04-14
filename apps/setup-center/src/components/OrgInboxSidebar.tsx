@@ -59,6 +59,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   progress: "进度",
   warning: "警告",
   scaling: "扩编",
+  anomaly: "异常",
 };
 
 export function OrgInboxSidebar({
@@ -66,11 +67,13 @@ export function OrgInboxSidebar({
   orgId,
   visible,
   onClose,
+  embedded = false,
 }: {
   apiBaseUrl: string;
   orgId: string;
   visible: boolean;
   onClose: () => void;
+  embedded?: boolean;
 }) {
   const [messages, setMessages] = useState<InboxMsg[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
@@ -149,13 +152,21 @@ export function OrgInboxSidebar({
 
   if (!visible) return null;
 
+  const rootStyle: React.CSSProperties = embedded
+    ? { display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }
+    : {
+        position: "fixed",
+        right: 0, top: 0, bottom: 0,
+        width: 380, maxWidth: "100vw",
+        background: "var(--card-bg, #fff)",
+        borderLeft: "1px solid var(--border, #e5e7eb)",
+        display: "flex", flexDirection: "column",
+        zIndex: 1200,
+        boxShadow: "-4px 0 16px rgba(0,0,0,0.08)",
+      };
+
   return (
-    <div style={{
-      display: "flex",
-      flexDirection: "column",
-      height: "100%",
-      background: "var(--card-bg, var(--bg-app, #fff))",
-    }}>
+    <div style={rootStyle}>
       {/* Header */}
       <div style={{
         padding: "12px 16px",
@@ -169,13 +180,13 @@ export function OrgInboxSidebar({
           {unreadCount > 0 && (
             <span style={{
               marginLeft: 6,
-              background: "#ef4444",
+              background: "#3b82f6",
               color: "#fff",
               borderRadius: 10,
               padding: "1px 7px",
               fontSize: 11,
               fontWeight: 500,
-            }}>{unreadCount}</span>
+            }}>{unreadCount} 未读</span>
           )}
           {pendingApprovals > 0 && (
             <span style={{

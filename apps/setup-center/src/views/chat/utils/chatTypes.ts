@@ -48,8 +48,6 @@ export type MdModules = {
   ReactMarkdown: typeof import("react-markdown").default;
   remarkPlugins: import("react-markdown").Options["remarkPlugins"];
   rehypePlugins: import("react-markdown").Options["rehypePlugins"];
-  remarkGfm?: any;
-  rehypeRaw?: any;
 };
 
 /** Message queued for sequential sending */
@@ -68,7 +66,7 @@ export type StreamEvent =
   | { type: "thinking_start" }
   | { type: "thinking_delta"; content: string }
   | { type: "thinking_end"; duration_ms?: number; has_thinking?: boolean }
-  | { type: "chain_text"; content: string }
+  | { type: "chain_text"; content: string; icon?: string }
   | { type: "text_delta"; content: string }
   | { type: "text_replace"; content: string }
   | { type: "tool_call_start"; tool: string; tool_name?: string; args: Record<string, unknown>; id?: string; call_id?: string; protocol_version?: number }
@@ -84,7 +82,8 @@ export type StreamEvent =
   | { type: "agent_handoff"; from_agent: string; to_agent: string; reason?: string }
   | { type: "sub_agent_state"; agent_id?: string; agentId?: string; session_id?: string; sessionId?: string; status?: string; reason?: string; protocol_version?: number }
   | { type: "artifact"; artifact_type: string; file_url: string; path: string; name: string; caption: string; size?: number }
-  | { type: "security_confirm"; tool: string; tool_name?: string; args: Record<string, unknown>; id?: string; call_id?: string; confirm_id?: string; reason: string; risk_level: string; needs_sandbox: boolean; protocol_version?: number }
+  | { type: "security_confirm"; tool: string; tool_name?: string; args: Record<string, unknown>; id?: string; call_id?: string; confirm_id?: string; reason: string; risk_level: string; needs_sandbox: boolean; protocol_version?: number; timeout_seconds?: number; default_on_timeout?: string }
+  | { type: "death_switch"; active: boolean; reason?: string }
   | { type: "ui_preference"; theme?: string; language?: string }
   | { type: "error"; message: string }
   | { type: "done"; reason?: string; usage?: { input_tokens: number; output_tokens: number; total_tokens?: number; context_tokens?: number; context_limit?: number } };

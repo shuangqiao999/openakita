@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { invoke, IS_WEB, IS_TAURI } from "../platform";
 import { safeFetch } from "../providers";
-import { IconInfo } from "../icons";
+import { IconInfo, IconKey } from "../icons";
 import type { EnvMap } from "../types";
 import { envGet, envSet } from "../utils";
 import { Input } from "@/components/ui/input";
@@ -98,13 +98,14 @@ export function FieldBool({
 }
 
 export function FieldSelect({
-  k, label, options, help,
+  k, label, options, help, defaultValue,
   envDraft, onEnvChange,
 }: EnvFieldProps & {
-  k: string; label: string; options: { value: string; label: string }[]; help?: string;
+  k: string; label: string; options: { value: string; label: string }[]; help?: string; defaultValue?: string;
 }) {
   const raw = envGet(envDraft, k);
-  const value = options.some((o) => o.value === raw) ? raw : (options[0]?.value ?? "");
+  const fallback = defaultValue ?? options[0]?.value ?? "";
+  const value = options.some((o) => o.value === raw) ? raw : fallback;
   return (
     <div className="space-y-1.5">
       <FieldLabel label={label} help={help} envKey={k} />
@@ -277,7 +278,7 @@ export function TelegramPairingCodeHint({
 
   return (
     <div className="flex items-center gap-1.5 flex-wrap text-xs text-muted-foreground mt-1 leading-7">
-      <span>🔑 {t("config.imCurrentPairingCode")}：</span>
+      <span><IconKey size={12} /> {t("config.imCurrentPairingCode")}：</span>
       {loading ? (
         <span className="opacity-50">...</span>
       ) : currentCode ? (

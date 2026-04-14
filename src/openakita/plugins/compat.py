@@ -34,7 +34,7 @@ class CompatResult:
     warnings: list[str] = field(default_factory=list)
 
 
-def check_compatibility(manifest: "PluginManifest") -> CompatResult:
+def check_compatibility(manifest: PluginManifest) -> CompatResult:
     """Run all compatibility checks for *manifest*.
 
     Returns a ``CompatResult`` — callers should skip loading when ``ok`` is
@@ -60,6 +60,7 @@ def check_compatibility(manifest: "PluginManifest") -> CompatResult:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+
 def _parse_version(raw: str) -> tuple[int, ...] | None:
     """Parse a dotted version string into a tuple of ints."""
     raw = raw.strip().lstrip("v")
@@ -81,6 +82,7 @@ def _parse_version(raw: str) -> tuple[int, ...] | None:
 def _get_system_version() -> tuple[int, ...]:
     try:
         from .. import __version__
+
         v = _parse_version(__version__)
         if v:
             return v
@@ -93,9 +95,7 @@ def _check_openakita(plugin_id: str, spec: str, result: CompatResult) -> None:
     if not spec:
         return
     if not spec.startswith(">="):
-        result.warnings.append(
-            f"Unrecognised openakita spec '{spec}' (expected >=X.Y.Z)"
-        )
+        result.warnings.append(f"Unrecognised openakita spec '{spec}' (expected >=X.Y.Z)")
         return
 
     min_ver = _parse_version(spec[2:])
@@ -148,15 +148,12 @@ def _check_plugin_api(plugin_id: str, spec: str, result: CompatResult) -> None:
             return
         if current < req:
             msg = (
-                f"Plugin '{plugin_id}' requires plugin_api {spec}, "
-                f"current is {PLUGIN_API_VERSION}"
+                f"Plugin '{plugin_id}' requires plugin_api {spec}, current is {PLUGIN_API_VERSION}"
             )
             result.errors.append(msg)
             result.ok = False
     else:
-        result.warnings.append(
-            f"Unrecognised plugin_api spec '{spec}' (expected ~N or >=X.Y.Z)"
-        )
+        result.warnings.append(f"Unrecognised plugin_api spec '{spec}' (expected ~N or >=X.Y.Z)")
 
 
 def _check_sdk(plugin_id: str, spec: str, result: CompatResult) -> None:
@@ -169,14 +166,14 @@ def _check_sdk(plugin_id: str, spec: str, result: CompatResult) -> None:
 
     try:
         from openakita_plugin_sdk.version import SDK_VERSION
+
         sdk = _parse_version(SDK_VERSION)
     except ImportError:
         sdk = None
 
     if sdk is None:
         result.warnings.append(
-            f"Plugin '{plugin_id}' recommends SDK {spec}, "
-            "but openakita-plugin-sdk is not installed"
+            f"Plugin '{plugin_id}' recommends SDK {spec}, but openakita-plugin-sdk is not installed"
         )
     elif sdk < req:
         result.warnings.append(
@@ -193,10 +190,7 @@ def _check_python(plugin_id: str, spec: str, result: CompatResult) -> None:
         return
     current = sys.version_info[:3]
     if current < req:
-        msg = (
-            f"Plugin '{plugin_id}' requires Python {spec}, "
-            f"current is {platform.python_version()}"
-        )
+        msg = f"Plugin '{plugin_id}' requires Python {spec}, current is {platform.python_version()}"
         result.errors.append(msg)
         result.ok = False
 

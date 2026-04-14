@@ -62,7 +62,7 @@ dependencies = [
     "uvicorn>=0.27.0",
 
     # IM Channels - Telegram (default)
-    "python-telegram-bot>=22.0",
+    "python-telegram-bot>=22.7",
 
     # Browser automation (built-in)
     "playwright>=1.40.0",
@@ -85,14 +85,14 @@ dingtalk = [
 
 # 企业微信 IM 通道
 wework = [
-    "aiohttp>=3.9.0",
+    "aiohttp>=3.11.0",
     "pycryptodome>=3.19.0",
 ]
 
 # 企业微信 WebSocket 长连接通道
 wework_ws = [
     "websockets>=15.0.1",
-    "cryptography>=42.0.0",
+    "cryptography>=46.0.5",
 ]
 
 # OneBot 协议通道 (NapCat/Lagrange 等)
@@ -102,8 +102,14 @@ onebot = [
 
 # QQ 官方机器人
 qqbot = [
-    "qq-botpy>=1.2.1",
+    "websockets>=15.0.1",       # QQ Gateway WebSocket 连接
+    "aiohttp>=3.11.0",          # Webhook 模式 HTTP 回调服务器
     "pilk>=0.2.1",              # SILK 语音编解码（QQ 语音格式）
+]
+
+# 微信个人号 (iLink Bot API)
+wechat = [
+    "pycryptodome>=3.19.0",
 ]
 
 # Windows 桌面自动化
@@ -120,11 +126,10 @@ all = [
     # -- IM 通道 --
     "lark-oapi>=1.4.0",
     "dingtalk-stream>=0.24.3",
-    "aiohttp>=3.9.0",
+    "aiohttp>=3.11.0",
     "pycryptodome>=3.19.0",
     "websockets>=15.0.1",
-    "cryptography>=42.0.0",
-    "qq-botpy>=1.2.1",
+    "cryptography>=46.0.5",
     "pilk>=0.2.1",
     # -- 桌面自动化 --
     "mss>=9.0.0",
@@ -178,11 +183,11 @@ packages = ["src/openakita"]
 # mcps          → site-packages/openakita/builtin_mcps/
 [tool.hatch.build.targets.wheel.force-include]
 # Web frontend (built with: cd apps/setup-center && VITE_BUILD_TARGET=web npm run build:web)
-# NOTE: do not force-include generated frontend artifacts here.
-# They may be unavailable in sdist-based wheel builds and should not block default `python -m build`.
+# CI always builds the frontend before `python -m build --wheel`, so dist-web/ is present.
+# Local `pip install .` without building the frontend first will fail; run npm run build:web first.
+"apps/setup-center/dist-web" = "openakita/web"
 # User docs (built with: python scripts/build_docs.py)
-# NOTE: do not force-include docs-site/.vitepress/dist here.
-# It may be absent in sdist-based wheel builds and should not block default `python -m build`.
+"docs-site/.vitepress/dist" = "openakita/docs_dist"
 "skills/system" = "openakita/builtin_skills/system"
 "mcps" = "openakita/builtin_mcps"
 "skills/xiaohongshu-creator" = "openakita/builtin_skills/external/xiaohongshu-creator"
@@ -233,12 +238,22 @@ target-version = "py311"
 select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "SIM"]
 ignore = [
     "E501",   # line length handled by formatter; keep ignored
+    "E402",   # module-level import not at top (circular-import avoidance, conditional init)
+    "B005",   # strip with multi-char strings (intentional character set removal)
+    "B008",   # function call in default argument (standard FastAPI File/Depends pattern)
+    "B027",   # empty method without abstract decorator (optional-override stubs)
     "B904",   # require `raise ... from err` inside except (too noisy for now)
     "N806",   # non-lowercase variable in function (constants in functions, third-party patterns)
+    "N814",   # CamelCase imported as constant (local alias pattern like `IntentType as _IT`)
+    "N818",   # exception name should end with Error (renaming would break existing API)
     "SIM102", # collapsible-if (style-only)
     "SIM103", # needless-bool (style-only)
     "SIM105", # prefer contextlib.suppress (style-only)
+    "SIM116", # dict-lookup instead of if-chain (less readable in some contexts)
 ]
+
+[tool.ruff.lint.per-file-ignores]
+"src/openakita/integrations/**" = ["F401", "F821", "SIM117", "E722", "UP035"]
 
 [tool.mypy]
 python_version = "3.11"

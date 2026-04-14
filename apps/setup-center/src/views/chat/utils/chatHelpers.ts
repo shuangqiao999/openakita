@@ -30,14 +30,14 @@ export const UNDO_MAX_STEPS = 50;
 // ── 加载状态轮播提示 ──
 
 const _spinnerTips = [
-  "💡 按 Ctrl+/ 查看所有快捷键",
-  "💡 输入 / 可以使用斜杠命令",
-  "💡 拖拽文件到输入框可以上传附件",
-  "💡 Ctrl+F 搜索聊天记录",
-  "💡 输入 @agent名 快速切换 Agent",
-  "💡 使用 /clear 清空当前会话上下文",
-  "💡 使用 /memory 管理 AI 记忆",
-  "💡 长按 Shift+Enter 可以换行输入",
+  "Tip: 按 Ctrl+/ 查看所有快捷键",
+  "Tip: 输入 / 可以使用斜杠命令",
+  "Tip: 拖拽文件到输入框可以上传附件",
+  "Tip: Ctrl+F 搜索聊天记录",
+  "Tip: 输入 @agent名 快速切换 Agent",
+  "Tip: 使用 /clear 清空当前会话上下文",
+  "Tip: 使用 /memory 管理 AI 记忆",
+  "Tip: 长按 Shift+Enter 可以换行输入",
 ];
 let _tipShowCounts: number[] = new Array(_spinnerTips.length).fill(0);
 
@@ -54,13 +54,13 @@ export function getNextSpinnerTip(): string {
 // ── Error Card 元数据 ──
 
 export const ERROR_META: Record<string, { icon: string; color: string; hint: string }> = {
-  auth: { icon: "🔑", color: "#ef4444", hint: "请检查 API Key 配置" },
-  quota: { icon: "📊", color: "#f59e0b", hint: "请稍后重试或升级配额" },
-  timeout: { icon: "⏱️", color: "#f59e0b", hint: "可尝试简化问题后重试" },
-  content_filter: { icon: "🛡️", color: "#8b5cf6", hint: "请换个方式重新提问" },
-  network: { icon: "🌐", color: "#f59e0b", hint: "请检查网络连接" },
-  server: { icon: "⚠️", color: "#ef4444", hint: "服务暂时不可用，请稍后重试" },
-  unknown: { icon: "❌", color: "#ef4444", hint: "" },
+  auth: { icon: "key", color: "#ef4444", hint: "请检查 API Key 配置" },
+  quota: { icon: "chart", color: "#f59e0b", hint: "请稍后重试或升级配额" },
+  timeout: { icon: "clock", color: "#f59e0b", hint: "可尝试简化问题后重试" },
+  content_filter: { icon: "shield", color: "#8b5cf6", hint: "请换个方式重新提问" },
+  network: { icon: "globe", color: "#f59e0b", hint: "请检查网络连接" },
+  server: { icon: "warn", color: "#ef4444", hint: "服务暂时不可用，请稍后重试" },
+  unknown: { icon: "error", color: "#ef4444", hint: "" },
 };
 
 // ── SVG icon paths ──
@@ -98,7 +98,7 @@ export function exportConversation(msgs: ChatMessage[], title: string, format: "
   } else {
     const lines: string[] = [`# ${title}`, "", `> 导出时间: ${new Date().toLocaleString()}`, ""];
     for (const msg of msgs) {
-      const role = msg.role === "user" ? "👤 用户" : msg.role === "assistant" ? "🤖 助手" : "📢 系统";
+      const role = msg.role === "user" ? "[User] 用户" : msg.role === "assistant" ? "[AI] 助手" : "[Sys] 系统";
       lines.push(`## ${role}`, "");
       if (msg.content) lines.push(msg.content, "");
       if (msg.toolCalls?.length) {

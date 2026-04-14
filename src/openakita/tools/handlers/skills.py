@@ -97,12 +97,10 @@ class SkillsHandler:
 
         system_skills = [s for s in all_skills if s.system]
         enabled_external = [
-            s for s in all_skills
-            if not s.system and not s.disabled and not s.catalog_hidden
+            s for s in all_skills if not s.system and not s.disabled and not s.catalog_hidden
         ]
         discoverable_external = [
-            s for s in all_skills
-            if not s.system and not s.disabled and s.catalog_hidden
+            s for s in all_skills if not s.system and not s.disabled and s.catalog_hidden
         ]
         disabled_external = [s for s in all_skills if not s.system and s.disabled]
 
@@ -277,6 +275,7 @@ class SkillsHandler:
         if skill.allowed_tools:
             try:
                 from openakita.core.policy import get_policy_engine
+
                 get_policy_engine().add_skill_allowlist(skill.skill_id, skill.allowed_tools)
             except Exception as e:
                 logger.warning("Failed to inject skill allowlist for %s: %s", skill.skill_id, e)
@@ -286,8 +285,9 @@ class SkillsHandler:
 
         # F4: argument substitution
         if "{{" in body:
-            from openakita.skills.arguments import substitute
             from openakita.config import settings as _cfg
+            from openakita.skills.arguments import substitute
+
             extra = {}
             if isinstance(user_args, dict):
                 extra = {k: str(v) for k, v in user_args.items()}
@@ -336,10 +336,14 @@ class SkillsHandler:
         # F4: display argument schema
         if skill.arguments:
             from openakita.skills.arguments import format_argument_schema
+
             args_block = format_argument_schema(skill.arguments)
             if args_block:
                 output += f"\n{args_block}\n"
 
+        from ...utils.context_scan import scan_context_content
+
+        body, threats = scan_context_content(body, source=f"skill:{skill_name}")
         output += "\n---\n\n"
         output += body
 
@@ -356,9 +360,14 @@ class SkillsHandler:
         if cwd_raw:
             resolved_cwd = Path(cwd_raw).resolve()
             from openakita.config import settings as _settings
+
             project_root = Path(_settings.project_root).resolve()
             skill_entry = self.agent.skill_registry.get(skill_name)
-            skill_dir = Path(skill_entry.skill_path).resolve() if skill_entry and skill_entry.skill_path else None
+            skill_dir = (
+                Path(skill_entry.skill_path).resolve()
+                if skill_entry and skill_entry.skill_path
+                else None
+            )
 
             allowed = False
             try:
@@ -373,10 +382,7 @@ class SkillsHandler:
                 except ValueError:
                     pass
             if not allowed:
-                return (
-                    f"❌ 工作目录被拒绝: {cwd_raw}\n"
-                    f"cwd 只能位于项目工作区或技能目录内。"
-                )
+                return f"❌ 工作目录被拒绝: {cwd_raw}\ncwd 只能位于项目工作区或技能目录内。"
 
         success, output = self.agent.skill_loader.run_script(
             skill_name, script_name, args, cwd=resolved_cwd
@@ -661,7 +667,6 @@ class SkillsHandler:
 
         return output
 
-
     async def _execute_skill(self, params: dict) -> str:
         """F10: 在隔离的 fork 上下文中执行技能"""
         import uuid
@@ -682,8 +687,9 @@ class SkillsHandler:
 
         # F4: argument substitution on body
         if "{{" in body:
-            from openakita.skills.arguments import substitute
             from openakita.config import settings as _cfg
+            from openakita.skills.arguments import substitute
+
             body = substitute(body, project_root=_cfg.project_root)
 
         # F6: record usage
@@ -695,9 +701,12 @@ class SkillsHandler:
         if skill.allowed_tools:
             try:
                 from openakita.core.policy import get_policy_engine
+
                 get_policy_engine().add_skill_allowlist(skill.skill_id, skill.allowed_tools)
             except Exception as e:
-                logger.warning("Failed to inject allowlist for fork skill %s: %s", skill.skill_id, e)
+                logger.warning(
+                    "Failed to inject allowlist for fork skill %s: %s", skill.skill_id, e
+                )
 
         # Build fork system prompt
         fork_system = (
@@ -714,6 +723,7 @@ class SkillsHandler:
         hook_runner = None
         if skill.hooks:
             from openakita.skills.skill_hooks import create_hook_runner
+
             hook_runner = create_hook_runner(skill.skill_id, skill.skill_dir, skill.hooks)
             if hook_runner and hook_runner.has_hook("before_execute"):
                 hook_result = hook_runner.run_hook("before_execute")
@@ -736,7 +746,9 @@ class SkillsHandler:
             tools = [t for t in tools if t.get("name") not in restricted]
             logger.info(
                 "Fork execution of untrusted skill '%s' (trust=%s): restricted %d tools",
-                skill.skill_id, skill.trust_level, len(restricted),
+                skill.skill_id,
+                skill.trust_level,
+                len(restricted),
             )
 
         # Determine endpoint override from skill metadata
@@ -777,6 +789,7 @@ class SkillsHandler:
         if skill.allowed_tools:
             try:
                 from openakita.core.policy import get_policy_engine
+
                 get_policy_engine().remove_skill_allowlist(skill.skill_id)
             except Exception:
                 pass
@@ -812,7 +825,7 @@ class SkillsHandler:
             skill_dir_resolved = skill_dir.resolve()
             skill_dir_resolved.relative_to(skills_root)
         except (ValueError, OSError):
-            return f"安全限制：不允许卸载 skills/ 目录之外的技能。"
+            return "安全限制：不允许卸载 skills/ 目录之外的技能。"
 
         if not skill_dir_resolved.exists():
             return f"技能目录不存在: {display_name}"
@@ -851,14 +864,12 @@ class SkillsHandler:
         # Clean up policy allowlists
         try:
             from openakita.core.policy import get_policy_engine
+
             get_policy_engine().remove_skill_allowlist(skill_id)
         except Exception:
             pass
 
-        return (
-            f"✅ 技能 '{display_name}' 已卸载。\n\n"
-            f"已删除目录及所有文件，并从系统中注销。"
-        )
+        return f"✅ 技能 '{display_name}' 已卸载。\n\n已删除目录及所有文件，并从系统中注销。"
 
 
 def create_handler(agent: "Agent"):

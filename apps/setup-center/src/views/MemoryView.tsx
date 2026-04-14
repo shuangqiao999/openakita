@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef, lazy, Suspense } from "react";
+import { useTranslation } from "react-i18next";
 import { IconBrain } from "../icons";
 import { safeFetch } from "../providers";
 import { toast } from "sonner";
@@ -67,15 +68,15 @@ type ReviewProgress = {
   finished_at?: number;
 };
 
-const TYPE_LABELS: Record<string, string> = {
-  fact: "事实",
-  preference: "偏好",
-  skill: "技能",
-  rule: "规则",
-  error: "经验教训",
-  experience: "经验",
-  persona_trait: "人格特征",
-  context: "上下文",
+const TYPE_LABEL_KEYS: Record<string, string> = {
+  fact: "memory.typeFact",
+  preference: "memory.typePreference",
+  skill: "memory.typeSkill",
+  rule: "memory.typeRule",
+  error: "memory.typeError",
+  experience: "memory.typeExperience",
+  persona_trait: "memory.typePersonaTrait",
+  context: "memory.typeContext",
 };
 
 const TYPE_COLORS: Record<string, string> = {
@@ -105,7 +106,9 @@ interface Props {
 }
 
 export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
+  const { t } = useTranslation();
   const API_BASE = apiBaseUrl;
+  const typeLabel = (type: string) => TYPE_LABEL_KEYS[type] ? t(TYPE_LABEL_KEYS[type]) : type;
   const [memories, setMemories] = useState<MemoryItem[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(false);
@@ -140,7 +143,7 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
       const data = await res.json();
       setMemories(data.memories || []);
     } catch (e: any) {
-      toast.error(e.message || "加载失败");
+      toast.error(e.message || t("memory.loadFailed"));
     } finally {
       setLoading(false);
     }
@@ -174,7 +177,7 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
     const mem = memories.find(m => m.id === id);
     const preview = mem ? (mem.content.length > 40 ? mem.content.slice(0, 40) + "..." : mem.content) : "";
     setConfirmDialog({
-      message: `确定删除这条记忆？\n\n"${preview}"`,
+      message: t("memory.confirmDeleteOne", { preview }),
       onConfirm: () => doDelete(id),
     });
   };
@@ -198,7 +201,7 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
     if (selected.size === 0) return;
     const ids = Array.from(selected);
     setConfirmDialog({
-      message: `确定删除选中的 ${ids.length} 条记忆？`,
+      message: t("memory.confirmDeleteBatch", { count: ids.length }),
       onConfirm: () => doBatchDelete(ids),
     });
   };
@@ -251,13 +254,13 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
           if (progress.status === "done" && progress.report) {
             const r = progress.report;
             toast.success(
-              `LLM 审查完成：删除 ${r.deleted}，更新 ${r.updated}，合并 ${r.merged}，保留 ${r.kept}` +
-              (r.errors > 0 ? `，错误 ${r.errors}` : "")
+              t("memory.reviewDone", { deleted: r.deleted, updated: r.updated, merged: r.merged, kept: r.kept }) +
+              (r.errors > 0 ? t("memory.reviewDoneWithErrors", { errors: r.errors }) : "")
             );
           } else if (progress.status === "cancelled") {
-            toast.info("审查已取消（已处理的部分生效）");
+            toast.info(t("memory.reviewCancelled"));
           } else if (progress.status === "error") {
-            toast.error(`审查出错：${progress.error || "未知错误"}`);
+            toast.error(t("memory.reviewError", { error: progress.error || "unknown" }));
           }
           loadMemories();
           loadStats();
@@ -298,11 +301,11 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
       });
       const data = await res.json();
       if (data.status === "already_running") {
-        toast.info("审查任务已在运行中");
+        toast.info(t("memory.reviewAlreadyRunning"));
       }
       pollReviewStatus();
     } catch (e: any) {
-      toast.error(e.message || "启动审查失败");
+      toast.error(e.message || t("memory.reviewStartFailed"));
       setReviewing(false);
       setReviewProgress({ status: "idle" });
     }
@@ -314,9 +317,9 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
         method: "POST",
         signal: AbortSignal.timeout(5_000),
       });
-      toast.info("正在取消审查...");
+      toast.info(t("memory.cancellingReview"));
     } catch {
-      toast.error("取消请求失败");
+      toast.error(t("memory.cancelReviewFailed"));
     }
   };
 
@@ -340,8 +343,8 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
         <IconBrain size={48} />
-        <div className="mt-3 font-semibold">记忆管理</div>
-        <div className="mt-1 text-xs opacity-50">后端服务未启动，请启动后再进行使用</div>
+        <div className="mt-3 font-semibold">{t("memory.title")}</div>
+        <div className="mt-1 text-xs opacity-50">{t("memory.serviceNotRunning")}</div>
       </div>
     );
   }
@@ -357,15 +360,15 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
           <CardContent className="p-0">
             <div className="grid grid-cols-2 sm:grid-cols-3 md:flex md:flex-wrap md:items-stretch divide-y md:divide-y-0 md:divide-x divide-border/50">
               {[
-                { value: stats.total, label: "总记忆数", color: "var(--foreground)" },
-                { value: stats.avg_score.toFixed(2), label: "平均分数", color: "var(--foreground)" },
-                ...Object.entries(stats.by_type).map(([t, c]) => ({
+                { value: stats.total, label: t("memory.totalMemories"), color: "var(--foreground)" },
+                { value: stats.avg_score.toFixed(2), label: t("memory.avgScore"), color: "var(--foreground)" },
+                ...Object.entries(stats.by_type).map(([tp, c]) => ({
                   value: c,
-                  label: TYPE_LABELS[t] || t,
-                  color: TYPE_COLORS[t] || "var(--foreground)",
+                  label: typeLabel(tp),
+                  color: TYPE_COLORS[tp] || "var(--foreground)",
                 })),
               ].map((item, i) => (
-                <div key={i} className="flex flex-1 min-w-[100px] flex-col items-center justify-center p-4">
+                <div key={i} className="flex flex-1 min-w-[80px] flex-col items-center justify-center p-3 md:p-4">
                   <div className="text-2xl font-bold tracking-tight" style={{ color: item.color }}>
                     {item.value}
                   </div>
@@ -382,12 +385,12 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
       {/* Toolbar */}
       <Card className="gap-0 border-border/80 py-0 shadow-sm shrink-0">
         <CardContent className="p-4">
-          <div className="flex items-center justify-between gap-3 overflow-x-auto">
-            <div className="flex min-w-max items-center gap-2 md:gap-3">
-              <div className="relative w-[220px] min-w-[180px] md:w-[280px]">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-2 md:gap-3">
+              <div className="relative w-full min-w-[160px] max-w-[280px] sm:w-[220px] md:w-[280px]">
                 <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
                 <Input
-                  placeholder="搜索记忆内容..."
+                  placeholder={t("memory.searchPlaceholder")}
                   value={searchQuery}
                   onChange={e => setSearchQuery(e.target.value)}
                   onKeyDown={e => e.key === "Enter" && loadMemories()}
@@ -400,43 +403,43 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="__all__">全部类型</SelectItem>
-                  {Object.entries(TYPE_LABELS).map(([k, v]) => (
-                    <SelectItem key={k} value={k}>{v}</SelectItem>
+                  <SelectItem value="__all__">{t("memory.allTypes")}</SelectItem>
+                  {Object.keys(TYPE_LABEL_KEYS).map((k) => (
+                    <SelectItem key={k} value={k}>{typeLabel(k)}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
 
-              <Button variant="outline" onClick={loadMemories} disabled={loading} className="h-9 px-3 shrink-0" title="刷新">
+              <Button variant="outline" onClick={loadMemories} disabled={loading} className="h-9 px-3 shrink-0" title={t("memory.refresh")}>
                 {loading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-                {!isMobile && <span className="ml-1.5 hidden xl:inline">刷新</span>}
+                {!isMobile && <span className="ml-1.5 hidden xl:inline">{t("memory.refresh")}</span>}
               </Button>
 
               {reviewing ? (
-                <Button onClick={handleCancelReview} variant="destructive" className="h-9 px-3 shrink-0" title="取消审查">
+                <Button onClick={handleCancelReview} variant="destructive" className="h-9 px-3 shrink-0" title={t("memory.cancelReview")}>
                   <Ban size={14} className="mr-1.5" />
-                  <span className="hidden xl:inline">取消审查</span>
-                  <span className="xl:hidden">取消</span>
+                  <span className="hidden xl:inline">{t("memory.cancelReview")}</span>
+                  <span className="xl:hidden">{t("memory.cancel")}</span>
                 </Button>
               ) : (
                 <Button
                   onClick={handleReviewConfirm}
                   className="h-9 px-3 shrink-0 border-0 bg-gradient-to-br from-indigo-500 to-purple-500 text-white shadow-md shadow-indigo-500/20 hover:from-indigo-600 hover:to-purple-600"
-                  title="LLM 智能审查"
+                  title={t("memory.llmReviewFull")}
                 >
                   <Brain size={14} className="mr-1.5" />
-                  <span className="hidden xl:inline">LLM 智能审查</span>
-                  <span className="xl:hidden">LLM 审查</span>
+                  <span className="hidden xl:inline">{t("memory.llmReviewFull")}</span>
+                  <span className="xl:hidden">{t("memory.llmReview")}</span>
                 </Button>
               )}
             </div>
 
             <div className="flex shrink-0 items-center gap-3">
               {selected.size > 0 && (
-                <Button variant="destructive" onClick={handleBatchDelete} className="h-9 px-3 shrink-0" title={`删除 ${selected.size} 条`}>
+                <Button variant="destructive" onClick={handleBatchDelete} className="h-9 px-3 shrink-0" title={t("memory.deleteCount", { count: selected.size })}>
                   <Trash2 size={14} className="mr-1.5" />
-                  <span className="hidden xl:inline">删除 {selected.size} 条</span>
-                  <span className="xl:hidden">删除</span>
+                  <span className="hidden xl:inline">{t("memory.deleteCount", { count: selected.size })}</span>
+                  <span className="xl:hidden">{t("memory.delete")}</span>
                 </Button>
               )}
 
@@ -448,13 +451,13 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
                 variant="outline"
                 className="shrink-0 justify-end"
               >
-                <ToggleGroupItem value="list" className="h-9 px-3 text-sm data-[state=on]:border-primary data-[state=on]:bg-primary data-[state=on]:text-primary-foreground" title="列表">
+                <ToggleGroupItem value="list" className="h-9 px-3 text-sm data-[state=on]:border-primary data-[state=on]:bg-primary data-[state=on]:text-primary-foreground" title={t("memory.listView")}>
                   <List size={14} className="mr-1.5" />
-                  <span className="hidden xl:inline">列表</span>
+                  <span className="hidden xl:inline">{t("memory.listView")}</span>
                 </ToggleGroupItem>
-                <ToggleGroupItem value="graph" className="h-9 px-3 text-sm data-[state=on]:border-primary data-[state=on]:bg-primary data-[state=on]:text-primary-foreground" title="图谱">
+                <ToggleGroupItem value="graph" className="h-9 px-3 text-sm data-[state=on]:border-primary data-[state=on]:bg-primary data-[state=on]:text-primary-foreground" title={t("memory.graphView")}>
                   <Network size={14} className="mr-1.5" />
-                  <span className="hidden xl:inline">图谱</span>
+                  <span className="hidden xl:inline">{t("memory.graphView")}</span>
                 </ToggleGroupItem>
               </ToggleGroup>
             </div>
@@ -474,9 +477,9 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
           : 0;
         const batchLabel = total > 0
           ? isLlmCalling
-            ? `正在审查第 ${(reviewProgress.batch ?? 0) + 1}/${total} 批`
-            : `已完成 ${reviewProgress.batch ?? 0}/${total} 批`
-          : "准备中...";
+            ? t("memory.reviewBatchProgress", { current: (reviewProgress.batch ?? 0) + 1, total })
+            : t("memory.reviewBatchDone", { done: reviewProgress.batch ?? 0, total })
+          : t("memory.reviewPreparing");
 
         return (
           <div className="card" style={{ margin: 0, padding: isMobile ? "10px 12px" : "12px 16px" }}>
@@ -484,11 +487,11 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
               <Loader2 size={14} className="animate-spin text-indigo-500" />
               <span style={{ fontSize: 13, fontWeight: 500 }}>
                 {batchLabel}
-                {isLlmCalling && <span style={{ fontSize: 11, color: "var(--muted)", marginLeft: 6 }}>等待 LLM 返回...</span>}
+                {isLlmCalling && <span style={{ fontSize: 11, color: "var(--muted)", marginLeft: 6 }}>{t("memory.reviewWaitingLLM")}</span>}
               </span>
               {reviewProgress.total_memories ? (
                 <span style={{ fontSize: 12, color: "var(--muted)", marginLeft: "auto" }}>
-                  {reviewProgress.processed ?? 0}/{reviewProgress.total_memories} 条记忆
+                  {t("memory.reviewMemoryCount", { processed: reviewProgress.processed ?? 0, total: reviewProgress.total_memories })}
                 </span>
               ) : null}
             </div>
@@ -506,12 +509,12 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
             </div>
             {reviewProgress.report && (
               <div style={{ display: "flex", gap: 12, marginTop: 8, fontSize: 11, color: "var(--muted)" }}>
-                <span>删除 <b style={{ color: "#ef4444" }}>{reviewProgress.report.deleted}</b></span>
-                <span>更新 <b style={{ color: "#f59e0b" }}>{reviewProgress.report.updated}</b></span>
-                <span>合并 <b style={{ color: "#8b5cf6" }}>{reviewProgress.report.merged}</b></span>
-                <span>保留 <b style={{ color: "#10b981" }}>{reviewProgress.report.kept}</b></span>
+                <span>{t("memory.reviewDeleted")} <b style={{ color: "#ef4444" }}>{reviewProgress.report.deleted}</b></span>
+                <span>{t("memory.reviewUpdated")} <b style={{ color: "#f59e0b" }}>{reviewProgress.report.updated}</b></span>
+                <span>{t("memory.reviewMerged")} <b style={{ color: "#8b5cf6" }}>{reviewProgress.report.merged}</b></span>
+                <span>{t("memory.reviewKept")} <b style={{ color: "#10b981" }}>{reviewProgress.report.kept}</b></span>
                 {(reviewProgress.report.errors ?? 0) > 0 && (
-                  <span>错误 <b style={{ color: "#ef4444" }}>{reviewProgress.report.errors}</b></span>
+                  <span>{t("memory.reviewErrors")} <b style={{ color: "#ef4444" }}>{reviewProgress.report.errors}</b></span>
                 )}
               </div>
             )}
@@ -524,18 +527,18 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
       <AlertDialog open={showReviewConfirm} onOpenChange={setShowReviewConfirm}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>启动 LLM 智能审查</AlertDialogTitle>
+            <AlertDialogTitle>{t("memory.reviewConfirmTitle")}</AlertDialogTitle>
             <AlertDialogDescription>
-              将由大模型逐条审查所有记忆，删除垃圾、合并重复。此操作在后台异步执行，你可以随时查看进度或取消。
+              {t("memory.reviewConfirmDesc")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogCancel>{t("memory.cancel")}</AlertDialogCancel>
             <AlertDialogAction
               onClick={handleReview}
               className="bg-gradient-to-br from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600 text-white border-0"
             >
-              确认审查
+              {t("memory.reviewConfirm")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -547,7 +550,7 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
           <Suspense fallback={
             <div className="flex items-center justify-center" style={{ height: graphPanelHeight }}>
               <Loader2 size={24} className="animate-spin text-indigo-500" />
-              <span className="ml-2 text-sm text-muted-foreground">加载图谱组件...</span>
+              <span className="ml-2 text-sm text-muted-foreground">{t("memory.loadingGraph")}</span>
             </div>
           }>
             <CardContent className="p-0" style={{ height: graphPanelHeight }}>
@@ -564,13 +567,13 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
           {loading ? (
             <Card className="shadow-sm">
               <CardContent className="py-10 text-center text-muted-foreground">
-                <Loader2 size={20} className="inline animate-spin mr-2" />加载中...
+                <Loader2 size={20} className="inline animate-spin mr-2" />{t("memory.loading")}
               </CardContent>
             </Card>
           ) : memories.length === 0 ? (
             <Card className="shadow-sm">
               <CardContent className="py-10 text-center text-muted-foreground">
-                暂无记忆数据
+                {t("memory.noData")}
               </CardContent>
             </Card>
           ) : (
@@ -578,7 +581,7 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
               <div className="flex items-center gap-2 px-1">
                 <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
                   <Checkbox checked={selected.size === memories.length && memories.length > 0} onCheckedChange={selectAll} />
-                  全选 ({memories.length})
+                  {t("memory.selectAll")} ({memories.length})
                 </label>
               </div>
               {memories.map(m => (
@@ -595,7 +598,7 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
                         color: TYPE_COLORS[m.type] || "#6b7280",
                         borderColor: `${TYPE_COLORS[m.type] || "#6b7280"}30`,
                       }}>
-                        {TYPE_LABELS[m.type] || m.type}
+                        {typeLabel(m.type)}
                       </Badge>
                       <span className="font-semibold text-xs" style={{
                         color: m.importance_score >= 0.85 ? "#10b981" : m.importance_score >= 0.7 ? "#f59e0b" : "#6b7280",
@@ -617,7 +620,7 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
                           className="resize-y text-sm"
                         />
                         <div className="flex items-center gap-2">
-                          <span className="text-xs text-muted-foreground">分数:</span>
+                          <span className="text-xs text-muted-foreground">{t("memory.score")}:</span>
                           <Input
                             type="number" min={0} max={1} step={0.05}
                             value={editScore}
@@ -643,9 +646,9 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
                       <div className="mt-3 space-y-1.5">
                         {(m.subject || m.predicate) && (
                           <div className="text-xs text-muted-foreground">
-                            {m.subject && <span>主体: {m.subject}</span>}
+                            {m.subject && <span>{t("memory.subject")}: {m.subject}</span>}
                             {m.subject && m.predicate && <span> · </span>}
-                            {m.predicate && <span>属性: {m.predicate}</span>}
+                            {m.predicate && <span>{t("memory.predicate")}: {m.predicate}</span>}
                           </div>
                         )}
                         {m.tags && m.tags.length > 0 && (
@@ -664,10 +667,10 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
                     {editingId !== m.id && (
                       <div className="flex gap-2 mt-4 justify-end">
                         <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => startEdit(m)}>
-                          <Pencil size={14} className="mr-1" /> 编辑
+                          <Pencil size={14} className="mr-1" /> {t("memory.edit")}
                         </Button>
                         <Button variant="outline" size="sm" className="h-8 text-xs text-destructive border-destructive/30 hover:text-destructive hover:bg-destructive/10" onClick={() => handleDelete(m.id)}>
-                          <Trash2 size={14} className="mr-1" /> 删除
+                          <Trash2 size={14} className="mr-1" /> {t("memory.delete")}
                         </Button>
                       </div>
                     )}
@@ -689,24 +692,24 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
                     onCheckedChange={selectAll}
                   />
                 </TableHead>
-                <TableHead className="w-[80px]">类型</TableHead>
-                <TableHead>内容</TableHead>
-                <TableHead className="w-[60px] text-center">分数</TableHead>
-                <TableHead className="w-[90px] text-center">创建时间</TableHead>
-                <TableHead className="w-[100px] text-center">操作</TableHead>
+                <TableHead className="w-[80px]">{t("memory.type")}</TableHead>
+                <TableHead>{t("memory.content")}</TableHead>
+                <TableHead className="w-[60px] text-center">{t("memory.score")}</TableHead>
+                <TableHead className="w-[90px] text-center">{t("memory.createdAt")}</TableHead>
+                <TableHead className="w-[100px] text-center">{t("memory.actions")}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {loading ? (
                 <TableRow>
                   <TableCell colSpan={6} className="text-center py-10 text-muted-foreground">
-                    <Loader2 size={20} className="inline animate-spin mr-2" />加载中...
+                    <Loader2 size={20} className="inline animate-spin mr-2" />{t("memory.loading")}
                   </TableCell>
                 </TableRow>
               ) : memories.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={6} className="text-center py-10 text-muted-foreground">
-                    暂无记忆数据
+                    {t("memory.noData")}
                   </TableCell>
                 </TableRow>
               ) : memories.map(m => (
@@ -725,7 +728,7 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
                       color: TYPE_COLORS[m.type] || "#6b7280",
                       border: `1px solid ${TYPE_COLORS[m.type] || "#6b7280"}30`,
                     }}>
-                      {TYPE_LABELS[m.type] || m.type}
+                      {typeLabel(m.type)}
                     </span>
                   </TableCell>
                   <TableCell className="max-w-[400px]">
@@ -738,7 +741,7 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
                           className="resize-y text-xs"
                         />
                         <div className="flex items-center gap-1.5">
-                          <span className="text-[11px] text-muted-foreground">分数:</span>
+                          <span className="text-[11px] text-muted-foreground">{t("memory.score")}:</span>
                           <Input
                             type="number" min={0} max={1} step={0.05}
                             value={editScore}
@@ -760,9 +763,9 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
                         </div>
                         {(m.subject || m.predicate) && (
                           <div className="mt-1 text-[11px] text-muted-foreground">
-                            {m.subject && <span>主体: {m.subject}</span>}
+                            {m.subject && <span>{t("memory.subject")}: {m.subject}</span>}
                             {m.subject && m.predicate && <span> · </span>}
-                            {m.predicate && <span>属性: {m.predicate}</span>}
+                            {m.predicate && <span>{t("memory.predicate")}: {m.predicate}</span>}
                           </div>
                         )}
                         {m.tags && m.tags.length > 0 && (
@@ -789,10 +792,10 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
                   </TableCell>
                   <TableCell className="text-center">
                     <div className="flex gap-1 justify-center">
-                      <Button variant="ghost" size="icon-sm" title="编辑" className="text-muted-foreground hover:text-foreground" onClick={() => startEdit(m)}>
+                      <Button variant="ghost" size="icon-sm" title={t("memory.edit")} className="text-muted-foreground hover:text-foreground" onClick={() => startEdit(m)}>
                         <Pencil size={13} />
                       </Button>
-                      <Button variant="ghost" size="icon-sm" title="删除" className="text-muted-foreground hover:text-destructive" onClick={() => handleDelete(m.id)}>
+                      <Button variant="ghost" size="icon-sm" title={t("memory.delete")} className="text-muted-foreground hover:text-destructive" onClick={() => handleDelete(m.id)}>
                         <Trash2 size={13} />
                       </Button>
                     </div>
@@ -806,13 +809,13 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
       <AlertDialog open={!!confirmDialog} onOpenChange={open => { if (!open) setConfirmDialog(null); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>确认操作</AlertDialogTitle>
+            <AlertDialogTitle>{t("memory.confirmTitle")}</AlertDialogTitle>
             <AlertDialogDescription className="whitespace-pre-wrap">{confirmDialog?.message}</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogCancel>{t("memory.cancel")}</AlertDialogCancel>
             <AlertDialogAction onClick={() => { confirmDialog?.onConfirm(); setConfirmDialog(null); }}>
-              确认
+              {t("memory.confirm")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

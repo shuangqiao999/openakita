@@ -10,7 +10,8 @@ import pytest
 
 from openakita.orgs.manager import OrgManager
 from openakita.orgs.runtime import OrgRuntime
-from openakita.orgs.models import NodeStatus, OrgStatus
+from openakita.orgs.models import NodeStatus, OrgProject, OrgStatus, ProjectTask, ProjectStatus, TaskStatus
+from openakita.orgs.project_store import ProjectStore
 from .conftest import make_org
 
 
@@ -355,3 +356,5 @@ class TestStateTransitions:
             assert loaded.status in (OrgStatus.ACTIVE, OrgStatus.RUNNING)
         finally:
             await runtime.shutdown()
+
+

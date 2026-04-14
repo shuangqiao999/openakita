@@ -115,17 +115,19 @@ class OrgSetupHandler:
 
         try:
             from ...orgs.tool_categories import TOOL_CATEGORIES
-            result["tool_categories"] = {
-                name: tools for name, tools in TOOL_CATEGORIES.items()
-            }
+            result["tool_categories"] = dict(TOOL_CATEGORIES.items())
         except Exception:
             result["tool_categories"] = {}
 
         result["usage_hint"] = (
-            "请根据以上信息为用户设计组织架构。"
-            "为每个节点选择最合适的 agent（agent_profile_id），"
-            "并配置合适的工具类目（external_tools）。"
-            "信息不足时请向用户询问。"
+            "请根据以上信息为用户设计组织架构。\n"
+            "为每个节点指定角色，有以下方式（按推荐顺序）：\n"
+            "1. 从 agents 或 custom_agents 中选择合适的 agent_profile_id\n"
+            "2. 直接填写 custom_prompt 创建全新角色（无需 agent_profile_id）\n"
+            "   — 适用于没有现成 Agent 匹配的场景\n"
+            "3. 同时设置 agent_profile_id 和 custom_prompt，"
+            "以预设 Agent 为基础并追加自定义指令\n"
+            "配置合适的工具类目（external_tools）。信息不足时请向用户询问。"
         )
 
         return json.dumps(result, ensure_ascii=False, indent=2)
@@ -423,7 +425,7 @@ class OrgSetupHandler:
         ]
 
         # --- 3. Update / add nodes ---
-        from ...orgs.tool_categories import get_preset_for_role, get_avatar_for_role
+        from ...orgs.tool_categories import get_avatar_for_role, get_preset_for_role
 
         title_to_id: dict[str, str] = {
             nd["role_title"]: nid for nid, nd in nodes_dict.items()
@@ -714,7 +716,7 @@ class OrgSetupHandler:
 
         Returns (nodes, edges, errors).
         """
-        from ...orgs.tool_categories import get_preset_for_role, get_avatar_for_role
+        from ...orgs.tool_categories import get_avatar_for_role, get_preset_for_role
 
         nodes_raw = params.get("nodes", [])
         errors: list[str] = []
@@ -763,7 +765,7 @@ class OrgSetupHandler:
         self._calculate_positions(nodes)
 
         edges: list[dict] = []
-        for nr, node in zip(nodes_raw, nodes):
+        for nr, node in zip(nodes_raw, nodes, strict=False):
             parent_title = nr.get("parent_role_title", "").strip()
             if not parent_title:
                 continue

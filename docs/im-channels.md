@@ -466,7 +466,7 @@ QQBOT_SANDBOX=false          # 开发调试时设为 true
 
 ### 连接方式
 
-- **WebSocket 长连接**: 使用 botpy SDK 自动管理 WebSocket 连接和分片
+- **WebSocket 长连接**: 自建 WebSocket 连接到 QQ Gateway，自动管理心跳和重连
 - 支持自动断线重连（指数退避策略，初始 5 秒，最大 120 秒）
 - 支持频道、群聊和单聊消息
 

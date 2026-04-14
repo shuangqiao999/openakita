@@ -10,13 +10,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .runtime import OrgRuntime
 
-from .models import Organization, OrgStatus, NodeStatus, _now_iso
+from .models import NodeStatus, Organization, OrgStatus, _now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -153,8 +153,12 @@ class OrgHeartbeat:
             return {"skipped": True, "reason": "root_busy"}
 
         running = self._runtime._running_tasks.get(org.id, {})
-        if root.id in running and not running[root.id].done():
-            logger.debug(f"[Heartbeat] Skipping: root {root.id} has running task")
+        root_busy_tasks = {
+            k: t for k, t in running.items()
+            if k.startswith(f"{root.id}:") and not t.done()
+        }
+        if root_busy_tasks:
+            logger.debug(f"[Heartbeat] Skipping: root {root.id} has {len(root_busy_tasks)} running task(s)")
             return {"skipped": True, "reason": "root_has_task"}
 
         await self._recover_error_nodes(org)
@@ -202,7 +206,7 @@ class OrgHeartbeat:
             if has_external:
                 action_guidance += (
                     "4. **执行**：使用 org_delegate_task 分配任务给下属，"
-                    "或自己使用 create_todo 制定计划、web_search 搜索信息\n"
+                    "或自己使用 create_plan 制定计划、web_search 搜索信息\n"
                 )
             else:
                 action_guidance += (
@@ -278,9 +282,41 @@ class OrgHeartbeat:
     # Standup loop
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _cron_matches_now(cron_expr: str) -> bool:
+        """Check if a 5-field cron expression matches the current minute (UTC)."""
+        parts = cron_expr.strip().split()
+        if len(parts) != 5:
+            return False
+        now = datetime.now(UTC)
+        fields = [now.minute, now.hour, now.day, now.month, now.isoweekday() % 7]
+        ranges = [(0, 59), (0, 23), (1, 31), (1, 12), (0, 6)]
+        for part, val, (lo, hi) in zip(parts, fields, ranges, strict=False):
+            if part == "*":
+                continue
+            try:
+                allowed: set[int] = set()
+                for segment in part.split(","):
+                    if "/" in segment:
+                        base, step_s = segment.split("/", 1)
+                        step = int(step_s)
+                        start = lo if base == "*" else int(base)
+                        allowed.update(range(start, hi + 1, step))
+                    elif "-" in segment:
+                        a, b = segment.split("-", 1)
+                        allowed.update(range(int(a), int(b) + 1))
+                    else:
+                        allowed.add(int(segment))
+                if val not in allowed:
+                    return False
+            except (ValueError, TypeError):
+                return False
+        return True
+
     async def _standup_loop(self, org: Organization) -> None:
-        """Milestone-driven review: triggers when N tasks complete or all nodes idle."""
+        """Hybrid standup: triggers on cron schedule OR milestone (N tasks done / all idle)."""
         milestone_threshold = 5
+        last_cron_trigger_minute: str = ""
         while True:
             try:
                 await asyncio.sleep(60)
@@ -299,14 +335,23 @@ class OrgHeartbeat:
                     n.status.value == "idle" for n in current.nodes if not n.is_clone
                 )
 
-                should_review = (
+                milestone_trigger = (
                     tasks_done >= milestone_threshold
                     or (all_idle and tasks_done > 0)
                 )
 
-                if should_review:
+                now_key = datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
+                cron_trigger = False
+                cron_expr = getattr(current, "standup_cron", "") or ""
+                if cron_expr and now_key != last_cron_trigger_minute:
+                    if self._cron_matches_now(cron_expr):
+                        cron_trigger = True
+                        last_cron_trigger_minute = now_key
+
+                if milestone_trigger or cron_trigger:
+                    reason = "cron" if cron_trigger else "milestone"
                     logger.info(
-                        f"[Heartbeat] Milestone review for {org.id}: "
+                        f"[Heartbeat] Standup review for {org.id} ({reason}): "
                         f"{tasks_done} tasks done, all_idle={all_idle}"
                     )
                     await self._execute_standup(current)
@@ -396,7 +441,7 @@ class OrgHeartbeat:
             "result_preview": str(result.get("result", ""))[:120],
         })
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         report_path = self._runtime._manager._org_dir(org.id) / "reports" / f"standup_{now.strftime('%Y-%m-%d')}.md"
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_content = (

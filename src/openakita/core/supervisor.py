@@ -26,7 +26,7 @@ import logging
 import time
 from collections import Counter
 from dataclasses import dataclass, field
-from enum import Enum, IntEnum
+from enum import IntEnum, StrEnum
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -34,16 +34,18 @@ logger = logging.getLogger(__name__)
 
 class InterventionLevel(IntEnum):
     """干预级别（递增严重程度）"""
+
     NONE = 0
-    NUDGE = 1           # 注入提示消息
+    NUDGE = 1  # 注入提示消息
     STRATEGY_SWITCH = 2  # 回滚 + 换策略
-    MODEL_SWITCH = 3     # 切换模型
-    ESCALATE = 4         # 请求用户介入
-    TERMINATE = 5        # 安全终止
+    MODEL_SWITCH = 3  # 切换模型
+    ESCALATE = 4  # 请求用户介入
+    TERMINATE = 5  # 安全终止
 
 
-class PatternType(str, Enum):
+class PatternType(StrEnum):
     """检测到的问题模式类型"""
+
     TOOL_THRASHING = "tool_thrashing"
     EDIT_THRASHING = "edit_thrashing"
     REASONING_LOOP = "reasoning_loop"
@@ -57,6 +59,7 @@ class PatternType(str, Enum):
 @dataclass
 class SupervisionEvent:
     """监督事件记录"""
+
     timestamp: float
     pattern: PatternType
     level: InterventionLevel
@@ -68,6 +71,7 @@ class SupervisionEvent:
 @dataclass
 class Intervention:
     """干预指令"""
+
     level: InterventionLevel
     pattern: PatternType
     message: str = ""
@@ -77,6 +81,7 @@ class Intervention:
     should_terminate: bool = False
     should_escalate: bool = False
     should_switch_model: bool = False
+    throttled_tool_names: list[str] = field(default_factory=list)
 
 
 # -- 配置常量 --
@@ -87,17 +92,24 @@ EDIT_THRASH_THRESHOLD = 3
 REASONING_SIMILARITY_THRESHOLD = 0.80
 REASONING_SIMILARITY_WINDOW = 3
 TOKEN_ANOMALY_THRESHOLD = 40000
-SIGNATURE_REPEAT_WARN = 2
-SIGNATURE_REPEAT_STRATEGY_SWITCH = 3
-SIGNATURE_REPEAT_TERMINATE = 4
+SIGNATURE_REPEAT_WARN = 3
+SIGNATURE_REPEAT_STRATEGY_SWITCH = 4
+SIGNATURE_REPEAT_TERMINATE = 5
 PLAN_DRIFT_WINDOW = 5
 EXTREME_ITERATION_THRESHOLD = 50
 SELF_CHECK_INTERVAL = 10
 UNPRODUCTIVE_WINDOW = 5
-UNPRODUCTIVE_ADMIN_TOOLS = frozenset({
-    "create_todo", "update_todo_step", "get_todo_status", "complete_todo",
-    "search_memory", "add_memory", "list_directory",
-})
+UNPRODUCTIVE_ADMIN_TOOLS = frozenset(
+    {
+        "create_todo",
+        "update_todo_step",
+        "get_todo_status",
+        "complete_todo",
+        "search_memory",
+        "add_memory",
+        "list_directory",
+    }
+)
 
 
 class RuntimeSupervisor:
@@ -169,21 +181,29 @@ class RuntimeSupervisor:
         """记录一次工具调用"""
         if not self._enabled:
             return
-        self._tool_call_history.append({
-            "tool_name": tool_name,
-            "params": params or {},
-            "success": success,
-            "iteration": iteration,
-            "timestamp": time.time(),
-        })
+        self._tool_call_history.append(
+            {
+                "tool_name": tool_name,
+                "params": params or {},
+                "success": success,
+                "iteration": iteration,
+                "timestamp": time.time(),
+            }
+        )
         # 文件操作追踪
         if tool_name in ("read_file", "write_file", "edit_file", "search_replace"):
             path = ""
             if params:
                 path = params.get("path", "") or params.get("file_path", "") or ""
             if path:
-                op = "write" if tool_name in ("write_file", "edit_file", "search_replace") else "read"
-                self._file_access_history.append({"path": path, "op": op, "iteration": str(iteration)})
+                op = (
+                    "write"
+                    if tool_name in ("write_file", "edit_file", "search_replace")
+                    else "read"
+                )
+                self._file_access_history.append(
+                    {"path": path, "op": op, "iteration": str(iteration)}
+                )
 
     def record_tool_signature(self, signature: str) -> None:
         """记录工具调用签名（用于签名重复检测）"""
@@ -191,7 +211,7 @@ class RuntimeSupervisor:
             return
         self._signature_history.append(signature)
         if len(self._signature_history) > TOOL_THRASH_WINDOW * 4:
-            self._signature_history = self._signature_history[-TOOL_THRASH_WINDOW * 3:]
+            self._signature_history = self._signature_history[-TOOL_THRASH_WINDOW * 3 :]
 
     def record_response(self, text_content: str) -> None:
         """记录 LLM 响应文本（用于推理死循环检测）"""
@@ -200,7 +220,7 @@ class RuntimeSupervisor:
         h = hashlib.md5(text_content.strip()[:2000].encode("utf-8", errors="ignore")).hexdigest()
         self._response_hashes.append(h)
         if len(self._response_hashes) > REASONING_SIMILARITY_WINDOW * 3:
-            self._response_hashes = self._response_hashes[-REASONING_SIMILARITY_WINDOW * 2:]
+            self._response_hashes = self._response_hashes[-REASONING_SIMILARITY_WINDOW * 2 :]
 
     def record_token_usage(self, tokens: int) -> None:
         """记录单轮 token 消耗"""
@@ -253,7 +273,8 @@ class RuntimeSupervisor:
             interventions.append(token_intervention)
 
         extreme_intervention = self._check_extreme_iterations(
-            iteration, has_active_todo=has_active_todo,
+            iteration,
+            has_active_todo=has_active_todo,
         )
         if extreme_intervention:
             interventions.append(extreme_intervention)
@@ -263,7 +284,9 @@ class RuntimeSupervisor:
             interventions.append(unproductive_intervention)
 
         selfcheck_intervention = self._check_self_check_interval(
-            iteration, has_active_todo, plan_current_step,
+            iteration,
+            has_active_todo,
+            plan_current_step,
         )
         if selfcheck_intervention:
             interventions.append(selfcheck_intervention)
@@ -275,13 +298,15 @@ class RuntimeSupervisor:
         interventions.sort(key=lambda i: i.level, reverse=True)
         chosen = interventions[0]
 
-        self._events.append(SupervisionEvent(
-            timestamp=time.time(),
-            pattern=chosen.pattern,
-            level=chosen.level,
-            detail=chosen.message,
-            iteration=iteration,
-        ))
+        self._events.append(
+            SupervisionEvent(
+                timestamp=time.time(),
+                pattern=chosen.pattern,
+                level=chosen.level,
+                detail=chosen.message,
+                iteration=iteration,
+            )
+        )
 
         logger.info(
             f"[Supervisor] Iter {iteration} — pattern={chosen.pattern.value} "
@@ -291,6 +316,7 @@ class RuntimeSupervisor:
         # Decision Trace: 记录监督事件
         try:
             from ..tracing.tracer import get_tracer
+
             tracer = get_tracer()
             tracer.record_decision(
                 decision_type="supervision",
@@ -317,6 +343,7 @@ class RuntimeSupervisor:
             return None
 
         import re as _re
+
         _name_pattern = _re.compile(r"\([^)]*\)")
         name_sigs = [_name_pattern.sub("", s) for s in recent]
         name_counts = Counter(name_sigs)
@@ -385,13 +412,14 @@ class RuntimeSupervisor:
                 should_inject_prompt=True,
                 prompt_injection=(
                     f"[系统提示] 你已经连续 {top_count} 次调用 {top_name}，"
-                    "工具已返回结果。请立即停止调用工具，用自然语言整理结果回复用户。"
+                    "工具已返回结果。请停止重复调用该工具，用自然语言整理结果回复用户。"
                     "如果还需要其他信息，请换一个不同的工具或方法。"
                 ),
+                throttled_tool_names=[top_name],
             )
 
-
         if most_common_count >= self._signature_repeat_warn:
+            _sig_tool = most_common_sig.split("(")[0] if "(" in most_common_sig else top_name
             return Intervention(
                 level=InterventionLevel.NUDGE,
                 pattern=PatternType.SIGNATURE_REPEAT,
@@ -399,8 +427,9 @@ class RuntimeSupervisor:
                 should_inject_prompt=True,
                 prompt_injection=(
                     "[系统提示] 你在最近几轮中用完全相同的参数重复调用了同一个工具。"
-                    "请立即停止调用工具，用自然语言回复用户。"
+                    "请停止重复调用该工具，用自然语言回复用户，或使用其他工具。"
                 ),
+                throttled_tool_names=[_sig_tool],
             )
 
         return None
@@ -453,7 +482,13 @@ class RuntimeSupervisor:
 
         for path, cycle_count in file_cycles.items():
             if cycle_count >= self._edit_thrash_threshold:
-                short_path = path.rsplit("/", 1)[-1] if "/" in path else path.rsplit("\\", 1)[-1] if "\\" in path else path
+                short_path = (
+                    path.rsplit("/", 1)[-1]
+                    if "/" in path
+                    else path.rsplit("\\", 1)[-1]
+                    if "\\" in path
+                    else path
+                )
                 return Intervention(
                     level=InterventionLevel.NUDGE,
                     pattern=PatternType.EDIT_THRASHING,
@@ -504,7 +539,8 @@ class RuntimeSupervisor:
         if last_tokens > self._token_anomaly_threshold:
             logger.info(
                 "[Supervisor] Token usage: %d tokens (threshold: %d) — logged only, not injected",
-                last_tokens, self._token_anomaly_threshold,
+                last_tokens,
+                self._token_anomaly_threshold,
             )
             return Intervention(
                 level=InterventionLevel.NUDGE,
@@ -517,7 +553,10 @@ class RuntimeSupervisor:
         return None
 
     def _check_extreme_iterations(
-        self, iteration: int, *, has_active_todo: bool = False,
+        self,
+        iteration: int,
+        *,
+        has_active_todo: bool = False,
     ) -> Intervention | None:
         """极端迭代阈值检测。
 
@@ -601,7 +640,7 @@ class RuntimeSupervisor:
             return Intervention(
                 level=InterventionLevel.STRATEGY_SWITCH,
                 pattern=PatternType.UNPRODUCTIVE_LOOP,
-                message=f"Last 5 tool calls are all administrative — escalating",
+                message="Last 5 tool calls are all administrative — escalating",
                 should_inject_prompt=True,
                 should_rollback=True,
                 prompt_injection=(
@@ -616,7 +655,7 @@ class RuntimeSupervisor:
             return Intervention(
                 level=InterventionLevel.NUDGE,
                 pattern=PatternType.UNPRODUCTIVE_LOOP,
-                message=f"Last 3 tool calls are all administrative",
+                message="Last 3 tool calls are all administrative",
                 should_inject_prompt=True,
                 prompt_injection=(
                     "[系统提示] 你最近连续多轮都只在调用管理/计划类工具，"
@@ -639,5 +678,7 @@ class RuntimeSupervisor:
             "pattern_counts": pattern_counts,
             "total_tool_calls": len(self._tool_call_history),
             "total_file_accesses": len(self._file_access_history),
-            "max_level_reached": max((e.level for e in self._events), default=InterventionLevel.NONE).name,
+            "max_level_reached": max(
+                (e.level for e in self._events), default=InterventionLevel.NONE
+            ).name,
         }

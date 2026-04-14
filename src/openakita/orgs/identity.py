@@ -18,7 +18,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from .models import EdgeType, OrgNode, Organization
+from .models import EdgeType, Organization, OrgNode
 
 logger = logging.getLogger(__name__)
 
@@ -50,10 +50,7 @@ class OrgIdentity:
         level = 3
         if role:
             if self._read_file(node_identity_dir / "AGENT.md"):
-                if self._read_file(node_identity_dir / "SOUL.md"):
-                    level = 3
-                else:
-                    level = 2
+                level = 3 if self._read_file(node_identity_dir / "SOUL.md") else 2
             else:
                 level = 1
         else:
@@ -86,6 +83,7 @@ class OrgIdentity:
         """
         parent = org.get_parent(node.id)
         children = org.get_children(node.id)
+        is_root = (node.level == 0 or not parent)
 
         connected_peers: list[str] = []
         for e in org.edges:
@@ -122,7 +120,6 @@ class OrgIdentity:
         parts.append(role_section)
 
         if org.core_business:
-            is_root = (node.level == 0 or not parent)
             persona_label = org.user_persona.label if org.user_persona else "负责人"
             biz_section = f"## 核心业务\n{org.core_business}"
             if is_root:
@@ -162,7 +159,9 @@ class OrgIdentity:
             rel_parts.append(f"- 直属上级：**{parent.role_title}** (id: `{parent.id}`)")
         elif persona and persona.label:
             desc = f"（{persona.description}）" if persona.description else "（用户）"
-            rel_parts.append(f"- 直属上级：{persona.label}{desc}")
+            rel_parts.append(
+                f"- 指挥者：{persona.label}{desc}（通过指挥台下达指令，不是组织内节点）"
+            )
         if children:
             child_lines = []
             for c in children:
@@ -174,11 +173,18 @@ class OrgIdentity:
                 "而非自己动手执行。只有简单协调沟通才自己处理。**"
             )
         else:
-            rel_parts.append(
-                "\n你是执行者（没有下属）。收到任务后**自己完成**，"
-                "完成后用 org_submit_deliverable 提交交付物。"
-                "需要同事协助时，用 org_send_message 与他们沟通（不要用 org_delegate_task，那是给有下属的管理者用的）。"
-            )
+            if is_root:
+                rel_parts.append(
+                    "\n你是独立执行者（无上级节点、无下属）。收到任务后**自己完成**，"
+                    "完成后直接在回复中总结成果即可，结果会自动返回给指挥者。"
+                    "需要同事协助时，用 org_send_message 与他们沟通。"
+                )
+            else:
+                rel_parts.append(
+                    "\n你是执行者（没有下属）。收到任务后**自己完成**，"
+                    "完成后用 org_submit_deliverable 提交交付物。"
+                    "需要同事协助时，用 org_send_message 与他们沟通（不要用 org_delegate_task，那是给有下属的管理者用的）。"
+                )
         if connected_peers:
             rel_parts.append(f"- 协作伙伴：{', '.join(connected_peers)}")
         if rel_parts:
@@ -203,19 +209,29 @@ class OrgIdentity:
         if policy_index:
             parts.append(f"制度索引：\n{policy_index}")
 
-        delivery_flow = (
-            "任务交付流程：\n"
-            "1. 收到任务后开始工作\n"
-            "2. 完成后用 **org_submit_deliverable** 提交交付物（to_node 可省略，系统自动提交给直属上级）\n"
-            "3. 委派人用 org_accept_deliverable（通过）或 org_reject_deliverable（打回）验收\n"
-            "4. 被打回时根据反馈修改后重新提交\n"
-            "5. 验收通过后任务完结\n\n"
-            "缺少工具时，用 org_request_tools 向上级申请。"
-        )
+        if is_root:
+            delivery_flow = (
+                "任务完成流程：\n"
+                "1. 收到指挥者指令后开始工作（可委派下属、也可自己执行）\n"
+                "2. 完成后直接在回复中总结成果，结果会自动返回给指挥者\n"
+                "3. 重要成果同时写入 org_write_blackboard 供团队查阅\n"
+                "4. **不要**使用 org_submit_deliverable，你没有上级节点可提交\n\n"
+                "验收下属交付物时，用 org_accept_deliverable（通过）或 org_reject_deliverable（打回）。"
+            )
+        else:
+            delivery_flow = (
+                "任务交付流程：\n"
+                "1. 收到任务后开始工作\n"
+                "2. 完成后用 **org_submit_deliverable** 提交交付物（to_node 可省略，系统自动提交给直属上级）\n"
+                "3. 委派人用 org_accept_deliverable（通过）或 org_reject_deliverable（打回）验收\n"
+                "4. 被打回时根据反馈修改后重新提交\n"
+                "5. 验收通过后任务完结\n\n"
+                "缺少工具时，用 org_request_tools 向上级申请。"
+            )
 
         has_external = bool(node.external_tools)
         if has_external:
-            from .tool_categories import expand_tool_categories, TOOL_CATEGORIES
+            from .tool_categories import TOOL_CATEGORIES, expand_tool_categories
             ext_names = expand_tool_categories(node.external_tools)
             cat_labels = [c for c in node.external_tools if c in TOOL_CATEGORIES]
             ext_desc = "、".join(cat_labels) if cat_labels else "、".join(sorted(ext_names)[:5])

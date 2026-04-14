@@ -112,9 +112,7 @@ class SubprocessBridge:
                 env=env,
                 **_NO_WINDOW_FLAGS,
             )
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout
-            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
 
             if proc.returncode != 0:
                 err_msg = stderr.decode("utf-8", errors="replace").strip()
@@ -131,7 +129,7 @@ class SubprocessBridge:
                     return {"success": True, "data": out_text}
             return {"success": True, "data": None}
 
-        except TimeoutError:
+        except (asyncio.TimeoutError, TimeoutError):
             return {"success": False, "error": f"子进程执行超时 ({timeout}s)"}
         except Exception as e:
             return {"success": False, "error": f"子进程执行异常: {e}"}
@@ -240,7 +238,7 @@ asyncio.run(main())
                 return {"success": False, "error": info["error"]}
             info["process"] = proc
             return {"success": True, "data": info}
-        except TimeoutError:
+        except (asyncio.TimeoutError, TimeoutError):
             proc.kill()
             return {"success": False, "error": "Playwright CDP 服务启动超时"}
         except Exception as e:

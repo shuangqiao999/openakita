@@ -7,7 +7,7 @@ They verify request/response contracts without running actual LLM calls.
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -17,7 +17,6 @@ except ImportError:
     pytest.skip("httpx not installed", allow_module_level=True)
 
 from openakita.orgs.manager import OrgManager
-from openakita.orgs.models import OrgStatus
 
 
 @pytest.fixture()
@@ -209,3 +208,5 @@ class TestInboxRoutes:
             assert "total_unread" in resp.json()
         finally:
             await runtime.shutdown()
+
+

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import ForceGraph3D from "react-force-graph-3d";
 import * as THREE from "three";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
@@ -25,7 +26,8 @@ const QUALITY_PRESETS: Record<GraphQuality, {
   low:    { bloom: false, particles: 0, particleWidth: 0,   alphaDecay: 0.06, warmupTicks: 20, cooldownTicks: 30 },
 };
 
-const QUALITY_LABELS: Record<GraphQuality, string> = { high: "高", medium: "中", low: "低" };
+const QUALITY_LABEL_KEYS: Record<GraphQuality, string> = { high: "memory.graphQualityHigh", medium: "memory.graphQualityMedium", low: "memory.graphQualityLow" };
+const QUALITY_TIP_KEYS: Record<GraphQuality, string> = { high: "memory.graphQualityHighTip", medium: "memory.graphQualityMediumTip", low: "memory.graphQualityLowTip" };
 const QUALITY_ICONS: Record<GraphQuality, typeof Zap> = { high: Zap, medium: Monitor, low: BatteryLow };
 const QUALITY_ORDER: GraphQuality[] = ["high", "medium", "low"];
 
@@ -80,11 +82,11 @@ const DIMENSION_COLORS: Record<string, string> = {
   context: "#6b7280",
 };
 
-const NODE_TYPE_LABELS: Record<string, string> = {
-  EVENT: "事件",
-  FACT: "事实",
-  DECISION: "决策",
-  GOAL: "目标",
+const NODE_TYPE_LABEL_KEYS: Record<string, string> = {
+  EVENT: "memory.graphNodeTypeEvent",
+  FACT: "memory.graphNodeTypeFact",
+  DECISION: "memory.graphNodeTypeDecision",
+  GOAL: "memory.graphNodeTypeGoal",
 };
 
 interface Props {
@@ -95,6 +97,7 @@ interface Props {
 }
 
 export function MemoryGraph3D({ apiBaseUrl = "", searchQuery = "", quality: qualityProp, onQualityChange }: Props) {
+  const { t } = useTranslation();
   // ForceGraph3D ref type doesn't export cleanly; use its expected shape
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const fgRef = useRef<any>(undefined);
@@ -415,7 +418,7 @@ export function MemoryGraph3D({ apiBaseUrl = "", searchQuery = "", quality: qual
     return (
       <div className="flex items-center justify-center h-full">
         <Loader2 size={24} className="animate-spin text-indigo-500" />
-        <span className="ml-2 text-sm text-muted-foreground">加载记忆图谱...</span>
+        <span className="ml-2 text-sm text-muted-foreground">{t("memory.graphLoading")}</span>
       </div>
     );
   }
@@ -423,9 +426,9 @@ export function MemoryGraph3D({ apiBaseUrl = "", searchQuery = "", quality: qual
   if (!graphData || graphData.nodes.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
-        <div className="text-lg font-semibold mb-1">暂无记忆图谱数据</div>
+        <div className="text-lg font-semibold mb-1">{t("memory.graphNoData")}</div>
         <div className="text-xs opacity-60">
-          对话后将自动生成关系型记忆（当前记忆模式需为 mode2 或 auto）
+          {t("memory.graphNoDataHint")}
         </div>
       </div>
     );
@@ -458,15 +461,15 @@ export function MemoryGraph3D({ apiBaseUrl = "", searchQuery = "", quality: qual
           {Object.entries(NODE_COLORS).map(([type, color]) => (
             <span key={type} className="flex items-center gap-1.5 shrink-0">
               <span className="w-2 h-2 rounded-full" style={{ background: color }} />
-              {NODE_TYPE_LABELS[type] || type}
+              {NODE_TYPE_LABEL_KEYS[type] ? t(NODE_TYPE_LABEL_KEYS[type]) : type}
             </span>
           ))}
           <span className="border-l border-slate-700 pl-3 text-slate-400 shrink-0">
-            {graphData.meta.total_nodes} 节点 · {graphData.meta.total_edges} 边 · {graphData.meta.mode}
+            {t("memory.graphNodeCount", { nodes: graphData.meta.total_nodes })} · {t("memory.graphEdgeCount", { edges: graphData.meta.total_edges })} · {graphData.meta.mode}
           </span>
           {matchedNodeIds && (
             <span className="border-l border-slate-700 pl-3 font-semibold text-amber-500 shrink-0">
-              搜索匹配: {matchedNodeIds.size} 个节点
+              {t("memory.graphSearchMatch", { count: matchedNodeIds.size })}
             </span>
           )}
         </div>
@@ -485,11 +488,11 @@ export function MemoryGraph3D({ apiBaseUrl = "", searchQuery = "", quality: qual
                       }`}
                     >
                       <Icon size={12} />
-                      {QUALITY_LABELS[q]}
+                      {t(QUALITY_LABEL_KEYS[q])}
                     </button>
                   </TooltipTrigger>
                   <TooltipContent side="bottom" className="text-xs">
-                    {q === "high" ? "高画质：开启发光特效和粒子动画" : q === "medium" ? "中画质：关闭发光特效，保留少量粒子" : "低画质：关闭所有特效，最流畅"}
+                    {t(QUALITY_TIP_KEYS[q])}
                   </TooltipContent>
                 </Tooltip>
               );
@@ -527,7 +530,7 @@ export function MemoryGraph3D({ apiBaseUrl = "", searchQuery = "", quality: qual
         ) : (
           <div className="flex h-full items-center justify-center text-sm text-slate-400">
             <Loader2 size={20} className="animate-spin text-indigo-400" />
-            <span className="ml-2">正在初始化图谱画布...</span>
+            <span className="ml-2">{t("memory.graphInitializing")}</span>
           </div>
         )}
       </div>
@@ -559,6 +562,7 @@ function NodeDetailPanel({
   onClose: () => void;
   onNavigate: (id: string) => void;
 }) {
+  const { t } = useTranslation();
   const related = useMemo(() => {
     const result: { id: string; edge_type: string; dimension: string }[] = [];
     for (const link of links) {
@@ -579,7 +583,7 @@ function NodeDetailPanel({
     <Card className="absolute top-0 right-0 bottom-0 w-80 rounded-none border-y-0 border-r-0 border-l border-slate-800 bg-slate-950/95 backdrop-blur-md overflow-y-auto z-20 shadow-2xl animate-in slide-in-from-right-full duration-200">
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4">
         <Badge variant="outline" style={{ backgroundColor: `${color}15`, color, borderColor: `${color}30` }}>
-          {NODE_TYPE_LABELS[node.node_type] || node.node_type}
+          {NODE_TYPE_LABEL_KEYS[node.node_type] ? t(NODE_TYPE_LABEL_KEYS[node.node_type]) : node.node_type}
         </Badge>
         <Button variant="ghost" size="icon-sm" onClick={onClose} className="text-slate-400 hover:text-slate-100 hover:bg-slate-800">
           <X size={16} />
@@ -593,23 +597,23 @@ function NodeDetailPanel({
         <div className="space-y-2 text-xs text-slate-400">
           {node.occurred_at && (
             <div className="flex gap-2">
-              <span className="text-slate-500 w-12 shrink-0">时间:</span>
-              <span className="text-slate-300">{new Date(node.occurred_at).toLocaleString("zh-CN")}</span>
+              <span className="text-slate-500 w-12 shrink-0">{t("memory.graphDetailTime")}:</span>
+              <span className="text-slate-300">{new Date(node.occurred_at).toLocaleString()}</span>
             </div>
           )}
           <div className="flex gap-2">
-            <span className="text-slate-500 w-12 shrink-0">重要性:</span>
+            <span className="text-slate-500 w-12 shrink-0">{t("memory.graphDetailImportance")}:</span>
             <span className="font-semibold" style={{ color }}>{node.importance.toFixed(2)}</span>
           </div>
           {node.action_category && (
             <div className="flex gap-2">
-              <span className="text-slate-500 w-12 shrink-0">动作:</span>
+              <span className="text-slate-500 w-12 shrink-0">{t("memory.graphDetailAction")}:</span>
               <span className="text-slate-300">{node.action_category}</span>
             </div>
           )}
           {node.project && (
             <div className="flex gap-2">
-              <span className="text-slate-500 w-12 shrink-0">项目:</span>
+              <span className="text-slate-500 w-12 shrink-0">{t("memory.graphDetailProject")}:</span>
               <span className="text-slate-300">{node.project}</span>
             </div>
           )}
@@ -617,7 +621,7 @@ function NodeDetailPanel({
 
         {node.entities.length > 0 && (
           <div className="space-y-2">
-            <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider">实体</div>
+            <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider">{t("memory.graphDetailEntities")}</div>
             <div className="flex flex-wrap gap-1.5">
               {node.entities.map((e, i) => (
                 <Badge key={i} variant="outline" className="bg-indigo-500/10 text-indigo-400 border-indigo-500/20 text-[10px] px-2 py-0">
@@ -631,7 +635,7 @@ function NodeDetailPanel({
         {related.length > 0 && (
           <div className="space-y-2">
             <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-              关联节点 ({related.length})
+              {t("memory.graphRelated", { count: related.length })}
             </div>
             <div className="space-y-1.5">
               {related.map((r, i) => (

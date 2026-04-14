@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -18,8 +18,8 @@ if TYPE_CHECKING:
 from .models import (
     NodeSchedule,
     NodeStatus,
-    OrgStatus,
     Organization,
+    OrgStatus,
     ScheduleType,
     _now_iso,
 )
@@ -60,7 +60,7 @@ class OrgNodeScheduler:
                     pass
 
     async def stop_all(self) -> None:
-        for key, task in list(self._tasks.items()):
+        for _key, task in list(self._tasks.items()):
             if not task.done():
                 task.cancel()
                 try:
@@ -116,15 +116,12 @@ class OrgNodeScheduler:
                     if sched.run_at:
                         target = datetime.fromisoformat(sched.run_at)
                         if target.tzinfo is None:
-                            target = target.replace(tzinfo=timezone.utc)
-                        now = datetime.now(timezone.utc)
+                            target = target.replace(tzinfo=UTC)
+                        now = datetime.now(UTC)
                         wait = (target - now).total_seconds()
                         if wait > 0:
                             await asyncio.sleep(wait)
                     await self._execute_schedule(org_id, node_id, sched)
-                    # 清理自身在 _tasks 中的条目，防止内存泄漏
-                    key = f"{org_id}:{node_id}:{sched.id}"
-                    self._tasks.pop(key, None)
                     break
 
                 await asyncio.sleep(current_interval)
@@ -139,14 +136,7 @@ class OrgNodeScheduler:
 
                 result = await self._execute_schedule(org_id, node_id, sched)
 
-                result_text = str(result.get("result", "")) if isinstance(result, dict) else str(result)
-                keyword_check = "异常" in result_text or "错误" in result_text or "error" in result_text.lower()
-                if isinstance(result, dict) and "error" in result:
-                    has_issue = True
-                elif isinstance(result, dict) and "success" in result:
-                    has_issue = result["success"] is False
-                else:
-                    has_issue = keyword_check
+                has_issue = "异常" in str(result) or "错误" in str(result) or "error" in str(result).lower()
 
                 if has_issue:
                     sched.consecutive_clean = 0

@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  IconClock,
+  IconClock, IconUsers, IconMessageCircle, IconLink, IconAlertCircle,
   DotGreen, DotGray, DotYellow, DotRed, DotBlueProcessing,
   IM_LOGO_MAP,
 } from "../icons";
@@ -156,7 +156,7 @@ function shortChatId(chatId: string): string {
 
 function formatChannelLabel(channelId: string, chatId: string, ch?: IMChannel): string {
   if (ch) {
-    const typeIcon = ch.chat_type === "group" ? "👥 " : "💬 ";
+    const typeIcon = ch.chat_type === "group" ? "[G] " : "[C] ";
     const name = ch.alias || ch.chat_name || shortChatId(ch.chat_id);
     return typeIcon + name;
   }
@@ -827,7 +827,7 @@ export function SchedulerView({ serviceRunning, apiBaseUrl = "" }: { serviceRunn
       {/* Header: Tabs + Search + Actions */}
       <Card className="gap-0 border-border/80 py-0 shadow-sm">
         <CardContent className="p-4">
-          <div className="flex items-center justify-between gap-4 overflow-x-auto">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <ToggleGroup
               type="single"
               value={activeTab}
@@ -836,23 +836,20 @@ export function SchedulerView({ serviceRunning, apiBaseUrl = "" }: { serviceRunn
               className="shrink-0 justify-start"
             >
               <ToggleGroupItem value="active" className="text-sm data-[state=on]:bg-primary data-[state=on]:text-primary-foreground data-[state=on]:border-primary" title={t("scheduler.tabActive")}>
-                <span className="hidden xl:inline">{t("scheduler.tabActive")}</span>
-                <span className="xl:hidden">进行中</span>
+                {t("scheduler.tabActive")}
                 {countBadge(tabCounts.active, "active")}
               </ToggleGroupItem>
               <ToggleGroupItem value="completed" className="text-sm data-[state=on]:bg-primary data-[state=on]:text-primary-foreground data-[state=on]:border-primary" title={t("scheduler.tabCompleted")}>
-                <span className="hidden xl:inline">{t("scheduler.tabCompleted")}</span>
-                <span className="xl:hidden">已完成</span>
+                {t("scheduler.tabCompleted")}
                 {countBadge(tabCounts.completed, "completed")}
               </ToggleGroupItem>
               <ToggleGroupItem value="all" className="text-sm data-[state=on]:bg-primary data-[state=on]:text-primary-foreground data-[state=on]:border-primary" title={t("scheduler.tabAll")}>
-                <span className="hidden xl:inline">{t("scheduler.tabAll")}</span>
-                <span className="xl:hidden">全部</span>
+                {t("scheduler.tabAll")}
                 {countBadge(tabCounts.all, "all")}
               </ToggleGroupItem>
             </ToggleGroup>
-            <div className="flex min-w-max items-center gap-3">
-              <div className="relative w-[220px] min-w-[180px] md:w-[280px]">
+            <div className="flex min-w-0 flex-1 items-center justify-end gap-3">
+              <div className="relative min-w-0 flex-1 max-w-[280px]">
                 <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
                 <Input
                   placeholder={t("scheduler.searchPlaceholder")}
@@ -872,8 +869,7 @@ export function SchedulerView({ serviceRunning, apiBaseUrl = "" }: { serviceRunn
                 title={t("scheduler.addTask")}
               >
                 <Plus size={14} className="mr-1.5" />
-                <span className="hidden xl:inline">{t("scheduler.addTask")}</span>
-                <span className="xl:hidden">新建</span>
+                {t("scheduler.addTask")}
               </Button>
             </div>
           </div>
@@ -1013,7 +1009,7 @@ export function SchedulerView({ serviceRunning, apiBaseUrl = "" }: { serviceRunn
                                     <SelectItem key={`${ch.channel_id}|${ch.chat_id}`} value={`${ch.channel_id}|${ch.chat_id}`}>
                                       <span className="flex items-center gap-1.5">
                                         {ItemLogo && <ItemLogo size={14} />}
-                                        {noPairedChat ? "🔗" : ch.chat_type === "group" ? "👥" : "💬"}
+                                        {noPairedChat ? <IconLink size={12} /> : ch.chat_type === "group" ? <IconUsers size={12} /> : <IconMessageCircle size={12} />}
                                         <span className={noPairedChat ? "text-muted-foreground" : ""}>{label}</span>
                                       </span>
                                     </SelectItem>
@@ -1025,7 +1021,7 @@ export function SchedulerView({ serviceRunning, apiBaseUrl = "" }: { serviceRunn
                         })()}
                         {isStale && (
                           <SelectItem value={currentKey}>
-                            ⚠ {formatChannelLabel(form.channel_id, form.chat_id)}
+                            <IconAlertCircle size={12} style={{ display: "inline", verticalAlign: "middle", marginRight: 3 }} />{formatChannelLabel(form.channel_id, form.chat_id)}
                           </SelectItem>
                         )}
                       </SelectContent>

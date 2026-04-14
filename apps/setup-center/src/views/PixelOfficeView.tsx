@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import { PhaserGame, type GameRef } from '../components/pixel-office/PhaserGame';
 import { PixelOfficeEventLog, type EventLogEntry } from '../components/pixel-office/PixelOfficeEventLog';
 import { PixelOfficeAgentList, type AgentListItem } from '../components/pixel-office/PixelOfficeAgentList';
@@ -7,6 +8,7 @@ import { EventBus } from '../components/pixel-office/EventBus';
 import type { OrgData } from '../components/pixel-office/OfficeScene';
 import type { AgentSpriteConfig } from '../components/pixel-office/AgentSprite';
 import { safeFetch } from '../providers';
+import { IconClipboard, IconSearch, IconFile, IconBot } from '../icons';
 import '../components/pixel-office/pixel-office.css';
 
 interface AgentDetailPanel {
@@ -42,6 +44,7 @@ export function PixelOfficeView({
   apiBaseUrl?: string;
   visible?: boolean;
 }) {
+  const { t } = useTranslation();
   const [themeId, setThemeId] = useState('office');
   const [orgData, setOrgData] = useState<OrgData | null>(null);
   const [agents, setAgents] = useState<AgentListItem[]>([]);
@@ -68,21 +71,29 @@ export function PixelOfficeView({
   useEffect(() => {
     if (!visible) return;
     let cancelled = false;
-    (async () => {
+
+    const fetchOrgList = async () => {
       try {
         const resp = await safeFetch(`${apiBaseUrl}/api/orgs`);
-        if (resp.ok && !cancelled) {
+        if (!cancelled) {
           const data = await resp.json();
           const orgs = (data.organizations ?? data) as Array<{ id: string; name: string }>;
           setOrgList(orgs);
           const cur = selectedOrgIdRef.current;
-          if (orgs.length > 0 && !cur) {
-            setSelectedOrgId(orgs[0].id);
+          if (orgs.length > 0) {
+            if (!cur || !orgs.some(o => o.id === cur)) {
+              setSelectedOrgId(orgs[0].id);
+            }
           }
         }
-      } catch { /* ignore */ }
-    })();
-    return () => { cancelled = true; };
+      } catch (err) {
+        console.warn('[PixelOffice] Failed to fetch org list, will retry:', err);
+      }
+    };
+
+    fetchOrgList();
+    const retryTimer = setInterval(fetchOrgList, POLL_INTERVAL);
+    return () => { cancelled = true; clearInterval(retryTimer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiBaseUrl, visible]);
 
@@ -136,7 +147,9 @@ export function PixelOfficeView({
           setOrgData(data);
           setAgents(agentList);
         }
-      } catch { /* ignore */ }
+      } catch (err) {
+        console.warn('[PixelOffice] Failed to fetch org data:', err);
+      }
     };
 
     fetchOrgData();
@@ -147,7 +160,7 @@ export function PixelOfficeView({
   useEffect(() => {
     if (!visible || !selectedOrgId || isSoloMode) return;
     const wsBase = apiBaseUrl.replace(/^http/, 'ws');
-    const wsUrl = `${wsBase}/ws/org/${selectedOrgId}`;
+    const wsUrl = `${wsBase}/ws/events`;
 
     let ws: WebSocket;
     try {
@@ -162,7 +175,11 @@ export function PixelOfficeView({
         const msg = JSON.parse(ev.data);
         const eventType = msg.type ?? msg.event;
         if (eventType?.startsWith('org:')) {
-          EventBus.emit('org-event', eventType, msg.payload ?? msg.data ?? msg);
+          const payload = msg.payload ?? msg.data ?? msg;
+          const eventOrgId = payload?.org_id;
+          if (!eventOrgId || eventOrgId === selectedOrgIdRef.current) {
+            EventBus.emit('org-event', eventType, payload);
+          }
         }
       } catch { /* ignore */ }
     };
@@ -234,13 +251,13 @@ export function PixelOfficeView({
               {orgData && <span className="poNodeCount">{orgData.nodes.length} 节点</span>}
             </>
           ) : (
-            <h2 className="poOrgName">像素办公室</h2>
+            <h2 className="poOrgName">{t("pixelOffice.title", "像素办公室")}</h2>
           )}
           <div className="poOrgSwitcher">
             <button
               className="poOrgSwitchBtn"
               onClick={() => setOrgDropdownOpen(!orgDropdownOpen)}
-              title="切换模式"
+              title={t("pixelOffice.switchMode", "切换模式")}
             >
               <svg width="10" height="6" viewBox="0 0 10 6" fill="currentColor">
                 <path d="M1 1l4 4 4-4" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
@@ -254,7 +271,7 @@ export function PixelOfficeView({
                     className={`poOrgDropItem${isSoloMode ? ' active' : ''}`}
                     onClick={() => { setSelectedOrgId(SOLO_ID); setDataVersion(v => v + 1); setOrgDropdownOpen(false); }}
                   >
-                    🐕 个人工作室
+                    <IconBot size={14} /> 个人工作室
                   </button>
                   {orgList.length > 0 && <div className="poOrgDropDivider" />}
                   {orgList.map(o => (
@@ -371,12 +388,12 @@ export function PixelOfficeView({
             color: 'var(--text, #e0e0e0)', fontSize: 13,
           }}>
             {[
-              { label: '📋 分配任务', action: () => handleAssignTask(agentCtxMenu.nodeId) },
-              { label: '🔍 聚焦', action: () => { EventBus.emit('zoom-to-node', agentCtxMenu.nodeId); setAgentCtxMenu(null); } },
-              { label: '📄 查看详情', action: () => { setAgentDetail({ ...agentCtxMenu }); setAgentCtxMenu(null); } },
+              { key: 'assign', label: <><IconClipboard size={13} /> 分配任务</>, action: () => handleAssignTask(agentCtxMenu.nodeId) },
+              { key: 'focus', label: <><IconSearch size={13} /> 聚焦</>, action: () => { EventBus.emit('zoom-to-node', agentCtxMenu.nodeId); setAgentCtxMenu(null); } },
+              { key: 'detail', label: <><IconFile size={13} /> 查看详情</>, action: () => { setAgentDetail({ ...agentCtxMenu }); setAgentCtxMenu(null); } },
             ].map((item) => (
               <button
-                key={item.label}
+                key={item.key}
                 onClick={item.action}
                 style={{
                   display: 'block', width: '100%', padding: '6px 14px', border: 'none',

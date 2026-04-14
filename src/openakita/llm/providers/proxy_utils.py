@@ -73,7 +73,13 @@ def build_httpx_timeout(timeout_value: object, default: float = 60.0) -> httpx.T
     def _to_float_or_none(v: object) -> float | None:
         if v is None:
             return None
-        if isinstance(v, str) and v.strip().lower() in ("none", "null", "off", "disable", "disabled"):
+        if isinstance(v, str) and v.strip().lower() in (
+            "none",
+            "null",
+            "off",
+            "disable",
+            "disabled",
+        ):
             return None
         try:
             return float(v)  # type: ignore[arg-type]
@@ -168,9 +174,12 @@ def _detect_proxy_source() -> tuple[str, str] | None:
         (proxy_url, source_description) 或 None
     """
     for env_var in [
-        "ALL_PROXY", "all_proxy",
-        "HTTPS_PROXY", "https_proxy",
-        "HTTP_PROXY", "http_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
     ]:
         proxy = (os.environ.get(env_var) or "").strip()
         if proxy:
@@ -232,9 +241,7 @@ def get_proxy_config() -> str | None:
         return None
 
     if not _proxy_logged:
-        logger.info(
-            f"[Proxy] LLM proxy enabled from {source}: {_redact_proxy_url(proxy)}"
-        )
+        logger.info(f"[Proxy] LLM proxy enabled from {source}: {_redact_proxy_url(proxy)}")
         _proxy_logged = True
     return proxy
 
@@ -298,8 +305,9 @@ def get_httpx_proxy_mounts() -> dict | None:
 def get_httpx_client_kwargs(*, timeout: float = 30.0, is_local: bool = False) -> dict:
     """获取 httpx.AsyncClient 通用 kwargs
 
-    统一处理代理、trust_env、超时等配置，供 bridge.py 等非 Provider 代码使用。
+    统一处理代理、trust_env、超时、transport 等配置。
     始终设置 trust_env=False，避免 macOS/Windows 残留系统代理导致请求失败。
+    包含 IPv4-only transport（FORCE_IPV4=true 时），与 LLM 客户端行为一致。
 
     Args:
         timeout: 请求超时（秒）
@@ -315,7 +323,46 @@ def get_httpx_client_kwargs(*, timeout: float = 30.0, is_local: bool = False) ->
         if proxy:
             kwargs["proxy"] = proxy
 
+    transport = get_httpx_transport()
+    if transport:
+        kwargs["transport"] = transport
+
     return kwargs
+
+
+def extract_connection_error(exc: BaseException, max_depth: int = 5) -> str:
+    """遍历异常链，提取底层错误信息。
+
+    httpx 的 ConnectError 经常包装了真正的 OSError/SSL 错误，
+    直接 str(e) 只得到空字符串。此函数走到链底提取有用信息。
+    同时检查 __cause__（显式链）和 __context__（隐式链）。
+
+    设计参考: claude-code errorUtils.ts extractConnectionErrorDetails()
+    """
+    best: str = ""
+    current: BaseException | None = exc
+    visited: set[int] = set()
+    depth = 0
+    while current and depth < max_depth:
+        cid = id(current)
+        if cid in visited:
+            break
+        visited.add(cid)
+        if isinstance(current, OSError) and (current.strerror or current.args):
+            return f"{type(current).__name__}: {current}"
+        s = str(current)
+        if s and not best:
+            best = f"{type(current).__name__}: {s}"
+        cause = getattr(current, "__cause__", None)
+        if cause is None or cause is current:
+            cause = getattr(current, "__context__", None)
+        if cause is None or cause is current:
+            break
+        current = cause
+        depth += 1
+    if best:
+        return best
+    return type(exc).__name__
 
 
 def format_proxy_hint() -> str:

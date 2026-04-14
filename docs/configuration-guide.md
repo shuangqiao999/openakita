@@ -251,7 +251,7 @@ OpenAkita 需要 Python 3.11+ 运行环境。你有两种选择：
 | `dingtalk` | 钉钉 IM 接入 |
 | `wework` | 企业微信 IM 接入 |
 | `onebot` | OneBot 协议 IM 接入（NapCat / Lagrange 等） |
-| `qqbot` | QQ 官方机器人接入（qq-botpy SDK） |
+| `qqbot` | QQ 官方机器人接入 |
 
 安装过程中会显示实时日志和进度条：
 
@@ -395,7 +395,7 @@ IM 通道让你可以通过即时通讯工具与 OpenAkita 对话。所有通道
 | **AppSecret** | 对应的 AppSecret |
 | **沙箱模式** | 开启后连接沙箱环境，用于开发调试 |
 
-> **接入方式**：通过 QQ 官方开放平台 API（botpy SDK），支持群聊、单聊、频道消息。需要在 [q.qq.com](https://q.qq.com) 注册并创建机器人。
+> **接入方式**：通过 QQ 官方开放平台 API v2（WebSocket Gateway + REST），支持群聊、单聊、频道消息。需要在 [q.qq.com](https://q.qq.com) 注册并创建机器人。
 
 #### OneBot（通用协议）
 

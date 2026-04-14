@@ -57,9 +57,12 @@ class MemoryEncoder:
       3. encode_session — batch LLM encoding at session end
     """
 
-    def __init__(self, brain: Brain | None = None, session_id: str = "") -> None:
+    def __init__(
+        self, brain: Brain | None = None, session_id: str = "", language: str = "zh"
+    ) -> None:
         self.brain = brain
         self.session_id = session_id
+        self.language = language
 
     # ------------------------------------------------------------------
     # Layer 1: Quick rule-based encoding (pre-compression)
@@ -111,13 +114,15 @@ class MemoryEncoder:
 
         # Build temporal chain
         for i in range(1, len(nodes)):
-            edges.append(MemoryEdge(
-                source_id=nodes[i - 1].id,
-                target_id=nodes[i].id,
-                edge_type=EdgeType.FOLLOWED_BY,
-                dimension=Dimension.TEMPORAL,
-                weight=0.6,
-            ))
+            edges.append(
+                MemoryEdge(
+                    source_id=nodes[i - 1].id,
+                    target_id=nodes[i].id,
+                    edge_type=EdgeType.FOLLOWED_BY,
+                    dimension=Dimension.TEMPORAL,
+                    weight=0.6,
+                )
+            )
 
         # Build entity co-occurrence edges
         entity_node_map: dict[str, list[str]] = {}
@@ -131,14 +136,16 @@ class MemoryEncoder:
                 continue
             for i in range(len(nids)):
                 for j in range(i + 1, min(i + 3, len(nids))):
-                    edges.append(MemoryEdge(
-                        source_id=nids[i],
-                        target_id=nids[j],
-                        edge_type=EdgeType.INVOLVES,
-                        dimension=Dimension.ENTITY,
-                        weight=0.5,
-                        metadata={"entity": ent_name},
-                    ))
+                    edges.append(
+                        MemoryEdge(
+                            source_id=nids[i],
+                            target_id=nids[j],
+                            edge_type=EdgeType.INVOLVES,
+                            dimension=Dimension.ENTITY,
+                            weight=0.5,
+                            metadata={"entity": ent_name},
+                        )
+                    )
 
         return EncodingResult(nodes=nodes, edges=edges)
 
@@ -170,26 +177,30 @@ class MemoryEncoder:
 
         # Link summary to all partial nodes as context
         for pn in partial_nodes:
-            edges.append(MemoryEdge(
-                source_id=pn.id,
-                target_id=summary_node.id,
-                edge_type=EdgeType.PART_OF,
-                dimension=Dimension.CONTEXT,
-                weight=0.5,
-            ))
+            edges.append(
+                MemoryEdge(
+                    source_id=pn.id,
+                    target_id=summary_node.id,
+                    edge_type=EdgeType.PART_OF,
+                    dimension=Dimension.CONTEXT,
+                    weight=0.5,
+                )
+            )
 
         # Scan summary for causal language
         has_causal = bool(
             _CAUSAL_KEYWORDS_ZH.search(summary) or _CAUSAL_KEYWORDS_EN.search(summary)
         )
         if has_causal and len(partial_nodes) >= 2:
-            edges.append(MemoryEdge(
-                source_id=partial_nodes[0].id,
-                target_id=partial_nodes[-1].id,
-                edge_type=EdgeType.LED_TO,
-                dimension=Dimension.CAUSAL,
-                weight=0.4,
-            ))
+            edges.append(
+                MemoryEdge(
+                    source_id=partial_nodes[0].id,
+                    target_id=partial_nodes[-1].id,
+                    edge_type=EdgeType.LED_TO,
+                    dimension=Dimension.CAUSAL,
+                    weight=0.4,
+                )
+            )
 
         return EncodingResult(nodes=new_nodes, edges=edges)
 
@@ -218,10 +229,16 @@ class MemoryEncoder:
 
         prompt = self._build_encoding_prompt(conversation_text)
 
+        system = (
+            "你是记忆图谱编码器。只输出合法的 JSON。"
+            if self.language == "zh"
+            else "You are a memory graph encoder. Output valid JSON only."
+        )
+
         try:
             resp = await self.brain.compiler_think(
                 prompt=prompt,
-                system="You are a memory graph encoder. Output valid JSON only.",
+                system=system,
                 max_tokens=2048,
             )
             response_text = resp.content if hasattr(resp, "content") else str(resp)
@@ -237,13 +254,15 @@ class MemoryEncoder:
         if existing_nodes and nodes:
             for en in existing_nodes:
                 best_target = self._find_best_matching_node(en, nodes)
-                edges.append(MemoryEdge(
-                    source_id=en.id,
-                    target_id=best_target.id,
-                    edge_type=EdgeType.RELATED_TO,
-                    dimension=Dimension.CONTEXT,
-                    weight=0.4,
-                ))
+                edges.append(
+                    MemoryEdge(
+                        source_id=en.id,
+                        target_id=best_target.id,
+                        edge_type=EdgeType.RELATED_TO,
+                        dimension=Dimension.CONTEXT,
+                        weight=0.4,
+                    )
+                )
 
         return EncodingResult(nodes=nodes, edges=edges)
 
@@ -308,6 +327,33 @@ class MemoryEncoder:
         return "\n".join(parts)
 
     def _build_encoding_prompt(self, conversation: str) -> str:
+        if self.language == "zh":
+            return f"""分析以下对话，提取结构化的记忆图谱。
+
+对于每个值得记录的事件/事实/决策/目标，输出一个节点。输出 JSON 数组：
+[
+  {{
+    "content": "用自然语言描述（使用中文）",
+    "node_type": "event|fact|decision|goal",
+    "entities": [{{"name": "实体名称（保留原文语言）", "type": "person|tool|file|concept", "role": "agent|patient|instrument"}}],
+    "action_verb": "核心动词",
+    "action_category": "create|modify|analyze|communicate|decide",
+    "importance": 0.0-1.0,
+    "causal_refs": ["因果事件描述"]
+  }}
+]
+
+重点提取：
+- 跨轮次的因果链（A 导致 B，B 导致 C）
+- 决策及其理由
+- 学到的关键事实
+- 确立的目标
+
+对话内容：
+{conversation}
+
+仅输出合法的 JSON 数组："""
+
         return f"""Analyze the following conversation and extract a structured memory graph.
 
 For each noteworthy event/fact/decision/goal, output a node. Output JSON array:
@@ -380,11 +426,13 @@ Output ONLY valid JSON array:"""
             entities = []
             for e in item.get("entities", []):
                 if isinstance(e, dict):
-                    entities.append(EntityRef(
-                        name=e.get("name", ""),
-                        type=e.get("type", "concept"),
-                        role=e.get("role", ""),
-                    ))
+                    entities.append(
+                        EntityRef(
+                            name=e.get("name", ""),
+                            type=e.get("type", "concept"),
+                            role=e.get("role", ""),
+                        )
+                    )
 
             node = MemoryNode(
                 content=item.get("content", "")[:500],
@@ -400,18 +448,18 @@ Output ONLY valid JSON array:"""
 
         # Build temporal chain
         for i in range(1, len(nodes)):
-            edges.append(MemoryEdge(
-                source_id=nodes[i - 1].id,
-                target_id=nodes[i].id,
-                edge_type=EdgeType.FOLLOWED_BY,
-                dimension=Dimension.TEMPORAL,
-                weight=0.7,
-            ))
+            edges.append(
+                MemoryEdge(
+                    source_id=nodes[i - 1].id,
+                    target_id=nodes[i].id,
+                    edge_type=EdgeType.FOLLOWED_BY,
+                    dimension=Dimension.TEMPORAL,
+                    weight=0.7,
+                )
+            )
 
         # Build causal edges from causal_refs
-        node_contents: list[tuple[str, str]] = [
-            (n.content.lower()[:80], n.id) for n in nodes
-        ]
+        node_contents: list[tuple[str, str]] = [(n.content.lower()[:80], n.id) for n in nodes]
         for item, node in zip(items, nodes, strict=False):
             if not isinstance(item, dict):
                 continue
@@ -423,13 +471,15 @@ Output ONLY valid JSON array:"""
                     if target_id == node.id:
                         continue
                     if self._text_similarity(ref_lower, content_key):
-                        edges.append(MemoryEdge(
-                            source_id=node.id,
-                            target_id=target_id,
-                            edge_type=EdgeType.LED_TO,
-                            dimension=Dimension.CAUSAL,
-                            weight=0.6,
-                        ))
+                        edges.append(
+                            MemoryEdge(
+                                source_id=node.id,
+                                target_id=target_id,
+                                edge_type=EdgeType.LED_TO,
+                                dimension=Dimension.CAUSAL,
+                                weight=0.6,
+                            )
+                        )
                         break
 
         # Entity co-occurrence
@@ -442,13 +492,15 @@ Output ONLY valid JSON array:"""
                 continue
             for i in range(len(nids)):
                 for j in range(i + 1, min(i + 3, len(nids))):
-                    edges.append(MemoryEdge(
-                        source_id=nids[i],
-                        target_id=nids[j],
-                        edge_type=EdgeType.INVOLVES,
-                        dimension=Dimension.ENTITY,
-                        weight=0.5,
-                        metadata={"entity": ent_name},
-                    ))
+                    edges.append(
+                        MemoryEdge(
+                            source_id=nids[i],
+                            target_id=nids[j],
+                            edge_type=EdgeType.INVOLVES,
+                            dimension=Dimension.ENTITY,
+                            weight=0.5,
+                            metadata={"entity": ent_name},
+                        )
+                    )
 
         return nodes, edges

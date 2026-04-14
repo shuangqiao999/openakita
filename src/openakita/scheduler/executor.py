@@ -122,7 +122,7 @@ class TaskExecutor:
         执行简单提醒任务
 
         流程:
-        1. 先发送提醒消息（只发送一次！）
+        1. 先发送提醒消息（只发送一次！）— silent 模式跳过
         2. 让 LLM 判断是否需要执行额外操作（防止误判）
 
         注意：简单提醒只发送一条消息，不发送"任务完成"通知
@@ -131,24 +131,28 @@ class TaskExecutor:
 
         try:
             message = task.reminder_message or task.prompt or f"⏰ 提醒: {task.name}"
+
+            if task.silent:
+                logger.info(f"TaskExecutor: reminder {task.id} in silent mode, skipping delivery")
+                return True, f"[SILENT] {message}"
+
             message_sent = False
 
             if task.channel_id and task.chat_id and self.gateway:
-                message_sent = await self._deliver_reminder_message(
-                    task, message
-                )
+                message_sent = await self._deliver_reminder_message(task, message)
             elif self.gateway:
                 # 有网关但任务未配置通道，尝试所有已知通道
-                message_sent = await self._deliver_via_fallback_channels(
-                    task, message
-                )
+                message_sent = await self._deliver_via_fallback_channels(task, message)
             # else: 无网关，无法发送
 
             if not message_sent:
                 # 最后的兜底：尝试桌面通知
                 desktop_sent = await self._try_desktop_notify_fallback(task, message)
                 if not desktop_sent:
-                    return False, f"提醒投递失败: 所有通道均不可用，提醒内容「{message[:50]}」未能送达"
+                    return (
+                        False,
+                        f"提醒投递失败: 所有通道均不可用，提醒内容「{message[:50]}」未能送达",
+                    )
 
                 return True, f"提醒已通过桌面通知送达（IM 通道不可用）: {message[:80]}"
 
@@ -170,9 +174,7 @@ class TaskExecutor:
             logger.error(f"TaskExecutor: reminder {task.id} failed: {error_msg}")
             return False, error_msg
 
-    async def _deliver_reminder_message(
-        self, task: ScheduledTask, message: str
-    ) -> bool:
+    async def _deliver_reminder_message(self, task: ScheduledTask, message: str) -> bool:
         """
         向任务配置的主通道投递提醒消息。
 
@@ -184,11 +186,9 @@ class TaskExecutor:
 
         # 检查主通道适配器是否存在且运行中
         adapter = (
-            self.gateway.get_adapter(channel_id)
-            if hasattr(self.gateway, 'get_adapter')
-            else None
+            self.gateway.get_adapter(channel_id) if hasattr(self.gateway, "get_adapter") else None
         )
-        channel_active = adapter is not None and getattr(adapter, 'is_running', False)
+        channel_active = adapter is not None and getattr(adapter, "is_running", False)
 
         try:
             msg_id = await self.gateway.send(
@@ -197,9 +197,7 @@ class TaskExecutor:
                 text=message,
             )
         except Exception as e:
-            logger.warning(
-                f"TaskExecutor: reminder {task.id} primary send error: {e}"
-            )
+            logger.warning(f"TaskExecutor: reminder {task.id} primary send error: {e}")
             msg_id = None
             channel_active = False
 
@@ -220,9 +218,7 @@ class TaskExecutor:
         )
         return await self._deliver_via_fallback_channels(task, message)
 
-    async def _deliver_via_fallback_channels(
-        self, task: ScheduledTask, message: str
-    ) -> bool:
+    async def _deliver_via_fallback_channels(self, task: ScheduledTask, message: str) -> bool:
         """尝试通过所有已知的备用 IM 通道投递提醒"""
         targets = self._find_all_im_targets()
         primary = (task.channel_id, task.chat_id)
@@ -232,11 +228,9 @@ class TaskExecutor:
                 continue  # 主通道已失败，跳过
 
             adapter = (
-                self.gateway.get_adapter(channel)
-                if hasattr(self.gateway, 'get_adapter')
-                else None
+                self.gateway.get_adapter(channel) if hasattr(self.gateway, "get_adapter") else None
             )
-            if not adapter or not getattr(adapter, 'is_running', False):
+            if not adapter or not getattr(adapter, "is_running", False):
                 continue
 
             try:
@@ -245,23 +239,19 @@ class TaskExecutor:
                     chat_id=chat_id,
                     text=message,
                 )
-                if msg_id is not None or (adapter and getattr(adapter, 'is_running', False)):
+                if msg_id is not None or (adapter and getattr(adapter, "is_running", False)):
                     logger.info(
                         f"TaskExecutor: reminder {task.id} delivered via fallback "
                         f"{channel}/{chat_id} (msg_id={msg_id})"
                     )
                     return True
             except Exception as e:
-                logger.warning(
-                    f"TaskExecutor: fallback send failed for {channel}/{chat_id}: {e}"
-                )
+                logger.warning(f"TaskExecutor: fallback send failed for {channel}/{chat_id}: {e}")
                 continue
 
         return False
 
-    async def _try_desktop_notify_fallback(
-        self, task: ScheduledTask, message: str
-    ) -> bool:
+    async def _try_desktop_notify_fallback(self, task: ScheduledTask, message: str) -> bool:
         """当所有 IM 通道失败时，尝试桌面通知作为最后兜底"""
         try:
             from ..config import settings
@@ -341,16 +331,15 @@ class TaskExecutor:
         执行复杂任务
 
         流程:
-        1. 发送开始通知
+        1. 发送开始通知（silent 模式跳过）
         2. 执行任务核心逻辑
         """
         logger.info(f"TaskExecutor: executing complex task {task.id}")
 
-        # 发送开始通知
-        await self._send_start_notification(task)
+        if not task.silent:
+            await self._send_start_notification(task)
 
-        # 执行核心逻辑
-        return await self._execute_complex_task_core(task)
+        return await self._execute_complex_task_core(task, skip_end_notification=task.silent)
 
     async def _execute_complex_task_core(
         self, task: ScheduledTask, skip_end_notification: bool = False
@@ -374,6 +363,13 @@ class TaskExecutor:
             # 1. 创建 Agent
             agent = await self._create_agent()
 
+            # 1.5. 防递归：禁止任务内再创建定时任务
+            if task.no_schedule_tools:
+                agent._cron_disabled_tools = {
+                    "schedule_task", "update_scheduled_task",
+                    "cancel_scheduled_task", "trigger_scheduled_task",
+                }
+
             # 2. 如果任务有 IM 通道信息，注入 IM 上下文
             if task.channel_id and task.chat_id and self.gateway:
                 im_context_set = await self._setup_im_context(agent, task)
@@ -385,7 +381,11 @@ class TaskExecutor:
             task_timeout = self.timeout_seconds
             if task.metadata and isinstance(task.metadata, dict):
                 custom_timeout = task.metadata.get("timeout_seconds")
-                if custom_timeout and isinstance(custom_timeout, (int, float)) and custom_timeout > 0:
+                if (
+                    custom_timeout
+                    and isinstance(custom_timeout, (int, float))
+                    and custom_timeout > 0
+                ):
                     task_timeout = int(custom_timeout)
                     logger.info(
                         f"TaskExecutor: using task-level timeout {task_timeout}s "
@@ -395,8 +395,10 @@ class TaskExecutor:
                 result = await asyncio.wait_for(
                     self._run_agent(agent, prompt), timeout=task_timeout
                 )
-            except TimeoutError:
-                timeout_display = f"{task_timeout // 60} 分钟" if task_timeout >= 60 else f"{task_timeout} 秒"
+            except (asyncio.TimeoutError, TimeoutError):
+                timeout_display = (
+                    f"{task_timeout // 60} 分钟" if task_timeout >= 60 else f"{task_timeout} 秒"
+                )
                 error_msg = f"任务执行超时（超过 {timeout_display} 未完成）"
                 logger.error(f"TaskExecutor: task {task.id} timed out after {task_timeout}s")
                 if not skip_end_notification:
@@ -531,6 +533,7 @@ class TaskExecutor:
             tokens = getattr(agent, "_im_context_tokens", None)
             if tokens:
                 from ..core.im_context import reset_im_context
+
                 reset_im_context(tokens)
                 agent._im_context_tokens = None
         except Exception as e:
@@ -582,6 +585,7 @@ class TaskExecutor:
         - system:daily_selfcheck - 每日系统自检
         - system:proactive_heartbeat - 活人感心跳
         - system:workspace_backup - 定时工作区备份
+        - system:memory_nudge_review - 周期性记忆回顾
         """
         action = task.action
         logger.info(f"Executing system task: {action}")
@@ -591,6 +595,7 @@ class TaskExecutor:
             "system:daily_selfcheck": 300,  # 5 分钟
             "system:daily_memory": 1800,  # 30 分钟（含 LLM review 大量记忆）
             "system:workspace_backup": 300,  # 5 分钟
+            "system:memory_nudge_review": 120,  # 2 分钟（轻量 LLM 审视）
         }
         timeout = SYSTEM_TASK_TIMEOUTS.get(action)
 
@@ -603,13 +608,15 @@ class TaskExecutor:
                 return await self._system_proactive_heartbeat(task)
             elif action == "system:workspace_backup":
                 coro = self._system_workspace_backup()
+            elif action == "system:memory_nudge_review":
+                coro = self._system_memory_nudge_review()
             else:
                 return False, f"Unknown system action: {action}"
 
             if timeout:
                 try:
                     return await asyncio.wait_for(coro, timeout=timeout)
-                except TimeoutError:
+                except (asyncio.TimeoutError, TimeoutError):
                     error_msg = f"System task {action} timed out after {timeout}s"
                     logger.error(f"TaskExecutor: {error_msg}")
                     return False, error_msg
@@ -697,6 +704,116 @@ class TaskExecutor:
             logger.error(f"Memory consolidation failed: {e}")
             return False, str(e)
 
+    async def _system_memory_nudge_review(self) -> tuple[bool, str]:
+        """
+        周期性记忆回顾（Memory Nudge）
+
+        用 LLM 审视最近对话轮次，提取可能遗漏的长期记忆。
+        与 daily_memory 互补：daily 是端到端全量整理，
+        nudge 是轻量实时补漏，确保重要信息不因上下文压缩而丢失。
+        """
+        try:
+            from ..config import settings
+
+            if not settings.memory_nudge_enabled or settings.memory_nudge_interval <= 0:
+                return True, "Memory nudge disabled, skipping"
+
+            mm = self.memory_manager
+            if not mm:
+                return True, "No MemoryManager available, skipping nudge"
+
+            store = getattr(mm, "store", None)
+            if not store:
+                return True, "No memory store available, skipping nudge"
+
+            nudge_interval = settings.memory_nudge_interval
+
+            recent_turns = store.get_global_recent_turns(limit=nudge_interval)
+            if not recent_turns:
+                return True, "No recent conversation turns to review"
+
+            conversation_text = "\n".join(
+                f"[{t.get('role', 'unknown')}]: {t.get('content', '')[:500]}"
+                for t in recent_turns
+                if t.get("content")
+            )
+
+            if not conversation_text.strip():
+                return True, "Recent turns have no meaningful content"
+
+            from ..core.brain import Brain
+
+            brain = Brain()
+
+            review_prompt = (
+                "You are a memory extraction assistant. Review the following recent "
+                "conversation and identify any facts, preferences, skills, rules, or "
+                "important context that should be remembered long-term. "
+                "Return ONLY a JSON array of objects with keys: "
+                '"type" (fact/preference/skill/rule/context), '
+                '"content" (the memory text), '
+                '"importance" (1-5). '
+                "If nothing worth remembering, return an empty array [].\n\n"
+                f"Conversation:\n{conversation_text}"
+            )
+
+            response = await brain.think_lightweight(review_prompt, max_tokens=2048)
+            raw = response.content.strip()
+
+            import json
+
+            if raw.startswith("```"):
+                raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+
+            memories = json.loads(raw)
+            if not isinstance(memories, list):
+                return True, "LLM returned non-list response, skipping"
+
+            from ..memory.types import Memory, MemoryPriority, MemoryType
+
+            type_map = {
+                "fact": MemoryType.FACT,
+                "preference": MemoryType.PREFERENCE,
+                "skill": MemoryType.SKILL,
+                "rule": MemoryType.RULE,
+                "context": MemoryType.CONTEXT,
+                "experience": MemoryType.EXPERIENCE,
+            }
+            importance_map = {
+                1: MemoryPriority.TRANSIENT,
+                2: MemoryPriority.SHORT_TERM,
+                3: MemoryPriority.SHORT_TERM,
+                4: MemoryPriority.LONG_TERM,
+                5: MemoryPriority.PERMANENT,
+            }
+
+            added = 0
+            for mem in memories:
+                if not isinstance(mem, dict) or "content" not in mem:
+                    continue
+                importance = mem.get("importance", 3)
+                if importance < 2:
+                    continue
+                try:
+                    m = Memory(
+                        type=type_map.get(mem.get("type", "fact"), MemoryType.FACT),
+                        priority=importance_map.get(importance, MemoryPriority.SHORT_TERM),
+                        content=mem["content"],
+                        source="memory_nudge",
+                    )
+                    mm.add_memory(m)
+                    added += 1
+                except Exception as e:
+                    logger.debug(f"Memory nudge: failed to add memory: {e}")
+
+            summary = f"Memory nudge completed: reviewed {len(recent_turns)} turns, extracted {added} memories"
+            logger.info(summary)
+            return True, summary
+
+        except Exception as e:
+            logger.error(f"Memory nudge review failed: {e}")
+            return False, str(e)
+
     async def _system_proactive_heartbeat(self, task: "ScheduledTask") -> tuple[bool, str]:
         """
         执行活人感心跳
@@ -766,7 +883,10 @@ class TaskExecutor:
                             try:
                                 from ..tools.sticker import StickerEngine
 
-                                sticker_engine = StickerEngine(settings.sticker_data_path)
+                                sticker_engine = StickerEngine(
+                                    settings.sticker_data_path,
+                                    mirrors=settings.sticker_mirrors or None,
+                                )
                                 await sticker_engine.initialize()
                                 sticker = await sticker_engine.get_random_by_mood(sticker_mood)
                                 if sticker:
@@ -1054,7 +1174,35 @@ class TaskExecutor:
             context_parts.append(f"相关脚本: {task.script_path}")
             context_parts.append("请先读取并执行该脚本")
 
+        # Skill 绑定：将指定技能内容注入 prompt
+        if task.skill_ids:
+            skill_content = self._load_bound_skills(task.skill_ids)
+            if skill_content:
+                context_parts.append("")
+                context_parts.append("## 绑定技能")
+                context_parts.append(skill_content)
+
         return "\n".join(context_parts)
+
+    def _load_bound_skills(self, skill_ids: list[str]) -> str:
+        """加载绑定的技能内容（用于注入到 Cron 任务的 prompt）"""
+        try:
+            from ..config import settings
+            from ..skills.loader import SkillLoader
+
+            loader = SkillLoader()
+            loader.load_all(settings.project_root)
+            parts = []
+            for sid in skill_ids:
+                entry = loader.get_skill(sid)
+                if entry and entry.body:
+                    parts.append(f"### {entry.metadata.name or sid}\n{entry.body}")
+                else:
+                    logger.debug(f"Bound skill '{sid}' not found or empty")
+            return "\n\n".join(parts)
+        except Exception as e:
+            logger.warning(f"Failed to load bound skills {skill_ids}: {e}")
+            return ""
 
     async def _send_notification(
         self,

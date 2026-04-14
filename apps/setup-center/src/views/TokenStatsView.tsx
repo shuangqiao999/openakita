@@ -181,8 +181,8 @@ export function TokenStatsView({
           <h2 className="truncate text-lg font-bold tracking-tight" title={t("tokenStats.title", "Token 用量统计")}>
             {t("tokenStats.title", "Token 用量统计")}
           </h2>
-          <p className="truncate text-xs text-muted-foreground leading-relaxed" title={t("tokenStats.disclaimer", "⚠ 本地 token 计算与服务商算法无法保证完全一致，实际用量以服务商账单为准，此处统计仅供参考。")}>
-            {t("tokenStats.disclaimer", "⚠ 本地 token 计算与服务商算法无法保证完全一致，实际用量以服务商账单为准，此处统计仅供参考。")}
+          <p className="truncate text-xs text-muted-foreground leading-relaxed" title={t("tokenStats.disclaimer", "注意：本地 token 计算与服务商算法无法保证完全一致，实际用量以服务商账单为准，此处统计仅供参考。")}>
+            {t("tokenStats.disclaimer", "注意：本地 token 计算与服务商算法无法保证完全一致，实际用量以服务商账单为准，此处统计仅供参考。")}
           </p>
         </div>
         {onToggleDisabled && (
@@ -204,7 +204,7 @@ export function TokenStatsView({
       {disabled ? (
         <Card className="opacity-50">
           <CardContent className="py-10 text-center">
-            <p className="text-muted-foreground text-sm">此模块已禁用，点击上方开关启用</p>
+            <p className="text-muted-foreground text-sm">{t("tokenStats.disabledHint", "此模块已禁用，点击上方开关启用")}</p>
           </CardContent>
         </Card>
       ) : (
@@ -224,7 +224,7 @@ export function TokenStatsView({
             ))}
             <Button size="xs" variant="outline" className="shrink-0" onClick={fetchAll} disabled={loading} title={t("tokenStats.refresh", "刷新")}>
               <span className="hidden xl:inline">{loading ? "..." : t("tokenStats.refresh", "刷新")}</span>
-              <span className="xl:hidden">{loading ? "..." : "刷新"}</span>
+              <span className="xl:hidden">{loading ? "..." : t("tokenStats.refresh", "刷新")}</span>
             </Button>
           </div>
 
@@ -321,7 +321,7 @@ export function TokenStatsView({
                       </div>
                       <MiniBar value={row.total_tokens} max={totalTokens} color="#3b82f6" />
                       <div className="text-[11px] text-muted-foreground">
-                        占本时段总 Token {fmtPct(row.total_tokens, totalTokens)}
+                        {t("tokenStats.shareOfTotal", { pct: fmtPct(row.total_tokens, totalTokens), defaultValue: "占本时段总 Token {{pct}}" })}
                       </div>
                     </div>
                   );

@@ -24,7 +24,7 @@ from collections.abc import Callable
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from .budget import BudgetConfig, apply_budget, estimate_tokens
 from .compiler import check_compiled_outdated, compile_all, get_compiled_content
@@ -44,9 +44,15 @@ logger = logging.getLogger(__name__)
 # Per-section 缓存 — 静态段跨轮缓存，动态段每轮重算
 # ---------------------------------------------------------------------------
 _section_cache: dict[str, str | None] = {}
-_STATIC_SECTIONS = frozenset({
-    "core_rules", "safety", "identity", "mode_rules", "agents_md",
-})
+_STATIC_SECTIONS = frozenset(
+    {
+        "core_rules",
+        "safety",
+        "identity",
+        "mode_rules",
+        "agents_md",
+    }
+)
 
 
 def _cached_section(
@@ -69,6 +75,7 @@ def _cached_section(
 def clear_prompt_section_cache() -> None:
     """清除所有 section 缓存。在 /clear、context compression、identity 文件变更时调用。"""
     _section_cache.clear()
+    _static_prompt_cache.clear()
     global _runtime_section_cache
     _runtime_section_cache = None
 
@@ -93,18 +100,72 @@ def _apply_plugin_prompt_hooks(prompt: str) -> str:
     return prompt
 
 
+# 静态/动态边界标记（借鉴 Claude Code 的 SYSTEM_PROMPT_DYNAMIC_BOUNDARY）
+# 用于 LLM API 缓存优化：标记之前的内容在 session 内不变，可缓存。
+SYSTEM_PROMPT_DYNAMIC_BOUNDARY = "<!-- DYNAMIC_BOUNDARY -->"
+
+
+def split_static_dynamic(prompt: str) -> tuple[str, str]:
+    """Split system prompt at the dynamic boundary marker.
+
+    Returns:
+        (static_prefix, dynamic_suffix) — static part is cache-safe within a session.
+        If no boundary found, returns (prompt, "").
+    """
+    if SYSTEM_PROMPT_DYNAMIC_BOUNDARY in prompt:
+        idx = prompt.index(SYSTEM_PROMPT_DYNAMIC_BOUNDARY)
+        static = prompt[:idx].rstrip()
+        dynamic = prompt[idx + len(SYSTEM_PROMPT_DYNAMIC_BOUNDARY):].lstrip()
+        return static, dynamic
+    return prompt, ""
+
+
 class PromptMode(Enum):
     """Prompt 注入级别，控制子 agent 的提示词精简程度"""
-    FULL = "full"         # 主 agent：所有段落
-    MINIMAL = "minimal"   # 子 agent：仅 Core Rules + Runtime + Catalogs
-    NONE = "none"         # 极简：仅一行身份声明
+
+    FULL = "full"  # 主 agent：所有段落
+    MINIMAL = "minimal"  # 子 agent：仅 Core Rules + Runtime + Catalogs
+    NONE = "none"  # 极简：仅一行身份声明
+
+
+class PromptProfile(Enum):
+    """产品场景 profile，决定注入哪些类别的内容。
+
+    org_agent 不在此枚举中——组织场景通过
+    _override_system_prompt_for_org() 完全绕过此管线。
+    """
+
+    CONSUMER_CHAT = "consumer_chat"
+    IM_ASSISTANT = "im_assistant"
+    LOCAL_AGENT = "local_agent"
+
+
+class PromptTier(Enum):
+    """上下文窗口分档，决定注入深度。"""
+
+    SMALL = "small"  # <8K context
+    MEDIUM = "medium"  # 8K-32K
+    LARGE = "large"  # >32K
+
+
+def resolve_tier(context_window: int) -> PromptTier:
+    """根据模型上下文窗口大小判定 tier。"""
+    if context_window <= 0 or context_window > 64000:
+        return PromptTier.LARGE
+    if context_window < 8000:
+        return PromptTier.SMALL
+    if context_window <= 32000:
+        return PromptTier.MEDIUM
+    return PromptTier.LARGE
+
 
 # ---------------------------------------------------------------------------
 # 核心行为规则（代码硬编码，升级自动生效，用户不可删除）
 # 合并自原 _SYSTEM_POLICIES + _DEFAULT_USER_POLICIES，消除冗余。
 # 提问准则提升到最前，正面指引优先。
 # ---------------------------------------------------------------------------
-_CORE_RULES = """\
+# _ALWAYS_ON_RULES: 所有 profile/tier 都注入 (~350 token)
+_ALWAYS_ON_RULES = """\
 ## 语言规则（最高优先级）
 - **始终使用与用户当前消息相同的语言回复。** 用户用中文提问就用中文回答，用英文就用英文回答。
 - 不要在用户没有切换语言时自行更换回复语言。
@@ -133,36 +194,29 @@ _CORE_RULES = """\
 **需要先确认再执行**的操作（难撤销、影响范围大）：
 - 破坏性操作：删除文件或数据、覆盖未保存的内容、终止进程
 - 难以撤销的操作：修改系统配置、更改权限、降级或删除依赖
-- 对外可见的操作：发送消息（群聊、邮件、Slack）、创建或评论工单、调用外部 API 产生副作用
-- 上传到第三方服务：上传的内容可能被缓存或索引，即使删除也可能保留，需考虑敏感性
+- 对外可见的操作：发送消息（群聊、邮件、Slack）、调用外部 API 产生副作用
 
 **行为准则**：
-- 暂停确认的成本很低，误操作的成本可能很高（丢失工作、发送不想发的消息）
+- 暂停确认的成本很低，误操作的成本可能很高
 - 用户批准一次操作不代表所有场景都已授权——授权仅适用于指定的范围
 - 遇到障碍时，不要用破坏性操作走捷径来消除障碍
-- 发现不认识的文件/配置/状态时，先调查再行动——它可能是用户进行中的工作
 
 ## 边界条件
 - 工具不可用时：纯文本完成，说明限制并给出手动步骤
 - 关键输入缺失时：调用 `ask_user` 工具澄清
 - 技能配置缺失时：主动辅助用户完成配置，不要直接拒绝
 - 任务失败时：说明原因 + 替代建议 + 需要用户提供什么
-- ask_user 超时：系统等待约 2 分钟，未回复则自行决策或终止
 - 不要超出用户请求范围——用户让做 A 就做 A，不要顺便做 B、C、D
-- 遇到失败时先诊断原因再换方案——不要盲目重试相同动作，也不要第一次失败就放弃。\
-先读错误信息、检查假设、尝试针对性修复
-- 不要给出任务需要多长时间的估计——聚焦于需要做什么
 - 完成前必须验证结果——如果无法验证，明确说明，不要假装成功
 
 ## 结果报告（严格规则）
-
 - 操作失败 → 说失败，附上相关错误信息和输出
 - 没有执行验证步骤 → 说"未验证"，不暗示已成功
 - 不要声称"一切正常"而实际存在问题
-- 不要压制或简化失败的检查结果来制造成功假象
-- 反之：检查确实通过了，直接说通过——不要对已确认的结果加不必要的免责声明
-- 目标是**准确的报告**，不是防御性的报告
+- 目标是**准确的报告**，不是防御性的报告"""
 
+# _EXTENDED_RULES: 仅在 LOCAL_AGENT profile 或 MEDIUM/LARGE tier 时注入 (~600 token)
+_EXTENDED_RULES = """\
 ## 任务管理
 
 多步骤任务（3 步以上）时，使用任务管理工具追踪进度：
@@ -189,9 +243,9 @@ _CORE_RULES = """\
 - **记忆工具不替代文本回复**：调用 add_memory / update_user_profile 后，**必须同时**向用户发送文本回复。这些是后台操作，绝不能作为唯一响应
 
 ## 信息纠正
-- 当用户纠正之前的信息（如"不对，我叫李四不是张三"）时，**立即以纠正后的信息为准**
+- 当用户纠正之前的信息时，**立即以纠正后的信息为准**
 - 回复中**不要再提及或引用旧值**，直接使用新值
-- 如已将旧信息存入记忆，应调用 update_user_profile / add_memory 更新为正确信息
+- 如已将旧信息存入记忆，应调用 update_user_profile / add_memory 更新
 
 ## 输出格式
 - 任务型回复：已执行 → 发现 → 下一步（如有）
@@ -214,12 +268,6 @@ _CORE_RULES = """\
 - 多个独立工具调用应并行发起，不要串行等待
 - 编辑代码文件后，用 read_lints 检查是否引入了错误
 
-## 并行工具调用
-
-当你需要调用多个工具且它们之间没有依赖关系时，应在同一轮中并行发起所有调用。
-例如：需要读取 3 个文件 → 同时发起 3 个 read_file 调用，而不是逐个读取。
-如果工具调用之间有依赖（如先 read_file 再 edit_file），则必须等前一个完成后再发起后续调用。
-
 ## 文件创建原则
 
 - 不要创建不必要的文件。编辑现有文件优先于创建新文件。
@@ -232,6 +280,7 @@ _CORE_RULES = """\
 - 如果某个操作已完成（如文件已写入、截图已完成、消息已发送），直接回复用户结果。
 - 如果工具调用被系统拒绝或失败，先分析原因再决定下一步，不要盲目重试相同调用。
 - 对于简单的单步任务（截图、查看文件、简单查询），直接执行后回复，无需创建计划。"""
+
 
 # ---------------------------------------------------------------------------
 # 安全约束（独立段落，不受 SOUL.md 编辑影响）
@@ -304,7 +353,9 @@ def _find_agents_md(cwd: str, *, max_depth: int, max_chars: int) -> str | None:
             try:
                 raw = agents_file.read_text(encoding="utf-8", errors="ignore")
                 content = raw[:max_chars] if len(raw) > max_chars else raw
-                logger.info("Loaded project AGENTS.md from %s (%d chars)", agents_file, len(content))
+                logger.info(
+                    "Loaded project AGENTS.md from %s (%d chars)", agents_file, len(content)
+                )
                 return content.strip() or None
             except OSError:
                 return None
@@ -313,6 +364,44 @@ def _find_agents_md(cwd: str, *, max_depth: int, max_chars: int) -> str | None:
             break
         current = parent
     return None
+
+
+_static_prompt_cache: dict[str, tuple[float, str]] = {}
+_STATIC_CACHE_TTL = 300  # 5 min
+
+
+def _build_delegation_rules() -> str:
+    """协作优先原则（多 Agent 委派），仅在 multi_agent_enabled + 非子 Agent 时注入。"""
+    return (
+        "## 协作优先原则\n\n"
+        "你拥有一支专业 Agent 团队。执行任务前，先判断是否有更合适的专业 Agent：\n"
+        "- 有专业 Agent 能处理 → 立即委派（delegate_to_agent），不要自己尝试\n"
+        "- 任务涉及多个专业领域 → 拆分并行委派（delegate_parallel）\n"
+        "- 只有简单问答或用户明确要你亲自做 → 才自己处理\n\n"
+        "### 给子 Agent 写 prompt 的原则\n\n"
+        "像给一个刚进入房间的聪明同事做简报——它没看过你的对话，不知道你试过什么：\n"
+        "- 说明你想完成什么、为什么\n"
+        "- 描述你已经了解到什么、排除了什么\n"
+        "- 给足上下文，让子 Agent 能做判断而不是盲目执行指令\n"
+        '- **永远不要委派理解**：不要写"根据你的调查结果修复问题"。'
+        "写 prompt 要证明你自己理解了问题——包含具体的信息和位置\n"
+        "- 简短的命令式 prompt 会产出肤浅的结果。"
+        "调查类任务给问题，实现类任务给具体指令\n\n"
+        "### 继续已有子 Agent vs 新启动\n\n"
+        "- 上下文高度重叠 → 继续同一个子 Agent（带完整错误上下文）\n"
+        "- 独立验证另一个子 Agent 的产出 → 新启动（确保独立性）\n"
+        "- 完全走错方向 → 新启动（新指令，不要在错误基础上继续）\n"
+        "- 无关的新任务 → 新启动\n\n"
+        "### 关键规则\n\n"
+        "- 启动子 Agent 后简短告知用户你委派了什么，然后结束本轮\n"
+        "- **绝不编造或预测子 Agent 的结果** — 结果以后续消息到达为准\n"
+        '- 验证必须**证明有效**，不是"存在即可"。对可疑结果持怀疑态度\n'
+        "- 子 Agent 失败时，优先带完整错误上下文继续同一个子 Agent；多次失败再换思路或上报用户\n\n"
+        "以下情况应自己处理，**不要委派**：\n"
+        "- 知识问答、架构讨论、方案分析、计算推理等纯对话任务\n"
+        "- 用户明确要你亲自回答的任务\n"
+        "- 没有明确匹配的专业 Agent 时\n"
+    )
 
 
 def build_system_prompt(
@@ -337,6 +426,10 @@ def build_system_prompt(
     model_display_name: str = "",
     session_context: dict | None = None,
     skip_catalogs: bool = False,
+    user_input_tokens: int = 0,
+    context_window: int = 0,
+    prompt_profile: "PromptProfile | None" = None,
+    prompt_tier: "PromptTier | None" = None,
 ) -> str:
     """
     组装系统提示词
@@ -359,16 +452,28 @@ def build_system_prompt(
         prompt_mode: 提示词注入级别 (full/minimal/none)
         mode: 当前模式 (ask/plan/agent)
         model_id: 模型标识（用于 per-model 基础 prompt）
+        prompt_profile: 产品场景 profile（None 回退到 LOCAL_AGENT）
+        prompt_tier: 上下文窗口分档（None 回退到 LARGE）
 
     Returns:
         完整的系统提示词
     """
+    # Resolve profile & tier defaults
+    _profile = prompt_profile or PromptProfile.LOCAL_AGENT
+    _tier = prompt_tier or PromptTier.LARGE
+
     if budget_config is None:
         budget_config = BudgetConfig()
+
+    # 向后兼容 skip_catalogs：映射到 profile 体系
+    if skip_catalogs and _profile == PromptProfile.LOCAL_AGENT:
+        _profile = PromptProfile.CONSUMER_CHAT
 
     # 向后兼容：is_sub_agent=True 且无显式 prompt_mode 时，使用 MINIMAL
     if prompt_mode is None:
         prompt_mode = PromptMode.MINIMAL if is_sub_agent else PromptMode.FULL
+
+    logger.debug("build_system_prompt: profile=%s, tier=%s, mode=%s", _profile.value, _tier.value, prompt_mode.value)
 
     system_parts: list[str] = []
     developer_parts: list[str] = []
@@ -380,16 +485,24 @@ def build_system_prompt(
     if base_prompt:
         system_parts.append(base_prompt)
 
-    # 2. Core Rules（提问准则 + 边界条件 + 安全约束）— 所有模式都注入
-    system_parts.append(_CORE_RULES)
+    # 2. Core Rules — ALWAYS_ON 始终注入；EXTENDED 按 profile/tier 决定
+    system_parts.append(_ALWAYS_ON_RULES)
     system_parts.append(_SAFETY_SECTION)
+    if _profile == PromptProfile.LOCAL_AGENT or _tier != PromptTier.SMALL:
+        system_parts.append(_EXTENDED_RULES)
 
-    # 3. 检查并加载编译产物
-    if check_compiled_outdated(identity_dir):
-        logger.info("Compiled files outdated, recompiling...")
-        compile_all(identity_dir)
-
-    compiled = get_compiled_content(identity_dir)
+    # 3. 检查并加载编译产物（带缓存）
+    _id_dir_key = str(identity_dir)
+    _compiled_cache = _static_prompt_cache.get(f"compiled:{_id_dir_key}")
+    _now_ts = time.time()
+    if _compiled_cache and (_now_ts - _compiled_cache[0]) < _STATIC_CACHE_TTL:
+        compiled = _compiled_cache[1]
+    else:
+        if check_compiled_outdated(identity_dir):
+            logger.info("Compiled files outdated, recompiling...")
+            compile_all(identity_dir)
+        compiled = get_compiled_content(identity_dir)
+        _static_prompt_cache[f"compiled:{_id_dir_key}"] = (_now_ts, compiled)
 
     # 4. Identity 层（SOUL.md + agent.core）
     if prompt_mode == PromptMode.FULL:
@@ -405,56 +518,9 @@ def build_system_prompt(
 
         # 多 Agent 委派优先声明（仅 Agent 模式 — Plan/Ask 模式不注入，因为这些工具不可用）
         from ..config import settings as _settings
-        if _settings.multi_agent_enabled and not is_sub_agent and mode == "agent":
-            delegation_preamble = (
-                "## 协作优先原则\n\n"
-                "你拥有一支专业 Agent 团队。执行任务前，先判断是否有更合适的专业 Agent：\n"
-                "- 有专业 Agent 能处理 → 立即委派（delegate_to_agent），不要自己尝试\n"
-                "- 任务涉及多个专业领域 → 拆分并行委派（delegate_parallel）\n"
-                "- 只有简单问答或用户明确要你亲自做 → 才自己处理\n\n"
-                "### 给子 Agent 写 prompt 的原则\n\n"
-                "像给一个刚进入房间的聪明同事做简报——它没看过你的对话，不知道你试过什么：\n"
-                "- 说明你想完成什么、为什么\n"
-                "- 描述你已经了解到什么、排除了什么\n"
-                "- 给足上下文，让子 Agent 能做判断而不是盲目执行指令\n"
-                "- **永远不要委派理解**：不要写\"根据你的调查结果修复问题\"。"
-                "写 prompt 要证明你自己理解了问题——包含具体的信息和位置\n"
-                "- 简短的命令式 prompt 会产出肤浅的结果。"
-                "调查类任务给问题，实现类任务给具体指令\n\n"
-                "### 继续已有子 Agent vs 新启动\n\n"
-                "- 上下文高度重叠 → 继续同一个子 Agent（带完整错误上下文）\n"
-                "- 独立验证另一个子 Agent 的产出 → 新启动（确保独立性）\n"
-                "- 完全走错方向 → 新启动（新指令，不要在错误基础上继续）\n"
-                "- 无关的新任务 → 新启动\n\n"
-                "### 关键规则\n\n"
-                "- 启动子 Agent 后简短告知用户你委派了什么，然后结束本轮\n"
-                "- **绝不编造或预测子 Agent 的结果** — 结果以后续消息到达为准\n"
-                "- 验证必须**证明有效**，不是\"存在即可\"。对可疑结果持怀疑态度\n"
-                "- 子 Agent 失败时，优先带完整错误上下文继续同一个子 Agent；多次失败再换思路或上报用户\n\n"
-                "以下情况应自己处理，**不要委派**：\n"
-                "- 知识问答、架构讨论、方案分析、计算推理等纯对话任务\n"
-                "- 用户明确要你亲自回答的任务\n"
-                "- 没有明确匹配的专业 Agent 时\n"
-            )
-            system_parts.append(delegation_preamble)
 
-        # 工具使用指导：何时不使用工具（仅 Agent 模式注入）
-        if mode == "agent":
-            no_tool_guidance = (
-                "## 何时不使用工具（严格遵守）\n\n"
-                "以下场景应直接以文本回复，**不要调用任何工具**：\n"
-                "- 知识问答：解释技术概念、对比方案、架构分析、最佳实践建议\n"
-                "- 数学计算：算术运算（1+1=2）、公式推导、数值估算 → **直接给出答案，禁止调用 run_shell**\n"
-                "- 日期/时间：当前日期/时间已在「运行环境」中提供 → **直接引用，禁止调用任何工具**\n"
-                "- 事实回忆：引用对话中已有的信息\n"
-                "- 创意写作：生成文案、翻译、摘要\n"
-                "- 观点讨论：给出建议、分析利弊、优先级排序\n"
-                "- 问候/闲聊：「你好」「在吗」「谢谢」→ 直接回复，不调任何工具\n\n"
-                "仅在需要**访问外部系统、读写文件、执行命令**等操作时才调用工具。\n"
-                "**反例（禁止）**：用户问「今天几号」→ 调用 run_skill_script ✗ → 正确做法：直接回答运行环境中的日期\n"
-                "**反例（禁止）**：用户问「1+1等于几」→ 调用 run_shell ✗ → 正确做法：直接回答 2\n"
-            )
-            system_parts.append(no_tool_guidance)
+        if _settings.multi_agent_enabled and not is_sub_agent and mode == "agent":
+            system_parts.append(_build_delegation_rules())
 
         if identity_section:
             system_parts.append(identity_section)
@@ -469,7 +535,7 @@ def build_system_prompt(
         system_parts.append("你是 OpenAkita，一个 AI 助手。")
 
     # 5. Mode Rules（Ask/Plan/Agent 模式专属规则）
-    mode_rules = _build_mode_rules(mode)
+    mode_rules = build_mode_rules(mode)
     if mode_rules:
         system_parts.append(mode_rules)
 
@@ -487,6 +553,7 @@ def build_system_prompt(
 
     # 6.6 架构概况（powered by {model}，区分主/子 Agent）
     from ..config import settings as _arch_settings
+
     arch_section = _build_arch_section(
         model_display_name=model_display_name,
         is_sub_agent=is_sub_agent,
@@ -512,6 +579,9 @@ def build_system_prompt(
     if prompt_mode in (PromptMode.FULL, PromptMode.MINIMAL) and mode != "ask":
         agents_md_content = _cached_section("agents_md", _read_agents_md)
         if agents_md_content:
+            from ..utils.context_scan import scan_context_content
+
+            agents_md_content, _ = scan_context_content(agents_md_content, source="AGENTS.md")
             developer_parts.append(
                 "## Project Guidelines (AGENTS.md)\n\n"
                 "以下是当前工作目录中的项目开发规范，执行开发任务时必须遵循：\n\n"
@@ -520,6 +590,9 @@ def build_system_prompt(
 
     # 9. Catalogs 层（skip_catalogs=True 时完全跳过，CHAT 意图无需工具描述）
     if not skip_catalogs:
+        _msg_count = 0
+        if session_context:
+            _msg_count = session_context.get("message_count", 0)
         catalogs_section = _build_catalogs_section(
             tool_catalog=tool_catalog,
             skill_catalog=skill_catalog,
@@ -528,20 +601,54 @@ def build_system_prompt(
             budget_tokens=budget_config.catalogs_budget,
             include_tools_guide=include_tools_guide,
             mode=mode,
+            message_count=_msg_count,
+            prompt_profile=_profile,
+            prompt_tier=_tier,
         )
         if catalogs_section:
             tool_parts.append(catalogs_section)
+
+    # 9.5 Skill Recommendation Hint（CONSUMER_CHAT / IM_ASSISTANT 时注入动态 hint）
+    if (
+        _profile in (PromptProfile.CONSUMER_CHAT, PromptProfile.IM_ASSISTANT)
+        and skill_catalog
+        and task_description
+    ):
+        try:
+            _hint_exp: str | None = None
+            if _profile == PromptProfile.CONSUMER_CHAT:
+                _hint_exp = "core"
+            elif _profile == PromptProfile.IM_ASSISTANT:
+                _hint_exp = "core+recommended"
+            rec_hint = skill_catalog.generate_recommendation_hint(
+                task_description, exposure_filter=_hint_exp,
+            )
+            if rec_hint:
+                tool_parts.append(rec_hint)
+        except Exception:
+            pass
 
     # 10. Memory 层（仅 FULL 模式）
     if prompt_mode == PromptMode.FULL:
         if precomputed_memory is not None:
             memory_section = precomputed_memory
         else:
+            effective_memory_budget, skip_experience, skip_relational = (
+                _adaptive_memory_budget(
+                    budget_config.memory_budget,
+                    user_input_tokens,
+                    context_window,
+                )
+            )
+            _use_compact = _profile == PromptProfile.CONSUMER_CHAT or _tier == PromptTier.SMALL
             memory_section = _build_memory_section(
                 memory_manager=memory_manager,
                 task_description=task_description,
-                budget_tokens=budget_config.memory_budget,
+                budget_tokens=effective_memory_budget,
                 memory_keywords=memory_keywords,
+                skip_experience=skip_experience,
+                skip_relational=skip_relational,
+                use_compact_guide=_use_compact,
             )
         if memory_section:
             developer_parts.append(memory_section)
@@ -560,6 +667,12 @@ def build_system_prompt(
     sections: list[str] = []
     if system_parts:
         sections.append("## System\n\n" + "\n\n".join(system_parts))
+
+    # === STATIC / DYNAMIC BOUNDARY ===
+    # 上方 system_parts 在 session 内不变（Rules + Safety + Identity + Persona + Mode rules + Runtime）
+    # 下方 developer_parts / tool_parts / user_parts 每轮可能变化
+    sections.append(SYSTEM_PROMPT_DYNAMIC_BOUNDARY)
+
     if developer_parts:
         sections.append("## Developer\n\n" + "\n\n".join(developer_parts))
     if user_parts:
@@ -572,7 +685,9 @@ def build_system_prompt(
     system_prompt = _apply_plugin_prompt_hooks(system_prompt)
 
     total_tokens = estimate_tokens(system_prompt)
-    logger.info(f"System prompt built: {total_tokens} tokens (mode={mode}, prompt_mode={prompt_mode.value})")
+    logger.info(
+        f"System prompt built: {total_tokens} tokens (mode={mode}, prompt_mode={prompt_mode.value})"
+    )
 
     return system_prompt
 
@@ -632,12 +747,17 @@ def _select_base_prompt(model_id: str) -> str:
         return ""
 
 
-def _build_mode_rules(mode: str) -> str:
+def build_mode_rules(mode: str) -> str:
     """根据当前模式返回专属提示词段落。
 
-    mode 值: "ask", "plan", "agent"（默认）
+    mode 值: "ask", "plan", "coordinator", "agent"（默认）
     """
     modes_dir = Path(__file__).parent / "modes"
+
+    if mode == "coordinator":
+        from ..agents.coordinator_prompt import get_coordinator_mode_rules
+
+        return get_coordinator_mode_rules()
 
     if mode == "plan":
         plan_file = modes_dir / "plan.txt"
@@ -742,7 +862,6 @@ _BUILT_IN_DEFAULTS: dict[str, str] = {
 2. 行为合乎道德
 3. 遵循指导原则
 4. 真正有帮助""",
-
     "agent_core": """\
 ## 核心执行原则
 ### 任务执行流程
@@ -820,7 +939,9 @@ def _build_identity_section(
         try:
             user_policies = policies_path.read_text(encoding="utf-8").strip()
             if user_policies:
-                policies_result = apply_budget(user_policies, budget_tokens * 15 // 100, "user_policies")
+                policies_result = apply_budget(
+                    user_policies, budget_tokens * 15 // 100, "user_policies"
+                )
                 parts.append(policies_result.content)
         except Exception:
             pass
@@ -834,6 +955,7 @@ def _get_current_time(timezone_name: str = "Asia/Shanghai") -> str:
 
     try:
         from zoneinfo import ZoneInfo
+
         tz = ZoneInfo(timezone_name)
     except Exception:
         tz = timezone(timedelta(hours=8))
@@ -885,6 +1007,7 @@ def _build_runtime_section_uncached() -> str:
     # --- 版本号 ---
     try:
         from .. import get_version_string
+
         version_str = get_version_string()
     except Exception:
         version_str = "unknown"
@@ -933,6 +1056,7 @@ def _build_runtime_section_uncached() -> str:
     path_tools = []
     _python_in_path_ok = False
     from ..utils.path_helper import which_command
+
     for cmd in ("git", "python", "node", "pip", "npm", "docker", "curl"):
         found = which_command(cmd)
         if not found:
@@ -966,6 +1090,12 @@ def _build_runtime_section_uncached() -> str:
 - **Shell**: {shell_type}
 - **PATH 可用工具**: {path_tools_str}
 
+### 工具执行域（必读）
+
+- `run_shell`、`pip install`、打开带窗口的程序、浏览器自动化等：**全部发生在当前 OpenAkita 进程所在的主机及其图形会话/无头环境中**。
+- **默认不等于**用户发消息时所用的设备：IM/手机、另一台电脑、飞书/钉钉客户端所在环境与此**不是同一执行域**；图形窗口**不会**自动出现在用户屏幕上，软件也**不会**自动装到用户个人电脑上。
+- 若用户要的是「在我这台电脑上看到窗口 / 本机安装 / 游戏内 overlay」等**用户侧可观测效果**：须通过 **可交付产物**（如脚本、`deliver_artifacts`）、**用户在本机可复制执行的命令/步骤**，或说明需要 **本地运行的 OpenAkita / 远程桌面到同一台机器** 等产品能力；**禁止**仅因宿主侧命令退出码为 0 就声称用户已在其设备上看到效果。
+
 ## 工具可用性
 {tool_status_text}
 
@@ -990,6 +1120,16 @@ def _build_session_metadata_section(
         lines.append(f"- **当前模型**: {model_display_name}")
 
     if session_context:
+        lang = session_context.get("language", "")
+        if lang:
+            _lang_names = {"zh": "中文", "en": "English", "ja": "日本語"}
+            lang_name = _lang_names.get(lang, lang)
+            lines.append(f"- **会话语言**: {lang_name}")
+            lines.append(
+                f"  - 所有回复、错误提示、状态文案均使用 **{lang_name}** 输出，"
+                f"除非用户在消息中明确切换了语言。"
+            )
+
         _channel_display = {
             "desktop": "桌面端",
             "cli": "CLI 终端",
@@ -1067,7 +1207,9 @@ def _build_arch_section(
         "后台异步提取（当前对话内容可能尚未入库）"
     )
     lines.append("- **ReAct 推理**: 思考→工具→观察 循环，上下文窗口由 ContextManager 自动管理")
-    lines.append("- **会话上下文**: 可通过 get_session_context 工具获取完整的会话状态、子 Agent 执行记录等")
+    lines.append(
+        "- **会话上下文**: 可通过 get_session_context 工具获取完整的会话状态、子 Agent 执行记录等"
+    )
     return "\n".join(lines)
 
 
@@ -1124,7 +1266,9 @@ def _build_python_info(
         if in_venv:
             lines.append(f"- **虚拟环境**: {_sys.prefix}")
         lines.append("- **pip**: 可用")
-        lines.append("- **注意**: 执行 Python 脚本时使用上述解释器路径，pip install 会安装到当前环境中")
+        lines.append(
+            "- **注意**: 执行 Python 脚本时使用上述解释器路径，pip install 会安装到当前环境中"
+        )
         return "\n".join(lines)
 
     # 打包模式
@@ -1136,7 +1280,9 @@ def _build_python_info(
         if venv_path:
             lines.append(f"- **虚拟环境**: {venv_path}")
         lines.append(f"- **pip**: {'可用' if pip_ok else '不可用'}")
-        lines.append("- **注意**: 执行 Python 脚本时请使用上述解释器路径，pip install 会安装到该虚拟环境中")
+        lines.append(
+            "- **注意**: 执行 Python 脚本时请使用上述解释器路径，pip install 会安装到该虚拟环境中"
+        )
         return "\n".join(lines)
 
     # 打包模式 + 无外置 Python
@@ -1168,10 +1314,13 @@ def _build_im_environment_section() -> str:
     """从 IM context 读取当前环境信息，生成系统提示词段落"""
     try:
         from ..core.im_context import get_im_session
+
         session = get_im_session()
         if not session:
             return ""
-        im_env = session.get_metadata("_im_environment") if hasattr(session, "get_metadata") else None
+        im_env = (
+            session.get_metadata("_im_environment") if hasattr(session, "get_metadata") else None
+        )
         if not im_env:
             return ""
     except Exception:
@@ -1192,12 +1341,16 @@ def _build_im_environment_section() -> str:
         f"- 场景：{chat_type_name}（ID: {chat_id}）",
     ]
     if thread_id:
-        lines.append(f"- 当前在话题/线程中（thread_id: {thread_id}），对话上下文仅包含本话题内的消息")
+        lines.append(
+            f"- 当前在话题/线程中（thread_id: {thread_id}），对话上下文仅包含本话题内的消息"
+        )
     if bot_id:
         lines.append(f"- 你的身份：机器人（ID: {bot_id}）")
     if capabilities:
         lines.append(f"- 已确认可用的能力：{', '.join(capabilities)}")
-    lines.append("- 你可以通过 get_chat_info / get_user_info / get_chat_members 等工具主动查询环境信息")
+    lines.append(
+        "- 你可以通过 get_chat_info / get_user_info / get_chat_members 等工具主动查询环境信息"
+    )
     lines.append(
         "- **重要**：你的记忆系统是跨会话共享的，检索到的记忆可能来自其他群聊或私聊场景。"
         "请优先关注当前对话上下文，审慎引用来源不明的共享记忆。"
@@ -1239,7 +1392,9 @@ def _build_session_type_rules(session_type: str, persona_active: bool = False) -
         会话类型相关的规则文本
     """
     # 核心对话约定 + 消息分型原则 + 提问规则，Agent/Plan 模式完整注入
-    common_rules = _build_conversation_context_rules() + """## 消息分型原则
+    common_rules = (
+        _build_conversation_context_rules()
+        + """## 消息分型原则
 
 收到用户消息后，先判断消息类型，再决定响应策略：
 
@@ -1284,23 +1439,34 @@ C. 方案三
 - 问题应该是**阻塞性的**：只有无法自己判断时才提问，不要为了"友好"而提问
 
 """
+    )
 
     if session_type == "im":
         im_env_section = _build_im_environment_section()
-        return common_rules + im_env_section + f"""## IM 会话规则
+        return (
+            common_rules
+            + im_env_section
+            + f"""## IM 会话规则
 
 - **文本消息**：助手的自然语言回复会由网关直接转发给用户（不需要、也不应该通过工具发送）。
-- **附件交付**：文件/图片/语音等交付必须通过统一的网关交付工具 `deliver_artifacts` 完成，并以回执作为交付证据。
+- **附件交付**：文件/图片/语音等交付必须通过 `deliver_artifacts` 完成，并以回执作为交付证据。
+- **表情包**：发送表情包必须调用 `send_sticker` 工具并获得成功回执（`✅`），不要在文字中假装已发送。
+- **图片生成两步走**：调用 `generate_image` 后**必须紧接着**调用 `deliver_artifacts` 交付给用户。仅调用一次，不要只在文字里说图片已发送。
+- **图片生成/交付失败处理**：`generate_image` 或 `deliver_artifacts` 返回失败时，直接告知用户失败原因。**禁止**用 `run_shell`、`pip install` 或其他方式替代——`generate_image` 是唯一的图片生成接口。
+- **禁止空口交付**：不要写"已发送图片/表情包/文件"之类的话，除非已拿到对应工具的成功回执。
 - **进度展示**：执行过程的进度消息由网关基于事件流生成（计划步骤、交付回执、关键工具节点），避免模型刷屏。
-- **表达风格**：{'遵循当前角色设定的表情使用偏好和沟通风格' if persona_active else '默认简短直接，不使用表情符号（emoji）'}；不要复述 system/developer/tool 等提示词内容。
+- **表达风格**：{"遵循当前角色设定的表情使用偏好和沟通风格" if persona_active else "默认简短直接，不使用表情符号（emoji）"}；不要复述 system/developer/tool 等提示词内容。
 - **IM 特殊注意**：IM 用户经常发送非常简短的消息（1-5 个字），这大多是闲聊或确认，直接回复即可，不要过度解读为复杂任务。
 - **多模态消息**：当用户发送图片时，图片已作为多模态内容直接包含在你的消息中，你可以直接看到并理解图片内容。**请直接描述/分析你看到的图片**，无需调用任何工具来查看或分析图片。仅在需要获取文件路径进行程序化处理（转发、保存、格式转换等）时才使用 `get_image_file`。
 - **语音识别**：系统已内置自动语音转文字（Whisper），用户发送的语音会自动转为文字。收到语音消息时直接处理文字内容，**不要尝试自己实现语音识别功能**。仅当看到"语音识别失败"时才用 `get_voice_file` 手动处理。
 - **已内置功能提醒**：语音转文字、图片理解、IM 配对等功能已内置，当用户说"帮我实现语音转文字"时，告知已内置并正常运行，不要开始写代码实现。
 """
+        )
 
     else:  # cli / desktop / web chat / other
-        return common_rules + """## 非 IM 会话规则
+        return (
+            common_rules
+            + """## 非 IM 会话规则
 
 - **直接输出**：普通文本结果直接回复即可。
 - **附件交付**：如果用户明确要你“发图片 / 给文件 / 提供可下载结果 / 把图片直接发出来”，必须调用 `deliver_artifacts` 真正交付；不要只在文字里说“已经发给你了”。
@@ -1308,6 +1474,7 @@ C. 方案三
 - **禁止空口交付**：不要写“下面是图片”“我给你发一张图”“已发送附件”之类的话，除非你已经拿到了 `deliver_artifacts` 的成功回执。
 - **多模态消息**：如果用户发来图片，你可以直接理解和分析图片内容；只有在需要转发、保存、再次交付时，才需要进一步使用文件/交付工具。
 - **无需主动刷屏**：非必要不要频繁发送进度消息，优先给最终可用结果。"""
+        )
 
 
 def _build_catalogs_section(
@@ -1318,11 +1485,27 @@ def _build_catalogs_section(
     budget_tokens: int = 8000,
     include_tools_guide: bool = False,
     mode: str = "agent",
+    message_count: int = 0,
+    prompt_profile: "PromptProfile | None" = None,
+    prompt_tier: "PromptTier | None" = None,
 ) -> str:
     """构建 Catalogs 层（工具/技能/插件/MCP 清单）
 
+    Progressive disclosure:
+    - CONSUMER_CHAT profile 或 SMALL tier → 仅索引（index-only）
+    - 对话前 4 轮或非 agent 模式 → 仅索引
+    - 其他 → 完整清单
+
     每个 catalog 用 try/except 隔离，确保单个 catalog 构建失败不会击穿整个系统提示。
     """
+    _profile = prompt_profile or PromptProfile.LOCAL_AGENT
+    _tier = prompt_tier or PromptTier.LARGE
+    progressive = (
+        _profile == PromptProfile.CONSUMER_CHAT
+        or _tier == PromptTier.SMALL
+        or mode != "agent"
+        or message_count < 4
+    )
     parts = []
 
     if tool_catalog:
@@ -1339,22 +1522,23 @@ def _build_catalogs_section(
             parts.append(tools_result.content)
         except Exception as e:
             logger.error(
-                "[PromptBuilder] tool catalog build failed, skipping: %s", e,
+                "[PromptBuilder] tool catalog build failed, skipping: %s",
+                e,
                 exc_info=True,
             )
 
     if skill_catalog:
         try:
             skills_budget = budget_tokens * 50 // 100
-            skills_index = skill_catalog.get_index_catalog()
 
-            index_tokens = estimate_tokens(skills_index)
-            remaining = max(0, skills_budget - index_tokens)
+            # Profile-aware exposure filter
+            _exp_filter: str | None = None
+            if _profile == PromptProfile.CONSUMER_CHAT:
+                _exp_filter = "core"
+            elif _profile == PromptProfile.IM_ASSISTANT:
+                _exp_filter = "core+recommended"
 
-            skills_detail = skill_catalog.get_catalog()
-            skills_detail_result = apply_budget(
-                skills_detail, remaining, "skills", truncate_strategy="end"
-            )
+            skills_index = skill_catalog.get_index_catalog(exposure_filter=_exp_filter)
 
             skills_rule = (
                 "### 技能使用规则\n"
@@ -1367,14 +1551,25 @@ def _build_catalogs_section(
                 "- **重要**：当前日期时间已写在「运行环境」里，禁止为了查日期而调用技能脚本\n"
             )
 
-            parts.append(
-                "\n\n".join(
-                    [skills_index, skills_rule, skills_detail_result.content]
-                ).strip()
-            )
+            if progressive:
+                parts.append(
+                    "\n\n".join([skills_index, skills_rule]).strip()
+                    + "\n\n> 详细技能说明将在需要时提供。可使用 `list_skills` 查看完整列表。"
+                )
+            else:
+                index_tokens = estimate_tokens(skills_index)
+                remaining = max(0, skills_budget - index_tokens)
+                skills_detail = skill_catalog.generate_catalog(exposure_filter=_exp_filter)
+                skills_detail_result = apply_budget(
+                    skills_detail, remaining, "skills", truncate_strategy="end"
+                )
+                parts.append(
+                    "\n\n".join([skills_index, skills_rule, skills_detail_result.content]).strip()
+                )
         except Exception as e:
             logger.error(
-                "[PromptBuilder] skill catalog build failed, skipping: %s", e,
+                "[PromptBuilder] skill catalog build failed, skipping: %s",
+                e,
                 exc_info=True,
             )
 
@@ -1385,7 +1580,8 @@ def _build_catalogs_section(
                 parts.append(plugin_text)
         except Exception as e:
             logger.error(
-                "[PromptBuilder] plugin catalog build failed, skipping: %s", e,
+                "[PromptBuilder] plugin catalog build failed, skipping: %s",
+                e,
                 exc_info=True,
             )
 
@@ -1397,7 +1593,8 @@ def _build_catalogs_section(
                 parts.append(mcp_result.content)
         except Exception as e:
             logger.error(
-                "[PromptBuilder] MCP catalog build failed, skipping: %s", e,
+                "[PromptBuilder] MCP catalog build failed, skipping: %s",
+                e,
                 exc_info=True,
             )
 
@@ -1407,6 +1604,23 @@ def _build_catalogs_section(
     return "\n\n".join(parts)
 
 
+# 精简版 Memory Guide（~200 token，用于 CONSUMER_CHAT 和 SMALL tier）
+_MEMORY_SYSTEM_GUIDE_COMPACT = """## 你的记忆系统
+
+### 信息优先级
+1. **对话历史** — 最高优先级，直接引用即可
+2. **系统注入记忆** — 跨会话持久化知识
+3. **记忆搜索工具** — 查找更早的历史信息
+
+- 用户提到"之前/上次" → 用 `search_memory` 搜索
+- 用户透露偏好时 → 用 `add_memory` 保存
+- 记忆可能过时 → 行动前用工具验证当前状态
+- 禁止虚假声称已保存记忆
+
+### 当前注入的信息
+下方是用户核心档案和高权重经验。"""
+
+# 完整版 Memory Guide（~815 token，用于 LOCAL_AGENT + MEDIUM/LARGE tier）
 _MEMORY_SYSTEM_GUIDE = """## 你的记忆系统
 
 你有一个三层分层记忆网络，各层双向关联。
@@ -1426,8 +1640,6 @@ _MEMORY_SYSTEM_GUIDE = """## 你的记忆系统
 
 ### 搜索记忆的两种模式
 
-你的记忆系统有两种搜索模式，根据查询特征选择：
-
 **Mode 1 — 碎片化搜索**（关键词匹配，适用于大多数查询）：
 - `search_memory` — 按关键词搜索知识记忆（fact/preference/skill/error/rule）
 - `list_recent_tasks` — 列出最近完成的任务情节
@@ -1441,59 +1653,58 @@ _MEMORY_SYSTEM_GUIDE = """## 你的记忆系统
 - 用户问**为什么/什么原因** → 因果链遍历
 - 用户问**之前做过什么/经过/时间线** → 时间线遍历
 - 用户问**关于某个事物的所有记录** → 实体追踪
-- 需要**跨会话关联**信息 → 跨会话图遍历
 - 默认或简单查询 → 用 search_memory 即可（更快）
-
-**关于 Mode 2 的写入**：关系型图谱由系统在会话结束时**自动编码**，你无需手动保存。你只需通过 `add_memory` 主动保存 Mode 1 碎片化记忆（见下方指导）。
 
 ### 何时保存记忆（使用 add_memory — 仅 Mode 1）
 
 后台会自动从对话中提取记忆，你只需在以下场景**主动**保存：
 
 **preference（偏好）** — 用户透露工作习惯、沟通偏好、风格喜好时
-- 不仅记录用户的**纠正**（"别这样做"），也记录用户的**确认**（"对，就这样"）
-- 附带原因：为什么用户有这个偏好？这样未来遇到边界情况你能做判断
-
-**fact（事实）** — 不能从当前状态推导出的关键信息
-- 用户角色、目标、职责、知识水平
-- 项目截止日期、决策背景、正在进行的计划
-- 外部系统指针（任务跟踪地址、群聊频道、监控面板）
-- 注意将相对日期转为绝对日期（"下周四" → 具体日期）
-
+**fact（事实）** — 不能从当前状态推导出的关键信息（角色、截止日期、决策背景等）
 **rule（规则）** — 用户设定的行为约束
-- "永远不要..."、"必须先..."等明确的行为规则
-- 项目级约定和流程要求
-
-**error（教训）** — 踩过的坑
-- 出了什么错、根因是什么、正确做法是什么
-- 避免仅记录"出错了"，要记录**为什么错**和**怎么避免**
-
+**error（教训）** — 出了什么错、根因是什么、正确做法是什么
 **skill（技能）** — 可复用的方法流程
-- 成功完成某类任务的步骤和方法
-- 发现的高效工作方式
 
-用户明确要求你记住某件事时，立即按最合适的类型保存。用户要求你忘记某件事时，用 search_memory 找到并告知用户（系统暂不支持直接删除记忆）。
-
-### 不应保存为记忆的内容
-
-- 本次对话中刚讨论过的内容（异步索引有延迟，搜不到反而浪费）
-- 临时任务状态、当前对话进度（这些属于 scratchpad）
-- MEMORY.md 中已存在的信息（避免重复）
-- 纯粹的活动日志、流水账式记录
-- 即使用户要求保存一个活动摘要，也应追问"这其中什么是出乎意料或不明显的？"——那部分才值得保存
+用户明确要求你记住某件事时，立即按最合适的类型保存。
 
 ### 记忆可靠性（行动前必读）
 
-- **记忆可能过时**：无论 Mode 1 碎片记忆还是 Mode 2 图谱节点，都记录的是保存时刻的状态。行动前，如果记忆内容可能已变化（如外部链接、资源位置、项目状态），先用工具验证当前状态
-- **记忆与观察冲突时以观察为准**：如果记忆说"X 存在/X 为真"但你当前查看发现并非如此，以当前观察为准，并考虑更新过时记忆
-- **引用记忆做推荐前先验证**："记忆说某资源存在"不等于"它现在还存在"——如果用户即将基于你的推荐行动，先核实
-- **"最近/当前"类问题**：用户问当前状态时，优先用工具获取实时信息，而非仅引用记忆中的旧快照
-- **用户说"忽略记忆"时**：当作记忆为空，不要引用、比较、提及记忆内容
+- **记忆可能过时**：行动前先用工具验证当前状态
+- **记忆与观察冲突时以观察为准**
+- **引用记忆做推荐前先验证**
+- **用户说"忽略记忆"时**：当作记忆为空
 
-**禁止虚假声称**：永远不要说"我已将此信息保存到记忆中"或"我会记住这个"之类的话，除非你确实调用了 `add_memory` 工具。记忆提取是后台自动进行的，你无法直接感知。如果用户要求你记住某些信息，请使用 `add_memory` 工具显式保存，然后再告知用户。
+**禁止虚假声称**：永远不要说"我已将此信息保存到记忆中"，除非你确实调用了 `add_memory` 工具。
 
 ### 当前注入的信息
 下方是用户核心档案、当前任务状态和高权重历史经验。"""
+
+
+def _adaptive_memory_budget(
+    base_budget: int,
+    user_input_tokens: int,
+    context_window: int,
+) -> tuple[int, bool, bool]:
+    """Compute effective memory budget based on user input pressure.
+
+    When user input is large relative to the context window, soft content
+    (experience hints, relational retrieval) is progressively shed to leave
+    more room for the LLM to reason about the user's actual request.
+
+    Returns:
+        (effective_budget, skip_experience, skip_relational)
+    """
+    if context_window <= 0 or user_input_tokens <= 0:
+        return base_budget, False, False
+
+    ratio = user_input_tokens / context_window
+
+    if ratio > 0.5:
+        return max(300, base_budget // 5), True, True
+    elif ratio > 0.3:
+        scale = 1.0 - (ratio - 0.3) / 0.2
+        return max(300, int(base_budget * scale)), False, True
+    return base_budget, False, False
 
 
 def _build_memory_section(
@@ -1501,22 +1712,26 @@ def _build_memory_section(
     task_description: str,
     budget_tokens: int,
     memory_keywords: list[str] | None = None,
+    skip_experience: bool = False,
+    skip_relational: bool = False,
+    use_compact_guide: bool = False,
 ) -> str:
     """
     构建 Memory 层 — 渐进式披露:
     0. 记忆系统自描述 (告知 LLM 记忆系统的运作方式)
     1. Scratchpad (当前任务 + 近期完成)
     2. Core Memory (MEMORY.md 用户基本信息 + 永久规则)
-    3. Experience Hints (高权重经验记忆)
+    3. Experience Hints (高权重经验记忆) — skipped under high input pressure
     4. Active Retrieval (if memory_keywords provided by IntentAnalyzer)
+    5. Relational graph retrieval — skipped under medium+ input pressure
     """
     if not memory_manager:
         return ""
 
     parts: list[str] = []
 
-    # Layer 0: 记忆系统自描述
-    parts.append(_MEMORY_SYSTEM_GUIDE)
+    # Layer 0: 记忆系统自描述（compact 版 ~200 token，完整版 ~600 token）
+    parts.append(_MEMORY_SYSTEM_GUIDE_COMPACT if use_compact_guide else _MEMORY_SYSTEM_GUIDE)
 
     # Layer 1: Scratchpad (当前任务)
     scratchpad_text = _build_scratchpad_section(memory_manager)
@@ -1530,15 +1745,19 @@ def _build_memory_section(
 
     # Layer 2: Core Memory (MEMORY.md — 用户基本信息 + 永久规则)
     from openakita.memory.types import MEMORY_MD_MAX_CHARS as _MD_MAX
+
     core_budget = min(budget_tokens // 2, 500)
     core_memory = _get_core_memory(memory_manager, max_chars=min(core_budget * 3, _MD_MAX))
     if core_memory:
         parts.append(f"## 核心记忆\n\n{core_memory}")
 
     # Layer 3: Experience Hints (高权重经验/教训/技能记忆)
-    experience_text = _build_experience_section(memory_manager, max_items=5)
-    if experience_text:
-        parts.append(experience_text)
+    if not skip_experience:
+        experience_text = _build_experience_section(
+            memory_manager, max_items=5, task_description=task_description
+        )
+        if experience_text:
+            parts.append(experience_text)
 
     # Layer 4: Active Retrieval (driven by IntentAnalyzer memory_keywords)
     if memory_keywords:
@@ -1547,10 +1766,8 @@ def _build_memory_section(
             parts.append(f"## 相关记忆（自动检索）\n\n{retrieved}")
 
     # Layer 5: Relational graph retrieval (Mode 2 / auto)
-    if memory_keywords:
-        relational = _retrieve_relational(
-            memory_manager, " ".join(memory_keywords), max_tokens=500
-        )
+    if memory_keywords and not skip_relational:
+        relational = _retrieve_relational(memory_manager, " ".join(memory_keywords), max_tokens=500)
         if relational:
             parts.append(f"## 关系型记忆（图检索）\n\n{relational}")
 
@@ -1667,11 +1884,10 @@ def _build_pinned_rules_section(
             return ""
 
         from datetime import datetime
+
         now = datetime.now()
         active_rules = [
-            r for r in rules
-            if not r.superseded_by
-            and (not r.expires_at or r.expires_at > now)
+            r for r in rules if not r.superseded_by and (not r.expires_at or r.expires_at > now)
         ]
         if not active_rules:
             return ""
@@ -1732,42 +1948,100 @@ def _get_core_memory(memory_manager: Optional["MemoryManager"], max_chars: int =
     return truncate_memory_md(content, max_chars)
 
 
+_EXPERIENCE_ITEM_MAX_CHARS = 200
+_EXPERIENCE_SECTION_MAX_CHARS = 1200
+
+
 def _build_experience_section(
     memory_manager: Optional["MemoryManager"],
     max_items: int = 5,
+    task_description: str = "",
 ) -> str:
-    """Inject top experience/lesson/skill memories as proactive hints."""
+    """Inject experience/lesson/skill memories relevant to the current task.
+
+    Two retrieval strategies:
+    - With task_description: semantic search for relevant experiences
+    - Without: fall back to global top-N by importance (original behaviour)
+
+    Only includes user-facing (scope=global) memories; agent-private data
+    such as task retrospects (scope=agent) is excluded.
+    """
     store = getattr(memory_manager, "store", None)
     if store is None:
         return ""
     try:
-        exp_types = ("experience", "skill", "error")
-        all_exp = []
-        for t in exp_types:
-            try:
-                results = store.query_semantic(memory_type=t, limit=10)
-                all_exp.extend(results)
-            except Exception:
-                continue
-        if not all_exp:
-            return ""
+        top: list = []
 
-        # Rank by (access_count * importance) descending, take top N
-        all_exp.sort(
-            key=lambda m: m.access_count * m.importance_score + m.importance_score,
-            reverse=True,
-        )
-        top = [m for m in all_exp[:max_items] if m.importance_score >= 0.6 and not m.superseded_by]
+        if task_description and task_description.strip():
+            top = _retrieve_relevant_experiences(store, task_description, max_items)
+
+        if not top:
+            top = _retrieve_top_experiences(store, max_items)
+
         if not top:
             return ""
 
         lines = ["## 历史经验（执行任务前请参考）\n"]
+        total_chars = 0
         for m in top:
             icon = {"error": "⚠️", "skill": "💡", "experience": "📝"}.get(m.type.value, "📝")
-            lines.append(f"- {icon} {m.content}")
-        return "\n".join(lines)
+            content = m.content
+            if len(content) > _EXPERIENCE_ITEM_MAX_CHARS:
+                content = content[:_EXPERIENCE_ITEM_MAX_CHARS] + "…"
+            line = f"- {icon} {content}"
+            if total_chars + len(line) > _EXPERIENCE_SECTION_MAX_CHARS:
+                break
+            lines.append(line)
+            total_chars += len(line)
+        return "\n".join(lines) if len(lines) > 1 else ""
     except Exception:
         return ""
+
+
+def _retrieve_relevant_experiences(
+    store: Any, task_description: str, max_items: int
+) -> list:
+    """Semantic search for experiences relevant to the current task."""
+    try:
+        scored = store.search_semantic_scored(
+            task_description,
+            limit=max_items * 2,
+            scope="global",
+        )
+        results = []
+        for mem, _score in scored:
+            if mem.type.value not in ("experience", "skill", "error"):
+                continue
+            if mem.superseded_by:
+                continue
+            if mem.importance_score < 0.5:
+                continue
+            results.append(mem)
+            if len(results) >= max_items:
+                break
+        return results
+    except Exception:
+        return []
+
+
+def _retrieve_top_experiences(store: Any, max_items: int) -> list:
+    """Fallback: global top-N by importance (no task context available)."""
+    exp_types = ("experience", "skill", "error")
+    all_exp = []
+    for t in exp_types:
+        try:
+            results = store.query_semantic(memory_type=t, scope="global", limit=10)
+            all_exp.extend(results)
+        except Exception:
+            continue
+    if not all_exp:
+        return []
+
+    all_exp.sort(
+        key=lambda m: m.access_count * m.importance_score + m.importance_score,
+        reverse=True,
+    )
+    return [m for m in all_exp[:max_items] if m.importance_score >= 0.6 and not m.superseded_by]
 
 
 def _clean_user_content(raw: str) -> str:
@@ -1832,6 +2106,13 @@ def _get_tools_guide_short() -> str:
 - **不要让用户自己跑命令**：直接使用工具执行，而不是输出命令让用户去终端跑
 - **不要编造工具结果**：未调用工具前不要声称已完成操作
 
+### 结果验证准则
+
+- **Grounding（事实落地）**：你的每个事实性声称必须有工具输出作为依据。若工具未返回预期结果，如实告知用户
+- **缺失上下文时不猜测**：若所需信息不足，说明缺什么并建议获取方式，不要编造答案
+- **完成前自查**：回复用户前确认——操作是否真的执行了？结果是否与声称一致？文件写了 ≠ 用户已收到（需 deliver_artifacts）
+- **区分宿主执行与用户可见**：工具在服务器执行成功 ≠ 用户本机可见。需要用户看到文件时，必须调用 deliver_artifacts
+
 ### 能力扩展
 
 缺少某种能力时，不要说"我做不到"：
@@ -1882,9 +2163,7 @@ def get_prompt_debug_info(
         skills_detail = skill_catalog.get_catalog()
         _skills_rule_overhead = 200
         info["catalogs"]["skills"] = (
-            estimate_tokens(skills_index)
-            + estimate_tokens(skills_detail)
-            + _skills_rule_overhead
+            estimate_tokens(skills_index) + estimate_tokens(skills_detail) + _skills_rule_overhead
         )
 
     if mcp_catalog:

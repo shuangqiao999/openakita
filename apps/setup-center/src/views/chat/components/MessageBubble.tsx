@@ -9,6 +9,7 @@ import { AskUserBlock } from "./AskUser";
 import { ErrorCard } from "./ErrorCard";
 import { AttachmentPreview } from "./AttachmentPreview";
 import { SpinnerTipDisplay } from "./SpinnerTipDisplay";
+import { IconClipboard, IconEdit, IconRefresh, IconRewind } from "../../../icons";
 
 export const MessageBubble = memo(function MessageBubble({
   msg,
@@ -127,16 +128,16 @@ export const MessageBubble = memo(function MessageBubble({
           </span>
         )}
         {!msg.streaming && msg.content && (
-          <button className="msgActionBtn" onClick={() => navigator.clipboard.writeText(msg.content).catch(() => {})} title={t("chat.copyMessage", "复制")}>📋</button>
+          <button className="msgActionBtn" onClick={() => navigator.clipboard.writeText(msg.content).catch(() => {})} title={t("chat.copyMessage", "复制")}><IconClipboard size={13} /></button>
         )}
         {isUser && !msg.streaming && onEdit && (
-          <button className="msgActionBtn" onClick={() => onEdit(msg.id)} title={t("chat.edit", "编辑")}>✏️</button>
+          <button className="msgActionBtn" onClick={() => onEdit(msg.id)} title={t("chat.edit", "编辑")}><IconEdit size={13} /></button>
         )}
         {isAssistant && !msg.streaming && onRegenerate && (
-          <button className="msgActionBtn" onClick={() => onRegenerate(msg.id)} title={t("chat.regenerate", "重新生成")}>🔄</button>
+          <button className="msgActionBtn" onClick={() => onRegenerate(msg.id)} title={t("chat.regenerate", "重新生成")}><IconRefresh size={13} /></button>
         )}
         {!isLast && !msg.streaming && onRewind && (
-          <button className="msgActionBtn" onClick={() => onRewind(msg.id)} title={t("chat.rewind", "回到这里")}>⏪</button>
+          <button className="msgActionBtn" onClick={() => onRewind(msg.id)} title={t("chat.rewind", "回到这里")}><IconRewind size={13} /></button>
         )}
       </div>
     </div>

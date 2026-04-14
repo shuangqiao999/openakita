@@ -266,8 +266,8 @@ export function Sidebar({
                 <div className={`navItem ${view === "org_editor" ? "navItemActive" : ""}`} onClick={() => onViewChange("org_editor")} role="button" tabIndex={0} title={t("sidebar.orgEditor")}>
                   <IconLayoutGrid size={16} /> {!collapsed && <span>{t("sidebar.orgEditor")} {BETA_SUP}</span>}
                 </div>
-                <div className={`navItem ${view === "pixel_office" ? "navItemActive" : ""}`} onClick={() => onViewChange("pixel_office")} role="button" tabIndex={0} title="像素办公室">
-                  <IconBuilding size={16} /> {!collapsed && <span>像素办公室 {BETA_SUP}</span>}
+                <div className={`navItem ${view === "pixel_office" ? "navItemActive" : ""}`} onClick={() => onViewChange("pixel_office")} role="button" tabIndex={0} title={t("sidebar.pixelOffice")}>
+                  <IconBuilding size={16} /> {!collapsed && <span>{t("sidebar.pixelOffice")} {BETA_SUP}</span>}
                 </div>
                 <div className={`navItem ${view === "agent_manager" ? "navItemActive" : ""}`} onClick={() => onViewChange("agent_manager")} role="button" tabIndex={0} title={t("sidebar.agentManager")}>
                   <IconBot size={16} /> {!collapsed && <span>{t("sidebar.agentManager")}</span>}

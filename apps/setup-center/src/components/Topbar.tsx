@@ -1,22 +1,25 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import type { WorkspaceSummary } from "../types";
+import type { EnvMap, ViewId, WorkspaceSummary } from "../types";
 import type { Theme } from "../theme";
 import {
   DotGreen, DotGray,
   IconX, IconLink, IconPower, IconRefresh,
   IconLaptop, IconMoon, IconSun, IconGlobe, IconClipboard,
+  IconCheck,
 } from "../icons";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup,
   DropdownMenuRadioItem, DropdownMenuTrigger, DropdownMenuLabel,
-  DropdownMenuSeparator,
+  DropdownMenuSeparator, DropdownMenuItem,
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { LogOut } from "lucide-react";
+import { LogOut, ClipboardCopy, Compass } from "lucide-react";
+import { toast } from "sonner";
 import { openExternalUrl } from "../platform";
 import { copyToClipboard } from "../utils/clipboard";
+import { RemoteAccessDialog } from "./RemoteAccessDialog";
 
 export type TopbarProps = {
   wsDropdownOpen: boolean;
@@ -46,6 +49,12 @@ export type TopbarProps = {
   onToggleMobileSidebar?: () => void;
   serverName?: string;
   onServerManager?: () => void;
+  envDraft?: EnvMap;
+  setEnvDraft?: React.Dispatch<React.SetStateAction<EnvMap>>;
+  saveEnvKeys?: (keys: string[]) => Promise<{ restartRequired?: boolean }>;
+  restartService?: () => Promise<void>;
+  askConfirm?: (msg: string, onConfirm: () => void) => void;
+  setView?: React.Dispatch<React.SetStateAction<ViewId>>;
 };
 
 export function Topbar({
@@ -59,9 +68,13 @@ export function Topbar({
   onDisconnect, onConnect, onStart, onRefreshAll,
   onSetTheme, themePrefState, isWeb, onLogout, webAccessUrl, apiBaseUrl,
   onToggleMobileSidebar, serverName, onServerManager,
+  envDraft, setEnvDraft, restartService, askConfirm,
 }: TopbarProps) {
   const { t, i18n } = useTranslation();
   const [remoteCopyState, setRemoteCopyState] = useState<"idle" | "copied" | "no_ip">("idle");
+  const [remoteDialogOpen, setRemoteDialogOpen] = useState(false);
+
+  const hasRemoteAccessProps = !!(envDraft && setEnvDraft && restartService && askConfirm);
 
   const copyRemoteUrl = async () => {
     const base = apiBaseUrl || "http://127.0.0.1:18900";
@@ -73,10 +86,18 @@ export function Topbar({
           if (res.ok) { data = await res.json(); break; }
         } catch { /* try next */ }
       }
-      const ip = data?.local_ip;
+      const allIps: string[] = data?.all_ips || [];
+      const ip = allIps[0] || data?.local_ip;
+      const apiHost = data?.api_host || "127.0.0.1";
       if (ip && ip !== "127.0.0.1" && ip !== "::1" && ip !== "localhost") {
         const port = new URL(base).port || "18900";
-        await navigator.clipboard.writeText(`http://${ip}:${port}/web`);
+        const url = `http://${ip}:${port}/web`;
+        await copyToClipboard(url);
+        if (apiHost !== "0.0.0.0") {
+          toast.warning(t("remoteAccess.copyNotReady"));
+        } else {
+          toast.success(t("remoteAccess.urlCopied"));
+        }
         setRemoteCopyState("copied");
         setTimeout(() => setRemoteCopyState("idle"), 2000);
       } else {
@@ -146,7 +167,7 @@ export function Topbar({
                   }}
                 >
                   <span>{w.name} <span style={{ opacity: 0.5, fontSize: 11 }}>({w.id})</span></span>
-                  {w.isCurrent && <span style={{ color: "var(--brand)", fontSize: 11 }}>✓</span>}
+                  {w.isCurrent && <IconCheck size={11} style={{ color: "var(--brand)" }} />}
                 </div>
               ))}
               <div style={{ borderTop: "1px solid var(--line)", margin: "4px 0" }} />
@@ -209,43 +230,61 @@ export function Topbar({
           <span>{serviceRunning ? t("topbar.running") : t("topbar.stopped")}</span>
         </span>
         {webAccessUrl && serviceRunning && !isWeb && (
-          <>
-            <span
-              className="topbarWebAccess"
-              onClick={() => openExternalUrl(webAccessUrl)}
-              title={webAccessUrl}
-              style={{
-                cursor: "pointer", fontSize: 11, display: "inline-flex", alignItems: "center", gap: 3,
-                color: "var(--accent, #5B8DEF)", opacity: 0.85,
-              }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.opacity = "1"; }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = "0.85"; }}
-            >
-              <IconGlobe size={11} />
-              <span style={{ textDecoration: "underline" }}>{t("topbar.webAccess")}</span>
-            </span>
-            <span
-              onClick={copyRemoteUrl}
-              title={t("topbar.copyRemoteUrl", "复制远程访问地址")}
-              style={{
-                cursor: "pointer", fontSize: 11, display: "inline-flex", alignItems: "center", gap: 2,
-                color: remoteCopyState === "copied" ? "var(--ok, #10b981)"
-                  : remoteCopyState === "no_ip" ? "var(--warning-text, #92400e)"
-                  : "var(--accent, #5B8DEF)",
-                opacity: remoteCopyState !== "idle" ? 1 : 0.7,
-                transition: "color 0.2s",
-              }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.opacity = "1"; }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = remoteCopyState !== "idle" ? "1" : "0.7"; }}
-            >
-              <IconClipboard size={11} />
-              <span>{
-                remoteCopyState === "copied" ? t("common.copied", "已复制")
-                : remoteCopyState === "no_ip" ? t("topbar.ipNotFound", "请用 ipconfig 或 ifconfig 查看本机 IP")
-                : t("topbar.remoteUrl", "远程地址")
-              }</span>
-            </span>
-          </>
+          <span
+            className="topbarWebAccess"
+            onClick={() => openExternalUrl(webAccessUrl)}
+            title={webAccessUrl}
+            style={{
+              cursor: "pointer", fontSize: 11, display: "inline-flex", alignItems: "center", gap: 3,
+              color: "var(--accent, #5B8DEF)", opacity: 0.85,
+            }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.opacity = "1"; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = "0.85"; }}
+          >
+            <IconGlobe size={11} />
+            <span style={{ textDecoration: "underline" }}>{t("topbar.webAccess")}</span>
+          </span>
+        )}
+        {serviceRunning && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <span
+                title={t("topbar.copyRemoteUrl", "复制远程访问地址")}
+                style={{
+                  cursor: "pointer", fontSize: 11, display: "inline-flex", alignItems: "center", gap: 2,
+                  color: remoteCopyState === "copied" ? "var(--ok, #10b981)"
+                    : remoteCopyState === "no_ip" ? "var(--warning-text, #92400e)"
+                    : "var(--accent, #5B8DEF)",
+                  opacity: remoteCopyState !== "idle" ? 1 : 0.7,
+                  transition: "color 0.2s",
+                }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.opacity = "1"; }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = remoteCopyState !== "idle" ? "1" : "0.7"; }}
+              >
+                <IconClipboard size={11} />
+                <span>{
+                  remoteCopyState === "copied" ? t("common.copied", "已复制")
+                  : remoteCopyState === "no_ip" ? t("topbar.ipNotFound")
+                  : t("topbar.remoteUrl", "远程地址")
+                }</span>
+              </span>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="min-w-[180px]">
+              <DropdownMenuItem onClick={copyRemoteUrl} className="gap-2 text-xs">
+                <ClipboardCopy className="h-3.5 w-3.5" />
+                {t("remoteAccess.quickCopy")}
+              </DropdownMenuItem>
+              {hasRemoteAccessProps && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={() => setRemoteDialogOpen(true)} className="gap-2 text-xs">
+                    <Compass className="h-3.5 w-3.5" />
+                    {t("remoteAccess.wizard")}
+                  </DropdownMenuItem>
+                </>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
         )}
         <span className="topbarEpCount">{t("topbar.endpoints", { count: endpointCount })}</span>
         {dataMode === "remote" && (
@@ -391,6 +430,19 @@ export function Topbar({
           </DropdownMenu>
         </div>
       </TooltipProvider>
+
+      {hasRemoteAccessProps && (
+        <RemoteAccessDialog
+          open={remoteDialogOpen}
+          onOpenChange={setRemoteDialogOpen}
+          apiBaseUrl={apiBaseUrl || "http://127.0.0.1:18900"}
+          serviceRunning={serviceRunning}
+          envDraft={envDraft!}
+          setEnvDraft={setEnvDraft!}
+          restartService={restartService!}
+          askConfirm={askConfirm!}
+        />
+      )}
     </div>
   );
 }

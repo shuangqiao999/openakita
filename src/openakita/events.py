@@ -8,12 +8,12 @@ Frontend TypeScript types should be kept in sync — see
 apps/setup-center/src/streamEvents.ts
 """
 
-from enum import Enum
+from enum import StrEnum
 
 STREAM_PROTOCOL_VERSION = 1
 
 
-class StreamEventType(str, Enum):
+class StreamEventType(StrEnum):
     """All event types that may appear in the SSE stream to clients."""
 
     # ── Lifecycle ──
@@ -41,6 +41,7 @@ class StreamEventType(str, Enum):
 
     # ── Security / Interaction ──
     SECURITY_CONFIRM = "security_confirm"
+    DEATH_SWITCH = "death_switch"
     ASK_USER = "ask_user"
 
     # ── Todo / Plan ──
@@ -76,6 +77,10 @@ def normalize_stream_event(event: dict | None) -> dict:
         payload.setdefault("confirm_id", payload.get("id", ""))
         payload.setdefault("call_id", payload.get("id", ""))
 
+    if event_type == StreamEventType.DEATH_SWITCH.value:
+        payload.setdefault("active", False)
+        payload.setdefault("reason", "")
+
     if event_type == StreamEventType.TODO_CREATED.value and isinstance(payload.get("plan"), dict):
         plan = dict(payload["plan"])
         plan.setdefault("task_summary", plan.get("taskSummary", ""))
@@ -90,7 +95,9 @@ def normalize_stream_event(event: dict | None) -> dict:
         if "step_id" in payload and "stepId" not in payload:
             payload["stepId"] = payload["step_id"]
 
-    if event_type == StreamEventType.PLAN_READY_FOR_APPROVAL.value and isinstance(payload.get("data"), dict):
+    if event_type == StreamEventType.PLAN_READY_FOR_APPROVAL.value and isinstance(
+        payload.get("data"), dict
+    ):
         data = dict(payload["data"])
         payload.setdefault("conversation_id", data.get("conversation_id", ""))
         payload.setdefault("plan_id", data.get("plan_id", ""))

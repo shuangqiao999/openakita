@@ -12,6 +12,8 @@ import logging
 import shutil
 from pathlib import Path
 
+from openakita.memory.types import normalize_tags
+
 from .models import (
     NodeSchedule,
     Organization,
@@ -20,7 +22,6 @@ from .models import (
     _new_id,
     _now_iso,
 )
-from openakita.memory.types import normalize_tags
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,8 @@ class OrgManager:
         self._orgs_dir.mkdir(parents=True, exist_ok=True)
         self._templates_dir.mkdir(parents=True, exist_ok=True)
         self._cache: dict[str, Organization] = {}
+        import threading
+        self._write_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Directory helpers
@@ -125,7 +128,22 @@ class OrgManager:
                 setattr(org, key, val)
 
         if nodes_raw is not None:
-            org.nodes = [OrgNode.from_dict(n) for n in nodes_raw]
+            _RUNTIME_KEYS = {"status", "_runtime", "current_task"}
+            _CONFIG_FIELDS = set(OrgNode.__dataclass_fields__) - _RUNTIME_KEYS
+            existing = {n.id: n for n in org.nodes}
+            updated: list[OrgNode] = []
+            for nd in nodes_raw:
+                node_id = nd.get("id")
+                old = existing.get(node_id) if node_id else None
+                if old is not None:
+                    for key in _CONFIG_FIELDS:
+                        if key in nd:
+                            setattr(old, key, nd[key])
+                    updated.append(old)
+                else:
+                    clean = {k: v for k, v in nd.items() if k not in _RUNTIME_KEYS}
+                    updated.append(OrgNode.from_dict(clean))
+            org.nodes = updated
         if edges_raw is not None:
             from .models import OrgEdge
             org.edges = [
@@ -190,7 +208,7 @@ class OrgManager:
             node["frozen_at"] = None
 
         id_map: dict[str, str] = {}
-        for old_n, new_n in zip(src.to_dict()["nodes"], data["nodes"]):
+        for old_n, new_n in zip(src.to_dict()["nodes"], data["nodes"], strict=False):
             id_map[old_n["id"]] = new_n["id"]
 
         for edge in data.get("edges", []):
@@ -349,10 +367,12 @@ class OrgManager:
     def _save(self, org: Organization) -> None:
         p = self._org_json(org.id)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(
-            json.dumps(org.to_dict(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        tmp = p.with_suffix(".tmp")
+        payload = json.dumps(org.to_dict(), ensure_ascii=False, indent=2)
+        import os
+        with self._write_lock:
+            tmp.write_text(payload, encoding="utf-8")
+            os.replace(str(tmp), str(p))
         self._cache[org.id] = org
 
     def _init_dirs(self, org: Organization) -> None:

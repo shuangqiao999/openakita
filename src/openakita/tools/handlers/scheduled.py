@@ -41,6 +41,7 @@ class ScheduledHandler:
         if scheduler:
             return scheduler
         from ...scheduler import get_active_scheduler
+
         return get_active_scheduler()
 
     async def handle(self, tool_name: str, params: dict[str, Any]) -> str:
@@ -150,6 +151,10 @@ class ScheduledHandler:
             chat_id=chat_id,
             task_source=TaskSource.CHAT,
         )
+        task.silent = bool(params.get("silent", False))
+        task.no_schedule_tools = bool(params.get("no_schedule_tools", False))
+        if params.get("skill_ids"):
+            task.skill_ids = list(params["skill_ids"])
         task.metadata["notify_on_start"] = params.get("notify_on_start", True)
         task.metadata["notify_on_complete"] = params.get("notify_on_complete", True)
 
@@ -164,7 +169,11 @@ class ScheduledHandler:
 
         logger.info(
             "定时任务已创建: ID=%s, 名称=%s, 类型=%s, 触发=%s, 下次执行=%s%s",
-            task_id, task.name, type_display, task.trigger_type.value, next_run,
+            task_id,
+            task.name,
+            type_display,
+            task.trigger_type.value,
+            next_run,
             f", 通知渠道={channel_id}/{chat_id}" if channel_id and chat_id else "",
         )
 
@@ -289,6 +298,7 @@ class ScheduledHandler:
 
         # fallback: 从全局 executor 获取（多 Agent 模式）
         from ...scheduler import get_active_executor
+
         global_executor = get_active_executor()
         if global_executor and getattr(global_executor, "gateway", None):
             return global_executor.gateway
@@ -356,7 +366,8 @@ class ScheduledHandler:
                             raw_sessions = json.load(f)
                         # 过滤该通道的 session
                         channel_sessions = [
-                            s for s in raw_sessions
+                            s
+                            for s in raw_sessions
                             if s.get("channel") == target_channel and s.get("chat_id")
                         ]
                         if channel_sessions:
@@ -408,9 +419,7 @@ class ScheduledHandler:
         task_id = params.get("task_id")
         limit = min(params.get("limit", 10), 50)
 
-        execs = self.agent.task_scheduler.get_executions(
-            task_id=task_id, limit=limit
-        )
+        execs = self.agent.task_scheduler.get_executions(task_id=task_id, limit=limit)
 
         if not execs:
             if task_id:

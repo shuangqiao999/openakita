@@ -1,6 +1,6 @@
 import { createContext, useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense } from "react";
 import { useTranslation } from "react-i18next";
-import { invoke, listen, IS_TAURI, IS_WEB, IS_CAPACITOR, IS_LOCAL_WEB, getAppVersion, onWsEvent, reconnectWsNow, logger, registerGlobalShortcut } from "./platform";
+import { invoke, listen, IS_TAURI, IS_WEB, IS_CAPACITOR, IS_LOCAL_WEB, getAppVersion, onWsEvent, reconnectWsNow, setWsApiBaseUrl, logger, registerGlobalShortcut } from "./platform";
 import { getActiveServer, getActiveServerId } from "./platform/servers";
 import { checkAuth, installFetchInterceptor, AUTH_EXPIRED_EVENT, isPasswordUserSet, clearAccessToken, setTauriRemoteMode, isTauriRemoteMode } from "./platform/auth";
 import { LoginView } from "./views/LoginView";
@@ -39,6 +39,7 @@ import type {
 } from "./types";
 import {
   IconCheckCircle, IconXCircle, IconInfo,
+  IconLightbulb, IconAlertCircle, IconCheck, IconPartyPopper,
 } from "./icons";
 import { ChevronRight, ChevronDown, Loader2, AlertTriangle, CheckCircle2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -99,6 +100,7 @@ const THEME_I18N_KEYS: Record<Theme, string> = {
  *  Startup/one-shot probes keep their own shorter timeouts.
  *  5s accommodates slow devices where the event loop may be busy. */
 const HEALTH_POLL_TIMEOUT_MS = 5_000;
+const DEFAULT_LOCAL_API_BASE = "http://127.0.0.1:18900";
 
 interface EnvFieldCtx {
   envDraft: EnvMap;
@@ -159,7 +161,10 @@ export function App() {
   if (window.location.pathname === '/pet') {
     return <Suspense fallback={null}><PetView /></Suspense>;
   }
+  return <MainApp />;
+}
 
+function MainApp() {
   const { t, i18n } = useTranslation();
 
   // ── Web / Capacitor auth gate ──
@@ -180,17 +185,7 @@ export function App() {
 
   useEffect(() => {
     if (!needsRemoteAuth) {
-      // Local web: non-blocking fetch for password-banner check only
-      if (IS_LOCAL_WEB) {
-        fetch("/api/auth/check", { signal: AbortSignal.timeout(5000) })
-          .then((r) => r.json())
-          .then((data) => {
-            if (data.password_user_set === false && !localStorage.getItem("openakita_pw_banner_dismissed")) {
-              setShowPwBanner(true);
-            }
-          })
-          .catch(() => {});
-      }
+      // Password banner disabled — the remote access dialog already shows password status.
       return;
     }
     if (IS_CAPACITOR && !getActiveServer()) {
@@ -200,9 +195,6 @@ export function App() {
     checkAuth(IS_CAPACITOR ? (getActiveServer()?.url || "") : "").then((ok) => {
       if (ok) {
         installFetchInterceptor();
-        if (!isPasswordUserSet() && !localStorage.getItem("openakita_pw_banner_dismissed")) {
-          setShowPwBanner(true);
-        }
       }
       setWebAuthed(ok);
       setAuthChecking(false);
@@ -355,7 +347,7 @@ export function App() {
   const [apiBaseUrl, setApiBaseUrl] = useState(() =>
     IS_CAPACITOR ? (getActiveServer()?.url || "")
     : IS_WEB ? ""
-    : (localStorage.getItem("openakita_apiBaseUrl") || "http://127.0.0.1:18900"),
+    : (localStorage.getItem("openakita_apiBaseUrl") || DEFAULT_LOCAL_API_BASE),
   );
   const [connectDialogOpen, setConnectDialogOpen] = useState(false);
   const [connectAddress, setConnectAddress] = useState("");
@@ -371,6 +363,12 @@ export function App() {
     window.addEventListener(AUTH_EXPIRED_EVENT, onExpired);
     return () => window.removeEventListener(AUTH_EXPIRED_EVENT, onExpired);
   }, [apiBaseUrl]);
+
+  useEffect(() => {
+    if (!IS_TAURI) return;
+    setWsApiBaseUrl(dataMode === "remote" ? apiBaseUrl : DEFAULT_LOCAL_API_BASE);
+    reconnectWsNow();
+  }, [apiBaseUrl, dataMode]);
 
   const [stepId, setStepId] = useState<StepId>(() => {
     const parsed = _parseHashRoute(window.location.hash);
@@ -2752,7 +2750,7 @@ export function App() {
     <FieldText key={p.k} {...p} {..._envBase} />;
   const FB = (p: { k: string; label: string; help?: string; defaultValue?: boolean }) =>
     <FieldBool key={p.k} {...p} {..._envBase} />;
-  const FS = (p: { k: string; label: string; options: { value: string; label: string }[]; help?: string }) =>
+  const FS = (p: { k: string; label: string; options: { value: string; label: string }[]; help?: string; defaultValue?: string }) =>
     <FieldSelect key={p.k} {...p} {..._envBase} />;
   const FC = (p: { k: string; label: string; options: { value: string; label: string }[]; placeholder?: string; help?: string }) =>
     <FieldCombo key={p.k} {...p} {..._envBase} />;
@@ -3006,20 +3004,20 @@ export function App() {
             <div className="flex flex-col gap-2.5 px-4 py-3 border-t border-border">
               <p className="text-xs text-muted-foreground">{t("config.toolsHallucinationGuardHint")}</p>
               <div className="grid2">
-                {FS({ k: "FORCE_TOOL_CALL_MAX_RETRIES", label: t("config.toolsForceRetry"), options: [
+                {FS({ k: "FORCE_TOOL_CALL_MAX_RETRIES", label: t("config.toolsForceRetry"), defaultValue: "2", options: [
                   { value: "0", label: t("config.guardOff") },
                   { value: "1", label: "1" },
                   { value: "2", label: "2" },
                   { value: "3", label: "3" },
                 ] })}
-                {FS({ k: "FORCE_TOOL_CALL_IM_FLOOR", label: t("config.toolsImFloor"), options: [
+                {FS({ k: "FORCE_TOOL_CALL_IM_FLOOR", label: t("config.toolsImFloor"), defaultValue: "2", options: [
                   { value: "0", label: t("config.guardSameAsGlobal") },
                   { value: "1", label: "1" },
                   { value: "2", label: "2" },
                 ] })}
               </div>
               <div className="grid2">
-                {FS({ k: "CONFIRMATION_TEXT_MAX_RETRIES", label: t("config.toolsConfirmTextRetry"), options: [
+                {FS({ k: "CONFIRMATION_TEXT_MAX_RETRIES", label: t("config.toolsConfirmTextRetry"), defaultValue: "2", options: [
                   { value: "0", label: t("config.guardOff") },
                   { value: "1", label: "1" },
                   { value: "2", label: "2" },
@@ -3321,7 +3319,7 @@ export function App() {
                           {FT({ k: "WEWORK_ENCODING_AES_KEY", label: "EncodingAESKey", placeholder: "在企业微信后台「接收消息」设置中获取", type: "password" })}
                           {FT({ k: "WEWORK_CALLBACK_PORT", label: "回调端口", placeholder: "9880" })}
                           <div style={{ fontSize: 12, color: "var(--muted)", margin: "4px 0 0 0", lineHeight: 1.6 }}>
-                            💡 企业微信后台「接收消息服务器配置」的 URL 请填：<code style={{ background: "#f5f5f5", padding: "1px 5px", borderRadius: 4, fontSize: 11 }}>http://your-domain:9880/callback</code>
+                            <IconLightbulb size={12} /> 企业微信后台「接收消息服务器配置」的 URL 请填：<code style={{ background: "#f5f5f5", padding: "1px 5px", borderRadius: 4, fontSize: 11 }}>http://your-domain:9880/callback</code>
                           </div>
                         </>
                       )}
@@ -3827,22 +3825,22 @@ export function App() {
             updateTask("backend-check", { detail: "安装 openakita..." });
             logTask("检查后端环境", "running", "安装 openakita...");
             await invoke<string>("pip_install", { venvDir: effectiveVenv, packageSpec: "openakita" });
-            log("✓ 已自动安装后端环境");
+            log("[OK] 已自动安装后端环境");
           } else {
-            log("⚠ 未检测到 Python 3.11+，无法自动创建后端环境");
+            log("[!] 未检测到 Python 3.11+，无法自动创建后端环境");
             log(`  已检查路径: bundled=${backendInfo.bundledChecked} venv=${backendInfo.venvChecked}`);
             updateTask("backend-check", { status: "error", detail: "未找到 Python 3.11+" });
             logTask("检查后端环境", "error", "未找到 Python 3.11+");
           }
         } else {
-          log(backendInfo.bundled ? "✓ 使用内置后端" : "✓ 使用 venv 后端");
+          log(backendInfo.bundled ? "[OK] 使用内置后端" : "[OK] 使用 venv 后端");
         }
         if (!hasErr) {
           updateTask("backend-check", { status: "done" });
           logTask("检查后端环境", "done");
         }
       } catch (e) {
-        log(`⚠ 后端环境检查失败: ${String(e)}`);
+        log(`[!] 后端环境检查失败: ${String(e)}`);
         updateTask("backend-check", { status: "error", detail: String(e).slice(0, 120) });
         logTask("检查后端环境", "error", String(e));
       }
@@ -3857,11 +3855,11 @@ export function App() {
             commands: cliCommands,
             addToPath: obCliAddToPath,
           });
-          log(`✓ ${result}`);
+          log(`[OK] ${result}`);
           updateTask("cli", { status: "done" });
           logTask(`注册 CLI 命令 (${cliCommands.join(", ")})`, "done", result);
         } catch (e) {
-          log(`⚠ CLI 命令注册失败: ${String(e)}`);
+          log(`[!] CLI 命令注册失败: ${String(e)}`);
           updateTask("cli", { status: "error", detail: String(e) });
           logTask(`注册 CLI 命令 (${cliCommands.join(", ")})`, "error", String(e));
         }
@@ -3894,7 +3892,7 @@ export function App() {
       try {
         const earlyProbe = await fetch("http://127.0.0.1:18900/api/health", { signal: AbortSignal.timeout(3000) }).then(r => r.ok).catch(() => false);
         if (earlyProbe) {
-          log("✓ 后端已在运行（由 ob-welcome 提前启动）");
+          log("[OK] 后端已在运行（由 ob-welcome 提前启动）");
           setServiceStatus({ running: true, pid: null, pidFile: "" });
           setDataMode("remote");
           httpReady = true;
@@ -3925,7 +3923,7 @@ export function App() {
           try {
             const res = await fetch("http://127.0.0.1:18900/api/health", { signal: AbortSignal.timeout(3000) });
             if (res.ok) {
-              log("✓ HTTP 服务已就绪");
+              log("[OK] HTTP 服务已就绪");
               setServiceStatus({ running: true, pid: null, pidFile: "" });
               httpReady = true;
               updateTask("http-wait", { status: "done", detail: `${(i + 1) * 2}s` });
@@ -3936,7 +3934,7 @@ export function App() {
           if (i % 5 === 4) log(`仍在等待 HTTP 服务启动... (${(i + 1) * 2}s)`);
         }
         if (!httpReady) {
-          log("⚠ HTTP 服务尚未就绪，可进入主页面后手动刷新");
+          log("[!] HTTP 服务尚未就绪，可进入主页面后手动刷新");
           updateTask("http-wait", { status: "error", detail: "超时" });
           logTask("等待 HTTP 服务就绪", "error", "超时");
           }
@@ -4002,13 +4000,13 @@ export function App() {
             updateTask("llm-config", { status: "done", detail: `${savedEndpoints.length + savedCompilerEndpoints.length + savedSttEndpoints.length} 个端点` });
             logTask("保存 LLM 配置", "done", `${savedEndpoints.length + savedCompilerEndpoints.length + savedSttEndpoints.length} 个端点`);
           } catch (e) {
-            log(`⚠ LLM 配置保存失败: ${String(e)}`);
+            log(`[!] LLM 配置保存失败: ${String(e)}`);
             updateTask("llm-config", { status: "error", detail: String(e).slice(0, 120) });
             logTask("保存 LLM 配置", "error", String(e));
             hasErr = true;
           }
         } else {
-          log("⚠ HTTP 服务未就绪，使用 Tauri 直接写入 LLM 配置");
+          log("[!] HTTP 服务未就绪，使用 Tauri 直接写入 LLM 配置");
           try {
             const llmData = { endpoints: savedEndpoints, compiler_endpoints: savedCompilerEndpoints, stt_endpoints: savedSttEndpoints, settings: {} };
             await invoke("workspace_write_file", {
@@ -4020,7 +4018,7 @@ export function App() {
             updateTask("llm-config", { status: "done", detail: `${savedEndpoints.length} 个端点 (Tauri)` });
             logTask("保存 LLM 配置", "done", `${savedEndpoints.length} 个端点 (Tauri 回退)`);
           } catch (e) {
-            log(`⚠ LLM 配置保存失败: ${String(e)}`);
+            log(`[!] LLM 配置保存失败: ${String(e)}`);
             updateTask("llm-config", { status: "error", detail: String(e).slice(0, 120) });
             logTask("保存 LLM 配置", "error", String(e));
             hasErr = true;
@@ -4058,12 +4056,12 @@ export function App() {
             const tauriEntries = Object.entries(entries).map(([key, value]) => ({ key, value }));
             await invoke("workspace_update_env", { workspaceId: activeWsId, entries: tauriEntries });
           }
-          log(t("onboarding.progress.envSaved") || "✓ 环境变量已保存");
+          log(t("onboarding.progress.envSaved") || "[OK] 环境变量已保存");
         }
         updateTask("env-save", { status: "done", detail: `${Object.keys(entries).length} 项` });
         logTask("保存环境变量", "done", `${Object.keys(entries).length} 项`);
       } catch (e) {
-        log(`⚠ 保存环境变量失败: ${String(e)}`);
+        log(`[!] 保存环境变量失败: ${String(e)}`);
         updateTask("env-save", { status: "error", detail: String(e) });
         logTask("保存环境变量", "error", String(e));
         hasErr = true;
@@ -4612,8 +4610,8 @@ export function App() {
                 )}
                 {obDetailLog.map((line, i) => (
                   <div key={i} style={{
-                    color: line.includes("⚠") || line.includes("失败") ? "#fbbf24"
-                         : line.includes("✓") ? "#4ade80"
+                    color: line.includes("[!]") || line.includes("失败") ? "#fbbf24"
+                         : line.includes("[OK]") ? "#4ade80"
                          : line.includes("---") ? "#64748b"
                          : "#cbd5e1",
                   }}>{line}</div>
@@ -4637,7 +4635,7 @@ export function App() {
         return (
           <div className="obPage">
             <div className="flex flex-col items-center text-center max-w-[520px] gap-5">
-              <div className="flex items-center justify-center size-16 rounded-full bg-emerald-500 text-white text-[32px] shadow-lg shadow-emerald-500/30">✓</div>
+              <div className="flex items-center justify-center size-16 rounded-full bg-emerald-500 text-white text-[32px] shadow-lg shadow-emerald-500/30"><IconCheck size={32} /></div>
               <h1 className="text-[28px] font-bold tracking-tight text-foreground">{t("onboarding.done.title")}</h1>
               <p className="text-sm text-muted-foreground leading-relaxed">{t("onboarding.done.desc")}</p>
               {obHasErrors && (
@@ -4806,12 +4804,7 @@ export function App() {
       );
     }
     if (view === "org_editor") {
-      return (
-        <OrgEditorView
-          apiBaseUrl={apiBaseUrl}
-          visible={view === "org_editor"}
-        />
-      );
+      return null;
     }
     if (view === "pixel_office") {
       return (
@@ -4933,7 +4926,7 @@ export function App() {
         checkAuth(url).then((ok) => {
           if (ok) {
             installFetchInterceptor();
-            if (!isPasswordUserSet() && !localStorage.getItem("openakita_pw_banner_dismissed")) setShowPwBanner(true);
+            // Password banner disabled — remote access dialog handles this.
           }
           setWebAuthed(ok);
           setAuthChecking(false);
@@ -4980,6 +4973,8 @@ export function App() {
       }}
       onSwitchServer={() => {
         setTauriRemoteMode(false);
+        setDataMode("local");
+        setApiBaseUrl(DEFAULT_LOCAL_API_BASE);
         setTauriRemoteLoginUrl(null);
       }}
     />;
@@ -5084,6 +5079,7 @@ export function App() {
           onDisconnect={() => {
             setTauriRemoteMode(false);
             setDataMode("local");
+            setApiBaseUrl(DEFAULT_LOCAL_API_BASE);
             setServiceStatus({ running: false, pid: null, pidFile: "" });
             resetEnvLoaded();
             notifySuccess(t("topbar.disconnected"));
@@ -5111,6 +5107,12 @@ export function App() {
           onToggleMobileSidebar={isMobile ? () => setMobileSidebarOpen((v) => !v) : undefined}
           serverName={IS_CAPACITOR ? (getActiveServer()?.name || undefined) : undefined}
           onServerManager={IS_CAPACITOR ? () => setShowServerManager(true) : undefined}
+          envDraft={envDraft}
+          setEnvDraft={setEnvDraft}
+          saveEnvKeys={saveEnvKeys}
+          restartService={restartService}
+          askConfirm={askConfirm}
+          setView={setView}
         />
 
         {showPwBanner && (
@@ -5159,7 +5161,17 @@ export function App() {
               }}
             />
           </div>
-          <div className="content" style={{ display: view !== "chat" ? undefined : "none", flex: 1, minHeight: 0 }}>
+          <div style={{ display: view === "org_editor" ? undefined : "none", flex: 1, minHeight: 0 }}>
+            <OrgEditorView apiBaseUrl={apiBaseUrl} visible={view === "org_editor"} />
+          </div>
+          <div
+            className="content"
+            style={{
+              display: view !== "chat" && view !== "org_editor" ? undefined : "none",
+              flex: 1,
+              minHeight: 0,
+            }}
+          >
             <Suspense fallback={<div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", opacity: 0.5 }}><div className="spinner" style={{ width: 24, height: 24 }} /></div>}>
             {renderStepContent()}
             </Suspense>
@@ -5280,7 +5292,7 @@ export function App() {
           <ModalOverlay onClose={() => { setConflictDialog(null); setPendingStartWsId(null); }}>
             <div className="modalContent" style={{ maxWidth: 440, padding: 24 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-                <span style={{ fontSize: 20 }}>⚠️</span>
+                <IconAlertCircle size={20} />
                 <span style={{ fontWeight: 600, fontSize: 15 }}>{t("conflict.title")}</span>
               </div>
               <div style={{ fontSize: 14, lineHeight: 1.7, marginBottom: 8 }}>{t("conflict.message")}</div>
@@ -5302,7 +5314,7 @@ export function App() {
         {versionMismatch && (
           <div style={{ position: "fixed", top: 48, left: "50%", transform: "translateX(-50%)", zIndex: 9999, background: "var(--panel2)", backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)", border: "1px solid var(--warning)", borderRadius: 10, padding: "12px 20px", maxWidth: 500, boxShadow: "var(--shadow)", display: "flex", flexDirection: "column", gap: 8, color: "var(--warning)" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ fontSize: 16 }}>⚠️</span>
+              <IconAlertCircle size={16} />
               <span style={{ fontWeight: 600, fontSize: 13 }}>{t("version.mismatch")}</span>
               <button style={{ marginLeft: "auto", background: "none", border: "none", cursor: "pointer", fontSize: 16, color: "var(--muted)" }} onClick={() => setVersionMismatch(null)}>&times;</button>
             </div>
@@ -5320,7 +5332,7 @@ export function App() {
         {newRelease && (
           <div style={{ position: "fixed", bottom: 20, right: 20, zIndex: 9998, background: "var(--panel2)", backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)", border: "1px solid var(--brand)", borderRadius: 10, padding: "12px 20px", maxWidth: 400, boxShadow: "var(--shadow)", display: "flex", flexDirection: "column", gap: 8, color: "var(--brand)" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ fontSize: 16 }}>{updateProgress.status === "done" ? "✅" : updateProgress.status === "error" ? "❌" : "🎉"}</span>
+              <span style={{ fontSize: 16 }}>{updateProgress.status === "done" ? <IconCheckCircle size={16} /> : updateProgress.status === "error" ? <IconXCircle size={16} /> : <IconPartyPopper size={16} />}</span>
               <span style={{ fontWeight: 600, fontSize: 13 }}>
                 {updateProgress.status === "done" ? t("version.updateReady") : updateProgress.status === "error" ? t("version.updateFailed") : t("version.newRelease")}
               </span>

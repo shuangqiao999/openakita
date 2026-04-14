@@ -53,7 +53,9 @@ class OpenCLIHandler:
             return await self._doctor(params)
         return f"Unknown opencli tool: {tool_name}"
 
-    async def _run_cmd(self, args: list[str], timeout: float = _OPENCLI_CMD_TIMEOUT) -> tuple[int, str, str]:
+    async def _run_cmd(
+        self, args: list[str], timeout: float = _OPENCLI_CMD_TIMEOUT
+    ) -> tuple[int, str, str]:
         """Execute opencli with given args, return (returncode, stdout, stderr)."""
         cmd = [self._opencli_path or "opencli"] + args
         try:
@@ -63,14 +65,15 @@ class OpenCLIHandler:
                 stderr=asyncio.subprocess.PIPE,
             )
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout,
+                proc.communicate(),
+                timeout=timeout,
             )
             return (
                 proc.returncode or 0,
                 stdout_bytes.decode("utf-8", errors="replace"),
                 stderr_bytes.decode("utf-8", errors="replace"),
             )
-        except TimeoutError:
+        except (asyncio.TimeoutError, TimeoutError):
             try:
                 proc.kill()  # type: ignore[possibly-undefined]
             except Exception:
@@ -117,7 +120,8 @@ class OpenCLIHandler:
             cmd_parts.append("--json")
 
         rc, stdout, stderr = await self._run_cmd(
-            cmd_parts, timeout=_OPENCLI_TASK_TIMEOUT,
+            cmd_parts,
+            timeout=_OPENCLI_TASK_TIMEOUT,
         )
         if rc != 0:
             error_msg = stderr.strip() or stdout.strip() or "未知错误"

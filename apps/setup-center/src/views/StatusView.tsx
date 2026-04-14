@@ -8,6 +8,7 @@ import { copyToClipboard } from "../utils/clipboard";
 import {
   DotGreen, DotGray, DotYellow,
   IM_LOGO_MAP,
+  IconAlertCircle,
 } from "../icons";
 import { Loader2, Play, Square, RotateCcw, Power, PowerOff, FolderOpen, Activity, ArrowRight, Server, Download, Zap } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -213,19 +214,19 @@ export function StatusView(props: StatusViewProps) {
         {/* Multi-process warning */}
         {IS_TAURI && detectedProcesses.length > 1 && (
           <div className="statusPanelAlert">
-            <span style={{ fontWeight: 600 }}>⚠ 检测到 {detectedProcesses.length} 个 OpenAkita 进程正在运行</span>
+            <span style={{ fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 4 }}><IconAlertCircle size={13} /> {t("statusExtra.multiProcessWarning", { count: detectedProcesses.length })}</span>
             <span style={{ fontSize: 11, opacity: 0.8 }}>
               ({detectedProcesses.map(p => `PID ${p.pid}`).join(", ")})
             </span>
             <Button size="sm" variant="destructive" style={{ marginLeft: "auto" }} onClick={async () => {
-              const _b = notifyLoading("正在停止所有进程...");
+              const _b = notifyLoading(t("statusExtra.stoppingAll"));
               try {
                 const stopped = await invoke<number[]>("openakita_stop_all_processes");
                 setDetectedProcesses([]);
-                notifySuccess(`已停止 ${stopped.length} 个进程`);
+                notifySuccess(t("statusExtra.stoppedCount", { count: stopped.length }));
                 await refreshStatus();
               } catch (e) { notifyError(String(e)); } finally { dismissLoading(_b); }
-            }} disabled={!!busy}><Square size={12} className="mr-1" />全部停止</Button>
+            }} disabled={!!busy}><Square size={12} className="mr-1" />{t("statusExtra.stopAll")}</Button>
           </div>
         )}
         {/* Degraded hint */}
@@ -345,7 +346,7 @@ export function StatusView(props: StatusViewProps) {
             <CardTitle className="truncate text-sm" title={`${t("status.llmEndpoints")} (${endpointSummary.length})`}>
               {t("status.llmEndpoints")} ({endpointSummary.length})
             </CardTitle>
-            <CardDescription className="mt-1 truncate text-xs" title="模型端点状态与健康检查">模型端点状态与健康检查</CardDescription>
+            <CardDescription className="mt-1 truncate text-xs" title={t("statusExtra.llmEndpointsDesc")}>{t("statusExtra.llmEndpointsDesc")}</CardDescription>
           </div>
           <Button size="sm" variant="outline" className="shrink-0" title={t("status.checkAll")} onClick={async () => {
             setHealthChecking("all");
@@ -521,7 +522,7 @@ export function StatusView(props: StatusViewProps) {
         </Card>
         <Card className="gap-0 border-border/80 py-0 shadow-sm">
           <CardHeader className="px-5 py-4">
-            <CardTitle className="text-sm">Skills</CardTitle>
+            <CardTitle className="text-sm">{t("sidebar.skills")}</CardTitle>
           </CardHeader>
           <CardContent className="px-5 pb-4 pt-0">
           {!skillSummary && !serviceStatus?.running ? (

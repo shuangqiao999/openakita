@@ -41,10 +41,15 @@ class MemoryHandler:
         "get_session_context",
     ]
 
-    _SEARCH_TOOLS = frozenset({
-        "search_memory", "list_recent_tasks", "trace_memory",
-        "search_conversation_traces", "search_relational_memory",
-    })
+    _SEARCH_TOOLS = frozenset(
+        {
+            "search_memory",
+            "list_recent_tasks",
+            "trace_memory",
+            "search_conversation_traces",
+            "search_relational_memory",
+        }
+    )
 
     _NAVIGATION_GUIDE = (
         "📖 记忆系统导航指南（仅显示一次）\n\n"
@@ -66,8 +71,8 @@ class MemoryHandler:
         "3. 对某个情节感兴趣 → trace_memory(episode_id=...) 查关联记忆和对话\n"
         "4. 以上都没结果 → search_conversation_traces 全文搜索\n\n"
         "## 何时搜索\n"
-        "- 用户问\"做了什么\" → list_recent_tasks\n"
-        "- 用户提到\"之前/上次\" → search_memory\n"
+        '- 用户问"做了什么" → list_recent_tasks\n'
+        '- 用户提到"之前/上次" → search_memory\n'
         "- 需要操作细节/具体命令 → trace_memory 或 search_conversation_traces\n"
         "- 做过类似任务 → 先 search_memory 查经验，需要细节再 trace_memory\n"
         "- 不确定时 → 不搜索\n\n"
@@ -127,7 +132,8 @@ class MemoryHandler:
 
             time_range = (
                 f"{since.strftime('%m-%d %H:%M')} → {until.strftime('%m-%d %H:%M')}"
-                if since else "全部记录"
+                if since
+                else "全部记录"
             )
 
             lines = ["✅ 记忆整理完成:"]
@@ -140,10 +146,12 @@ class MemoryHandler:
 
             review = result.get("llm_review", {})
             if review.get("deleted") or review.get("updated") or review.get("merged"):
-                lines.append(f"- LLM 审查: 删除 {review.get('deleted', 0)}, "
-                             f"更新 {review.get('updated', 0)}, "
-                             f"合并 {review.get('merged', 0)}, "
-                             f"保留 {review.get('kept', 0)}")
+                lines.append(
+                    f"- LLM 审查: 删除 {review.get('deleted', 0)}, "
+                    f"更新 {review.get('updated', 0)}, "
+                    f"合并 {review.get('merged', 0)}, "
+                    f"保留 {review.get('kept', 0)}"
+                )
 
             if result.get("sessions_processed"):
                 lines.append(f"- 处理会话: {result['sessions_processed']}")
@@ -165,6 +173,26 @@ class MemoryHandler:
         content_key = content.strip()[:100].lower()
         if content_key in self._recent_add_contents:
             return "该内容已记录过，无需重复保存。"
+
+        try:
+            store = self.agent.memory_manager.store
+            existing_hits = store.search_semantic(content.strip(), limit=3)
+            for hit in existing_hits:
+                if hit.content and content.strip()[:80].lower() in hit.content.lower():
+                    return "✅ 记忆已存在（FTS5 预检命中），无需重复记录。请继续执行其他任务。"
+        except Exception:
+            pass
+
+        try:
+            profile = getattr(self.agent, "user_profile", None)
+            if profile:
+                profile_data = profile.to_dict() if hasattr(profile, "to_dict") else {}
+                profile_text = str(profile_data).lower()
+                core_fact = content.strip()[:60].lower()
+                if core_fact and core_fact in profile_text:
+                    return "✅ 该信息已存在于用户画像中，无需重复添加记忆。"
+        except Exception:
+            pass
 
         type_map = {
             "fact": MemoryType.FACT,
@@ -225,8 +253,15 @@ class MemoryHandler:
                     )
                     if candidates:
                         from openakita.core.tool_executor import smart_truncate as _st
-                        logger.info(f"[search_memory] RetrievalEngine: {len(candidates)} candidates for '{query[:50]}'")
-                        cited = [{"id": c.memory_id, "content": c.content[:200]} for c in candidates[:10] if c.memory_id]
+
+                        logger.info(
+                            f"[search_memory] RetrievalEngine: {len(candidates)} candidates for '{query[:50]}'"
+                        )
+                        cited = [
+                            {"id": c.memory_id, "content": c.content[:200]}
+                            for c in candidates[:10]
+                            if c.memory_id
+                        ]
                         if cited:
                             mm.record_cited_memories(cited)
                         output = f"找到 {len(candidates)} 条相关记忆:\n\n"
@@ -234,7 +269,9 @@ class MemoryHandler:
                             ep_hint = ""
                             if hasattr(c, "episode_id") and c.episode_id:
                                 ep_hint = f", 来源情节: {c.episode_id[:12]}"
-                            c_trunc, _ = _st(c.content or "", 400, save_full=False, label="mem_search")
+                            c_trunc, _ = _st(
+                                c.content or "", 400, save_full=False, label="mem_search"
+                            )
                             output += f"- [{c.source_type}] {c_trunc}{ep_hint}\n\n"
                         return output
                 except Exception as e:
@@ -247,12 +284,16 @@ class MemoryHandler:
                 memories = store.search_semantic(query, limit=10, filter_type=type_filter)
                 memories = [m for m in memories if not m.expires_at or m.expires_at >= now]
                 if memories:
-                    logger.info(f"[search_memory] SQLite: {len(memories)} results for '{query[:50]}'")
+                    logger.info(
+                        f"[search_memory] SQLite: {len(memories)} results for '{query[:50]}'"
+                    )
                     cited = [{"id": m.id, "content": m.content[:200]} for m in memories]
                     mm.record_cited_memories(cited)
                     output = f"找到 {len(memories)} 条相关记忆:\n\n"
                     for m in memories:
-                        ep_hint = f", 来源情节: {m.source_episode_id[:12]}" if m.source_episode_id else ""
+                        ep_hint = (
+                            f", 来源情节: {m.source_episode_id[:12]}" if m.source_episode_id else ""
+                        )
                         output += f"- [{m.type.value}] {m.content}\n"  # Memory content 完整保留
                         output += f"  (重要性: {m.importance_score:.1f}, 引用: {m.access_count}{ep_hint})\n\n"
                     return output
@@ -272,9 +313,7 @@ class MemoryHandler:
             }
             mem_type = type_map.get(type_filter)
 
-        memories = mm.search_memories(
-            query=query, memory_type=mem_type, limit=10
-        )
+        memories = mm.search_memories(query=query, memory_type=mem_type, limit=10)
         memories = [m for m in memories if not m.expires_at or m.expires_at >= now]
 
         if not memories:
@@ -285,7 +324,9 @@ class MemoryHandler:
 
         output = f"找到 {len(memories)} 条相关记忆:\n\n"
         for m in memories:
-            ep_hint = f", 来源情节: {m.source_episode_id[:12]}" if m.source_episode_id else ""  # episode ID 是固定长度
+            ep_hint = (
+                f", 来源情节: {m.source_episode_id[:12]}" if m.source_episode_id else ""
+            )  # episode ID 是固定长度
             output += f"- [{m.type.value}] {m.content}\n"
             output += f"  (重要性: {m.importance_score:.1f}, 引用: {m.access_count}{ep_hint})\n\n"
 
@@ -311,7 +352,6 @@ class MemoryHandler:
             output += f"  - {priority}: {count}\n"
 
         return output
-
 
     def _list_recent_tasks(self, params: dict) -> str:
         """列出最近完成的任务（Episode）"""
@@ -376,16 +416,18 @@ class MemoryHandler:
                     limit=max_results,
                 )
                 for row in rows:
-                    results.append({
-                        "source": "sqlite_turns",
-                        "session_id": row.get("session_id", ""),
-                        "episode_id": row.get("episode_id", ""),
-                        "timestamp": row.get("timestamp", ""),
-                        "role": row.get("role", ""),
-                        "content": str(row.get("content", ""))[:500],
-                        "tool_calls": row.get("tool_calls") or [],
-                        "tool_results": row.get("tool_results") or [],
-                    })
+                    results.append(
+                        {
+                            "source": "sqlite_turns",
+                            "session_id": row.get("session_id", ""),
+                            "episode_id": row.get("episode_id", ""),
+                            "timestamp": row.get("timestamp", ""),
+                            "role": row.get("role", ""),
+                            "content": str(row.get("content", ""))[:500],
+                            "tool_calls": row.get("tool_calls") or [],
+                            "tool_results": row.get("tool_results") or [],
+                        }
+                    )
             except Exception as e:
                 logger.warning(f"[SearchTraces] SQLite search failed, will try JSONL: {e}")
 
@@ -393,6 +435,7 @@ class MemoryHandler:
         if len(results) < max_results:
             cutoff = datetime.now() - timedelta(days=days_back)
             from ...config import settings
+
             data_root = settings.project_root / "data"
 
             traces_dir = data_root / "react_traces"
@@ -400,14 +443,20 @@ class MemoryHandler:
                 remaining = max_results - len(results)
                 seen_timestamps = {r.get("timestamp", "") for r in results}
                 self._search_react_traces(
-                    traces_dir, keyword, session_id_filter, cutoff, remaining,
-                    results, seen_timestamps,
+                    traces_dir,
+                    keyword,
+                    session_id_filter,
+                    cutoff,
+                    remaining,
+                    results,
+                    seen_timestamps,
                 )
 
         # === 数据源 3: JSONL fallback（SQLite 无结果或更早历史） ===
         if len(results) < max_results:
             cutoff = datetime.now() - timedelta(days=days_back)
             from ...config import settings
+
             data_root = settings.project_root / "data"
 
             history_dir = data_root / "memory" / "conversation_history"
@@ -415,8 +464,13 @@ class MemoryHandler:
                 remaining = max_results - len(results)
                 seen_timestamps = {r.get("timestamp", "") for r in results}
                 self._search_jsonl_history(
-                    history_dir, keyword, session_id_filter, cutoff, remaining,
-                    results, seen_timestamps,
+                    history_dir,
+                    keyword,
+                    session_id_filter,
+                    cutoff,
+                    remaining,
+                    results,
+                    seen_timestamps,
                 )
 
         if not results:
@@ -450,7 +504,9 @@ class MemoryHandler:
 
         lines = ["## 记忆详情\n"]
         lines.append(f"- [{mem.type.value}] {mem.content}")
-        lines.append(f"  重要性: {mem.importance_score:.1f}, 引用: {mem.access_count}, 置信度: {mem.confidence:.1f}")
+        lines.append(
+            f"  重要性: {mem.importance_score:.1f}, 引用: {mem.access_count}, 置信度: {mem.confidence:.1f}"
+        )
 
         ep_id = mem.source_episode_id
         if not ep_id:
@@ -511,6 +567,7 @@ class MemoryHandler:
                 mem = store.get_semantic(mid)
                 if mem:
                     from openakita.core.tool_executor import smart_truncate as _st
+
                     mem_trunc, _ = _st(mem.content or "", 300, save_full=False, label="mem_linked")
                     lines.append(f"- [{mem.type.value}] {mem_trunc}")
                 else:
@@ -530,7 +587,9 @@ class MemoryHandler:
                     if isinstance(tc, list):
                         for c in tc[:3]:
                             if isinstance(c, dict):
-                                lines.append(f"  → {c.get('name', '?')}: {json.dumps(c.get('input', {}), ensure_ascii=False, default=str)[:200]}")
+                                lines.append(
+                                    f"  → {c.get('name', '?')}: {json.dumps(c.get('input', {}), ensure_ascii=False, default=str)[:200]}"
+                                )
                 lines.append("")
 
         return "\n".join(lines)
@@ -570,15 +629,17 @@ class MemoryHandler:
                     it_str = json.dumps(it, ensure_ascii=False, default=str)
                     if keyword.lower() not in it_str.lower():
                         continue
-                    results.append({
-                        "source": "react_trace",
-                        "file": f"{date_dir.name}/{trace_file.name}",
-                        "conversation_id": trace_data.get("conversation_id", ""),
-                        "iteration": it.get("iteration", 0),
-                        "tool_calls": it.get("tool_calls", []),
-                        "tool_results": it.get("tool_results", []),
-                        "text_content": str(it.get("text_content", ""))[:300],
-                    })
+                    results.append(
+                        {
+                            "source": "react_trace",
+                            "file": f"{date_dir.name}/{trace_file.name}",
+                            "conversation_id": trace_data.get("conversation_id", ""),
+                            "iteration": it.get("iteration", 0),
+                            "tool_calls": it.get("tool_calls", []),
+                            "tool_results": it.get("tool_results", []),
+                            "text_content": str(it.get("text_content", ""))[:300],
+                        }
+                    )
                     count += 1
                     if count >= limit:
                         return
@@ -621,15 +682,17 @@ class MemoryHandler:
                     ts = turn.get("timestamp", "")
                     if ts in seen_timestamps:
                         continue
-                    results.append({
-                        "source": "conversation_history",
-                        "file": jsonl_file.name,
-                        "timestamp": ts,
-                        "role": turn.get("role", ""),
-                        "content": str(turn.get("content", ""))[:500],
-                        "tool_calls": turn.get("tool_calls", []),
-                        "tool_results": turn.get("tool_results", []),
-                    })
+                    results.append(
+                        {
+                            "source": "conversation_history",
+                            "file": jsonl_file.name,
+                            "timestamp": ts,
+                            "role": turn.get("role", ""),
+                            "content": str(turn.get("content", ""))[:500],
+                            "tool_calls": turn.get("tool_calls", []),
+                            "tool_results": turn.get("tool_results", []),
+                        }
+                    )
                     seen_timestamps.add(ts)
                     count += 1
                     if count >= limit:
@@ -680,7 +743,6 @@ class MemoryHandler:
             output += "\n"
         return output
 
-
     async def _search_relational_memory(self, params: dict) -> str:
         """Search the relational memory graph (Mode 2)."""
         query = params.get("query", "")
@@ -695,13 +757,15 @@ class MemoryHandler:
 
         try:
             results = await mm.relational_graph.query(
-                query, limit=max_results, token_budget=2000,
+                query,
+                limit=max_results,
+                token_budget=2000,
             )
         except Exception as e:
             return f"❌ 图搜索失败: {e}"
 
         if not results:
-            return f"未找到与 \"{query}\" 相关的关系型记忆"
+            return f'未找到与 "{query}" 相关的关系型记忆'
 
         output = f"🔗 关系型记忆搜索结果（{len(results)} 条）\n\n"
         for i, r in enumerate(results, 1):
@@ -719,7 +783,6 @@ class MemoryHandler:
                 output += f"时间: {time_str}\n"
             output += f"内容: {node.content[:300]}\n\n"
         return output
-
 
     def _get_session_context(self, params: dict) -> str:
         """获取当前会话的详细上下文信息。"""
@@ -786,10 +849,7 @@ class MemoryHandler:
                 ts = msg.get("timestamp", "")
                 ts_display = ts[:16] if ts else ""
                 content = msg.get("content", "")
-                if isinstance(content, str):
-                    content = content[:500]
-                else:
-                    content = str(content)[:500]
+                content = content[:500] if isinstance(content, str) else str(content)[:500]
                 parts.append(f"[{ts_display}] {role}: {content}")
 
         return "\n".join(parts) if parts else "无可用会话信息"

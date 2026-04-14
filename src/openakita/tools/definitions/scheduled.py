@@ -91,6 +91,21 @@ SCHEDULED_TOOLS = [
                     "default": True,
                     "description": "任务完成时发通知？默认 true",
                 },
+                "silent": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "静默模式：执行任务但不发送任何通知（开始/结束/结果都不发）",
+                },
+                "no_schedule_tools": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "防递归：禁止此任务在执行时再创建/修改定时任务",
+                },
+                "skill_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "绑定技能 ID 列表：仅将这些技能内容注入到执行 prompt 中",
+                },
             },
             "required": ["name", "description", "task_type", "trigger_type", "trigger_config"],
         },

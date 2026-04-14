@@ -4,6 +4,7 @@ import { safeFetch } from "../providers";
 import {
   IconRefresh, IconCheck, IconX, IconInfo,
   IconChevronRight, IconLoader, IconFingerprint,
+  IconAlertCircle,
 } from "../icons";
 import { ModalOverlay } from "../components/ModalOverlay";
 
@@ -502,7 +503,7 @@ function FileItem({ file, selected, onClick }: { file: IdentityFile; selected: b
   const displayName = file.name.startsWith("runtime/")
     ? file.name.replace("runtime/", "")
     : file.name.startsWith("personas/")
-    ? file.name.replace("personas/", "👤 ")
+    ? file.name.replace("personas/", "")
     : file.name;
 
   return (
@@ -530,7 +531,7 @@ function FileItem({ file, selected, onClick }: { file: IdentityFile; selected: b
         {displayName}
       </span>
       {file.restricted && (
-        <span title="Restricted" style={{ color: "#f59e0b", fontSize: 10 }}>⚠</span>
+        <span title="Restricted" style={{ color: "#f59e0b", display: "inline-flex" }}><IconAlertCircle size={10} /></span>
       )}
       {file.is_runtime && (
         <span title="Compiled" style={{ color: "#8b5cf6", fontSize: 9 }}>RT</span>

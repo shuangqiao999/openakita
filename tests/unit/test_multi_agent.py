@@ -555,7 +555,7 @@ class TestAgentInstancePool:
         profile = _make_profile("agent-a", "Agent A")
         agent = await pool.get_or_create("session-1", profile)
         assert agent is not None
-        mock_factory.create.assert_awaited_once_with(profile, parent_brain=None)
+        mock_factory.create.assert_awaited_once_with(profile)
 
     @pytest.mark.asyncio
     async def test_get_or_create_reuses_existing(self, pool, mock_factory):

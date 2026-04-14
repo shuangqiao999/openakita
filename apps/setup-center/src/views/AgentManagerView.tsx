@@ -31,6 +31,8 @@ type AgentProfile = {
   identity_mode?: string;
   memory_mode?: string;
   memory_inherit_global?: boolean;
+  name_i18n?: Record<string, string>;
+  description_i18n?: Record<string, string>;
 };
 
 type SkillItem = {
@@ -193,6 +195,7 @@ export function AgentManagerView({
   const [newCatLabel, setNewCatLabel] = useState("");
   const [newCatColor, setNewCatColor] = useState("#6b7280");
   const [batchSelected, setBatchSelected] = useState<Set<string>>(new Set());
+  const [skillSearch, setSkillSearch] = useState("");
   const importInputRef = useRef<HTMLInputElement>(null);
 
   // Isolation UI state
@@ -454,6 +457,7 @@ export function AgentManagerView({
   const closeEditor = () => {
     setEditorOpen(false);
     setEmojiPickerOpen(false);
+    setSkillSearch("");
   };
 
   const generateId = (name: string) =>
@@ -572,6 +576,10 @@ export function AgentManagerView({
     };
     return i18nMap[catId] ? t(`agentManager.${i18nMap[catId]}`) : catId;
   };
+
+  const langKey = i18n.language?.startsWith("zh") ? "zh" : "en";
+  const getI18nName = (agent: AgentProfile) => agent.name_i18n?.[langKey] || agent.name;
+  const getI18nDesc = (agent: AgentProfile) => agent.description_i18n?.[langKey] || agent.description;
 
   const getCategoryColor = (catId: string): string => {
     const found = categories.find((c) => c.id === catId);
@@ -854,12 +862,12 @@ export function AgentManagerView({
                   {agent.icon.startsWith("svg:") ? <SvgIcon name={agent.icon.slice(4)} size={28} color={agent.color || "currentColor"} /> : agent.icon}
                 </span>
                 <div style={{ minWidth: 0 }}>
-                  <div style={{ fontWeight: 700, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{agent.name}</div>
+                  <div style={{ fontWeight: 700, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{getI18nName(agent)}</div>
                   <div style={{ fontSize: 11, opacity: 0.45, fontFamily: "monospace" }}>{agent.id}</div>
                 </div>
               </div>
               <div style={{ fontSize: 12, opacity: 0.6, marginBottom: 10, minHeight: 18, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {agent.description || "\u2014"}
+                {getI18nDesc(agent) || "\u2014"}
               </div>
 
               {/* Actions */}
@@ -975,7 +983,7 @@ export function AgentManagerView({
                       {agent.icon.startsWith("svg:") ? <SvgIcon name={agent.icon.slice(4)} size={28} color={agent.color || "currentColor"} /> : agent.icon}
                     </span>
                     <div style={{ minWidth: 0 }}>
-                      <div style={{ fontWeight: 700, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{agent.name}</div>
+                      <div style={{ fontWeight: 700, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{getI18nName(agent)}</div>
                     </div>
                   </div>
                   <button
@@ -1057,7 +1065,7 @@ export function AgentManagerView({
           <SheetHeader className="px-6 pt-6 pb-2">
             <SheetTitle>{isCreating ? t("agentManager.create") : t("agentManager.edit")}</SheetTitle>
             <SheetDescription className="sr-only">
-              {isCreating ? "Create a new agent profile" : "Edit agent profile"}
+              {isCreating ? t("agentManager.create") : t("agentManager.edit")}
             </SheetDescription>
           </SheetHeader>
 
@@ -1207,7 +1215,7 @@ export function AgentManagerView({
               <Label className="text-xs opacity-70">{t("agentManager.skills")}</Label>
               <Select
                 value={editingProfile.skills_mode}
-                onValueChange={(v) => setEditingProfile((p) => ({ ...p, skills_mode: v }))}
+                onValueChange={(v) => { setEditingProfile((p) => ({ ...p, skills_mode: v })); setSkillSearch(""); }}
               >
                 <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -1220,26 +1228,43 @@ export function AgentManagerView({
 
             {/* Skills multi-select */}
             {editingProfile.skills_mode !== "all" && availableSkills.length > 0 && (
-              <div className="max-h-[220px] overflow-y-auto rounded-lg border p-1">
-                {availableSkills.map((skill) => {
-                  const checked = editingProfile.skills.includes(skill.skillId);
-                  return (
-                    <label
-                      key={skill.skillId}
-                      className={`flex items-center gap-2.5 px-2.5 py-1.5 rounded-md cursor-pointer text-[13px] transition-colors ${
-                        checked ? "bg-primary/8" : "hover:bg-accent/50"
-                      }`}
-                    >
-                      <Checkbox
-                        checked={checked}
-                        onCheckedChange={() => toggleSkill(skill.skillId)}
-                      />
-                      <span className="flex-1 min-w-0 truncate">
-                        {skill.name_i18n?.[i18n.language?.startsWith("zh") ? "zh" : i18n.language || "zh"] || skill.name}
-                      </span>
-                    </label>
-                  );
-                })}
+              <div className="rounded-lg border">
+                <div className="p-1.5 border-b">
+                  <Input
+                    placeholder={t("agentManager.skillSearchPlaceholder")}
+                    value={skillSearch}
+                    onChange={(e) => setSkillSearch(e.target.value)}
+                    className="h-7 text-xs"
+                  />
+                </div>
+                <div className="max-h-[200px] overflow-y-auto p-1">
+                  {availableSkills
+                    .filter((skill) => {
+                      if (!skillSearch.trim()) return true;
+                      const q = skillSearch.trim().toLowerCase();
+                      const displayName = skill.name_i18n?.[i18n.language?.startsWith("zh") ? "zh" : i18n.language || "zh"] || skill.name;
+                      return displayName.toLowerCase().includes(q) || skill.name.toLowerCase().includes(q);
+                    })
+                    .map((skill) => {
+                      const checked = editingProfile.skills.includes(skill.skillId);
+                      return (
+                        <label
+                          key={skill.skillId}
+                          className={`flex items-center gap-2.5 px-2.5 py-1.5 rounded-md cursor-pointer text-[13px] transition-colors ${
+                            checked ? "bg-primary/8" : "hover:bg-accent/50"
+                          }`}
+                        >
+                          <Checkbox
+                            checked={checked}
+                            onCheckedChange={() => toggleSkill(skill.skillId)}
+                          />
+                          <span className="flex-1 min-w-0 truncate">
+                            {skill.name_i18n?.[i18n.language?.startsWith("zh") ? "zh" : i18n.language || "zh"] || skill.name}
+                          </span>
+                        </label>
+                      );
+                    })}
+                </div>
               </div>
             )}
 

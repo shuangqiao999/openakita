@@ -65,8 +65,8 @@ class TestDelegationPreambleInjection:
     def test_preamble_contains_priority_override(self):
         """Preamble must explicitly override solo-agent philosophy."""
         prompt = self._build_prompt(multi_agent=True, is_sub_agent=False)
-        assert "此原则优先于" in prompt
-        assert "自己解决" in prompt
+        assert "立即委派" in prompt
+        assert "才自己处理" in prompt
 
     def test_identity_still_present(self):
         """Identity layer should still be present even with preamble."""

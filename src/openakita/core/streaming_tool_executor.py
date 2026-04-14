@@ -109,7 +109,8 @@ class StreamingToolExecutor:
             if self._is_bash_error(pending.tool_name, e):
                 logger.warning(
                     "Bash error in %s, aborting siblings: %s",
-                    pending.tool_name, e,
+                    pending.tool_name,
+                    e,
                 )
                 self._abort_event.set()
         finally:
@@ -148,7 +149,7 @@ class StreamingToolExecutor:
                     asyncio.gather(*tasks, return_exceptions=True),
                     timeout=timeout,
                 )
-            except TimeoutError:
+            except (asyncio.TimeoutError, TimeoutError):
                 logger.warning("StreamingToolExecutor: timeout waiting for %d tools", len(tasks))
 
         return [self._to_result_dict(p) for p in self._queue]

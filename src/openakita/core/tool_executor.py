@@ -17,7 +17,10 @@ import logging
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .permission import PermissionDecision
 
 from ..config import settings
 from ..tools.errors import ToolError, classify_error
@@ -31,9 +34,11 @@ logger = logging.getLogger(__name__)
 
 class ToolSkipped(Exception):
     """用户主动跳过当前工具执行（非错误，仅中断单步）。"""
+
     def __init__(self, reason: str = "用户请求跳过"):
         self.reason = reason
         super().__init__(reason)
+
 
 # ========== 通用截断守卫常量 ==========
 MAX_TOOL_RESULT_CHARS = 16000  # 通用截断阈值 (~8000 tokens)
@@ -54,9 +59,7 @@ def save_overflow(tool_name: str, content: str) -> str:
         filepath = _OVERFLOW_DIR / filename
         filepath.write_text(content, encoding="utf-8")
         _cleanup_overflow_files(_OVERFLOW_DIR, _OVERFLOW_MAX_FILES)
-        logger.info(
-            f"[Overflow] Saved {len(content)} chars to {filepath}"
-        )
+        logger.info(f"[Overflow] Saved {len(content)} chars to {filepath}")
         return str(filepath)
     except Exception as exc:
         logger.warning(f"[Overflow] Failed to save overflow file: {exc}")
@@ -142,6 +145,7 @@ class ToolExecutor:
     ) -> None:
         self._handler_registry = handler_registry
         self._agent_ref: Any = None  # set by Agent after construction
+        self._plugin_hooks: Any = None  # HookRegistry, set by Agent after construction
 
         # 并行控制
         self._semaphore = asyncio.Semaphore(max(1, max_parallel))
@@ -155,7 +159,9 @@ class ToolExecutor:
         # Security: pending confirmations — tool calls that returned CONFIRM
         # and are awaiting user decision via ask_user.
         # When the agent retries after ask_user, we auto-mark as confirmed.
-        self._pending_confirms: dict[str, dict] = {}  # cache_key → {tool_name, params, metadata, ts}
+        self._pending_confirms: dict[
+            str, dict
+        ] = {}  # cache_key → {tool_name, params, metadata, ts}
 
         # Current mode for permission checks (set by ReasoningEngine before tool loop)
         self._current_mode: str = "agent"
@@ -165,8 +171,13 @@ class ToolExecutor:
 
     # 并发安全工具: 这些工具的只读操作可以并行执行
     _CONCURRENCY_SAFE_TOOLS: set[str] = {
-        "read_file", "list_files", "search_files", "web_fetch",
-        "get_time", "read_resource", "list_resources",
+        "read_file",
+        "list_files",
+        "search_files",
+        "web_fetch",
+        "get_time",
+        "read_resource",
+        "list_resources",
     }
 
     # 长时间运行工具的硬超时（秒），防止工具卡死拖垮整个 agent 循环
@@ -233,9 +244,12 @@ class ToolExecutor:
     def _is_concurrency_safe(self, tool_name: str, tool_input: dict) -> bool:
         """判断工具在给定输入下是否并发安全。
 
-        参考 Claude Code 的 isConcurrencySafe(input) 设计:
-        按工具名 + 输入内容判断，而非全局开关。
+        优先询问 handler 级回调（可根据 tool_input 细粒度判断），
+        回调返回 None 时回退到静态 ``_CONCURRENCY_SAFE_TOOLS`` 集合。
         """
+        override = self._handler_registry.check_concurrency_safe(tool_name, tool_input)
+        if override is not None:
+            return override
         if tool_name in self._CONCURRENCY_SAFE_TOOLS:
             return True
         handler_name = self.get_handler_name(tool_name)
@@ -394,6 +408,16 @@ class ToolExecutor:
 
         return await self._execute_tool_impl(tool_name, tool_input)
 
+    async def _dispatch_hook(self, hook_name: str, **kwargs) -> None:
+        """Fire a plugin hook if a HookRegistry is attached. Never raises."""
+        hooks = self._plugin_hooks
+        if hooks is None:
+            return
+        try:
+            await hooks.dispatch(hook_name, **kwargs)
+        except Exception as e:
+            logger.debug(f"[ToolExecutor] {hook_name} hook error (ignored): {e}")
+
     async def _execute_tool_impl(
         self,
         tool_name: str,
@@ -409,10 +433,13 @@ class ToolExecutor:
         if isinstance(tool_input, dict) and PARSE_ERROR_KEY in tool_input:
             err_msg = tool_input[PARSE_ERROR_KEY]
             logger.warning(
-                f"[ToolExecutor] Skipping tool '{tool_name}' due to parse error: "
-                f"{err_msg[:200]}"
+                f"[ToolExecutor] Skipping tool '{tool_name}' due to parse error: {err_msg[:200]}"
             )
             return err_msg
+
+        await self._dispatch_hook(
+            "on_before_tool_use", tool_name=tool_name, tool_input=tool_input
+        )
 
         # 导入日志缓存
         from ..logging import get_session_log_buffer
@@ -430,6 +457,13 @@ class ToolExecutor:
                 else:
                     span.set_attribute("error", f"unknown_tool: {tool_name}")
                     suggestion = self._suggest_similar_tool(tool_name)
+                    await self._dispatch_hook(
+                        "on_after_tool_use",
+                        tool_name=tool_name,
+                        tool_input=tool_input,
+                        tool_result=suggestion,
+                        error="unknown_tool",
+                    )
                     return suggestion
 
                 # 获取执行期间产生的新日志（WARNING/ERROR/CRITICAL）
@@ -450,25 +484,46 @@ class ToolExecutor:
                 result = self._guard_truncate(tool_name, result)
 
                 span.set_attribute("result_length", len(result))
+
+                await self._dispatch_hook(
+                    "on_after_tool_use",
+                    tool_name=tool_name,
+                    tool_input=tool_input,
+                    tool_result=result,
+                )
                 return result
 
             except ToolError as e:
-                # 结构化工具错误，直接序列化返回给 LLM
                 logger.warning(f"Tool error ({e.error_type.value}): {tool_name} - {e.message}")
                 span.set_attribute("error_type", e.error_type.value)
                 span.set_attribute("error_message", e.message)
-                return e.to_tool_result()
+                error_result = e.to_tool_result()
+                await self._dispatch_hook(
+                    "on_after_tool_use",
+                    tool_name=tool_name,
+                    tool_input=tool_input,
+                    tool_result=error_result,
+                    error=str(e),
+                )
+                return error_result
 
             except ToolSkipped:
                 raise
 
             except Exception as e:
-                # 将通用异常分类为结构化 ToolError
                 tool_error = classify_error(e, tool_name=tool_name)
                 logger.error(f"Tool execution error: {e}", exc_info=True)
                 span.set_attribute("error_type", tool_error.error_type.value)
                 span.set_attribute("error_message", str(e))
-                return tool_error.to_tool_result()
+                error_result = tool_error.to_tool_result()
+                await self._dispatch_hook(
+                    "on_after_tool_use",
+                    tool_name=tool_name,
+                    tool_input=tool_input,
+                    tool_result=error_result,
+                    error=str(e),
+                )
+                return error_result
 
     async def execute_tool_with_policy(
         self,
@@ -505,10 +560,9 @@ class ToolExecutor:
             except Exception as e:
                 logger.debug(f"[Checkpoint] Failed: {e}")
 
-        if (
-            tool_name in ("run_shell", "run_powershell")
-            and getattr(policy_result, "metadata", {}).get("needs_sandbox")
-        ):
+        if tool_name in ("run_shell", "run_powershell") and getattr(
+            policy_result, "metadata", {}
+        ).get("needs_sandbox"):
             from .sandbox import get_sandbox_executor
 
             sandbox = get_sandbox_executor()
@@ -517,8 +571,7 @@ class ToolExecutor:
             timeout = tool_input.get("timeout", 60)
             sb_result = await sandbox.execute(command, cwd=cwd, timeout=float(timeout))
             sandbox_output = (
-                f"[沙箱执行 backend={sb_result.backend}]\n"
-                f"Exit code: {sb_result.returncode}\n"
+                f"[沙箱执行 backend={sb_result.backend}]\nExit code: {sb_result.returncode}\n"
             )
             if sb_result.stdout:
                 sandbox_output += f"stdout:\n{sb_result.stdout}\n"
@@ -611,14 +664,13 @@ class ToolExecutor:
 
             if perm_decision.behavior == "confirm":
                 from .policy import get_policy_engine
+
                 policy_engine = get_policy_engine()
                 confirm_key = policy_engine._confirm_cache_key(tool_name, tool_input)
                 if confirm_key in self._pending_confirms:
                     policy_engine.mark_confirmed(tool_name, tool_input)
                     del self._pending_confirms[confirm_key]
-                    logger.info(
-                        f"[Security] Auto-allowed retry of confirmed tool: {tool_name}"
-                    )
+                    logger.info(f"[Security] Auto-allowed retry of confirmed tool: {tool_name}")
                 else:
                     self._pending_confirms[confirm_key] = {
                         "tool_name": tool_name,
@@ -639,17 +691,15 @@ class ToolExecutor:
                             "content": (
                                 f"⚠️ 需要用户确认: {perm_decision.reason}"
                                 f"{sandbox_hint}\n"
-                                "请使用 ask_user 工具询问用户是否允许此操作，"
-                                "得到用户同意后再重新调用此工具。"
+                                "已向用户发送确认请求，请等待用户通过界面做出决定后再继续。"
+                                "不要使用 ask_user 工具重复询问。"
                             ),
                             "is_error": True,
                             "_security_confirm": {
                                 "tool_name": tool_name,
                                 "params": tool_input,
                                 "risk_level": risk,
-                                "needs_sandbox": perm_decision.metadata.get(
-                                    "needs_sandbox", False
-                                ),
+                                "needs_sandbox": perm_decision.metadata.get("needs_sandbox", False),
                             },
                         },
                         None,
@@ -661,9 +711,7 @@ class ToolExecutor:
             _agent = self._agent_ref
             if _agent and hasattr(_agent, "_discovered_tools"):
                 _all_tools = getattr(_agent, "_tools", [])
-                _tool_def = next(
-                    (t for t in _all_tools if t.get("name") == tool_name), None
-                )
+                _tool_def = next((t for t in _all_tools if t.get("name") == tool_name), None)
                 if _tool_def and _tool_def.get("_deferred"):
                     return (
                         idx,
@@ -672,7 +720,7 @@ class ToolExecutor:
                             "tool_use_id": tool_use_id,
                             "content": (
                                 f"⚠️ Tool '{tool_name}' is deferred. "
-                                "You must first call tool_search(query=\"...\") "
+                                'You must first call tool_search(query="...") '
                                 "to load its full parameters, then call it in "
                                 "the NEXT turn."
                             ),
@@ -733,6 +781,7 @@ class ToolExecutor:
                 # 对于 PARSE_ERROR_KEY（参数截断）路径，需要在此修正 success
                 # 标志，使 tool_result 的 is_error 正确传播到 reasoning_engine。
                 from ..llm.converters.tools import PARSE_ERROR_KEY
+
                 if isinstance(tool_input, dict) and PARSE_ERROR_KEY in tool_input:
                     success = False
 
@@ -745,7 +794,9 @@ class ToolExecutor:
                         pass
 
                 # 终端输出工具返回结果（便于调试与观察）
-                _preview = result_str if len(result_str) <= 800 else result_str[:800] + "\n... (已截断)"
+                _preview = (
+                    result_str if len(result_str) <= 800 else result_str[:800] + "\n... (已截断)"
+                )
                 try:
                     logger.info(f"[Tool] {tool_name} → {_preview}")
                 except (UnicodeEncodeError, OSError):
@@ -845,17 +896,19 @@ class ToolExecutor:
                     # 为剩余工具生成取消结果
                     for j in range(i + 1, len(tool_calls)):
                         remaining_tc = tool_calls[j]
-                        results.append((
-                            j,
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": remaining_tc.get("id", ""),
-                                "content": "[任务已被用户停止]",
-                                "is_error": True,
-                            },
-                            None,
-                            None,
-                        ))
+                        results.append(
+                            (
+                                j,
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": remaining_tc.get("id", ""),
+                                    "content": "[任务已被用户停止]",
+                                    "is_error": True,
+                                },
+                                None,
+                                None,
+                            )
+                        )
                     break
 
         # 整理结果
@@ -911,8 +964,13 @@ class ToolExecutor:
         if self._current_mode in ("plan", "ask"):
             return None
 
-        if tool_name in ("create_todo", "create_plan_file", "exit_plan_mode",
-                         "get_todo_status", "ask_user"):
+        if tool_name in (
+            "create_todo",
+            "create_plan_file",
+            "exit_plan_mode",
+            "get_todo_status",
+            "ask_user",
+        ):
             return None
 
         try:
@@ -951,7 +1009,8 @@ class ToolExecutor:
 
         try:
             decision = check_permission(
-                tool_name, tool_input,
+                tool_name,
+                tool_input,
                 mode=self._current_mode,
                 extra_rules=self._extra_permission_rules,
             )
@@ -969,10 +1028,15 @@ class ToolExecutor:
             if tool_perm_check is not None:
                 try:
                     tool_decision = tool_perm_check(tool_name, tool_input)
-                    if tool_decision is not None and getattr(tool_decision, "behavior", "allow") != "allow":
+                    if (
+                        tool_decision is not None
+                        and getattr(tool_decision, "behavior", "allow") != "allow"
+                    ):
                         decision = tool_decision
                 except Exception as e:
-                    logger.warning(f"[Permission] per-tool check_permissions error for {tool_name}: {e}")
+                    logger.warning(
+                        f"[Permission] per-tool check_permissions error for {tool_name}: {e}"
+                    )
 
         if decision.behavior != "allow":
             logger.warning(
@@ -983,6 +1047,7 @@ class ToolExecutor:
         # Audit log for every decision
         try:
             from .audit_logger import get_audit_logger
+
             get_audit_logger().log(
                 tool_name=tool_name,
                 decision=decision.behavior,
@@ -1024,7 +1089,7 @@ class ToolExecutor:
         if decision.behavior == "confirm":
             return (
                 f"⚠️ 需要用户确认: {decision.reason}\n"
-                "请使用 ask_user 工具询问用户是否允许此操作，"
-                "得到用户同意后再重新调用此工具。"
+                "已向用户发送确认请求，请等待用户通过界面做出决定后再继续。"
+                "不要使用 ask_user 工具重复询问。"
             )
         return decision.reason

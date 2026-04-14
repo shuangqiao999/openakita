@@ -123,10 +123,9 @@ def _split_code_block(segment: str, max_length: int) -> list[str]:
     fence = fence_char * max(fence_len, 3)
     lang_tag = opening.lstrip()[fence_len:].strip()
 
-    closing = ""
     body_lines = lines[1:]
     if body_lines and body_lines[-1].strip().startswith(fence_char * fence_len):
-        closing = body_lines[-1]
+        body_lines[-1]
         body_lines = body_lines[:-1]
 
     body = "\n".join(body_lines)
@@ -248,7 +247,7 @@ def chunk_text_by_bytes(
                 if not piece:
                     break
                 chunks.append(piece)
-                line = line[len(piece):]
+                line = line[len(piece) :]
         else:
             current = line + "\n"
 
@@ -361,7 +360,7 @@ def markdown_to_plaintext(text: str) -> str:
             if not in_code:
                 in_code = True
                 fence_marker = marker[0] * len(marker)
-                lang = stripped[len(marker):].strip()
+                lang = stripped[len(marker) :].strip()
                 result_lines.append(f"--- {lang} ---" if lang else "---")
                 continue
             elif marker[0] == fence_marker[0] and len(marker) >= len(fence_marker):

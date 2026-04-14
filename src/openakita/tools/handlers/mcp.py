@@ -93,6 +93,7 @@ class MCPHandler:
         auto_connected = False
         if not client.is_connected(server):
             from ..mcp_workspace import prepare_chrome_devtools_args
+
             await prepare_chrome_devtools_args(client, server)
             result = await client.connect(server)
             if not result.success:
@@ -105,7 +106,10 @@ class MCPHandler:
             self._sync_catalog(server)
 
         if result.success:
-            return f"✅ MCP 工具调用成功:\n{result.data}"
+            from ...utils.credential_redact import redact_credentials
+
+            safe_data = redact_credentials(str(result.data)) if result.data else ""
+            return f"✅ MCP 工具调用成功:\n{safe_data}"
         else:
             return f"❌ MCP 工具调用失败: {result.error}"
 
@@ -123,6 +127,7 @@ class MCPHandler:
             )
 
         from ...config import settings
+
         output = f"已配置 {len(all_ids)} 个 MCP 服务器:\n\n"
 
         for server_id in all_ids:
@@ -192,6 +197,7 @@ class MCPHandler:
             return f"❌ 服务器 {server} 未配置。请先用 add_mcp_server 添加或检查名称"
 
         from ..mcp_workspace import prepare_chrome_devtools_args
+
         await prepare_chrome_devtools_args(client, server)
         result = await client.connect(server)
         if result.success:
@@ -203,10 +209,7 @@ class MCPHandler:
                 f"发现 {len(tools)} 个工具: {', '.join(tool_names)}"
             )
         else:
-            return (
-                f"❌ 连接 MCP 服务器失败: {server}\n"
-                f"原因: {result.error}"
-            )
+            return f"❌ 连接 MCP 服务器失败: {server}\n原因: {result.error}"
 
     async def _disconnect_server(self, params: dict) -> str:
         """断开 MCP 服务器"""
@@ -234,7 +237,9 @@ class MCPHandler:
 
         transport = params.get("transport", "stdio")
         if transport not in VALID_TRANSPORTS:
-            return f"❌ 不支持的传输协议: {transport}（支持: {', '.join(sorted(VALID_TRANSPORTS))}）"
+            return (
+                f"❌ 不支持的传输协议: {transport}（支持: {', '.join(sorted(VALID_TRANSPORTS))}）"
+            )
 
         command = params.get("command", "")
         url = params.get("url", "")
@@ -269,7 +274,7 @@ class MCPHandler:
         else:
             connect_msg = (
                 f"\n\n⚠️ 自动连接失败: {cr.get('error', '未知')}\n"
-                f"配置已保存，可稍后手动调用 `connect_mcp_server(\"{name}\")` 重试"
+                f'配置已保存，可稍后手动调用 `connect_mcp_server("{name}")` 重试'
             )
 
         return (

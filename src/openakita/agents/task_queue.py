@@ -9,15 +9,17 @@ import heapq
 import logging
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Any, Callable, Awaitable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
 class Priority(IntEnum):
     """Task priority levels. Lower value = higher priority."""
+
     URGENT = 0
     HIGH = 1
     NORMAL = 2
@@ -28,6 +30,7 @@ class Priority(IntEnum):
 @dataclass(order=True)
 class QueuedTask:
     """A task in the priority queue."""
+
     priority: int
     created_at: float = field(compare=True)
     task_id: str = field(default_factory=lambda: f"qt_{uuid.uuid4().hex[:10]}", compare=False)
@@ -87,7 +90,7 @@ class TaskQueue:
             except (asyncio.CancelledError, Exception):
                 pass
 
-        for task_id, task in self._active.items():
+        for _task_id, task in self._active.items():
             if not task.done():
                 task.cancel()
         self._active.clear()
@@ -100,7 +103,7 @@ class TaskQueue:
         self._heap.clear()
 
         # 清理任何残留的 Future
-        for tid, fut in list(self._results.items()):
+        for _tid, fut in list(self._results.items()):
             if not fut.done():
                 fut.cancel()
         self._results.clear()
@@ -163,10 +166,7 @@ class TaskQueue:
         """Main worker loop: picks tasks from queue and executes them."""
         while self._running:
             async with self._lock:
-                if self._heap:
-                    task = heapq.heappop(self._heap)
-                else:
-                    task = None
+                task = heapq.heappop(self._heap) if self._heap else None
 
             if task is None:
                 self._not_empty.clear()
@@ -191,9 +191,7 @@ class TaskQueue:
                 for tid in finished_ids:
                     self._active.pop(tid, None)
 
-            self._active[task.task_id] = asyncio.create_task(
-                self._execute_task(task)
-            )
+            self._active[task.task_id] = asyncio.create_task(self._execute_task(task))
 
     async def _execute_task(self, task: QueuedTask) -> None:
         """Execute a single task and resolve its future."""

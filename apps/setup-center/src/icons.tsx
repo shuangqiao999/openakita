@@ -952,3 +952,128 @@ export function IconTerminal(p: IconProps = {}) {
     <line x1="12" y1="19" x2="20" y2="19" />
   </>);
 }
+
+export function IconRewind(p: IconProps = {}) {
+  return svg(p, <>
+    <polygon points="11 19 2 12 11 5 11 19" />
+    <polygon points="22 19 13 12 22 5 22 19" />
+  </>);
+}
+
+export function IconMail(p: IconProps = {}) {
+  return svg(p, <>
+    <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" />
+    <polyline points="22,6 12,13 2,6" />
+  </>);
+}
+
+export function IconBarChart(p: IconProps = {}) {
+  return svg(p, <>
+    <line x1="12" y1="20" x2="12" y2="10" />
+    <line x1="18" y1="20" x2="18" y2="4" />
+    <line x1="6" y1="20" x2="6" y2="16" />
+  </>);
+}
+
+export function IconTarget(p: IconProps = {}) {
+  return svg(p, <>
+    <circle cx="12" cy="12" r="10" />
+    <circle cx="12" cy="12" r="6" />
+    <circle cx="12" cy="12" r="2" />
+  </>);
+}
+
+export function IconHourglass(p: IconProps = {}) {
+  return svg(p, <>
+    <path d="M5 22h14" />
+    <path d="M5 2h14" />
+    <path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22" />
+    <path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2" />
+  </>);
+}
+
+export function IconUnlock(p: IconProps = {}) {
+  return svg(p, <>
+    <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+    <path d="M7 11V7a5 5 0 0 1 9.9-1" />
+  </>);
+}
+
+export function IconShuffle(p: IconProps = {}) {
+  return svg(p, <>
+    <polyline points="16 3 21 3 21 8" />
+    <line x1="4" y1="20" x2="21" y2="3" />
+    <polyline points="21 16 21 21 16 21" />
+    <line x1="15" y1="15" x2="21" y2="21" />
+    <line x1="4" y1="4" x2="9" y2="9" />
+  </>);
+}
+
+export function IconLightbulb(p: IconProps = {}) {
+  return svg(p, <>
+    <path d="M9 18h6" />
+    <path d="M10 22h4" />
+    <path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14" />
+  </>);
+}
+
+export function IconKey(p: IconProps = {}) {
+  return svg(p, <>
+    <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
+  </>);
+}
+
+export function IconWrench(p: IconProps = {}) {
+  return svg(p, <>
+    <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
+  </>);
+}
+
+export function IconFolder(p: IconProps = {}) {
+  return svg(p, <>
+    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+  </>);
+}
+
+export function IconPartyPopper(p: IconProps = {}) {
+  return svg(p, <>
+    <path d="M5.8 11.3L2 22l10.7-3.79" />
+    <path d="M4 3h.01" />
+    <path d="M22 8h.01" />
+    <path d="M15 2h.01" />
+    <path d="M22 20h.01" />
+    <path d="M22 2l-2.24.75a2.9 2.9 0 0 0-1.96 3.12v0c.1.86-.57 1.63-1.45 1.63h-.38c-.86 0-1.6.6-1.76 1.44L14 10" />
+    <path d="M22 13l-1.34-.45a2.9 2.9 0 0 0-3.12 1.96v0a1.37 1.37 0 0 1-1.63 1.45h0a1.98 1.98 0 0 0-1.44 1.76L14 19" />
+    <path d="M7.5 7.5c2 1.5 3 3 4 6.5" />
+    <path d="M11 14c1.5 2 2 3.5 2.5 6" />
+  </>);
+}
+
+export function IconCamera(p: IconProps = {}) {
+  return svg(p, <>
+    <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+    <circle cx="12" cy="13" r="4" />
+  </>);
+}
+
+export function IconKeyboard(p: IconProps = {}) {
+  return svg(p, <>
+    <rect x="2" y="4" width="20" height="16" rx="2" ry="2" />
+    <line x1="6" y1="8" x2="6.01" y2="8" />
+    <line x1="10" y1="8" x2="10.01" y2="8" />
+    <line x1="14" y1="8" x2="14.01" y2="8" />
+    <line x1="18" y1="8" x2="18.01" y2="8" />
+    <line x1="8" y1="12" x2="8.01" y2="12" />
+    <line x1="12" y1="12" x2="12.01" y2="12" />
+    <line x1="16" y1="12" x2="16.01" y2="12" />
+    <line x1="7" y1="16" x2="17" y2="16" />
+  </>);
+}
+
+export function IconMonitor(p: IconProps = {}) {
+  return svg(p, <>
+    <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+    <line x1="8" y1="21" x2="16" y2="21" />
+    <line x1="12" y1="17" x2="12" y2="21" />
+  </>);
+}
