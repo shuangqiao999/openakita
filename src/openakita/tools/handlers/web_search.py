@@ -95,7 +95,11 @@ class WebSearchHandler:
         except Exception as e:
             tb = traceback.format_exc()
             logger.error(f"Web search failed: {type(e).__name__}: {e}\n{tb}")
-            return f"搜索失败: {type(e).__name__}: {e}（请直接告知用户搜索暂时不可用及原因）"
+            return (
+                "搜索暂时不可用（网络无法访问 DuckDuckGo）。"
+                "请直接告知用户\"当前无法联网搜索\"，建议稍后重试或改用其他工具，"
+                "不要反复重试，也不要伪造搜索结果。"
+            )
 
     async def _news_search(self, params: dict[str, Any]) -> str:
         """搜索新闻"""
@@ -128,7 +132,11 @@ class WebSearchHandler:
         except Exception as e:
             tb = traceback.format_exc()
             logger.error(f"News search failed: {type(e).__name__}: {e}\n{tb}")
-            return f"新闻搜索失败: {type(e).__name__}: {e}（请直接告知用户搜索暂时不可用及原因）"
+            return (
+                "新闻搜索暂时不可用（网络无法访问 DuckDuckGo）。"
+                "请直接告知用户\"当前无法联网搜索\"，建议稍后重试或改用其他工具，"
+                "不要反复重试，也不要伪造搜索结果。"
+            )
 
     @staticmethod
     def _format_web_results(results: list) -> str:

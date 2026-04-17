@@ -801,6 +801,8 @@ export function SkillManager({
       };
 
       if (serviceRunning && apiBaseUrl != null) {
+        // POST /api/config/skills 后端已自动调 propagate_skill_change(ENABLE)，
+        // 无需再额外发 /api/skills/reload（会触发重复全量扫盘）。
         const res = await safeFetch(`${apiBaseUrl}/api/config/skills`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -809,16 +811,6 @@ export function SkillManager({
         });
         const data = await res.json();
         if (data.error) throw new Error(data.error);
-
-        // 通知后端热重载
-        try {
-          await safeFetch(`${apiBaseUrl}/api/skills/reload`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({}),
-            signal: AbortSignal.timeout(10_000),
-          });
-        } catch { /* reload 失败不阻塞 */ }
       } else if (IS_TAURI && dataMode !== "remote" && currentWorkspaceId) {
         await invoke("workspace_write_file", {
           workspaceId: currentWorkspaceId,
@@ -906,6 +898,8 @@ export function SkillManager({
 
       if (serviceRunning && apiBaseUrl != null) {
         try {
+          // /api/skills/install 成功后后端会自动 propagate_skill_change(INSTALL)，
+          // 前端不再发追加的 /api/skills/reload。
           const res = await safeFetch(`${apiBaseUrl}/api/skills/install`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -915,14 +909,6 @@ export function SkillManager({
           const data = await res.json();
           if (data.error) throw new Error(data.error);
           installed = true;
-          try {
-            await safeFetch(`${apiBaseUrl}/api/skills/reload`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({}),
-              signal: AbortSignal.timeout(10_000),
-            });
-          } catch { /* reload 失败不阻塞 */ }
         } catch (apiErr) {
           const m = String(apiErr).toLowerCase();
           if (m.includes("request cancel") || m.includes("request_cancel")) {
@@ -1200,6 +1186,8 @@ export function SkillManager({
       let installed = false;
 
       // 方式1：服务运行中 → HTTP API 安装
+      // 后端 /api/skills/install 成功后自动 propagate_skill_change(INSTALL)，
+      // 此处不再额外发 /api/skills/reload。
       if (serviceRunning && apiBaseUrl != null) {
         setInstallStatus(t("skills.installDownloading", "正在下载技能..."));
         const res = await safeFetch(`${apiBaseUrl}/api/skills/install`, {
@@ -1212,14 +1200,6 @@ export function SkillManager({
         if (data.error) throw new Error(data.error);
         installed = true;
         setInstallStatus(t("skills.installParsing", "正在解析技能..."));
-        try {
-          await safeFetch(`${apiBaseUrl}/api/skills/reload`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({}),
-            signal: AbortSignal.timeout(10_000),
-          });
-        } catch { /* reload 失败不阻塞 */ }
       }
 
       // 方式2：服务未运行 → Tauri invoke（本地模式）
@@ -1276,6 +1256,8 @@ export function SkillManager({
       let installed = false;
 
       if (serviceRunning && apiBaseUrl != null) {
+        // /api/skills/install 后端会自动 propagate_skill_change(INSTALL)，
+        // 此处不再发追加的 /api/skills/reload。
         const res = await safeFetch(`${apiBaseUrl}/api/skills/install`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1285,14 +1267,6 @@ export function SkillManager({
         const data = await res.json();
         if (data.error) throw new Error(data.error);
         installed = true;
-        try {
-          await safeFetch(`${apiBaseUrl}/api/skills/reload`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({}),
-            signal: AbortSignal.timeout(10_000),
-          });
-        } catch { /* reload 失败不阻塞 */ }
       }
 
       if (!installed && IS_TAURI && dataMode !== "remote" && currentWorkspaceId) {

@@ -79,6 +79,74 @@ class _CachedAgent:
         return (time.monotonic() - self.last_used) > AGENT_CACHE_TTL
 
 
+class UserCommandTracker:
+    """Track the lifecycle of a single user command across its delegation chains.
+
+    A user command is considered **truly complete** when:
+      - all chains that were opened *by or under this command's root* are closed
+        (accepted / rejected / cancelled), AND
+      - the root node is IDLE, AND
+      - the root's inbox has no pending messages, AND
+      - no other nodes under this org are still BUSY/WAITING with pending work.
+
+    This tracker is event-driven: `register_chain`/`unregister_chain` are called
+    from `_handle_org_delegate_task` and `_mark_chain_closed` respectively.
+    Completion is signalled via :pyattr:`completed`.
+
+    The :pyattr:`last_progress_at` timestamp is refreshed by `_touch()` whenever
+    any progress signal fires (node status change, org tool call, messenger
+    dispatch, chain event). It is consumed **only** by the command watchdog to
+    decide whether to emit a stuck warning or to soft-stop the organization.
+    It does **not** participate in completion judgement.
+    """
+
+    __slots__ = (
+        "org_id",
+        "root_node_id",
+        "command_id",
+        "open_chains",
+        "completed",
+        "last_progress_at",
+        "started_at",
+        "warned_stuck",
+        "auto_stopped",
+    )
+
+    def __init__(
+        self,
+        org_id: str,
+        root_node_id: str,
+        command_id: str | None = None,
+    ) -> None:
+        self.org_id = org_id
+        self.root_node_id = root_node_id
+        self.command_id = command_id
+        self.open_chains: set[str] = set()
+        self.completed: asyncio.Event = asyncio.Event()
+        now = time.monotonic()
+        self.last_progress_at: float = now
+        self.started_at: float = now
+        self.warned_stuck: bool = False
+        self.auto_stopped: bool = False
+
+    def _touch(self) -> None:
+        self.last_progress_at = time.monotonic()
+        self.warned_stuck = False
+
+    def register_chain(self, chain_id: str) -> None:
+        if not chain_id:
+            return
+        self.open_chains.add(chain_id)
+        self._touch()
+        self.completed.clear()
+
+    def unregister_chain(self, chain_id: str) -> None:
+        if not chain_id:
+            return
+        self.open_chains.discard(chain_id)
+        self._touch()
+
+
 class OrgRuntime:
     """Core runtime engine for organization orchestration."""
 
@@ -140,6 +208,19 @@ class OrgRuntime:
         self._post_hook_cooldown: dict[str, float] = {}
         self._suppress_post_hook: dict[str, bool] = {}
         self._latest_root_result: dict[str, dict] = {}
+
+        # 用户命令生命周期追踪：key=(org_id, root_node_id) → UserCommandTracker
+        # 由 send_command 在命令开始时创建、结束时移除。用于事件驱动的命令完成
+        # 判定（所有 chain 关闭 + root IDLE + root inbox 空），并给看门狗提供
+        # `last_progress_at` / `warned_stuck` 等状态。
+        self._active_user_cmd: dict[tuple[str, str], UserCommandTracker] = {}
+
+        # root 节点"下一次激活"的来源标签，控制 _latest_root_result 的写入门禁。
+        # key = f"{org_id}:{node_id}"，value ∈ {"user_command", "task_delivered",
+        # "delivery_followup", "question", "answer", "feedback",
+        # "notification", "post_task_notify", "other"}。在 _activate_and_run_inner
+        # 写入 _latest_root_result 前 pop 出来，只有在白名单内的来源才写入。
+        self._root_activation_origin: dict[str, str] = {}
 
         # 最近被显式停止/删除的组织 id（短期集合，用于让 in-flight tool 调用
         # 返回"组织已停止，任务被取消"这样的语义化错误而不是"组织未运行"）
@@ -218,6 +299,13 @@ class OrgRuntime:
             messenger = self._messengers.get(org_id)
             if messenger:
                 await messenger.stop_background_tasks()
+
+        # 释放所有挂起的命令 tracker，防止 send_command 的等待者悬挂
+        for tracker in list(self._active_user_cmd.values()):
+            if not tracker.completed.is_set():
+                tracker.completed.set()
+        self._active_user_cmd.clear()
+        self._root_activation_origin.clear()
 
         self._active_orgs.clear()
         self._messengers.clear()
@@ -627,21 +715,75 @@ class OrgRuntime:
 
         if self._is_stop_intent(content):
             await self._soft_stop_org(org_id)
-            result = await self._activate_and_run(org, target, tagged_content, chain_id=chain_id)
+            result = await self._activate_and_run(
+                org, target, tagged_content,
+                chain_id=chain_id, activation_origin="user_command",
+            )
             if chain_id and isinstance(result, dict):
                 result["chain_id"] = chain_id
             return result
 
-        result = await self._activate_and_run(org, target, tagged_content, chain_id=chain_id)
+        # 事件驱动的命令完成检测：为这条命令创建一个 UserCommandTracker，
+        # 它在 root 节点发起的 org_delegate_task 上 register_chain、
+        # 在 _mark_chain_closed 上 unregister_chain。首次激活完成 + 所有 chain
+        # 关闭 + root IDLE + root inbox 空时 tracker.completed 被 set。
+        # 与 tracker 并行跑一个看门狗协程，只负责"真正卡死"的预警/兜底，
+        # 不参与完成判定。
+        tracker_key = (org_id, target.id)
+        prior = self._active_user_cmd.pop(tracker_key, None)
+        if prior is not None and not prior.completed.is_set():
+            # 极少见：同一 root 上两条命令重叠。先标记旧的 completed 让其
+            # 看门狗/等待者退出，避免悬挂。
+            prior.completed.set()
 
-        if self._has_active_delegations(org_id, target.id):
-            final = await self._wait_delegation_completion(org_id, target.id, timeout=300)
-            if final:
-                result = final
+        tracker = UserCommandTracker(org_id, target.id)
+        self._active_user_cmd[tracker_key] = tracker
 
-        if chain_id and isinstance(result, dict):
-            result["chain_id"] = chain_id
-        return result
+        watchdog_task = asyncio.create_task(self._command_watchdog(tracker))
+
+        try:
+            result = await self._activate_and_run(
+                org, target, tagged_content,
+                chain_id=chain_id, activation_origin="user_command",
+            )
+            # root 首轮 ReAct 结束后立刻检查一次完成条件（无派工任务时直接命中）
+            self._maybe_finalize_tracker(tracker)
+            if not tracker.completed.is_set():
+                await tracker.completed.wait()
+        finally:
+            self._active_user_cmd.pop(tracker_key, None)
+            if not watchdog_task.done():
+                watchdog_task.cancel()
+            try:
+                await watchdog_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+        # 取 _latest_root_result 作为真正的"用户可见最终结果"——它只会被
+        # user_command / task_delivered / delivery_followup 三类来源写入，
+        # 故 CEO 回复 CFO 预算问题等中间态不会污染这里。
+        final_result = self._latest_root_result.pop(org_id, None)
+        if final_result is None:
+            # 兜底：tracker 完成但 _latest_root_result 因过滤或异常未被写入，
+            # 回退到首轮 _activate_and_run 的返回值。
+            if isinstance(result, dict):
+                final_result = dict(result)
+            else:
+                final_result = {
+                    "node_id": target.id,
+                    "result": str(result) if result is not None else "",
+                }
+
+        if tracker.auto_stopped:
+            final_result["stopped_by_watchdog"] = True
+            final_result.setdefault(
+                "warning",
+                "组织长时间无进度，已自动暂停，此为已有阶段性结果。",
+            )
+
+        if chain_id:
+            final_result["chain_id"] = chain_id
+        return final_result
 
     async def cancel_node_task(
         self,
@@ -701,6 +843,13 @@ class OrgRuntime:
         except Exception as e:
             logger.warning(f"[OrgRuntime] Failed to reset node status: {e}")
 
+        # (c2) 如果取消的恰好是某个进行中命令的 root 节点，标记其 tracker 完成，
+        # 让 send_command 的等待者立即返回——避免"用户通过 UI 取消任务后
+        # HTTP 请求仍在后台挂着等 completed 事件"的死锁。
+        tracker = self._active_user_cmd.get((org_id, node_id))
+        if tracker is not None and not tracker.completed.is_set():
+            tracker.completed.set()
+
         # (d) Broadcast events
         self.get_event_store(org_id).emit(
             "task_cancelled", node_id, {"reason": reason[:_LIM_EVENT]},
@@ -749,7 +898,9 @@ class OrgRuntime:
                 {"root_node": root.id, "core_business_len": len(org.core_business)},
             )
 
-            await self._activate_and_run(org, root, prompt)
+            await self._activate_and_run(
+                org, root, prompt, activation_origin="auto_kickoff",
+            )
         except Exception as e:
             logger.error(f"[OrgRuntime] Auto-kickoff failed for {org.id}: {e}")
 
@@ -790,6 +941,15 @@ class OrgRuntime:
             bucket[chain_id] = time.time()
             while len(bucket) > self._closed_chain_max_per_org:
                 bucket.popitem(last=False)
+        # 关链事件 → 通知所有该 org 下的 UserCommandTracker 移除此 chain 并
+        # 尝试 finalize。若所有 chain 都关闭 + root IDLE + inbox 空则命令完成。
+        try:
+            self._tracker_unregister_chain(org_id, chain_id)
+        except Exception:
+            logger.debug(
+                "[OrgRuntime] tracker unregister_chain failed",
+                exc_info=True,
+            )
 
     def _cleanup_accepted_chain(
         self,
@@ -922,8 +1082,16 @@ class OrgRuntime:
     async def _activate_and_run(
         self, org: Organization, node: OrgNode, prompt: str,
         chain_id: str | None = None,
+        *,
+        activation_origin: str | None = None,
     ) -> dict:
-        """Activate a node agent and run a task (with org-level concurrency limit)."""
+        """Activate a node agent and run a task (with org-level concurrency limit).
+
+        ``activation_origin`` tags *this* activation's source for root-node
+        result filtering. See :pyattr:`_FINAL_RESULT_ORIGINS`. When ``None``
+        (default) the tag stored in ``_root_activation_origin`` is consumed
+        as a fallback (legacy path). Prefer passing explicitly.
+        """
         if node.status == NodeStatus.FROZEN:
             return {"error": f"{node.role_title} 已被冻结，无法执行任务"}
         if node.status == NodeStatus.OFFLINE:
@@ -931,11 +1099,16 @@ class OrgRuntime:
 
         sem = self._get_org_semaphore(org.id)
         async with sem:
-            return await self._activate_and_run_inner(org, node, prompt, chain_id)
+            return await self._activate_and_run_inner(
+                org, node, prompt, chain_id,
+                activation_origin=activation_origin,
+            )
 
     async def _activate_and_run_inner(
         self, org: Organization, node: OrgNode, prompt: str,
         chain_id: str | None = None,
+        *,
+        activation_origin: str | None = None,
     ) -> dict:
         """_activate_and_run 的内部实现（已在 org semaphore 保护下）。"""
         if node.status == NodeStatus.FROZEN:
@@ -957,6 +1130,7 @@ class OrgRuntime:
 
         self._set_node_status(org, node, NodeStatus.BUSY, "task_started")
         self._node_last_activity[cache_key] = time.monotonic()
+        self._touch_trackers_for_org(org.id)
         await self._save_org(org)
 
         if org.id not in self._active_orgs:
@@ -1076,7 +1250,28 @@ class OrgRuntime:
 
             is_root = (node.level == 0 or not org.get_parent(node.id))
             if is_root:
-                self._latest_root_result[org.id] = {"node_id": node.id, "result": result_text}
+                # 只有来源属于"用户可见终态"的激活才允许写入 _latest_root_result。
+                # 见 _origin_from_msg_type 与 _FINAL_RESULT_ORIGINS：
+                # - user_command：send_command 下发的首次激活
+                # - task_delivered：下级提交交付物后唤醒 root 做综合汇报
+                # - delivery_followup：验收后的后续处理
+                # QUESTION/ANSWER/FEEDBACK/NOTIFICATION 等 inter-agent 通信不写入，
+                # 避免 CEO 回答下级问题的文字被当成"最终结果"返回给用户。
+                # 优先用显式传入的 activation_origin；若未传入（兼容旧路径）
+                # 则回退读 _root_activation_origin。默认保守按 "user_command"
+                # 处理，保证历史调用点（无命令跟踪）的行为不变。
+                if activation_origin:
+                    origin = activation_origin
+                else:
+                    origin = self._pop_root_origin(
+                        org.id, node.id, "user_command",
+                    )
+                if is_normal and origin in self._FINAL_RESULT_ORIGINS:
+                    self._latest_root_result[org.id] = {
+                        "node_id": node.id,
+                        "result": result_text,
+                        "origin": origin,
+                    }
 
             # 非正常结束时不触发 post-task hook（避免把"部分/失败结果"再次下发下游）
             if is_normal:
@@ -1720,13 +1915,24 @@ class OrgRuntime:
                 if mb and not mb.is_paused:
                     mb.mark_handler_processed(msg.id)
 
+        # 任一消息被派发都算一次"组织在呼吸"的进度信号。放在消息被真正投递
+        # 到 agent 前，覆盖 "收到消息但当前节点并发已满、消息滞留 mailbox" 的路径。
+        self._touch_trackers_for_org(org_id)
+
+        # 按消息类型为"本次激活"计算来源标签。显式参数传入 _activate_and_run，
+        # 避免并发场景下共享字典被后到消息覆盖的竞态。
+        msg_origin = self._origin_from_msg_type(msg.msg_type)
+
         if active_count >= self.max_concurrent_per_node:
             target_clone = self._try_route_to_clone(org, node, msg, pending)
             if target_clone:
                 _mark_dispatched()
                 task_prompt = self._format_incoming_message(msg)
                 chain_id = msg.metadata.get("task_chain_id") or None
-                await self._activate_and_run(org, target_clone, task_prompt, chain_id=chain_id)
+                await self._activate_and_run(
+                    org, target_clone, task_prompt,
+                    chain_id=chain_id, activation_origin=msg_origin,
+                )
                 if messenger:
                     messenger.mark_processed(msg.id)
                 return
@@ -1738,7 +1944,10 @@ class OrgRuntime:
                     self._register_clone_in_messenger(org_id, new_clone)
                     task_prompt = self._format_incoming_message(msg)
                     chain_id = msg.metadata.get("task_chain_id") or None
-                    await self._activate_and_run(org, new_clone, task_prompt, chain_id=chain_id)
+                    await self._activate_and_run(
+                        org, new_clone, task_prompt,
+                        chain_id=chain_id, activation_origin=msg_origin,
+                    )
                     if messenger:
                         messenger.mark_processed(msg.id)
                     return
@@ -1752,7 +1961,10 @@ class OrgRuntime:
         _mark_dispatched()
         task_prompt = self._format_incoming_message(msg)
         chain_id = msg.metadata.get("task_chain_id") or ""
-        await self._activate_and_run(org, node, task_prompt, chain_id=chain_id or None)
+        await self._activate_and_run(
+            org, node, task_prompt,
+            chain_id=chain_id or None, activation_origin=msg_origin,
+        )
         if messenger:
             messenger.mark_processed(msg.id)
 
@@ -1934,6 +2146,12 @@ class OrgRuntime:
             f"[OrgRuntime] Node {node.id}: {old_status.value} -> {new_status.value}"
             + (f" ({reason})" if reason else "")
         )
+        # 任一节点状态切换都算一次"组织在呼吸"的进度信号，重置命令看门狗
+        # 计时器；同时在节点进入 IDLE 时有可能满足命令完成条件，触发一次
+        # 终态检测（极廉价，未命中 _active_user_cmd 时 O(0)）。
+        self._touch_trackers_for_org(org.id)
+        if new_status == NodeStatus.IDLE:
+            self._maybe_finalize_trackers_for_org(org.id)
 
     # ------------------------------------------------------------------
     # Internal
@@ -2006,6 +2224,17 @@ class OrgRuntime:
         for k in list(self._node_current_chain.keys()):
             if k.startswith(f"{org_id}:"):
                 self._node_current_chain.pop(k, None)
+
+        # 组织被注销时释放所有挂起的命令 tracker 与 origin 标签，避免
+        # send_command 的 await tracker.completed.wait() 永久挂起。
+        for key in list(self._active_user_cmd.keys()):
+            if key[0] == org_id:
+                tracker = self._active_user_cmd.pop(key, None)
+                if tracker and not tracker.completed.is_set():
+                    tracker.completed.set()
+        for k in list(self._root_activation_origin.keys()):
+            if k.startswith(f"{org_id}:"):
+                self._root_activation_origin.pop(k, None)
 
     def _get_save_lock(self, org_id: str) -> asyncio.Lock:
         lock = self._save_locks.get(org_id)
@@ -2229,7 +2458,11 @@ class OrgRuntime:
             )
             task_prompt = self._format_incoming_message(msg)
             chain_id = msg.metadata.get("task_chain_id") or None
-            await self._activate_and_run(org, node, task_prompt, chain_id=chain_id)
+            msg_origin = self._origin_from_msg_type(msg.msg_type)
+            await self._activate_and_run(
+                org, node, task_prompt,
+                chain_id=chain_id, activation_origin=msg_origin,
+            )
             dispatched += 1
         return dispatched
 
@@ -2307,7 +2540,11 @@ class OrgRuntime:
                 f"如有待验收的交付物，请处理。如无，则无需任何操作。\n"
                 f"⚠️ 禁止：不要分配新任务、不要扩展工作范围、不要主动发起任何工作。"
             )
-            await self._activate_and_run(org, parent, prompt)
+            # post_task_notify 不是"用户命令路径"，不应写入 _latest_root_result，
+            # 否则父节点处理这条通知产生的文本会污染用户侧最终结果。
+            await self._activate_and_run(
+                org, parent, prompt, activation_origin="post_task_notify",
+            )
         except Exception as e:
             logger.debug(f"[OrgRuntime] Post-task hook error: {e}")
 
@@ -2339,6 +2576,15 @@ class OrgRuntime:
         self.get_event_store(org_id).emit("soft_stop", "user", {})
 
     def _has_active_delegations(self, org_id: str, root_node_id: str) -> bool:
+        """Return True if any downstream work exists for this command.
+
+        Includes:
+          - non-root nodes in BUSY/WAITING state
+          - non-root nodes with pending messages in their mailbox
+          - **root node itself** with pending messages (covers the window where
+            a subordinate just submitted a deliverable but the TASK_DELIVERED
+            message has not yet been dispatched to the root's ReAct loop).
+        """
         org = self.get_org(org_id)
         if not org:
             return False
@@ -2350,11 +2596,287 @@ class OrgRuntime:
             for node in org.nodes:
                 if node.id != root_node_id and messenger.get_pending_count(node.id) > 0:
                     return True
+            if messenger.get_pending_count(root_node_id) > 0:
+                return True
         return False
+
+    # ------------------------------------------------------------------
+    # UserCommandTracker helpers
+    # ------------------------------------------------------------------
+
+    def _get_tracker(
+        self, org_id: str, root_node_id: str,
+    ) -> UserCommandTracker | None:
+        return self._active_user_cmd.get((org_id, root_node_id))
+
+    def _trackers_for_org(self, org_id: str) -> list[UserCommandTracker]:
+        """Return all active trackers for an organization (usually 0 or 1)."""
+        return [
+            t for (oid, _nid), t in self._active_user_cmd.items()
+            if oid == org_id
+        ]
+
+    def _touch_trackers_for_org(self, org_id: str) -> None:
+        """Refresh progress timestamp on every tracker active in this org.
+
+        Called on any progress signal: node status change, org_* tool call,
+        messenger dispatch, chain register/unregister. Cheap no-op when no
+        command is in flight.
+        """
+        if not self._active_user_cmd:
+            return
+        for tracker in self._trackers_for_org(org_id):
+            tracker._touch()
+
+    def _maybe_finalize_tracker(
+        self, tracker: UserCommandTracker,
+    ) -> None:
+        """If completion conditions are met, set tracker.completed.
+
+        Completion = all chains closed + root IDLE + no active delegations
+        (which already covers root/non-root pending messages).
+        """
+        if tracker.completed.is_set():
+            return
+        if tracker.open_chains:
+            return
+        org = self.get_org(tracker.org_id)
+        if not org:
+            tracker.completed.set()
+            return
+        root = org.get_node(tracker.root_node_id)
+        if not root or root.status != NodeStatus.IDLE:
+            return
+        if self._has_active_delegations(tracker.org_id, tracker.root_node_id):
+            return
+        tracker.completed.set()
+
+    def _maybe_finalize_trackers_for_org(self, org_id: str) -> None:
+        if not self._active_user_cmd:
+            return
+        for tracker in self._trackers_for_org(org_id):
+            self._maybe_finalize_tracker(tracker)
+
+    def _tracker_register_chain(
+        self, org_id: str, opener_node_id: str, chain_id: str,
+    ) -> None:
+        """Hook point for tool_handler: register a newly opened chain.
+
+        Only the tracker whose root matches either ``opener_node_id`` itself
+        or the opener's ancestor root is updated — this covers both the case
+        where the CEO(root) delegates directly, and the case where a
+        subordinate delegates further (the chain still belongs to the current
+        user command).
+        """
+        if not self._active_user_cmd or not chain_id:
+            return
+        org = self.get_org(org_id)
+        if not org:
+            return
+        for tracker in self._trackers_for_org(org_id):
+            if tracker.root_node_id == opener_node_id or self._is_descendant(
+                org, tracker.root_node_id, opener_node_id,
+            ):
+                tracker.register_chain(chain_id)
+
+    def _tracker_unregister_chain(
+        self, org_id: str, chain_id: str,
+    ) -> None:
+        if not self._active_user_cmd or not chain_id:
+            return
+        for tracker in self._trackers_for_org(org_id):
+            if chain_id in tracker.open_chains:
+                tracker.unregister_chain(chain_id)
+        self._maybe_finalize_trackers_for_org(org_id)
+
+    @staticmethod
+    def _is_descendant(
+        org: Organization, ancestor_id: str, node_id: str,
+    ) -> bool:
+        """Return True if ``node_id`` is a descendant of (or equal to) ``ancestor_id``."""
+        if ancestor_id == node_id:
+            return True
+        current = org.get_node(node_id)
+        # Walk up via get_parent; bounded by node count to avoid accidental cycles.
+        seen: set[str] = set()
+        depth = 0
+        while current and depth < len(org.nodes) + 1:
+            parent = org.get_parent(current.id)
+            if not parent:
+                return False
+            if parent.id == ancestor_id:
+                return True
+            if parent.id in seen:
+                return False
+            seen.add(parent.id)
+            current = parent
+            depth += 1
+        return False
+
+    def _mark_root_origin(
+        self, org_id: str, node_id: str, origin: str,
+    ) -> None:
+        """Tag the next `_activate_and_run_inner` for this root node with an origin.
+
+        The tag is consumed (popped) inside `_activate_and_run_inner` and
+        controls whether the resulting FINAL_ANSWER gets written into
+        `_latest_root_result`. Only writes from whitelisted origins
+        (user_command / task_delivered / delivery_followup) surface to the
+        user; inter-agent question/answer replies are discarded to avoid
+        polluting the final command result.
+        """
+        if not org_id or not node_id or not origin:
+            return
+        self._root_activation_origin[f"{org_id}:{node_id}"] = origin
+
+    def _pop_root_origin(
+        self, org_id: str, node_id: str, default: str = "user_command",
+    ) -> str:
+        return self._root_activation_origin.pop(
+            f"{org_id}:{node_id}", default,
+        )
+
+    @staticmethod
+    def _origin_from_msg_type(msg_type: Any) -> str:
+        """Map an inbound message type to an activation origin tag."""
+        value = getattr(msg_type, "value", msg_type)
+        return {
+            MsgType.TASK_ASSIGN.value: "task_assign",
+            MsgType.TASK_DELIVERED.value: "task_delivered",
+            MsgType.TASK_ACCEPTED.value: "delivery_followup",
+            MsgType.TASK_REJECTED.value: "delivery_followup",
+            MsgType.REPORT.value: "report",
+            MsgType.QUESTION.value: "question",
+            MsgType.ANSWER.value: "answer",
+            MsgType.ESCALATE.value: "escalate",
+            MsgType.BROADCAST.value: "broadcast",
+            MsgType.DEPT_BROADCAST.value: "broadcast",
+            MsgType.FEEDBACK.value: "feedback",
+            MsgType.HANDSHAKE.value: "handshake",
+        }.get(value, "other")
+
+    _FINAL_RESULT_ORIGINS: frozenset[str] = frozenset({
+        "user_command",
+        "task_delivered",
+        "delivery_followup",
+    })
+
+    async def _command_watchdog(self, tracker: UserCommandTracker) -> None:
+        """Stuck-detection watchdog for a user command.
+
+        Does **not** participate in completion judgement. Every iteration it
+        checks ``time.monotonic() - tracker.last_progress_at``:
+          - >= warn_secs and not yet warned → broadcast stuck warning, mark warned
+          - >= autostop_secs → mark auto_stopped, soft_stop the org, set completed
+          - wall-clock since start >= hard_cap → same soft_stop path
+
+        Any progress signal calls ``tracker._touch()`` which resets
+        ``last_progress_at`` and ``warned_stuck``, so long tasks that keep
+        producing progress never trip the watchdog.
+        """
+        try:
+            from openakita.config import settings as _settings
+        except Exception:
+            _settings = None
+
+        def _cfg(attr: str, default: int) -> int:
+            if _settings is None:
+                return default
+            try:
+                v = int(getattr(_settings, attr, default) or default)
+            except Exception:
+                v = default
+            return v
+
+        warn_secs = max(30, _cfg("org_command_stuck_warn_secs", 300))
+        autostop_secs = max(
+            warn_secs + 60, _cfg("org_command_stuck_autostop_secs", 1800)
+        )
+        hard_cap = _cfg("org_command_timeout_secs", 10800)
+
+        poll_interval = max(5.0, min(15.0, warn_secs / 3.0))
+
+        try:
+            while not tracker.completed.is_set():
+                try:
+                    await asyncio.wait_for(
+                        tracker.completed.wait(), timeout=poll_interval,
+                    )
+                    return
+                except asyncio.TimeoutError:
+                    pass
+
+                if tracker.completed.is_set():
+                    return
+
+                now = time.monotonic()
+                idle = now - tracker.last_progress_at
+
+                if idle >= warn_secs and not tracker.warned_stuck:
+                    tracker.warned_stuck = True
+                    try:
+                        await self._broadcast_ws("org:command_stuck_warning", {
+                            "org_id": tracker.org_id,
+                            "root_node_id": tracker.root_node_id,
+                            "command_id": tracker.command_id or "",
+                            "open_chains": list(tracker.open_chains),
+                            "idle_secs": int(idle),
+                        })
+                    except Exception:
+                        logger.debug(
+                            "[CmdWatchdog] broadcast stuck_warning failed",
+                            exc_info=True,
+                        )
+                    logger.warning(
+                        "[CmdWatchdog] org=%s root=%s idle=%ds (warn)",
+                        tracker.org_id, tracker.root_node_id, int(idle),
+                    )
+
+                should_autostop = idle >= autostop_secs
+                if (
+                    not should_autostop
+                    and hard_cap > 0
+                    and (now - tracker.started_at) >= hard_cap
+                ):
+                    should_autostop = True
+                    logger.warning(
+                        "[CmdWatchdog] org=%s root=%s hit hard cap %ds",
+                        tracker.org_id, tracker.root_node_id, hard_cap,
+                    )
+
+                if should_autostop and not tracker.auto_stopped:
+                    tracker.auto_stopped = True
+                    logger.warning(
+                        "[CmdWatchdog] org=%s root=%s auto soft-stopping (idle=%ds)",
+                        tracker.org_id, tracker.root_node_id, int(idle),
+                    )
+                    try:
+                        await self._soft_stop_org(tracker.org_id)
+                    except Exception:
+                        logger.error(
+                            "[CmdWatchdog] soft_stop failed",
+                            exc_info=True,
+                        )
+                    finally:
+                        tracker.completed.set()
+                    return
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.error(
+                "[CmdWatchdog] unexpected error, exiting watchdog",
+                exc_info=True,
+            )
 
     async def _wait_delegation_completion(
         self, org_id: str, root_node_id: str, timeout: int = 300,
     ) -> dict | None:
+        """Deprecated: legacy time-based waiter, kept only for back-compat.
+
+        New code path in :meth:`send_command` uses UserCommandTracker +
+        _command_watchdog for event-driven completion. This wrapper is
+        retained so external callers (if any) keep functioning.
+        """
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             await asyncio.sleep(5)
@@ -2525,7 +3047,10 @@ class OrgRuntime:
                                 )
                                 self._heartbeat.record_activity(org_id)
                                 asyncio.ensure_future(
-                                    self._activate_and_run(org, root, prompt)
+                                    self._activate_and_run(
+                                        org, root, prompt,
+                                        activation_origin="watchdog_kick",
+                                    )
                                 )
 
             except asyncio.CancelledError:
@@ -2599,7 +3124,9 @@ class OrgRuntime:
                         node_thresholds[node.id] = min(threshold * 1.5, 600)
                         if self._suppress_post_hook.get(org_id):
                             continue
-                        await self._activate_and_run(org, node, prompt)
+                        await self._activate_and_run(
+                            org, node, prompt, activation_origin="idle_probe",
+                        )
                         break
 
             except asyncio.CancelledError:

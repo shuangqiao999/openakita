@@ -187,13 +187,12 @@ class AgentHubHandler:
         )
 
     def _try_reload_skills(self) -> None:
-        """Best-effort reload of skills after installation."""
+        """Hub Agent 安装后，走统一刷新入口让附带的技能立刻生效。"""
         try:
-            loader = getattr(self.agent, "skill_loader", None)
-            if loader:
-                from ...config import settings
+            from ...skills.events import SkillEvent
 
-                loader.load_all(settings.project_root)
+            if hasattr(self.agent, "propagate_skill_change"):
+                self.agent.propagate_skill_change(SkillEvent.INSTALL)
                 logger.info("Skills reloaded after Hub install")
         except Exception as e:
             logger.warning(f"Skill reload after Hub install failed (non-blocking): {e}")

@@ -843,6 +843,14 @@ async def _stream_chat(
                 await _agent_task
             except (asyncio.CancelledError, Exception):
                 pass
+            try:
+                import openakita.main as _main_mod
+                _orch = getattr(_main_mod, "_orchestrator", None)
+                _sid = chat_request.conversation_id or ""
+                if _orch is not None and _sid:
+                    _orch.cancel_request(_sid)
+            except Exception as _e:
+                logger.debug(f"[Chat API] purge sub-agent states failed: {_e}")
 
         # ── Release busy lock (via lifecycle manager) & broadcast message update ──
         _conv_id = chat_request.conversation_id or ""
@@ -922,6 +930,51 @@ async def chat(request: Request, body: ChatRequest):
                     "busy_client_id": conflict.client_id,
                     "busy_since": conflict.start_time,
                     "message": "该会话正在其他终端进行中，请新建会话或稍后再试",
+                },
+            )
+
+    if body.agent_profile_id:
+        from openakita.agents.presets import SYSTEM_PRESETS
+        from openakita.agents.profile import get_profile_store
+        _known = any(p.id == body.agent_profile_id for p in SYSTEM_PRESETS)
+        if not _known:
+            try:
+                _known = get_profile_store().get(body.agent_profile_id) is not None
+            except Exception:
+                _known = False
+        if not _known:
+            if client_id:
+                await lifecycle.finish(conversation_id, generation=busy_gen)
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": "unknown_agent_profile_id",
+                    "agent_profile_id": body.agent_profile_id,
+                    "message": f"未知的 agent_profile_id: {body.agent_profile_id}",
+                },
+            )
+
+    if body.endpoint:
+        try:
+            from openakita.api.routes.config import _get_endpoint_manager
+            _mgr = _get_endpoint_manager()
+            _names: set[str] = set()
+            for _et in ("endpoints", "compiler_endpoints", "stt_endpoints"):
+                for _ep in _mgr.list_endpoints(_et) or []:
+                    _n = _ep.get("name")
+                    if _n:
+                        _names.add(_n)
+        except Exception:
+            _names = set()
+        if _names and body.endpoint not in _names:
+            if client_id:
+                await lifecycle.finish(conversation_id, generation=busy_gen)
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": "unknown_endpoint",
+                    "endpoint": body.endpoint,
+                    "message": f"未知的 endpoint: {body.endpoint}",
                 },
             )
 

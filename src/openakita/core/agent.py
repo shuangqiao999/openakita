@@ -627,13 +627,14 @@ class Agent:
             memory_manager=self.memory_manager,
         )
 
-        # 技能管理器（委托自 _install_skill / _load_installed_skills 等）
+        # 技能管理器（仅负责从 Git/URL 落盘 + 首次 loader.load_skill）。
+        # 刷新目录缓存、通知 Pool、广播 SkillEvent 统一由 ``propagate_skill_change`` 负责，
+        # 此处不再传入回调，避免半套刷新路径。
         self.skill_manager = SkillManager(
             skill_registry=self.skill_registry,
             skill_loader=self.skill_loader,
             skill_catalog=self.skill_catalog,
             shell_tool=self.shell_tool,
-            on_skill_loaded=self._on_skill_manager_loaded,
         )
 
         # 插件目录（在 _load_plugins 中设置）
@@ -1425,28 +1426,14 @@ class Agent:
             logger.debug("Failed to start skill watcher: %s", e)
 
     def _on_skills_dir_changed(self) -> None:
-        """F9: Callback when skill files change on disk."""
+        """F9: Watchdog 回调（运行在 watcher 的独立 Timer 线程中）。
+
+        全部刷新逻辑收敛到 ``propagate_skill_change``；此回调只负责跨线程调度。
+        """
         try:
-            from ..skills.watcher import clear_all_skill_caches
+            from ..skills.events import SkillEvent
 
-            clear_all_skill_caches()
-            loaded = self.skill_loader.load_all(settings.project_root)
-            self.skill_catalog.invalidate_cache()
-            self._skill_catalog_text = self.skill_catalog.generate_catalog()
-            self._update_skill_tools()
-
-            # F8: refresh conditional activation registry
-            if hasattr(self, "_skill_activation"):
-                self._skill_activation.clear()
-                for skill in self.skill_registry.list_enabled():
-                    if skill.paths or skill.fallback_for_toolsets:
-                        self._skill_activation.register_conditional(skill)
-                self._sync_available_toolsets()
-
-            from ..skills.events import SkillEvent, notify_skills_changed
-
-            notify_skills_changed(SkillEvent.HOT_RELOAD)
-            logger.info("Hot-reloaded %d skills after file change", loaded)
+            self.propagate_skill_change(SkillEvent.HOT_RELOAD)
         except Exception as e:
             logger.warning("Skill hot-reload failed: %s", e)
 
@@ -1536,10 +1523,100 @@ class Agent:
         except (ImportError, AttributeError):
             pass
 
-    def _on_skill_manager_loaded(self) -> None:
-        """SkillManager 安装完技能后的回调：同步映射 + 通知池。"""
-        self._update_skill_tools()
-        self.notify_pools_skills_changed()
+    def propagate_skill_change(
+        self,
+        action: "Any" = None,
+        *,
+        rescan: bool = True,
+    ) -> None:
+        """技能状态变更的唯一刷新入口。
+
+        调用方（API 路由、工具处理器、配置端点、watchdog 回调、SkillManager 安装）
+        触达任何会影响技能可见性 / 内容的操作后，**必须且只能**通过此方法完成刷新，
+        从而保证：
+          1. Parser / Loader 内部缓存被清空，磁盘改动能被下一次 ``load_all`` 看见；
+          2. ``data/skills.json`` 定义的 external_allowlist 被重新应用；
+          3. ``SkillCatalog`` 与 ``_skill_catalog_text`` 与注册表保持一致；
+          4. 系统 skill 的 tool→handler 映射同步到 handler_registry；
+          5. F8 条件激活注册表刷新；
+          6. CLI 长驻路径使用的 ``_context.system`` 缓存失效重建；
+          7. 全局 Agent 实例池版本号自增，使 Desktop Chat 下条请求拿到新 Agent；
+          8. 跨层 ``notify_skills_changed`` 仅此处触发（API HTTP 缓存 + WebSocket 广播）。
+
+        Args:
+            action: ``SkillEvent`` 枚举或字符串，仅用于广播与日志，不影响刷新路径。
+            rescan: 为 False 时跳过 ``loader.load_all``，仅走 allowlist→catalog→pool
+                刷新链（启停 / 配置面板场景常用，避免重复扫描）。
+        """
+        from ..skills.events import SkillEvent, notify_skills_changed
+        from ..skills.watcher import clear_all_skill_caches
+
+        clear_all_skill_caches()
+
+        if rescan:
+            try:
+                self.skill_loader.load_all(settings.project_root)
+            except Exception as e:
+                logger.warning("propagate_skill_change: load_all failed: %s", e)
+
+        try:
+            from ..skills.allowlist_io import read_allowlist
+            from ..skills.preset_utils import collect_preset_referenced_skills
+
+            _, external_allowlist = read_allowlist()
+            effective = self.skill_loader.compute_effective_allowlist(external_allowlist)
+            agent_skills = collect_preset_referenced_skills()
+            self.skill_loader.prune_external_by_allowlist(
+                effective, agent_referenced_skills=agent_skills
+            )
+        except Exception as e:
+            logger.warning("propagate_skill_change: allowlist apply failed: %s", e)
+
+        try:
+            self.skill_catalog.invalidate_cache()
+            self._skill_catalog_text = self.skill_catalog.generate_catalog()
+        except Exception as e:
+            logger.warning("propagate_skill_change: catalog rebuild failed: %s", e)
+
+        try:
+            self._update_skill_tools()
+        except Exception as e:
+            logger.warning("propagate_skill_change: tool mapping update failed: %s", e)
+
+        try:
+            if hasattr(self, "_skill_activation"):
+                self._skill_activation.clear()
+                for skill in self.skill_registry.list_enabled():
+                    if skill.paths or skill.fallback_for_toolsets:
+                        self._skill_activation.register_conditional(skill)
+                self._sync_available_toolsets()
+        except Exception as e:
+            logger.warning("propagate_skill_change: activation refresh failed: %s", e)
+
+        try:
+            if getattr(self, "_initialized", False):
+                ctx = getattr(self, "_context", None)
+                if ctx is not None and getattr(ctx, "system", None):
+                    ctx.system = self._build_system_prompt()
+        except Exception as e:
+            logger.warning("propagate_skill_change: system prompt rebuild failed: %s", e)
+
+        try:
+            Agent.notify_pools_skills_changed()
+        except Exception as e:
+            logger.warning("propagate_skill_change: pool notify failed: %s", e)
+
+        try:
+            action_value: str
+            if isinstance(action, SkillEvent):
+                action_value = action.value
+            elif isinstance(action, str) and action:
+                action_value = action
+            else:
+                action_value = SkillEvent.RELOAD.value
+            notify_skills_changed(action_value)
+        except Exception as e:
+            logger.debug("propagate_skill_change: notify_skills_changed failed: %s", e)
 
     async def _install_skill(
         self,
@@ -2140,6 +2217,13 @@ class Agent:
                 "**禁止**使用 delegate_to_agent、delegate_parallel、create_agent、"
                 "spawn_agent 等委派工具。不要创建或委派其他 Agent。\n"
                 "直接用你自己的专业工具（如 web_search、browser、read_file 等）完成任务。\n"
+                "\n"
+                "### 数据结论零伪造原则（必须遵守）\n"
+                "- 若任务要求数值/统计/模拟/计算结果，必须通过 run_shell 执行 python "
+                "或调用对应工具获得，不得凭经验估算。\n"
+                "- 任何没有工具输出佐证的数字、百分比、均值、标准差、概率一律视为违规。\n"
+                "- 无法获得真实数据时，明确返回：\"无法执行：<具体原因>，建议 <替代方案>\"，"
+                "禁止编造数据占位。\n"
             )
 
         profile = self._agent_profile

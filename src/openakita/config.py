@@ -582,6 +582,25 @@ class Settings(BaseSettings):
         description="任务完成时是否自动向父节点发送[通知]：False 表示不主动唤醒父级",
     )
 
+    # === 组织编排 · 用户命令生命周期看门狗 ===
+    # 用户通过 send_command 下发一条顶层指令后，完成判定由事件驱动
+    # （所有委派链 chain 关闭 + root IDLE + root inbox 空）。下列时间参数
+    # 仅用于看门狗：防止组织真正卡死（LLM 挂起、死锁）时命令无限挂起。
+    # 任一进度信号（token / 工具完成 / 节点状态切换 / chain 事件）到达
+    # 都会让 warn/autostop 计时器归零，因此长时但持续产出的任务不会被误停。
+    org_command_stuck_warn_secs: int = Field(
+        default=300,
+        description="无进度多久（秒）向前端发出 stuck_warning 提示（不终止命令，默认 300=5 分钟）",
+    )
+    org_command_stuck_autostop_secs: int = Field(
+        default=1800,
+        description="无进度多久（秒）兜底 soft_stop 组织（默认 1800=30 分钟）",
+    )
+    org_command_timeout_secs: int = Field(
+        default=10800,
+        description="单条命令最长运行时间（秒）硬上限，0 或负数表示不限时（默认 10800=3 小时）",
+    )
+
     @model_validator(mode="after")
     def _enforce_min_max_iterations(self) -> "Settings":
         MIN_ITERATIONS = 15

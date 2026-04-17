@@ -522,6 +522,15 @@ class OrgToolHandler:
         if handler is None:
             return f"Unknown org tool: {tool_name}"
 
+        # 每次 org_* 工具调用都是一次"组织在活动"的进度信号，用来阻止命令
+        # 看门狗误判卡死。对没有进行中 UserCommandTracker 的 org 是 O(0)。
+        try:
+            touch = getattr(self._runtime, "_touch_trackers_for_org", None)
+            if callable(touch):
+                touch(org_id)
+        except Exception:
+            pass
+
         arguments = self._resolve_aliases(arguments)
         arguments = self._coerce_types(arguments)
         self._resolve_node_refs(arguments, org_id, tool_name=tool_name)
@@ -826,6 +835,19 @@ class OrgToolHandler:
 
         messenger.bind_task_affinity(chain_id, to_node)
         self._runtime._chain_delegation_depth[chain_id] = chain_depth + 1
+
+        # 用户命令生命周期追踪：如果当前 org 上存在进行中的 UserCommandTracker
+        # 且本次派工源自 tracker 的 root 或其后代，则把新 chain 登记进 tracker，
+        # 作为"该命令尚未完成"的信号之一。关闭时由 _mark_chain_closed 反向解注册。
+        try:
+            register = getattr(self._runtime, "_tracker_register_chain", None)
+            if callable(register):
+                register(org_id, node_id, chain_id)
+        except Exception:
+            logger.debug(
+                "[ToolHandler] tracker_register_chain failed",
+                exc_info=True,
+            )
 
         self._runtime.get_event_store(org_id).emit(
             "task_assigned", node_id,
