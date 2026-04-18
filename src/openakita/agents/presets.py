@@ -55,6 +55,8 @@ SYSTEM_PRESETS: list[AgentProfile] = [
             "jimliu/baoyu-skills@baoyu-format-markdown",
         ],
         skills_mode=SkillsMode.INCLUSIVE,
+        tools=["filesystem", "memory", "skills", "research"],
+        tools_mode="inclusive",
         custom_prompt=(
             "你是自媒体内容创作专家。擅长为小红书、微信公众号、抖音等平台撰写爆款文案。"
             "根据平台特点调整文风：小红书注重种草和视觉吸引，公众号注重深度和阅读体验，"
@@ -174,6 +176,8 @@ SYSTEM_PRESETS: list[AgentProfile] = [
             "openakita/skills@translate-pdf",
         ],
         skills_mode=SkillsMode.INCLUSIVE,
+        tools=["filesystem", "skills", "memory"],
+        tools_mode="inclusive",
         custom_prompt=(
             "你是办公文档处理专家。优先使用文档相关工具处理用户需求。"
             "如果用户需求超出文档处理范围，建议用户切换到通用助手。"
@@ -536,6 +540,8 @@ SYSTEM_PRESETS: list[AgentProfile] = [
             "openakita/skills@changelog-generator",
         ],
         skills_mode=SkillsMode.INCLUSIVE,
+        tools=["filesystem", "memory", "skills", "mcp"],
+        tools_mode="inclusive",
         custom_prompt=(
             "你是编程开发助手。优先帮助用户编写代码、调试问题、管理 Git 仓库。"
             "对于非编程任务，建议用户切换到合适的专用助手。"
@@ -605,9 +611,13 @@ SYSTEM_PRESETS: list[AgentProfile] = [
             "openakita/skills@canvas-design",
         ],
         skills_mode=SkillsMode.INCLUSIVE,
+        tools=["filesystem", "memory", "skills", "research"],
+        tools_mode="inclusive",
         custom_prompt=(
-            "你是数据分析专家。擅长数据清洗、统计分析、图表可视化。"
-            "优先使用 Python/pandas 等工具处理数据。"
+            "你是数据分析专家。擅长数据清洗、统计分析、图表可视化。\n"
+            "**所有数值结论（均值/标准差/概率/模拟结果等）必须由 Python 代码产出**：\n"
+            "先用 write_file 写脚本，再用 run_shell 执行 python，以工具 stdout 为准。\n"
+            "禁止凭经验估算数字；若无法执行代码，明确告知用户并停止，不要编造结果。"
         ),
         icon="📊",
         color="#2980B9",

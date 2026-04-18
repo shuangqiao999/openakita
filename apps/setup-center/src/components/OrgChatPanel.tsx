@@ -487,6 +487,17 @@ export function OrgChatPanel({ orgId, nodeId, apiBaseUrl, compact, showHeader, t
           seg.lines.push(`~ **${nn(nid)}** 更新黑板`);
           updatePreview();
         }
+      } else if (event === "org:command_stuck_warning") {
+        const idle = Number(d.idle_secs || 0);
+        const minutes = Math.floor(idle / 60);
+        const sec = idle % 60;
+        const idleStr = minutes > 0 ? `${minutes}分${sec}秒` : `${sec}秒`;
+        const seg = findOrCreateSeg("system");
+        seg.lines.push(
+          `⏳ 组织已 ${idleStr} 无进度。任务仍在运行中，可继续等待，` +
+          `或在需要时手动停止。长时间无响应时系统会自动兜底暂停。`
+        );
+        updatePreview();
       }
     });
 
@@ -516,14 +527,23 @@ export function OrgChatPanel({ orgId, nodeId, apiBaseUrl, compact, showHeader, t
       }
     };
 
-    const wrapWithProcess = (resultText: string): string => {
-      const doneBanner = '\n\n<div class="ocp-done-banner">&#x2705; 任务已完成</div>';
-      if (segments.length === 0) return resultText + doneBanner;
+    const wrapWithProcess = (
+      resultText: string,
+      opts?: { stoppedByWatchdog?: boolean; warning?: string }
+    ): string => {
+      const stopped = !!opts?.stoppedByWatchdog;
+      const banner = stopped
+        ? '\n\n<div class="ocp-done-banner ocp-done-banner-warn">&#x26A0;&#xFE0F; 组织长时间无进度，已自动暂停（此为阶段性结果）</div>'
+        : '\n\n<div class="ocp-done-banner">&#x2705; 任务已完成</div>';
+      const warningLine = stopped && opts?.warning
+        ? `\n\n> ${opts.warning}`
+        : "";
+      if (segments.length === 0) return resultText + warningLine + banner;
       const allCollapsed = segments.map(seg => {
         const body = seg.lines.join("\n\n");
         return `<details>\n<summary>✓ ${seg.nodeName}</summary>\n\n${body}\n\n</details>`;
       }).join("\n\n");
-      return `${allCollapsed}\n\n---\n\n${resultText}${doneBanner}`;
+      return `${allCollapsed}\n\n---\n\n${resultText}${warningLine}${banner}`;
     };
 
     let finalContent = "";
@@ -551,8 +571,10 @@ export function OrgChatPanel({ orgId, nodeId, apiBaseUrl, compact, showHeader, t
           const result = d.result as Record<string, unknown> | null;
           const error = d.error as string | undefined;
           const resultText = String((result && (result.result || result.error)) || error || JSON.stringify(d));
+          const stopped = !!(result && result.stopped_by_watchdog);
+          const warning = result && typeof result.warning === "string" ? result.warning as string : undefined;
           setTimeout(() => {
-            finalContent = wrapWithProcess(resultText);
+            finalContent = wrapWithProcess(resultText, { stoppedByWatchdog: stopped, warning });
             finalizeResult(finalContent, collectAllFiles());
           }, 500);
         });
@@ -567,7 +589,9 @@ export function OrgChatPanel({ orgId, nodeId, apiBaseUrl, compact, showHeader, t
               if (!resolved) {
                 resolved = true;
                 const resultText = pd.result?.result || pd.result?.error || pd.error || JSON.stringify(pd);
-                finalContent = wrapWithProcess(resultText);
+                const stopped = !!(pd.result && pd.result.stopped_by_watchdog);
+                const warning = pd.result && typeof pd.result.warning === "string" ? pd.result.warning : undefined;
+                finalContent = wrapWithProcess(resultText, { stoppedByWatchdog: stopped, warning });
                 finalizeResult(finalContent, collectAllFiles());
               }
             }
@@ -837,6 +861,10 @@ const CHAT_CSS = `
   margin-top: 12px; padding: 8px 12px; border-radius: 8px;
   background: rgba(34,197,94,0.1); border: 1px solid rgba(34,197,94,0.25);
   color: #22c55e; font-size: 13px; font-weight: 500; text-align: center;
+}
+.ocp-done-banner.ocp-done-banner-warn {
+  background: rgba(234,179,8,0.12); border-color: rgba(234,179,8,0.35);
+  color: #eab308;
 }
 
 /* ─── Input ─── */

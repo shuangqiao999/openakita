@@ -228,7 +228,7 @@ class TestAutoKickoff:
 
             captured_prompt = None
 
-            async def capture_activate(org_obj, node, prompt):
+            async def capture_activate(org_obj, node, prompt, *args, **kwargs):
                 nonlocal captured_prompt
                 captured_prompt = prompt
                 return {"result": "ok"}
@@ -259,7 +259,7 @@ class TestAutoKickoff:
 
             captured_prompt = None
 
-            async def capture_activate(org_obj, node, prompt):
+            async def capture_activate(org_obj, node, prompt, *args, **kwargs):
                 nonlocal captured_prompt
                 captured_prompt = prompt
                 return {"result": "ok"}

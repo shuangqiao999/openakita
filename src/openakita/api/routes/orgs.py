@@ -60,6 +60,63 @@ def _get_runtime(request: Request):
     return rt
 
 
+def _require_org_running(rt, org_id: str):
+    """校验组织处于可接受外部指令的状态。
+
+    只有 ACTIVE/RUNNING 允许；其它状态返回 409，前端应据此弹出
+    "请先启动组织"的提示，而不是让 runtime 在未经用户确认的情况下自动启动。
+
+    DORMANT/ARCHIVED → 请先启动；
+    PAUSED          → 请先恢复；
+    组织不存在       → 404。
+    """
+    from openakita.orgs.models import OrgStatus
+
+    org = rt.get_org(org_id)
+    if not org:
+        raise HTTPException(404, "Organization not found")
+
+    if org.status in (OrgStatus.ACTIVE, OrgStatus.RUNNING):
+        return org
+
+    status_value = org.status.value if hasattr(org.status, "value") else str(org.status)
+
+    if org.status == OrgStatus.PAUSED:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "org_paused",
+                "org_id": org_id,
+                "status": status_value,
+                "message": "组织当前已暂停，请先恢复组织后再下发指令。",
+                "guidance": "点击组织控制面板中的 [恢复] 按钮。",
+            },
+        )
+
+    if org.status == OrgStatus.ARCHIVED:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "org_archived",
+                "org_id": org_id,
+                "status": status_value,
+                "message": "组织已归档，无法下发指令。",
+                "guidance": "请先取消归档（unarchive）并启动组织。",
+            },
+        )
+
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "code": "org_not_running",
+            "org_id": org_id,
+            "status": status_value,
+            "message": "组织尚未启动，无法下发指令或与节点通讯。",
+            "guidance": "请先点击控制面板中的 [启动] 按钮启动组织后再试。",
+        },
+    )
+
+
 # ---- Organization CRUD ----
 
 
@@ -608,13 +665,21 @@ def _bridge_persist_result(
 @router.post("/{org_id}/command")
 async def send_command(request: Request, org_id: str):
     """Submit a command to the organization. Returns immediately with a
-    command_id that the frontend can use to poll for progress / result."""
+    command_id that the frontend can use to poll for progress / result.
+
+    若组织未启动（DORMANT/PAUSED/ARCHIVED），返回 409 让前端提示用户先
+    启动组织，而不是让 runtime 默默自动启动。
+    """
     rt = _get_runtime(request)
     body = await request.json()
     content = body.get("content", "")
     target_node = body.get("target_node_id")
     if not content:
         raise HTTPException(400, "content is required")
+
+    org = _require_org_running(rt, org_id)
+    if target_node and not org.get_node(target_node):
+        raise HTTPException(404, f"Node not found: {target_node}")
 
     _purge_old_commands()
 
@@ -716,6 +781,7 @@ async def broadcast_to_org(request: Request, org_id: str):
     content = body.get("content", "")
     if not content:
         raise HTTPException(400, "content is required")
+    _require_org_running(rt, org_id)
     result = await to_engine(
         rt.handle_org_tool(
             "org_broadcast",
@@ -1407,6 +1473,7 @@ async def org_status_stream(request: Request, org_id: str):
 @router.post("/{org_id}/heartbeat/trigger")
 async def trigger_heartbeat(request: Request, org_id: str):
     rt = _get_runtime(request)
+    _require_org_running(rt, org_id)
     hb = rt.get_heartbeat()
     result = await hb.trigger_heartbeat(org_id)
     return result
@@ -1415,6 +1482,7 @@ async def trigger_heartbeat(request: Request, org_id: str):
 @router.post("/{org_id}/standup/trigger")
 async def trigger_standup(request: Request, org_id: str):
     rt = _get_runtime(request)
+    _require_org_running(rt, org_id)
     hb = rt.get_heartbeat()
     result = await hb.trigger_standup(org_id)
     return result
@@ -1426,6 +1494,7 @@ async def trigger_standup(request: Request, org_id: str):
 @router.post("/{org_id}/nodes/{node_id}/schedules/{schedule_id}/trigger")
 async def trigger_schedule(request: Request, org_id: str, node_id: str, schedule_id: str):
     rt = _get_runtime(request)
+    _require_org_running(rt, org_id)
     scheduler = rt.get_scheduler()
     result = await scheduler.trigger_once(org_id, node_id, schedule_id)
     return result
@@ -1487,6 +1556,7 @@ async def list_reports(request: Request, org_id: str):
 @router.post("/{org_id}/im-reply")
 async def handle_im_reply(request: Request, org_id: str):
     rt = _get_runtime(request)
+    _require_org_running(rt, org_id)
     notifier = rt.get_notifier()
     body = await request.json()
     text = body.get("text", "")
@@ -1912,7 +1982,10 @@ async def create_task(request: Request, org_id: str, project_id: str):
 
 @router.post("/{org_id}/projects/{project_id}/tasks/{task_id}/dispatch")
 async def dispatch_task(request: Request, org_id: str, project_id: str, task_id: str):
-    """Dispatch a user-created task to the organization for execution."""
+    """Dispatch a user-created task to the organization for execution.
+
+    组织未启动时返回 409，让前端提示用户先启动组织。
+    """
     store = _get_project_store(request, org_id)
     task_data, proj_data = store.get_task(task_id)
     if not task_data:
@@ -1921,9 +1994,7 @@ async def dispatch_task(request: Request, org_id: str, project_id: str, task_id:
         raise HTTPException(404, "Task not found in this project")
 
     runtime = _get_runtime(request)
-    org = runtime.get_org(org_id)
-    if not org:
-        raise HTTPException(404, "Organization not found or not running")
+    org = _require_org_running(runtime, org_id)
 
     prompt = (
         f"请执行以下项目任务:\n"

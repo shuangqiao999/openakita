@@ -563,6 +563,44 @@ class Settings(BaseSettings):
     evaluation_enabled: bool = Field(default=False, description="是否启用每日自动评估")
     evaluation_output_dir: str = Field(default="data/evaluation", description="评估报告输出目录")
 
+    # === 组织编排 · 任务链终止防护 ===
+    # 这组开关用于防止：
+    # 1) 同一 chain 被重复交付/验收导致附件与交付物重复；
+    # 2) 任务验收完成后节点仍被后续消息唤醒、自主启动新的 ReAct 循环；
+    # 3) 任务完成后自动向上级发送"已完成"通知从而引发新的父级推理。
+    # 默认全部开启；如需回退旧行为只需将对应项设为 false。
+    org_reject_resubmit_after_accept: bool = Field(
+        default=True,
+        description="禁止在 chain 已 accepted/delivered 之后再次 submit_deliverable",
+    )
+    org_suppress_closed_chain_reactivation: bool = Field(
+        default=True,
+        description="chain 已关闭(accepted/rejected/cancelled)时抑制其消息触发 ReAct 重新激活",
+    )
+    org_post_task_notify_parent: bool = Field(
+        default=False,
+        description="任务完成时是否自动向父节点发送[通知]：False 表示不主动唤醒父级",
+    )
+
+    # === 组织编排 · 用户命令生命周期看门狗 ===
+    # 用户通过 send_command 下发一条顶层指令后，完成判定由事件驱动
+    # （所有委派链 chain 关闭 + root IDLE + root inbox 空）。下列时间参数
+    # 仅用于看门狗：防止组织真正卡死（LLM 挂起、死锁）时命令无限挂起。
+    # 任一进度信号（token / 工具完成 / 节点状态切换 / chain 事件）到达
+    # 都会让 warn/autostop 计时器归零，因此长时但持续产出的任务不会被误停。
+    org_command_stuck_warn_secs: int = Field(
+        default=300,
+        description="无进度多久（秒）向前端发出 stuck_warning 提示（不终止命令，默认 300=5 分钟）",
+    )
+    org_command_stuck_autostop_secs: int = Field(
+        default=1800,
+        description="无进度多久（秒）兜底 soft_stop 组织（默认 1800=30 分钟）",
+    )
+    org_command_timeout_secs: int = Field(
+        default=10800,
+        description="单条命令最长运行时间（秒）硬上限，0 或负数表示不限时（默认 10800=3 小时）",
+    )
+
     @model_validator(mode="after")
     def _enforce_min_max_iterations(self) -> "Settings":
         MIN_ITERATIONS = 15

@@ -130,7 +130,14 @@ class SkillStoreHandler:
                 f"install_url: {install_url}"
             )
 
-        self._try_reload_skills()
+        # Store 安装完成后：统一走 Agent.propagate_skill_change，不再自行 rescan / rebuild。
+        try:
+            from ...skills.events import SkillEvent
+
+            self.agent.propagate_skill_change(SkillEvent.STORE_INSTALL)
+            logger.info("Skills reloaded after Store install")
+        except Exception as e:
+            logger.warning(f"Skill reload after Store install failed (non-blocking): {e}")
 
         skill_name = skill.get("name", skill_id)
         return (
@@ -140,31 +147,6 @@ class SkillStoreHandler:
             f"🏷️ 信任等级: {skill.get('trustLevel', 'community')}\n\n"
             f"Skill 已安装到本地并自动加载。"
         )
-
-    def _try_reload_skills(self) -> None:
-        """Best-effort reload of skills after installation."""
-        try:
-            loader = getattr(self.agent, "skill_loader", None)
-            if loader:
-                from ...config import settings
-
-                loader.load_all(settings.project_root)
-
-            catalog = getattr(self.agent, "skill_catalog", None)
-            if catalog:
-                catalog.invalidate_cache()
-                self.agent._skill_catalog_text = catalog.generate_catalog()
-
-            if hasattr(self.agent, "_update_skill_tools"):
-                self.agent._update_skill_tools()
-
-            from ...skills.events import SkillEvent, notify_skills_changed
-
-            notify_skills_changed(SkillEvent.STORE_INSTALL)
-
-            logger.info("Skills reloaded after Store install")
-        except Exception as e:
-            logger.warning(f"Skill reload after Store install failed (non-blocking): {e}")
 
     async def _get_detail(self, params: dict[str, Any]) -> str:
         skill_id = params.get("skill_id", "")

@@ -817,7 +817,13 @@ class MemoryHandler:
                     elapsed = r.get("elapsed_s", "")
                     if elapsed:
                         parts.append(f"- 耗时: {elapsed}s")
-                    tools = r.get("tools_used", [])
+                    tools_raw = r.get("tools_used") or []
+                    tools = [
+                        t if isinstance(t, str)
+                        else (t.get("name") if isinstance(t, dict) and t.get("name") else str(t))
+                        for t in tools_raw
+                    ]
+                    tools = [t for t in tools if t]
                     if tools:
                         parts.append(f"- 工具: {', '.join(tools[:10])}")
                     preview = r.get("result_preview", "")

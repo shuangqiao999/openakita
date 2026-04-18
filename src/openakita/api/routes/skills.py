@@ -2,6 +2,19 @@
 Skills route: GET /api/skills, POST /api/skills/config, GET /api/skills/marketplace
 
 技能列表与配置管理。
+
+本模块只负责 HTTP 适配 + 自身的列表缓存；所有会影响技能可见性 / 内容的操作
+（install / uninstall / reload / content-update / allowlist-change）在完成磁盘
+副作用后统一调用 ``Agent.propagate_skill_change``，由其负责：
+  - 清空 parser/loader 缓存
+  - 重扫技能目录
+  - 重新应用 allowlist
+  - 重建 SkillCatalog 与 ``_skill_catalog_text``
+  - 同步 handler 映射
+  - 通知 AgentInstancePool 回收旧实例
+  - 广播 ``SkillEvent``（HTTP 缓存失效 + WebSocket 广播通过事件回调完成）
+
+API 层不再自行做半套刷新，避免多路径导致状态不一致。
 """
 
 from __future__ import annotations
@@ -17,16 +30,6 @@ from fastapi import APIRouter, HTTPException, Request
 logger = logging.getLogger(__name__)
 
 
-def _notify_skills_changed(action: str = "reload") -> None:
-    """Fire-and-forget WS broadcast for skill state changes."""
-    try:
-        from openakita.api.routes.websocket import broadcast_event
-
-        asyncio.ensure_future(broadcast_event("skills:changed", {"action": action}))
-    except Exception:
-        pass
-
-
 router = APIRouter()
 
 SKILLS_SH_API = "https://skills.sh/api/search"
@@ -34,7 +37,8 @@ SKILLS_SH_API = "https://skills.sh/api/search"
 
 _skills_cache: dict | None = None
 """Module-level cache for GET /api/skills response.
-Populated on first request, invalidated by install/uninstall/reload/edit."""
+Populated on first request, invalidated via the cross-layer on-change callback
+registered at the bottom of this module."""
 
 
 def _invalidate_skills_cache() -> None:
@@ -43,92 +47,25 @@ def _invalidate_skills_cache() -> None:
     _skills_cache = None
 
 
-def _read_external_allowlist() -> tuple[Path, set[str] | None]:
-    """Read external_allowlist from data/skills.json.
-
-    Returns (base_path, allowlist). allowlist is None when the file doesn't
-    exist or has no external_allowlist key (meaning "all external skills enabled").
-    """
-    import json
-
-    try:
-        from openakita.config import settings
-
-        base_path = settings.project_root
-    except Exception:
-        base_path = Path.cwd()
-
-    external_allowlist: set[str] | None = None
-    try:
-        cfg_path = base_path / "data" / "skills.json"
-        if cfg_path.exists():
-            raw = cfg_path.read_text(encoding="utf-8")
-            cfg = json.loads(raw) if raw.strip() else {}
-            al = cfg.get("external_allowlist", None)
-            if isinstance(al, list):
-                external_allowlist = {str(x).strip() for x in al if str(x).strip()}
-    except Exception:
-        pass
-    return base_path, external_allowlist
-
-
-def _apply_allowlist_and_rebuild_catalog(request: Request) -> int:
-    """Re-read skills.json allowlist, prune agent's loader & registry, rebuild catalog.
-
-    Call this after any operation that changes loaded skills or the allowlist.
-    Returns the number of pruned external skills.
-    """
+def _resolve_agent(request: Request):
+    """返回真实 Agent 实例（解包可能的 thin wrapper / _local_agent）。"""
     from openakita.core.agent import Agent
 
     agent = getattr(request.app.state, "agent", None)
-    actual_agent = agent
-    if not isinstance(agent, Agent):
-        actual_agent = getattr(agent, "_local_agent", None)
-    if actual_agent is None:
-        return 0
-
-    _, external_allowlist = _read_external_allowlist()
-
-    loader = getattr(actual_agent, "skill_loader", None)
-    removed = 0
-    if loader:
-        from openakita.skills.preset_utils import collect_preset_referenced_skills
-
-        effective = loader.compute_effective_allowlist(external_allowlist)
-        agent_skills = collect_preset_referenced_skills()
-        removed = loader.prune_external_by_allowlist(
-            effective, agent_referenced_skills=agent_skills
-        )
-
-    catalog = getattr(actual_agent, "skill_catalog", None)
-    if catalog:
-        catalog.invalidate_cache()
-        new_text = catalog.generate_catalog()
-        if hasattr(actual_agent, "_skill_catalog_text"):
-            actual_agent._skill_catalog_text = new_text
-
-    # 同步系统技能的 tool_name → handler 映射到 handler_registry
-    if hasattr(actual_agent, "_update_skill_tools"):
-        actual_agent._update_skill_tools()
-
-    # 通知所有 Agent 池技能已变更，使池中旧 Agent 在下次使用时重建
-    _notify_pools_skills_changed(request)
-
-    return removed
+    if isinstance(agent, Agent):
+        return agent
+    return getattr(agent, "_local_agent", None)
 
 
-def _notify_pools_skills_changed(request: Request) -> None:
-    """通知所有 Agent 实例池全局技能已变更。"""
-    for pool_attr in ("agent_pool", "orchestrator"):
-        obj = getattr(request.app.state, pool_attr, None)
-        if obj is None:
-            continue
-        pool = getattr(obj, "_pool", obj)
-        if hasattr(pool, "notify_skills_changed"):
-            try:
-                pool.notify_skills_changed()
-            except Exception as e:
-                logger.warning(f"Failed to notify pool ({pool_attr}): {e}")
+async def _propagate(request: Request, action: str, *, rescan: bool = True) -> None:
+    """在工作线程中调用 Agent 的统一刷新入口，避免阻塞事件循环。"""
+    agent = _resolve_agent(request)
+    if agent is None or not hasattr(agent, "propagate_skill_change"):
+        return
+    try:
+        await asyncio.to_thread(agent.propagate_skill_change, action, rescan=rescan)
+    except Exception as e:
+        logger.warning("propagate_skill_change(%s) failed: %s", action, e)
 
 
 async def _auto_translate_new_skills(request: Request, install_url: str) -> None:
@@ -136,13 +73,8 @@ async def _auto_translate_new_skills(request: Request, install_url: str) -> None
 
     翻译失败不影响安装结果，仅记录日志。
     """
-    from openakita.core.agent import Agent
-
     try:
-        agent = getattr(request.app.state, "agent", None)
-        actual_agent = agent
-        if not isinstance(agent, Agent):
-            actual_agent = getattr(agent, "_local_agent", None)
+        actual_agent = _resolve_agent(request)
         if actual_agent is None:
             return
 
@@ -179,30 +111,33 @@ async def list_skills(request: Request):
     ``enabled`` status derived from ``data/skills.json`` allowlist.
 
     Uses a module-level cache to avoid re-scanning disk on every request.
-    The cache is invalidated by install/uninstall/reload/edit operations.
+    The cache is invalidated by install/uninstall/reload/edit operations via
+    the cross-layer on-change callback.
     """
     global _skills_cache
     if _skills_cache is not None:
         return _skills_cache
 
-    base_path, external_allowlist = _read_external_allowlist()
+    from openakita.skills.allowlist_io import read_allowlist
 
-    # load_all() does synchronous file I/O — run in a thread to avoid blocking
-    # the event loop.
+    skills_json_path, external_allowlist = read_allowlist()
+    # 用于生成 relative_path 的 base 仍需项目根目录
+    try:
+        from openakita.config import settings
+
+        base_path = Path(settings.project_root)
+    except Exception:
+        base_path = skills_json_path.parent.parent
+
     try:
         from openakita.skills.loader import SkillLoader
 
         loader = SkillLoader()
-        await asyncio.to_thread(loader.load_all, base_path=base_path)
+        await asyncio.to_thread(loader.load_all, base_path)
         all_skills = loader.registry.list_all()
         effective_allowlist = loader.compute_effective_allowlist(external_allowlist)
     except Exception:
-        from openakita.core.agent import Agent
-
-        agent = getattr(request.app.state, "agent", None)
-        actual_agent = agent
-        if not isinstance(agent, Agent):
-            actual_agent = getattr(agent, "_local_agent", None)
+        actual_agent = _resolve_agent(request)
         if actual_agent is None:
             return {"skills": []}
         registry = getattr(actual_agent, "skill_registry", None)
@@ -309,11 +244,13 @@ async def install_skill(request: Request):
     """安装技能（远程模式替代 Tauri openakita_install_skill 命令）。
 
     POST body: { "url": "github:user/repo/skill" }
-    安装完成后自动重新加载技能并应用 allowlist。
-    """
-    import asyncio
 
-    from openakita.core.agent import Agent
+    完成后会：
+      1. 把新安装 skill_id upsert 到 data/skills.json 的 external_allowlist
+         （仅当已存在该字段；文件不存在时保留“未声明=全部启用”语义）
+      2. 通过 ``propagate_skill_change`` 完整刷新运行时缓存与 Agent Pool。
+    """
+    from openakita.skills.allowlist_io import upsert_skill_ids
 
     body = await request.json()
     url = body.get("url", "").strip()
@@ -325,7 +262,7 @@ async def install_skill(request: Request):
 
         workspace_dir = str(settings.project_root)
     except Exception:
-        workspace_dir = str(__import__("pathlib").Path.cwd())
+        workspace_dir = str(Path.cwd())
 
     try:
         from openakita.setup_center.bridge import install_skill as _install_skill
@@ -344,13 +281,13 @@ async def install_skill(request: Request):
         logger.error("Skill install failed: %s", e, exc_info=True)
         return {"error": str(e)}
 
-    # 验证安装的技能是否能被 SkillLoader 正确解析
+    # 识别本次新增的 skill 目录（最近修改的 SKILL.md 所在目录）
     install_warning = None
+    new_skill_id: str | None = None
     try:
         from openakita.setup_center.bridge import _resolve_skills_dir
 
         skills_dir = _resolve_skills_dir(workspace_dir)
-        # 找到刚安装的技能目录（最新修改的含 SKILL.md 的子目录）
         candidates = sorted(
             (d for d in skills_dir.iterdir() if d.is_dir() and (d / "SKILL.md").exists()),
             key=lambda d: d.stat().st_mtime,
@@ -362,6 +299,7 @@ async def install_skill(request: Request):
             parser = SkillParser()
             try:
                 parser.parse_directory(candidates[0])
+                new_skill_id = candidates[0].name
             except Exception as parse_err:
                 import shutil
 
@@ -382,30 +320,28 @@ async def install_skill(request: Request):
         install_warning = str(ve)
         logger.warning("Post-install validation skipped: %s", ve)
 
-    # 安装成功后：重新加载技能到 agent 运行时，并应用 allowlist
+    # 若 skills.json 已有 external_allowlist，自动把新装 skill upsert 进去，
+    # 避免被随后的 prune 立即裁掉。不存在 allowlist 字段时跳过（全部启用语义）。
+    if new_skill_id:
+        try:
+            upsert_skill_ids({new_skill_id})
+        except Exception as e:
+            logger.warning("Failed to upsert %s into skills.json: %s", new_skill_id, e)
+
+    # 统一刷新入口 —— 重扫磁盘 + 重新应用 allowlist + 重建 catalog + 通知 Pool
+    await _propagate(request, "install")
+
+    # 自动翻译（可选，不阻塞成功返回）
     try:
-        agent = getattr(request.app.state, "agent", None)
-        actual_agent = agent
-        if not isinstance(agent, Agent):
-            actual_agent = getattr(agent, "_local_agent", None)
-
-        if actual_agent is not None:
-            loader = getattr(actual_agent, "skill_loader", None)
-            if loader:
-                base_path, _ = _read_external_allowlist()
-                loader.load_all(base_path)
-            _apply_allowlist_and_rebuild_catalog(request)
-
-            # 自动翻译：为新安装的技能生成 i18n (agents/openai.yaml)
-            await _auto_translate_new_skills(request, url)
+        await _auto_translate_new_skills(request, url)
     except Exception as e:
-        logger.warning(f"Post-install reload failed (skill was installed): {e}")
+        logger.debug("Auto-translate skipped: %s", e)
 
-    _invalidate_skills_cache()
-    _notify_skills_changed("install")
     result: dict = {"status": "ok", "url": url}
     if install_warning:
         result["warning"] = install_warning
+    if new_skill_id:
+        result["skill_id"] = new_skill_id
     return result
 
 
@@ -414,9 +350,8 @@ async def uninstall_skill(request: Request):
     """卸载技能。
 
     POST body: { "skill_id": "skill-directory-name" }
-    卸载后自动重新加载技能并刷新 allowlist。
     """
-    from openakita.core.agent import Agent
+    from openakita.skills.allowlist_io import remove_skill_ids
 
     body = await request.json()
     skill_id = (body.get("skill_id") or "").strip()
@@ -428,7 +363,7 @@ async def uninstall_skill(request: Request):
 
         workspace_dir = str(settings.project_root)
     except Exception:
-        workspace_dir = str(__import__("pathlib").Path.cwd())
+        workspace_dir = str(Path.cwd())
 
     try:
         from openakita.setup_center.bridge import uninstall_skill as _uninstall_skill
@@ -438,23 +373,14 @@ async def uninstall_skill(request: Request):
         logger.error("Skill uninstall failed: %s", e, exc_info=True)
         return {"error": str(e)}
 
+    # 从 allowlist 中移除（文件不存在或无该字段时静默跳过）
     try:
-        agent = getattr(request.app.state, "agent", None)
-        actual_agent = agent
-        if not isinstance(agent, Agent):
-            actual_agent = getattr(agent, "_local_agent", None)
-        if actual_agent is not None:
-            loader = getattr(actual_agent, "skill_loader", None)
-            if loader:
-                loader.unload_skill(skill_id)
-                base_path, _ = _read_external_allowlist()
-                loader.load_all(base_path)
-            _apply_allowlist_and_rebuild_catalog(request)
+        remove_skill_ids({skill_id})
     except Exception as e:
-        logger.warning(f"Post-uninstall reload failed: {e}")
+        logger.warning("Failed to remove %s from skills.json: %s", skill_id, e)
 
-    _invalidate_skills_cache()
-    _notify_skills_changed("uninstall")
+    await _propagate(request, "uninstall")
+
     return {"status": "ok", "skill_id": skill_id}
 
 
@@ -464,9 +390,15 @@ async def reload_skills(request: Request):
 
     POST body: { "skill_name": "optional-name" }
     如果 skill_name 为空或未提供，则重新扫描并加载所有技能。
-    全量重载后会重新读取 data/skills.json 的 allowlist 并裁剪禁用技能。
     """
-    from openakita.core.agent import Agent
+    agent = _resolve_agent(request)
+    if agent is None:
+        return {"error": "Agent not initialized"}
+
+    loader = getattr(agent, "skill_loader", None)
+    registry = getattr(agent, "skill_registry", None)
+    if not loader or not registry:
+        return {"error": "Skill loader/registry not available"}
 
     body = (
         await request.json()
@@ -475,43 +407,21 @@ async def reload_skills(request: Request):
     )
     skill_name = (body.get("skill_name") or "").strip()
 
-    agent = getattr(request.app.state, "agent", None)
-    actual_agent = agent
-    if not isinstance(agent, Agent):
-        actual_agent = getattr(agent, "_local_agent", None)
-
-    if actual_agent is None:
-        return {"error": "Agent not initialized"}
-
-    loader = getattr(actual_agent, "skill_loader", None)
-    registry = getattr(actual_agent, "skill_registry", None)
-    if not loader or not registry:
-        return {"error": "Skill loader/registry not available"}
-
     try:
-        _invalidate_skills_cache()
         if skill_name:
-            reloaded = loader.reload_skill(skill_name)
-            if reloaded:
-                _apply_allowlist_and_rebuild_catalog(request)
-                _notify_skills_changed("reload")
-                return {"status": "ok", "reloaded": [skill_name]}
-            else:
+            reloaded = await asyncio.to_thread(loader.reload_skill, skill_name)
+            if not reloaded:
                 return {"error": f"Skill '{skill_name}' not found or reload failed"}
-        else:
-            base_path, _ = _read_external_allowlist()
-            loaded_count = loader.load_all(base_path)
+            await _propagate(request, "reload", rescan=False)
+            return {"status": "ok", "reloaded": [skill_name]}
 
-            pruned = _apply_allowlist_and_rebuild_catalog(request)
-            total = len(registry.list_all())
-            _notify_skills_changed("reload")
-            return {
-                "status": "ok",
-                "reloaded": "all",
-                "loaded": loaded_count,
-                "pruned": pruned,
-                "total": total,
-            }
+        await _propagate(request, "reload", rescan=True)
+        total = len(registry.list_all())
+        return {
+            "status": "ok",
+            "reloaded": "all",
+            "total": total,
+        }
     except Exception as e:
         logger.error(f"Skill reload failed: {e}")
         return {"error": str(e)}
@@ -526,13 +436,14 @@ async def get_skill_content(skill_name: str, request: Request):
     """
     from openakita.skills.loader import SkillLoader
 
-    base_path, _ = _read_external_allowlist()
+    try:
+        from openakita.config import settings
 
-    # 优先从 agent 运行时的 loader 中查找（已加载的技能）
-    from openakita.core.agent import Agent
+        base_path = Path(settings.project_root)
+    except Exception:
+        base_path = Path.cwd()
 
-    agent = getattr(request.app.state, "agent", None)
-    actual_agent = agent if isinstance(agent, Agent) else getattr(agent, "_local_agent", None)
+    actual_agent = _resolve_agent(request)
 
     skill = None
     if actual_agent:
@@ -541,7 +452,6 @@ async def get_skill_content(skill_name: str, request: Request):
             skill = loader.get_skill(skill_name)
 
     if not skill:
-        # Fallback: 用临时 loader 扫描
         try:
             tmp_loader = SkillLoader()
             tmp_loader.load_all(base_path=base_path)
@@ -575,14 +485,7 @@ async def update_skill_content(skill_name: str, request: Request):
     """更新技能的 SKILL.md 内容并热重载。
 
     PUT body: { "content": "完整的 SKILL.md 内容" }
-
-    流程:
-    1. 校验新内容能被正确解析（frontmatter + body）
-    2. 写入磁盘
-    3. 热重载该技能
-    4. 返回更新后的元数据
     """
-    from openakita.core.agent import Agent
     from openakita.skills.parser import skill_parser
 
     try:
@@ -593,9 +496,7 @@ async def update_skill_content(skill_name: str, request: Request):
     if not new_content.strip():
         return {"error": "content is required"}
 
-    # 查找技能
-    agent = getattr(request.app.state, "agent", None)
-    actual_agent = agent if isinstance(agent, Agent) else getattr(agent, "_local_agent", None)
+    actual_agent = _resolve_agent(request)
 
     skill = None
     loader = None
@@ -610,31 +511,26 @@ async def update_skill_content(skill_name: str, request: Request):
     if skill.metadata.system:
         return {"error": "Cannot edit system (built-in) skills"}
 
-    # 1. 校验新内容格式
     try:
         parsed = skill_parser.parse_content(new_content, skill.path)
     except Exception as e:
         return {"error": f"Invalid SKILL.md format: {e}"}
 
-    # 2. 写入磁盘
     try:
         skill.path.write_text(new_content, encoding="utf-8")
     except Exception as e:
         return {"error": f"Failed to write SKILL.md: {e}"}
 
-    # 3. 热重载
     reloaded = False
     if loader:
         try:
-            result = loader.reload_skill(skill_name)
+            result = await asyncio.to_thread(loader.reload_skill, skill_name)
             if result:
-                _apply_allowlist_and_rebuild_catalog(request)
+                await _propagate(request, "content_update", rescan=False)
                 reloaded = True
         except Exception as e:
             logger.warning(f"Skill reload after edit failed: {e}")
 
-    _invalidate_skills_cache()
-    _notify_skills_changed("content_update")
     return {
         "status": "ok",
         "reloaded": reloaded,
@@ -658,7 +554,6 @@ async def search_marketplace(q: str = "agent"):
             "trust_env": False,
         }
 
-        # 复用项目的代理和 IPv4 设置（get_proxy_config 含可达性验证）
         proxy = get_proxy_config()
         if proxy:
             client_kwargs["proxy"] = proxy
@@ -676,11 +571,33 @@ async def search_marketplace(q: str = "agent"):
         return {"skills": [], "count": 0, "error": str(e)}
 
 
-# Register API-layer side effects (cache invalidation + WS broadcast) so that
-# skill changes made by the *tools* layer also propagate to the frontend.
+# ──────────────────────────────────────────────────────────────────────
+# Cross-layer event subscribers
+#
+# ``Agent.propagate_skill_change`` 是所有刷新路径的起点，
+# 其最后一步会调用 ``notify_skills_changed(action)``；此处注册两个副作用：
+#   1. 清空 GET /api/skills 的模块缓存，使前端下次 GET 时拿到最新列表
+#   2. 通过 WebSocket 广播 ``skills:changed`` 事件，前端可实时刷新 UI
+#
+# AgentInstancePool 的版本号提升已在 ``propagate_skill_change`` 内部完成，
+# 此处**不再**重复通知池，避免版本号被同一次变更递增两次。
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _broadcast_ws_event(action: str) -> None:
+    """WebSocket 广播（fire-and-forget）。"""
+    try:
+        from openakita.api.routes.websocket import broadcast_event
+
+        asyncio.ensure_future(broadcast_event("skills:changed", {"action": action}))
+    except Exception:
+        pass
+
+
 def _on_skills_changed_api(action: str) -> None:
+    """由 ``skills.events.notify_skills_changed`` 触发的 API 层副作用。"""
     _invalidate_skills_cache()
-    _notify_skills_changed(action)
+    _broadcast_ws_event(action)
 
 
 try:

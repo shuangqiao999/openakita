@@ -21,11 +21,11 @@ class ChatRequest(BaseModel):
     )
     endpoint: str | None = Field(None, description="Specific endpoint name (null=auto)")
     attachments: list[AttachmentInfo] | None = Field(None, description="Attached files/images")
-    thinking_mode: str | None = Field(
+    thinking_mode: Literal["auto", "on", "off"] | None = Field(
         None,
         description="Thinking mode override: 'auto'(system decides), 'on'(force enable), 'off'(force disable). null=use system default.",
     )
-    thinking_depth: str | None = Field(
+    thinking_depth: Literal["low", "medium", "high"] | None = Field(
         None,
         description="Thinking depth: 'low', 'medium', 'high'. Only effective when thinking is enabled.",
     )
