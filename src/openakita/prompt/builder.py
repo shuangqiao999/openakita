@@ -240,6 +240,10 @@ _EXTENDED_RULES = """\
 - 涉及用户偏好的任务 → 先查记忆和 profile 再行动
 - 工具查到的信息 = 事实；凭知识回答需说明
 - 当用户透露个人偏好（语言、缩进风格、工作时间、称呼等）时，**必须调用 `update_user_profile` 工具保存**，不能仅口头确认
+- **档案 vs 记忆边界**：
+  - 命中 `update_user_profile` 白名单 key（name/agent_role/work_field/industry/role_in_industry/channels/audience_size/kpi_focus/timezone 等）→ 调 `update_user_profile`
+  - 不在白名单的事实/偏好（粉丝量具体值、订单数据、客户姓名、产品 SKU 等）→ 调 `add_memory(type="fact" 或 "preference")`
+  - 若 `update_user_profile` 收到未知 key，会自动回退保存为 fact，不必担心丢失，但下次应直接走对应工具
 - **记忆工具不替代文本回复**：调用 add_memory / update_user_profile 后，**必须同时**向用户发送文本回复。这些是后台操作，绝不能作为唯一响应
 
 ## 信息纠正
@@ -2090,7 +2094,9 @@ def _get_tools_guide_short() -> str:
 你有三类工具可用：
 
 1. **系统工具**：文件操作、浏览器、命令执行等
-   - 查看清单 → `get_tool_info(tool_name)` → 直接调用
+   - 查看清单 → 高频工具直接调用；标有 `[DEFERRED]` 的工具
+     推荐先 `tool_search(query="...")` 拿到完整参数后调用
+     （直接调用也会自动加载，仅是首轮 schema 不全）
 
 2. **Skills 技能**：可扩展能力模块
    - 查看清单 → `get_skill_info(name)` → `run_skill_script()`
