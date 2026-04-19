@@ -3,6 +3,7 @@ from .fallback import FallbackResolver
 from .lock_manager import LockManager
 from .orchestrator import AgentOrchestrator
 from .profile import AgentProfile, AgentType, ProfileStore, SkillsMode
+from .soldier import SoldierAgent
 from .task_queue import Priority, QueuedTask, TaskQueue
 
 __all__ = [
@@ -18,4 +19,5 @@ __all__ = [
     "QueuedTask",
     "SkillsMode",
     "TaskQueue",
+    "SoldierAgent",
 ]
