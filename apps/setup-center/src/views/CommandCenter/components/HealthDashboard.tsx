@@ -74,7 +74,12 @@ export function HealthDashboard() {
 
 interface HealthCardProps {
   name: string;
-  health: any;
+  health: {
+    status: ComponentHealthStatus;
+    message?: string;
+    metrics?: Record<string, any>;
+    lastCheckedAt?: string;
+  };
 }
 
 function HealthCard({ name, health }: HealthCardProps) {
