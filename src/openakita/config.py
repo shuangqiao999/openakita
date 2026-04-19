@@ -277,7 +277,7 @@ class Settings(BaseSettings):
         description="超时后动作: abort(中止) / continue_auto(继续自动) / retry(重试)",
     )
     commander_default_task_timeout: int = Field(
-        default=300, description="默认任务超时（秒）", ge=0
+        default=900, description="默认任务超时（秒）", ge=0
     )
     commander_max_concurrent_tasks: int = Field(
         default=10, description="最大并发任务数", ge=1
