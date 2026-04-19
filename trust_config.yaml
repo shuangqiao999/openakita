@@ -1,0 +1,28 @@
+# 信任度配置文件
+# 控制渐进自动化的信任度评分和等级切换
+
+# 初始信任度
+initial_score: 0.0
+
+# 信任等级切换阈值
+level_thresholds:
+  L0_to_L1: 3    # 需要 3 次成功才能从 L0 升到 L1
+  L1_to_L2: 60   # 信任度达到 60 分升到 L2
+  L2_to_L3: 80   # 信任度达到 80 分升到 L3
+  L3_to_L4: 95   # 信任度达到 95 分升到 L4
+
+# 信任度变化规则
+score_rules:
+  success_no_correction: 10    # 执行成功且无人纠正
+  success_with_correction: 0   # 执行成功但用户手动调整
+  user_cancel_auto: -20        # 用户取消后续自动执行
+  failure_auto_recovered: -5   # 执行失败但系统自动恢复
+  failure_need_human: -30      # 执行失败需要人工介入
+  user_mark_untrust: -50       # 用户标记为不可信
+
+# 抽查概率配置
+default_check_rate: 0.3    # L2 模式默认抽查概率 30%
+check_rate_decay: 0.1      # 信任度每增加 10 分，抽查概率降低 10%
+
+# 是否允许用户手动覆盖信任等级
+allow_manual_override: true

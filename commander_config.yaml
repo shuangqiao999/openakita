@@ -1,0 +1,26 @@
+# 指挥官配置文件
+# 控制指挥官的决策行为和策略选择
+
+# 决策模式: full_auto, full_manual, hybrid
+decision_mode: hybrid
+
+# 永不放弃策略配置
+max_strategies: 10           # 最多尝试多少种不同策略
+auto_retry_threshold: 3      # 自动换策略次数（超限后请求人工）
+enable_auto_downgrade: true  # 是否允许自动降级
+
+# 降级策略列表（按优先级排序）
+downgrade_strategies:
+  - simplify_task      # 简化任务目标
+  - cheaper_model      # 使用更便宜的模型
+  - skip_noncore       # 跳过非核心步骤
+  - increase_timeout   # 增加超时时间
+  - fallback_to_local  # 降级到本地执行
+
+# 人工介入配置
+human_intervention_timeout: 3600  # 等待人工响应超时（秒）
+on_timeout: abort                  # 超时后动作: abort, continue_auto, retry
+
+# 任务执行配置
+default_task_timeout: 300   # 默认任务超时（秒）
+max_concurrent_tasks: 10    # 最大并发任务数

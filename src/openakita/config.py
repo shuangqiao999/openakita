@@ -255,6 +255,122 @@ class Settings(BaseSettings):
         default=1200, description="定时任务执行超时时间（秒），默认 1200 秒（20分钟）"
     )
 
+    # === 指挥官配置 ===
+    commander_decision_mode: str = Field(
+        default="hybrid",
+        description="决策模式: full_auto(完全自动) / full_manual(完全手动) / hybrid(混合，默认)",
+    )
+    commander_max_strategies: int = Field(
+        default=10, description="最多尝试多少种不同策略", ge=1
+    )
+    commander_auto_retry_threshold: int = Field(
+        default=3, description="自动换策略次数（超限后请求人工）", ge=0
+    )
+    commander_enable_auto_downgrade: bool = Field(
+        default=True, description="是否允许自动降级"
+    )
+    commander_human_intervention_timeout: int = Field(
+        default=3600, description="等待人工响应超时（秒）", ge=0
+    )
+    commander_on_timeout: str = Field(
+        default="abort",
+        description="超时后动作: abort(中止) / continue_auto(继续自动) / retry(重试)",
+    )
+    commander_default_task_timeout: int = Field(
+        default=300, description="默认任务超时（秒）", ge=0
+    )
+    commander_max_concurrent_tasks: int = Field(
+        default=10, description="最大并发任务数", ge=1
+    )
+
+    # === 信任度配置 ===
+    trust_initial_score: float = Field(
+        default=0.0, description="初始信任度", ge=0, le=100
+    )
+    trust_level_threshold_L0_to_L1: int = Field(
+        default=3, description="L0 升到 L1 需要的成功次数"
+    )
+    trust_level_threshold_L1_to_L2: int = Field(
+        default=60, description="信任度达到该分数升到 L2"
+    )
+    trust_level_threshold_L2_to_L3: int = Field(
+        default=80, description="信任度达到该分数升到 L3"
+    )
+    trust_level_threshold_L3_to_L4: int = Field(
+        default=95, description="信任度达到该分数升到 L4"
+    )
+    trust_score_rule_success_no_correction: int = Field(
+        default=10, description="执行成功且无人纠正的信任度加分"
+    )
+    trust_score_rule_success_with_correction: int = Field(
+        default=0, description="执行成功但用户手动调整的信任度加分"
+    )
+    trust_score_rule_user_cancel_auto: int = Field(
+        default=-20, description="用户取消后续自动执行的信任度扣分"
+    )
+    trust_score_rule_failure_auto_recovered: int = Field(
+        default=-5, description="执行失败但系统自动恢复的信任度扣分"
+    )
+    trust_score_rule_failure_need_human: int = Field(
+        default=-30, description="执行失败需要人工介入的信任度扣分"
+    )
+    trust_score_rule_user_mark_untrust: int = Field(
+        default=-50, description="用户标记为不可信的信任度扣分"
+    )
+    trust_default_check_rate: float = Field(
+        default=0.3, description="L2 模式默认抽查概率 30%", ge=0, le=1
+    )
+    trust_check_rate_decay: float = Field(
+        default=0.1, description="信任度每增加 10 分，抽查概率降低 10%", ge=0, le=1
+    )
+    trust_allow_manual_override: bool = Field(
+        default=True, description="是否允许用户手动覆盖信任等级"
+    )
+
+    # === 自愈配置 ===
+    healing_health_check_interval: int = Field(
+        default=30, description="健康检查间隔（秒）", ge=1
+    )
+    healing_heartbeat_interval: int = Field(
+        default=5, description="心跳发送间隔（秒）", ge=1
+    )
+    healing_heartbeat_timeout: int = Field(
+        default=15, description="心跳超时时间（秒）", ge=1
+    )
+    healing_max_retries: int = Field(
+        default=3, description="最大重试次数", ge=0
+    )
+    healing_retry_backoff_base: float = Field(
+        default=1.0, description="退避基数（秒），重试等待时间 = base * 2^(n-1)", ge=0.1
+    )
+    healing_commander_ha_enabled: bool = Field(
+        default=True, description="是否启用指挥官热备"
+    )
+    healing_ha_sync_interval: int = Field(
+        default=5, description="状态同步间隔（秒）", ge=1
+    )
+    healing_ha_failover_timeout: int = Field(
+        default=10, description="故障切换超时（秒）", ge=1
+    )
+    healing_memory_degradation_threshold: float = Field(
+        default=5.0, description="记忆系统延迟阈值（秒），超过则降级", ge=0, le=60
+    )
+    healing_cpu_degradation_threshold: float = Field(
+        default=80.0, description="CPU 使用率阈值（%），超过则降级", ge=0, le=100
+    )
+    healing_memory_usage_threshold: float = Field(
+        default=80.0, description="内存使用率阈值（%），超过则降级", ge=0, le=100
+    )
+    healing_snapshot_interval: int = Field(
+        default=30, description="状态快照保存间隔（秒）", ge=1
+    )
+    healing_max_snapshots: int = Field(
+        default=100, description="最大快照数量", ge=1
+    )
+    healing_snapshot_retention_days: int = Field(
+        default=7, description="快照保留天数", ge=1
+    )
+
     # === 记忆整理配置 ===
     memory_consolidation_onboarding_days: int = Field(
         default=7,

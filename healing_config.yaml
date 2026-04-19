@@ -1,0 +1,26 @@
+# 自愈配置文件
+# 控制健康检查、故障恢复和热备行为
+
+# 健康检查配置
+health_check_interval: 30   # 健康检查间隔（秒）
+heartbeat_interval: 5       # 心跳发送间隔（秒）
+heartbeat_timeout: 15       # 心跳超时时间（秒）
+
+# 重试配置
+max_retries: 3              # 最大重试次数
+retry_backoff_base: 1.0     # 退避基数（秒），重试等待时间 = base * 2^(n-1)
+
+# 指挥官热备配置
+commander_ha_enabled: true   # 是否启用热备
+ha_sync_interval: 5          # 状态同步间隔（秒）
+ha_failover_timeout: 10      # 故障切换超时（秒）
+
+# 降级配置
+memory_degradation_threshold: 5.0   # 记忆系统延迟阈值（秒），超过则降级
+cpu_degradation_threshold: 80.0     # CPU 使用率阈值（%），超过则降级
+memory_usage_threshold: 80.0        # 内存使用率阈值（%），超过则降级
+
+# 状态快照配置
+snapshot_interval: 30         # 状态快照保存间隔（秒）
+max_snapshots: 100            # 最大快照数量
+snapshot_retention_days: 7    # 快照保留天数
