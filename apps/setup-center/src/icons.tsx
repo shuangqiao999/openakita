@@ -1077,3 +1077,12 @@ export function IconMonitor(p: IconProps = {}) {
     <line x1="12" y1="17" x2="12" y2="21" />
   </>);
 }
+
+export function IconLayoutDashboard(p: IconProps = {}) {
+  return svg(p, <>
+    <rect x="3" y="3" width="7" height="7" />
+    <rect x="14" y="3" width="7" height="7" />
+    <rect x="14" y="14" width="7" height="7" />
+    <rect x="3" y="14" width="7" height="7" />
+  </>);
+}

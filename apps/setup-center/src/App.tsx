@@ -25,6 +25,7 @@ const AgentStoreView = lazy(() => import("./views/AgentStoreView").then(m => ({ 
 const SkillStoreView = lazy(() => import("./views/SkillStoreView").then(m => ({ default: m.SkillStoreView })));
 const SecurityView = lazy(() => import("./views/SecurityView"));
 const PetView = lazy(() => import("./views/PetView").then(m => ({ default: m.PetView })));
+const CommandCenterView = lazy(() => import("./views/CommandCenter").then(m => ({ default: m.CommandCenterView })));
 
 import { FeedbackModal } from "./views/FeedbackModal";
 import { IMConfigView } from "./views/IMConfigView";
@@ -121,7 +122,7 @@ const _HASH_TO_VIEW: Record<string, ViewId> = {
   "pixel-office": "pixel_office",
   "agent-manager": "agent_manager", "agent-store": "agent_store",
   "skill-store": "skill_store", "wizard": "wizard", "docs": "docs",
-  "security": "security",
+  "security": "security", "command-center": "command_center",
 };
 
 const _VIEW_TO_HASH: Record<string, string> = Object.fromEntries(
@@ -4810,6 +4811,9 @@ function MainApp() {
           serviceRunning={serviceStatus?.running ?? false}
         />
       );
+    }
+    if (view === "command_center") {
+      return <CommandCenterView />;
     }
     if (view.startsWith("plugin_app:")) {
       const pluginId = view.slice("plugin_app:".length);

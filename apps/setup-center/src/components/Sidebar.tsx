@@ -7,7 +7,7 @@ import {
   IconZap, IconPlug, IconCalendar,
   IconBug, IconBrain, IconGitHub, IconGitee, IconUsers, IconBot,
   IconGear, IconBook, IconStorefront, IconPuzzle, IconFingerprint, IconLayoutGrid,
-  IconShield, IconRadar, IconBuilding,
+  IconShield, IconRadar, IconBuilding, IconLayoutDashboard,
 } from "../icons";
 import logoUrl from "../assets/logo.png";
 import { openExternalUrl } from "../platform";
@@ -132,7 +132,7 @@ export function Sidebar({
   }, [httpApiBase, serviceRunning]);
 
   const capViews: ViewId[] = ["skills", "mcp", "plugins", "memory", "scheduler"];
-  const monViews: ViewId[] = ["token_stats", "security"];
+  const monViews: ViewId[] = ["token_stats", "security", "command_center"];
   const maViews: ViewId[] = ["dashboard", "org_editor", "pixel_office", "agent_manager"];
   const stViews: ViewId[] = ["agent_store", "skill_store"];
 
@@ -258,6 +258,9 @@ export function Sidebar({
             </div>
             <div className={`navItem ${view === "security" ? "navItemActive" : ""}`} onClick={() => onViewChange("security")} role="button" tabIndex={0} title={t("sidebar.security")}>
               <IconShield size={16} /> {!collapsed && <span>{t("sidebar.security")}</span>}
+            </div>
+            <div className={`navItem ${view === "command_center" ? "navItemActive" : ""}`} onClick={() => onViewChange("command_center")} role="button" tabIndex={0} title="情报看板">
+              <IconLayoutDashboard size={16} /> {!collapsed && <span>情报看板 {BETA_SUP}</span>}
             </div>
           </div>
         )}
