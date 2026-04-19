@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ...core.tool_executor import MAX_TOOL_RESULT_CHARS, OVERFLOW_MARKER, save_overflow
-from ...skills.events import notify_skills_changed
+from ...skills.events import SkillEvent
 from ...skills.exposure import build_skill_exposure
 
 if TYPE_CHECKING:
@@ -454,7 +454,7 @@ class SkillsHandler:
         extra_files = params.get("extra_files", [])
 
         result = await self.agent.skill_manager.install_skill(source, name, subdir, extra_files)
-        notify_skills_changed("install")
+        self.agent.propagate_skill_change(SkillEvent.INSTALL)
         return result
 
     def _load_skill(self, params: dict) -> str:
@@ -483,16 +483,12 @@ class SkillsHandler:
             return f"⚠️ 技能 '{skill_name}' 已存在。如需更新，请使用 reload_skill"
 
         try:
-            # 加载技能
-            loaded = self.agent.skill_loader.load_skill(skill_dir)
+            loaded = self.agent.skill_loader.load_skill(skill_dir, force=True)
 
             if loaded:
-                # 刷新技能目录缓存 + handler 映射
-                self.agent._skill_catalog_text = self.agent.skill_catalog.generate_catalog()
-                self.agent._update_skill_tools()
-                self.agent.notify_pools_skills_changed()
-                notify_skills_changed("load")
-
+                # 所有刷新（catalog / tool 映射 / activation / pool / system prompt / event）
+                # 都在 propagate_skill_change 里完成，工具处理器层不要再手工调用任何子步骤。
+                self.agent.propagate_skill_change(SkillEvent.LOAD, rescan=False)
                 logger.info(f"Skill loaded: {skill_name}")
 
                 return f"""✅ 技能加载成功！
@@ -520,16 +516,11 @@ class SkillsHandler:
             return f"❌ 技能 '{skill_name}' 未加载。如需加载新技能，请使用 load_skill"
 
         try:
-            # 重新加载
             reloaded = self.agent.skill_loader.reload_skill(skill_name)
 
             if reloaded:
-                # 刷新技能目录缓存 + handler 映射
-                self.agent._skill_catalog_text = self.agent.skill_catalog.generate_catalog()
-                self.agent._update_skill_tools()
-                self.agent.notify_pools_skills_changed()
-                notify_skills_changed("reload")
-
+                # loader.reload_skill 已经重新注册单个 skill，rescan=False 避免二次全量扫描。
+                self.agent.propagate_skill_change(SkillEvent.RELOAD, rescan=False)
                 logger.info(f"Skill reloaded: {skill_name}")
 
                 return f"""✅ 技能重新加载成功！
@@ -548,7 +539,7 @@ class SkillsHandler:
 
     def _manage_skill_enabled(self, params: dict) -> str:
         """批量启用/禁用外部技能"""
-        import json
+        from openakita.skills.allowlist_io import overwrite_allowlist, read_allowlist
 
         changes: list[dict] = params.get("changes", [])
         reason: str = params.get("reason", "")
@@ -556,31 +547,16 @@ class SkillsHandler:
         if not changes:
             return "❌ 未指定要变更的技能"
 
-        try:
-            from openakita.config import settings
+        _, existing_allowlist = read_allowlist()
 
-            cfg_path = settings.project_root / "data" / "skills.json"
-        except Exception:
-            cfg_path = Path.cwd() / "data" / "skills.json"
-
-        # 读取现有 allowlist
-        existing_allowlist: set[str] | None = None
-        try:
-            if cfg_path.exists():
-                raw = cfg_path.read_text(encoding="utf-8")
-                cfg = json.loads(raw) if raw.strip() else {}
-                al = cfg.get("external_allowlist", None)
-                if isinstance(al, list):
-                    existing_allowlist = {str(x).strip() for x in al if str(x).strip()}
-        except Exception:
-            pass
-
-        # 如果没有 allowlist 文件，初始化为当前所有外部技能的 skill_id
+        # 若文件尚不存在：用当前所有已启用外部技能作为初始集合
         if existing_allowlist is None:
             all_skills = self.agent.skill_registry.list_all()
             existing_allowlist = {s.skill_id for s in all_skills if not s.system}
+        else:
+            existing_allowlist = set(existing_allowlist)
 
-        # 收集所有已知外部技能 skill_id（包括被 prune 的）
+        # 收集所有已知外部技能 skill_id（包括被 prune 掉、仅在 loader 缓存里的）
         all_external_ids = set(existing_allowlist)
         loader = getattr(self.agent, "skill_loader", None)
         if loader:
@@ -590,6 +566,7 @@ class SkillsHandler:
 
         applied: list[str] = []
         skipped: list[str] = []
+        any_disabled = False
 
         for change in changes:
             name = change.get("skill_name", "").strip()
@@ -597,7 +574,7 @@ class SkillsHandler:
             if not name:
                 continue
 
-            # Resolve to skill_id (accept both skill_id and display name)
+            # 支持 skill_id 或显示名
             skill = self.agent.skill_registry.get(name)
             sid = skill.skill_id if skill else name
 
@@ -613,6 +590,7 @@ class SkillsHandler:
                 existing_allowlist.add(sid)
             else:
                 existing_allowlist.discard(sid)
+                any_disabled = True
             applied.append(f"{sid} → {'启用' if enabled else '禁用'}")
 
         if not applied:
@@ -621,40 +599,16 @@ class SkillsHandler:
                 msg += f"\n跳过: {', '.join(skipped)}"
             return msg
 
-        # 写入 data/skills.json
-        content = {
-            "version": 1,
-            "external_allowlist": sorted(existing_allowlist),
-            "updated_at": __import__("datetime").datetime.now().isoformat(),
-        }
-        cfg_path.parent.mkdir(parents=True, exist_ok=True)
-        cfg_path.write_text(
-            json.dumps(content, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-
-        # 热重载
+        # 原子写入 data/skills.json（唯一写入点：allowlist_io.overwrite_allowlist）
         try:
-            from openakita.skills.preset_utils import collect_preset_referenced_skills
-
-            effective = (
-                loader.compute_effective_allowlist(existing_allowlist)
-                if loader
-                else existing_allowlist
-            )
-            agent_skills = collect_preset_referenced_skills()
-            if loader:
-                loader.prune_external_by_allowlist(effective, agent_referenced_skills=agent_skills)
-            catalog = getattr(self.agent, "skill_catalog", None)
-            if catalog:
-                catalog.invalidate_cache()
-                self.agent._skill_catalog_text = catalog.generate_catalog()
-            self.agent._update_skill_tools()
-            self.agent.notify_pools_skills_changed()
+            overwrite_allowlist(existing_allowlist)
         except Exception as e:
-            logger.warning(f"Post-manage reload failed: {e}")
+            logger.error("Failed to persist skills allowlist: %s", e)
+            return f"❌ 写入 data/skills.json 失败: {e}"
 
-        notify_skills_changed("enable")
+        # 统一刷新入口：rescan=False，仅重跑 allowlist→catalog→pool 链
+        action = SkillEvent.DISABLE if any_disabled else SkillEvent.ENABLE
+        self.agent.propagate_skill_change(action, rescan=False)
 
         output = f"✅ 技能状态已更新（{len(applied)} 项变更）\n\n"
         if reason:
@@ -851,12 +805,15 @@ class SkillsHandler:
         if self.agent.skill_registry.get(skill_id):
             self.agent.skill_registry.unregister(skill_id)
 
-        # Refresh catalog and tools
-        self.agent.skill_catalog.invalidate_cache()
-        self.agent._update_skill_tools()
-        notify_skills_changed("uninstall")
+        # 从 external_allowlist 中移除（若存在）；失败不影响卸载主流程。
+        try:
+            from openakita.skills.allowlist_io import remove_skill_ids
 
-        # Clean up activation manager
+            remove_skill_ids({skill_id})
+        except Exception as e:
+            logger.warning("Failed to update allowlist after uninstall of %s: %s", skill_id, e)
+
+        # Clean up activation manager（必须在 propagate 之前，因为 propagate 会重建激活表）
         activation = getattr(self.agent, "_skill_activation", None)
         if activation:
             activation.unregister(skill_id)
@@ -868,6 +825,9 @@ class SkillsHandler:
             get_policy_engine().remove_skill_allowlist(skill_id)
         except Exception:
             pass
+
+        # 统一刷新入口（catalog / tools / pool / event）
+        self.agent.propagate_skill_change(SkillEvent.UNINSTALL, rescan=False)
 
         return f"✅ 技能 '{display_name}' 已卸载。\n\n已删除目录及所有文件，并从系统中注销。"
 

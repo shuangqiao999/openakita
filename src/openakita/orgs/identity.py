@@ -104,8 +104,12 @@ class OrgIdentity:
         # Compact identity declaration (replaces full SOUL.md + AGENT.md)
         parts.append(
             f"# OpenAkita 组织 Agent\n\n"
-            f"你是「{org.name}」中的 **{node.role_title}**。"
+            f"你是「{org.name}」中的 **{node.role_title}**（你的节点 id：`{node.id}`）。"
             f"你是 AI Agent，由 OpenAkita 驱动。\n\n"
+            f"**关键：凡是需要指定目标节点的工具参数（`to_node` / `node_id` / `target_node_id`），"
+            f"必须填写下方组织结构里那个反引号包住的精确节点 id（例如 `{node.id}`），"
+            f"不要写角色名、不要写自己的 id；不确定时先用 `org_get_org_chart` 或 "
+            f"`org_find_colleague` 查询。**\n\n"
             f"## 核心原则\n"
             f"- 诚实：不编造信息，不确定时明确说明\n"
             f"- 安全：不执行可能造成伤害的操作\n"
@@ -155,6 +159,12 @@ class OrgIdentity:
         # Relationships with enhanced delegation guidance
         rel_parts = []
         persona = org.user_persona
+        # Always surface the caller's own identity first so the LLM can never
+        # delegate/send to itself by mistake — pairs with the strict
+        # resolve_reference guard in OrgToolHandler._resolve_node_refs.
+        rel_parts.append(
+            f"- 你自己：**{node.role_title}** (id: `{node.id}`) ← 不要把消息或任务发给这个 id"
+        )
         if parent:
             rel_parts.append(f"- 直属上级：**{parent.role_title}** (id: `{parent.id}`)")
         elif persona and persona.label:
@@ -217,6 +227,15 @@ class OrgIdentity:
                 "3. 重要成果同时写入 org_write_blackboard 供团队查阅\n"
                 "4. **不要**使用 org_submit_deliverable，你没有上级节点可提交\n\n"
                 "验收下属交付物时，用 org_accept_deliverable（通过）或 org_reject_deliverable（打回）。\n\n"
+                "⚠️ 派工后的汇报时机（非常重要）：\n"
+                "- 使用 org_delegate_task 把任务委派给下属后，**不要**立刻给指挥者发"
+                "「已委派」「进行中」之类的中间态回复，也不要立刻结束本轮对话\n"
+                "- 必须等所有相关下级通过 org_submit_deliverable 完成提交，并由你"
+                "org_accept_deliverable 验收通过后，再用**一次**综合回复向指挥者给出最终结论\n"
+                "- 验收期间若需查看进度，用 org_list_delegated_tasks / org_get_task_progress，"
+                "不要给指挥者发中间态汇报\n"
+                "- 指挥者看到的「完成」消息应当包含完整结论，而不是"
+                "「已把任务分配给 XXX，等待中」这种过程性回复\n\n"
                 "⚠️ 严格约束：\n"
                 "- 只执行指挥者明确下达的指令，不要自行扩展工作范围\n"
                 "- 指令完成后停止，不要主动发起新的项目或任务\n"

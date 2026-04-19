@@ -132,6 +132,11 @@ def mock_runtime(persisted_org: Organization, org_manager: OrgManager, org_dir: 
     rt.get_org = MagicMock(return_value=persisted_org)
     rt._active_orgs = {persisted_org.id: persisted_org}
     rt._chain_delegation_depth = {}
+    # MagicMock attribute access otherwise returns truthy MagicMocks, which would
+    # trip the closed-chain gate in tool_handler. Default to "no chain is closed".
+    rt.is_chain_closed = MagicMock(return_value=False)
+    rt.get_current_chain_id = MagicMock(return_value=None)
+    rt._cleanup_accepted_chain = MagicMock(return_value=None)
 
     from openakita.orgs.event_store import OrgEventStore
     from openakita.orgs.blackboard import OrgBlackboard

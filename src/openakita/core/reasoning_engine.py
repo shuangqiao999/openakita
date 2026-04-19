@@ -2683,11 +2683,57 @@ class ReasoningEngine:
                 _usage = getattr(_raw, "usage", None) if _raw else None
                 _in_tokens = getattr(_usage, "input_tokens", 0) if _usage else 0
                 _out_tokens = getattr(_usage, "output_tokens", 0) if _usage else 0
+                _cache_read = 0
+                _cache_create = 0
                 if not (_in_tokens or _out_tokens) and _stream_usage:
                     _in_tokens = _stream_usage.get("input_tokens", 0)
                     _out_tokens = _stream_usage.get("output_tokens", 0)
+                if _stream_usage:
+                    _cache_read = int(
+                        _stream_usage.get("cache_read_input_tokens", 0) or 0
+                    )
+                    _cache_create = int(
+                        _stream_usage.get("cache_creation_input_tokens", 0) or 0
+                    )
+                if _usage:
+                    _cache_read = _cache_read or getattr(
+                        _usage, "cache_read_input_tokens", 0
+                    )
+                    _cache_create = _cache_create or getattr(
+                        _usage, "cache_creation_input_tokens", 0
+                    )
                 if _in_tokens or _out_tokens:
                     self._budget.record_tokens(_in_tokens, _out_tokens)
+                # 流式路径下 brain 不落 token_tracking（详见 brain.messages_create_stream
+                # 注释），需在此显式落库以保留 cache_read/cache_create 命中统计。
+                if _in_tokens or _out_tokens or _cache_read or _cache_create:
+                    try:
+                        from .token_tracking import record_usage as _tt_record_usage
+
+                        _ep_info = self._brain.get_current_endpoint_info() or {}
+                        _ep_name = _ep_info.get("name", "")
+                        _cost = 0.0
+                        for _ep in self._brain._llm_client.endpoints:
+                            if _ep.name == _ep_name:
+                                _cost = _ep.calculate_cost(
+                                    input_tokens=_in_tokens,
+                                    output_tokens=_out_tokens,
+                                    cache_read_tokens=_cache_read,
+                                )
+                                break
+                        _tt_record_usage(
+                            model=current_model or "",
+                            endpoint_name=_ep_name,
+                            input_tokens=_in_tokens,
+                            output_tokens=_out_tokens,
+                            cache_creation_tokens=_cache_create,
+                            cache_read_tokens=_cache_read,
+                            estimated_cost=_cost,
+                        )
+                    except Exception as _tt_err:
+                        logger.debug(
+                            f"[ReAct-Stream] token_tracking record failed (non-fatal): {_tt_err}"
+                        )
                 _iter_trace: dict = {
                     "iteration": _iteration + 1,
                     "timestamp": datetime.now().isoformat(),
@@ -3371,7 +3417,14 @@ class ReasoningEngine:
                             yield {"type": "chain_text", "content": _result_summary}
 
                         # deliver_artifacts 回执收集（与 run() 一致）
-                        if tool_name == "deliver_artifacts" and result_text:
+                        # 与 run() 路径对齐：deliver_artifacts 为直接交付，
+                        # org_accept_deliverable 为"中继交付"（父节点验收子节点
+                        # 带文件的交付物，receipts.status == "relayed"），
+                        # 两种都算 TaskVerify 眼里的有效交付证据。
+                        if (
+                            tool_name in ("deliver_artifacts", "org_accept_deliverable")
+                            and result_text
+                        ):
                             try:
                                 _rt = result_text
                                 _lm = "\n\n[执行日志]"
@@ -3381,6 +3434,8 @@ class ReasoningEngine:
                                 if (
                                     isinstance(_receipts_data, dict)
                                     and "receipts" in _receipts_data
+                                    and isinstance(_receipts_data["receipts"], list)
+                                    and _receipts_data["receipts"]
                                 ):
                                     delivery_receipts = _receipts_data["receipts"]
                                     self._last_delivery_receipts = delivery_receipts

@@ -184,12 +184,23 @@ class MemoryHandler:
             pass
 
         try:
-            profile = getattr(self.agent, "user_profile", None)
-            if profile:
-                profile_data = profile.to_dict() if hasattr(profile, "to_dict") else {}
-                profile_text = str(profile_data).lower()
+            # Agent 上挂的属性是 profile_manager（UserProfileManager），
+            # 不是 user_profile。旧代码 getattr(self.agent, "user_profile", None)
+            # 永远拿到 None，导致这段去重永远失效。同时支持任一字段以保持兼容。
+            profile_mgr = getattr(self.agent, "profile_manager", None) or getattr(
+                self.agent, "user_profile", None
+            )
+            if profile_mgr is not None:
+                if hasattr(profile_mgr, "state") and hasattr(
+                    profile_mgr.state, "collected_items"
+                ):
+                    profile_text = str(profile_mgr.state.collected_items).lower()
+                elif hasattr(profile_mgr, "to_dict"):
+                    profile_text = str(profile_mgr.to_dict()).lower()
+                else:
+                    profile_text = ""
                 core_fact = content.strip()[:60].lower()
-                if core_fact and core_fact in profile_text:
+                if core_fact and profile_text and core_fact in profile_text:
                     return "✅ 该信息已存在于用户画像中，无需重复添加记忆。"
         except Exception:
             pass
@@ -817,7 +828,13 @@ class MemoryHandler:
                     elapsed = r.get("elapsed_s", "")
                     if elapsed:
                         parts.append(f"- 耗时: {elapsed}s")
-                    tools = r.get("tools_used", [])
+                    tools_raw = r.get("tools_used") or []
+                    tools = [
+                        t if isinstance(t, str)
+                        else (t.get("name") if isinstance(t, dict) and t.get("name") else str(t))
+                        for t in tools_raw
+                    ]
+                    tools = [t for t in tools if t]
                     if tools:
                         parts.append(f"- 工具: {', '.join(tools[:10])}")
                     preview = r.get("result_preview", "")

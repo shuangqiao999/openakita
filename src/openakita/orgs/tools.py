@@ -15,7 +15,14 @@ ORG_NODE_TOOLS: list[dict] = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "to_node": {"type": "string", "description": "目标节点 ID"},
+                "to_node": {
+                    "type": "string",
+                    "description": (
+                        "目标节点的精确 id（与系统提示里组织结构展示的反引号 id 一致）。"
+                        "必须使用精确 id，不要填角色名；如果不确定，先用 "
+                        "org_find_colleague 或 org_get_org_chart 查询。不能写自己的 id。"
+                    ),
+                },
                 "content": {"type": "string", "description": "消息内容"},
                 "msg_type": {
                     "type": "string",
@@ -42,11 +49,21 @@ ORG_NODE_TOOLS: list[dict] = [
     },
     {
         "name": "org_delegate_task",
-        "description": "向直属下级分配任务。只能分配给你的直接下属，不能委派给平级同事或自己。与平级协作请用 org_send_message。",
+        "description": (
+            "向直属下级分配任务。只能分配给你的直接下属，不能委派给平级同事或自己。"
+            "与平级协作请用 org_send_message。"
+            "不确定下属 id 时先用 org_get_org_chart 或 org_find_colleague 查询。"
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "to_node": {"type": "string", "description": "目标直属下级的节点 ID（必须是你的直接下属）"},
+                "to_node": {
+                    "type": "string",
+                    "description": (
+                        "目标直属下级的精确节点 id（与系统提示里组织结构展示的反引号 id 一致）。"
+                        "必须是你的直接下属，禁止填角色名或自己的 id；名字接近的同事要用精确 id 区分。"
+                    ),
+                },
                 "task": {"type": "string", "description": "任务描述"},
                 "deadline": {"type": "string", "description": "截止时间（ISO 格式，可选）。AI 节点通常在分钟内完成任务，建议设置 5-30 分钟的 deadline"},
                 "priority": {"type": "integer", "default": 0},
@@ -367,6 +384,23 @@ ORG_NODE_TOOLS: list[dict] = [
                     ),
                 },
                 "summary": {"type": "string", "description": "工作过程简述"},
+                "file_attachments": {
+                    "type": "array",
+                    "description": (
+                        "如果本次交付涉及文件（无论通过 write_file 还是 run_shell 产出），"
+                        "必须在此字段声明，否则用户看不到附件。file_path 可以是相对于"
+                        "组织工作区的路径或绝对路径。"
+                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "filename": {"type": "string", "description": "文件显示名"},
+                            "file_path": {"type": "string", "description": "文件路径（相对于组织工作区或绝对路径）"},
+                            "description": {"type": "string", "description": "文件说明（可选）"},
+                        },
+                        "required": ["filename", "file_path"],
+                    },
+                },
             },
             "required": ["deliverable"],
         },
@@ -395,6 +429,38 @@ ORG_NODE_TOOLS: list[dict] = [
                 "reason": {"type": "string", "description": "打回原因和修改要求"},
             },
             "required": ["task_chain_id", "from_node", "reason"],
+        },
+    },
+    {
+        "name": "org_wait_for_deliverable",
+        "description": (
+            "阻塞等待你派出的下级任务完成（用 org_delegate_task 派的）。"
+            "比 org_list_delegated_tasks 轮询高效得多——会在以下任一事件触发时立即返回：\n"
+            "  1) 任意指定的子任务链关闭（被你 accept/reject 或被取消）\n"
+            "  2) 收到下级新消息（提问/升级），需要你立即处理\n"
+            "  3) timeout 到期（默认 60 秒）\n"
+            "  4) 用户取消整个命令\n"
+            "返回值会告诉你：哪些子链已关闭、是否被消息打断、是否超时。"
+            "建议用法：派完一组并行任务后立即 wait，超时后用 org_list_delegated_tasks "
+            "看进度，再决定是继续 wait 还是输出阶段性汇总。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "chain_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "要等待的具体任务链 ID 列表（可选）。"
+                        "省略时自动等待你最近派出的所有未关闭子链。"
+                    ),
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "最大等待秒数，默认 60，最大 300。",
+                    "default": 60,
+                },
+            },
         },
     },
     # ── 制度提议 ──

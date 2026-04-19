@@ -579,14 +579,50 @@ async def read_skills_config():
 
 
 @router.post("/api/config/skills")
-async def write_skills_config(body: SkillsWriteRequest):
-    """Write data/skills.json."""
-    sk_path = _project_root() / "data" / "skills.json"
-    sk_path.parent.mkdir(parents=True, exist_ok=True)
-    sk_path.write_text(
-        json.dumps(body.content, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+async def write_skills_config(body: SkillsWriteRequest, request: Request):
+    """Write data/skills.json.
+
+    写入后统一走 ``Agent.propagate_skill_change``：
+      - Parser/Loader 缓存失效，外部技能 allowlist 按新文件重算
+      - SkillCatalog / ``_skill_catalog_text`` 重建，CLI 系统提示重刷
+      - Handler 映射同步 + AgentInstancePool 版本号自增（下一条桌面端请求拿到新 Agent）
+      - HTTP ``_skills_cache`` 通过事件回调失效，WebSocket 广播 SkillEvent.ENABLE
+
+    若 request 中尚无 agent（启动前调用），则仅写盘，刷新将在 Agent 初始化时自然发生。
+    """
+    import asyncio as _asyncio
+
+    from openakita.skills.allowlist_io import overwrite_allowlist
+
+    content = body.content if isinstance(body.content, dict) else {}
+    al = content.get("external_allowlist") if isinstance(content, dict) else None
+
+    # 优先走唯一写入点；若 payload 不是标准 allowlist 结构，回退到旧的整文件覆盖，
+    # 以保持前端「原样写入」的兼容（例如把非 allowlist 字段写进去）。
+    if isinstance(al, list):
+        overwrite_allowlist({str(x).strip() for x in al if str(x).strip()})
+    else:
+        sk_path = _project_root() / "data" / "skills.json"
+        sk_path.parent.mkdir(parents=True, exist_ok=True)
+        sk_path.write_text(
+            json.dumps(content, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    # 触发统一刷新（rescan=False：仅重算 allowlist+catalog+pool，无需再扫盘）
+    try:
+        from openakita.core.agent import Agent
+        from openakita.skills.events import SkillEvent
+
+        agent = getattr(request.app.state, "agent", None)
+        actual_agent = agent if isinstance(agent, Agent) else getattr(agent, "_local_agent", None)
+        if actual_agent is not None and hasattr(actual_agent, "propagate_skill_change"):
+            await _asyncio.to_thread(
+                actual_agent.propagate_skill_change, SkillEvent.ENABLE, rescan=False
+            )
+    except Exception as e:
+        logger.warning("[Config API] post-write skill propagate failed: %s", e)
+
     logger.info("[Config API] Updated skills.json")
     return {"status": "ok"}
 

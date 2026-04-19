@@ -50,7 +50,6 @@ class SkillManager:
         skill_loader: Any,
         skill_catalog: Any,
         shell_tool: Any,
-        on_skill_loaded: Any = None,
     ) -> None:
         """
         Args:
@@ -58,13 +57,17 @@ class SkillManager:
             skill_loader: SkillLoader 实例
             skill_catalog: SkillCatalog 实例
             shell_tool: ShellTool 实例（用于 git 操作）
-            on_skill_loaded: 技能加载后的回调（用于同步 handler_registry 等）
+
+        Note:
+            ``install_skill`` / ``load_installed_skills`` 仅负责把技能落盘并首次注册到
+            loader/registry；**不**负责后续的 catalog 刷新、Pool 通知、事件广播 ——
+            这些由 ``Agent.propagate_skill_change`` 统一完成。工具层 / API 层在调用
+            本管理器之后必须再走 ``propagate_skill_change`` 一次。
         """
         self._registry = skill_registry
         self._loader = skill_loader
         self._catalog = skill_catalog
         self._shell_tool = shell_tool
-        self._on_skill_loaded = on_skill_loaded
 
         # 缓存
         self._catalog_text: str = ""
@@ -393,11 +396,12 @@ class SkillManager:
             self._ensure_skill_structure(target_dir)
 
             try:
-                loaded = self._loader.load_skill(target_dir)
+                # force=True：允许覆盖已注册的同名 skill（再次安装 / 升级场景）
+                loaded = self._loader.load_skill(target_dir, force=True)
                 if loaded:
+                    # 注意：目录缓存 / Pool 通知 / 事件广播由上层 propagate_skill_change 统一完成，
+                    # 此处只记录 catalog_text 快照供调试。
                     self._catalog_text = self._catalog.generate_catalog()
-                    if self._on_skill_loaded:
-                        self._on_skill_loaded()
                     self._reset_failure_streaks()
                     logger.info(f"Skill installed from git: {skill_name}")
                 else:
@@ -500,11 +504,12 @@ class SkillManager:
                             logger.warning(f"Failed to download {file_url}: {e}")
 
             try:
-                loaded = self._loader.load_skill(skill_dir)
+                # force=True：允许覆盖已注册的同名 skill（再次安装 / 升级场景）
+                loaded = self._loader.load_skill(skill_dir, force=True)
                 if loaded:
+                    # 注意：目录缓存 / Pool 通知 / 事件广播由上层 propagate_skill_change 统一完成，
+                    # 此处只记录 catalog_text 快照供调试。
                     self._catalog_text = self._catalog.generate_catalog()
-                    if self._on_skill_loaded:
-                        self._on_skill_loaded()
                     self._reset_failure_streaks()
                     logger.info(f"Skill installed from URL: {skill_name}")
                 else:

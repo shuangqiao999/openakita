@@ -7,6 +7,7 @@ OrgToolHandler — 组织工具执行器
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import TYPE_CHECKING, Any
@@ -31,6 +32,22 @@ _LIM_WS = 2000
 _LIM_EXEC_LOG = 2000
 _LIM_TOOL_RETURN = 200
 _LIM_TITLE = 200
+
+# Tools whose ``to_node`` / ``node_id`` / ``target_node_id`` parameters must
+# resolve to a **specific** node before the handler runs. Used by
+# ``OrgToolHandler._resolve_node_refs`` to switch from lenient fuzzy matching
+# (which is the historical behaviour for search tools like
+# ``org_find_colleague``) to strict exact-only matching (so that ambiguous
+# role titles surface as structured errors instead of silently binding to
+# the wrong node — typically the caller itself).
+_STRICT_REF_TOOLS: set[str] = {
+    "org_delegate_task",
+    "org_send_message",
+    "org_reply_message",
+    "org_submit_deliverable",
+    "org_accept_deliverable",
+    "org_reject_deliverable",
+}
 
 
 class OrgToolHandler:
@@ -110,20 +127,62 @@ class OrgToolHandler:
         explicit = org.max_delegation_depth
         return max(explicit, org_depth + 3)
 
-    def _resolve_node_refs(self, args: dict, org_id: str) -> None:
-        """Resolve node references: LLM may pass role titles or wrong-cased IDs."""
+    def _resolve_node_refs(
+        self, args: dict, org_id: str, tool_name: str | None = None
+    ) -> None:
+        """Resolve node references: LLM may pass role titles or wrong-cased IDs.
+
+        Behaviour depends on *tool_name*:
+
+        - If ``tool_name`` is in ``_STRICT_REF_TOOLS`` (write-effect tools
+          like delegate / send_message / reply_message), we only rewrite
+          ``args[key]`` to the canonical node id when ``resolve_reference``
+          returns ``exact_id`` or ``exact_title``. Ambiguous or fuzzy
+          matches are **kept as-is** so the downstream handler can surface
+          a structured error listing the candidate IDs — this is what
+          prevents the "产品总监" ↔ "产品经理" substring collision from
+          silently resolving the caller to itself.
+        - If ``tool_name`` is outside that set (search / read tools such
+          as org_find_colleague, org_get_memory_of_node, org_pause_node,
+          …), we keep the historical lenient behaviour: any hit — exact
+          or fuzzy — wins, matching pre-existing caller expectations and
+          avoiding regressions in search flows.
+
+        ``tool_name=None`` defaults to the lenient path for backward
+        compatibility with any direct test harness.
+        """
         org = self._runtime.get_org(org_id)
         if not org:
             return
+
+        strict = tool_name in _STRICT_REF_TOOLS
+
         for key in ("to_node", "node_id", "target_node_id"):
             val = args.get(key, "")
             if not val:
                 continue
+
+            if strict:
+                node, _candidates, status = org.resolve_reference(val)
+                # Exact hits are safe to rewrite; everything else (ambiguous
+                # title, fuzzy, not_found) must be passed through untouched
+                # so the handler can emit an informative error including
+                # the candidate list.
+                if status in ("exact_id", "exact_title") and node is not None:
+                    args[key] = node.id
+                continue
+
+            # Lenient path (search / read tools): first try exact hits,
+            # then fall back to the legacy substring / title / id matching.
             if org.get_node(val):
                 continue
             val_lower = val.lower().replace(" ", "_").replace("-", "_")
             for n in org.nodes:
-                if n.id == val_lower or n.role_title == val or n.role_title.lower() == val.lower():
+                if (
+                    n.id == val_lower
+                    or n.role_title == val
+                    or n.role_title.lower() == val.lower()
+                ):
                     args[key] = n.id
                     break
 
@@ -169,6 +228,146 @@ class OrgToolHandler:
             if v:
                 args["filename"] = v
         return args
+
+    @staticmethod
+    def _attachment_key(att: dict) -> tuple[str, str]:
+        """Stable dedup key for a file attachment dict.
+
+        Key = (filename, file_path). Size/timestamp are intentionally excluded
+        so a re-write of the same file (which may change size by a byte) is
+        treated as the same attachment and replaces the previous entry.
+        """
+        if not isinstance(att, dict):
+            return ("", "")
+        filename = str(att.get("filename") or "").strip()
+        file_path = str(att.get("file_path") or att.get("path") or "").strip()
+        return (filename, file_path)
+
+    @classmethod
+    def _merge_file_attachments(
+        cls, existing: list[dict], incoming: list[dict]
+    ) -> list[dict]:
+        """Merge incoming attachments into existing list, deduping by (filename, file_path).
+
+        If a newer attachment shares a key with an older one, the newer
+        replaces the older (keeping insertion order at the old position).
+        Entries with an empty key are appended as-is (defensive fallback).
+        """
+        result: list[dict] = []
+        index_by_key: dict[tuple[str, str], int] = {}
+        for att in existing or []:
+            key = cls._attachment_key(att)
+            if not key[0] and not key[1]:
+                result.append(att)
+                continue
+            if key in index_by_key:
+                result[index_by_key[key]] = att
+            else:
+                index_by_key[key] = len(result)
+                result.append(att)
+        for att in incoming or []:
+            key = cls._attachment_key(att)
+            if not key[0] and not key[1]:
+                result.append(att)
+                continue
+            if key in index_by_key:
+                result[index_by_key[key]] = att
+            else:
+                index_by_key[key] = len(result)
+                result.append(att)
+        return result
+
+    # 文件名清洗：去掉路径分隔符 / 控制字符 / 平台保留字符，避免 LLM
+    # 给的标题里包含 ../ 或 :*?"<>| 这种东西穿越到 workspace 之外。
+    _DELIVERABLE_NAME_FORBIDDEN = set('\\/:*?"<>|\r\n\t')
+
+    # 自动落盘 deliverable 的最小字符数。低于这个长度通常是聊天式回复
+    # （"我已完成"），落盘成附件反而噪音。LLM 写出的真实文档（带 markdown
+    # 标题或列表）通常 ≥300 字符；用户实测 case ~ 476 字符。
+    _DELIVERABLE_AUTO_PERSIST_MIN_CHARS = 300
+
+    @classmethod
+    def _slugify_deliverable_title(cls, title: str) -> str:
+        cleaned = "".join(
+            ch for ch in (title or "") if ch not in cls._DELIVERABLE_NAME_FORBIDDEN
+        ).strip()
+        cleaned = cleaned.replace(" ", "_")
+        if len(cleaned) > 60:
+            cleaned = cleaned[:60].rstrip("_- ")
+        return cleaned or "deliverable"
+
+    @staticmethod
+    def _looks_like_structured_document(body: str) -> bool:
+        """Heuristic to decide whether a deliverable string is a 'document'
+        worth materialising as an attachment.
+
+        True if ANY of:
+          - Has at least one ATX markdown heading (`#`..`######`) at line start
+          - Has at least 3 bullet list items (`- ` or `* `) at line start
+          - Contains a fenced code block (```)
+
+        Designed to be conservative so plain conversational replies like
+        "我已完成" do not trigger auto-persist.
+        """
+        if not body:
+            return False
+        import re
+        if re.search(r"(?m)^\s{0,3}#{1,6}\s", body):
+            return True
+        bullet_lines = re.findall(r"(?m)^\s{0,3}[-*]\s+\S", body)
+        if len(bullet_lines) >= 3:
+            return True
+        if "```" in body:
+            return True
+        return False
+
+    def _auto_persist_deliverable(
+        self,
+        *,
+        workspace,
+        chain_id: str,
+        title: str,
+        body: str,
+    ):
+        """Persist a long inline deliverable to ``<workspace>/deliverables/``.
+
+        Returns the absolute Path on success, or None on any failure (caller
+        only logs a warning and continues; this is a best-effort fallback).
+        Resolved path is verified to stay strictly inside the workspace
+        ``deliverables`` folder so that a malicious / careless LLM-supplied
+        title cannot escape via path-traversal.
+        """
+        from pathlib import Path
+        from datetime import datetime
+
+        try:
+            base_ws = Path(workspace).resolve()
+        except Exception:
+            return None
+        deliverables_dir = (base_ws / "deliverables").resolve()
+        try:
+            deliverables_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            return None
+
+        slug = self._slugify_deliverable_title(title)
+        chain_short = (chain_id or "chain").split(":")[-1][:12] or "chain"
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        candidate = (deliverables_dir / f"{chain_short}_{slug}_{ts}.md").resolve()
+
+        try:
+            deliverables_dir_str = str(deliverables_dir)
+            if not str(candidate).startswith(deliverables_dir_str):
+                return None
+        except Exception:
+            return None
+
+        header = f"# {title.strip() or '交付物'}\n\n" if title else ""
+        try:
+            candidate.write_text(header + (body or ""), encoding="utf-8")
+        except Exception:
+            return None
+        return candidate
 
     def _link_project_task(
         self, org_id: str, chain_id: str, *,
@@ -220,17 +419,28 @@ class OrgToolHandler:
                         updates["progress_pct"] = 100
                 if deliverable_content:
                     old = existing.deliverable_content or ""
-                    if old and deliverable_content not in old:
-                        updates["deliverable_content"] = old + "\n\n---\n\n" + deliverable_content
+                    new_stripped = deliverable_content.strip()
+                    old_stripped = old.strip()
+                    if not old_stripped:
+                        updates["deliverable_content"] = deliverable_content
+                    elif new_stripped == old_stripped:
+                        # exact same payload — do not store again
+                        pass
+                    elif new_stripped in old_stripped:
+                        # new content fully contained in old — skip append
+                        pass
+                    elif old_stripped in new_stripped:
+                        # new content is a superset — replace
+                        updates["deliverable_content"] = deliverable_content
                     else:
-                        updates["deliverable_content"] = deliverable_content or old
+                        updates["deliverable_content"] = old + "\n\n---\n\n" + deliverable_content
                 if delivery_summary:
                     updates["delivery_summary"] = delivery_summary
                 if file_attachment:
-                    old_attachments = list(existing.file_attachments or [])
-                    if file_attachment not in old_attachments:
-                        old_attachments.append(file_attachment)
-                    updates["file_attachments"] = old_attachments
+                    updates["file_attachments"] = self._merge_file_attachments(
+                        list(existing.file_attachments or []),
+                        [file_attachment],
+                    )
                 if updates:
                     store.update_task(existing.project_id, existing.id, updates)
                 return
@@ -405,9 +615,18 @@ class OrgToolHandler:
         if handler is None:
             return f"Unknown org tool: {tool_name}"
 
+        # 每次 org_* 工具调用都是一次"组织在活动"的进度信号，用来阻止命令
+        # 看门狗误判卡死。对没有进行中 UserCommandTracker 的 org 是 O(0)。
+        try:
+            touch = getattr(self._runtime, "_touch_trackers_for_org", None)
+            if callable(touch):
+                touch(org_id)
+        except Exception:
+            pass
+
         arguments = self._resolve_aliases(arguments)
         arguments = self._coerce_types(arguments)
-        self._resolve_node_refs(arguments, org_id)
+        self._resolve_node_refs(arguments, org_id, tool_name=tool_name)
 
         try:
             result = await handler(arguments, org_id, node_id)
@@ -422,6 +641,30 @@ class OrgToolHandler:
     # Communication tools
     # ------------------------------------------------------------------
 
+    # ── 协调者反模式 heuristic guard ──
+    # 协调者（有下属的节点）经常错误地用 ``org_send_message(question)`` 给下级
+    # 派发任务，绕过 ``org_delegate_task`` 的 chain 注册，导致：
+    #   1) UserCommandTracker 看不到子任务，提前判定命令完成
+    #   2) 子任务无 deadline / 无验收闭环
+    # 触发条件：sender 有直属下级 + msg_type=question + content 含明显任务措辞。
+    # 触发后拒绝发送，引导改用 org_delegate_task。受
+    # ``org_question_task_guard`` flag 控制，可一键关闭。
+    _TASK_INTENT_PATTERNS: tuple[str, ...] = (
+        "撰写", "编写", "起草", "草拟", "拟定",
+        "优化", "改写", "重写",
+        "产出", "给出", "生成", "制作", "做一份", "做一版",
+        "完成", "完成一份", "完成一版",
+        "整理一份", "整理出", "提供一份", "提供一版",
+        "出一份", "出一版", "出一稿",
+        "写一篇", "写一份", "写一版", "写一稿",
+        "给我一份", "给我一稿", "给我一版",
+    )
+
+    def _looks_like_task_assignment(self, content: str) -> bool:
+        if not content:
+            return False
+        return any(p in content for p in self._TASK_INTENT_PATTERNS)
+
     async def _handle_org_send_message(
         self, args: dict, org_id: str, node_id: str
     ) -> str:
@@ -429,7 +672,56 @@ class OrgToolHandler:
         if not messenger:
             return self._org_not_running_error(org_id)
 
+        # 反模式拦截：协调者用 question 派任务（受 flag 控制）
+        try:
+            from openakita.config import settings as _settings_sm
+            _guard_enabled = bool(getattr(
+                _settings_sm, "org_question_task_guard", True,
+            ))
+        except Exception:
+            _guard_enabled = True
+
+        if _guard_enabled:
+            raw_msg_type = args.get("msg_type", "question")
+            content_preview = (args.get("content") or "")[:2000]
+            org_for_guard = self._runtime.get_org(org_id)
+            sender_has_children = False
+            if org_for_guard:
+                try:
+                    sender_has_children = bool(
+                        org_for_guard.get_children(node_id)
+                    )
+                except Exception:
+                    sender_has_children = False
+            if (
+                raw_msg_type == "question"
+                and sender_has_children
+                and self._looks_like_task_assignment(content_preview)
+            ):
+                logger.info(
+                    "[ToolHandler] block question-as-task by=%s to=%s",
+                    node_id, args.get("to_node", ""),
+                )
+                return (
+                    "[org_send_message 拦截] 检测到你正用 msg_type=question "
+                    "向下属派发实际任务（含'撰写/优化/产出/完成'等任务措辞）。"
+                    "这会绕过任务链跟踪，导致系统认为你的指令已完成而提前结束。"
+                    "请改用 org_delegate_task 正式派发任务（一次只能派一个，"
+                    "可并行多次调用），并在下属交付后用 org_accept_deliverable "
+                    "验收。需要等下属交付时可调用 org_wait_for_deliverable。"
+                )
+
         metadata: dict = {}
+
+        # 若调用方当前绑定的 chain 已关闭，把 chain_closed 标记放进 metadata，
+        # 供接收端 `_on_node_message` 做软门禁。不拦截发送本身，因为回复/总结
+        # 这类对话性消息仍然有价值，只是不应再重新激活 ReAct。
+        # 注意：仅在 chain 已关闭时才打 metadata，不对"开放中"的 chain 外泄 chain_id，
+        # 以免把 sender 的 chain 语义传染给 receiver 的下一次 ReAct 调用。
+        current_chain = self._runtime.get_current_chain_id(org_id, node_id)
+        if current_chain and self._runtime.is_chain_closed(org_id, current_chain):
+            metadata["task_chain_id"] = current_chain
+            metadata["chain_closed"] = True
 
         raw_type = args.get("msg_type", "question")
         try:
@@ -438,15 +730,55 @@ class OrgToolHandler:
             msg_type = MsgType.QUESTION
             logger.warning(f"[OrgToolHandler] Invalid msg_type '{raw_type}', falling back to 'question'")
 
-        to_node = args["to_node"]
+        to_node = args.get("to_node", "")
         org = self._runtime.get_org(org_id)
         if org:
-            resolved = org.get_node(to_node)
-            if resolved:
-                to_node = resolved.id
-            else:
+            caller_node = org.get_node(node_id)
+            caller_label = (
+                f"`{caller_node.id}`({caller_node.role_title})"
+                if caller_node else f"`{node_id}`"
+            )
+            # 和 org_delegate_task 用同一套 resolve_reference 协议，确保
+            # to_node 必须是反引号包住的精确节点 id 或完全相同的唯一 role_title；
+            # 名字相近的模糊命中一律退到"请用精确 id"错误，避免把消息
+            # 错发给同名同事（例如"产品总监"/"产品经理"的 substring 歧义）。
+            resolved, candidates, status = org.resolve_reference(to_node)
+            if status == "ambiguous_title":
+                cand_list = ", ".join(
+                    f"`{c.id}`({c.role_title})" for c in candidates
+                )
+                return (
+                    f"[org_send_message 失败] 你是 {caller_label}，to_node='{to_node}' "
+                    f"对应多个节点：{cand_list}。请改用上面列出的精确节点 id（反引号包住的那一个）。"
+                )
+            if status == "fuzzy":
+                cand = candidates[0] if candidates else None
+                cand_label = (
+                    f"`{cand.id}`({cand.role_title})" if cand else f"'{to_node}'"
+                )
+                if cand and cand.id == node_id:
+                    return (
+                        f"[org_send_message 失败] 你是 {caller_label}，"
+                        f"to_node='{to_node}' 模糊匹配到的是你自己（{cand_label}），不能给自己发消息。"
+                        "请使用准确的目标节点 id。"
+                    )
+                return (
+                    f"[org_send_message 失败] 你是 {caller_label}，to_node='{to_node}' "
+                    f"不是精确匹配，最接近的是 {cand_label}。为避免误发，请把 to_node 改为 "
+                    "上面建议的精确节点 id 再试。"
+                )
+            if status == "not_found":
                 avail = ", ".join(f"{n.id}({n.role_title})" for n in org.nodes)
-                return f"节点 '{to_node}' 不存在。可用节点: {avail}"
+                return (
+                    f"[org_send_message 失败] 你是 {caller_label}，节点 '{to_node}' 不存在。"
+                    f"可用节点: {avail}"
+                )
+
+            to_node = resolved.id
+            if to_node == node_id:
+                return (
+                    f"[org_send_message 失败] 你是 {caller_label}，不能给自己发消息。"
+                )
 
         msg = OrgMessage(
             org_id=org_id,
@@ -496,11 +828,53 @@ class OrgToolHandler:
 
         org = self._runtime.get_org(org_id)
 
-        chain_id = (
-            args.get("task_chain_id")
-            or self._runtime.get_current_chain_id(org_id, node_id)
-            or _now_iso() + ":" + node_id[:8]
-        )
+        # chain_id 计算策略（受 ``org_chain_parent_enforced`` flag 控制）：
+        #   - flag=True（默认，新行为）：每次 delegate 一律新建子 chain，并把
+        #     新 chain 挂到 caller 的 current_chain 之下作为父子关系，便于
+        #     UserCommandTracker 沿子树关系判定真正的"全树关闭"。
+        #   - flag=False（旧行为）：caller 已有 current_chain 时复用，整棵
+        #     调用树共用一个 chain_id。这是出 bug 前的兼容路径。
+        # LLM 显式传入的 ``task_chain_id`` 始终优先（用于"重派/续派"场景的
+        # 主动指定 chain）。
+        try:
+            from openakita.config import settings as _settings_dt
+            _chain_parent_enforced = bool(getattr(
+                _settings_dt, "org_chain_parent_enforced", True,
+            ))
+        except Exception:
+            _chain_parent_enforced = True
+
+        caller_chain = self._runtime.get_current_chain_id(org_id, node_id)
+        explicit_chain = args.get("task_chain_id") or None
+        if explicit_chain:
+            chain_id = explicit_chain
+            parent_chain = caller_chain if caller_chain != chain_id else None
+        elif _chain_parent_enforced:
+            chain_id = _now_iso() + ":" + node_id[:8]
+            parent_chain = caller_chain or None
+        else:
+            chain_id = caller_chain or (_now_iso() + ":" + node_id[:8])
+            parent_chain = None
+
+        # 软屏障：如果当前 chain 已被验收/打回/取消，禁止继续 delegate。
+        # 这是防止"任务完成后组织继续自主派活"的核心拦截点之一。
+        try:
+            from openakita.config import settings as _settings
+            if (getattr(_settings, "org_suppress_closed_chain_reactivation", True)
+                    and self._runtime.is_chain_closed(org_id, chain_id)):
+                logger.info(
+                    "[ToolHandler] block delegate on closed chain=%s by=%s to=%s",
+                    chain_id, node_id, args.get("to_node", ""),
+                )
+                return (
+                    f"[已关闭] 任务链 {chain_id} 已结束（验收/打回/取消），"
+                    "禁止基于该 chain 继续 org_delegate_task。"
+                    "如确有新工作需要，请由上级重新发起独立任务；"
+                    "当前请直接用文字总结回复，不要再调用任何 org_* 工具。"
+                )
+        except Exception as exc:
+            logger.debug("delegate closed-chain check skipped: %s", exc)
+
         chain_depth = self._runtime._chain_delegation_depth.get(chain_id, 0)
         max_depth = self._effective_max_delegation_depth(org)
         if chain_depth + 1 > max_depth:
@@ -518,11 +892,41 @@ class OrgToolHandler:
 
         to_node = args["to_node"]
 
+        # task_affinity 的语义是"同一 chain 的后续消息路由到同一个 clone 实例"，
+        # 它是给 messenger.send 用的（参见 messenger.send 里 affinity_node !=
+        # to_node and != from_node 的反自指守卫）。在 delegate 这条路径上，
+        # 之前把 to_node 无条件覆盖成 existing_affinity 会出现一个致命的
+        # 自指：CEO 用 chain X 派给 CPO 后，affinity[X] = CPO；CPO 用同一个
+        # chain X 继续向下派给 PM 时，to_node=pm 会被改写回 cpo，紧接着
+        # 触发"不能把任务委派给自己"。
+        # 这里只在三个条件同时满足时才走 affinity 改写：
+        #   1) existing_affinity 不是 caller 自己（避免自指）
+        #   2) existing_affinity 不是当前显式 to_node（无需改写）
+        #   3) existing_affinity 与 to_node 同属一个 clone 组
+        # 这样既保留了"clone 路由"的原意，又不会拦截上下游正常派活。
         existing_affinity = messenger.get_task_affinity(chain_id)
-        if existing_affinity:
-            if org:
-                affinity_node = org.get_node(existing_affinity)
-                if affinity_node and affinity_node.status not in (NodeStatus.FROZEN, NodeStatus.OFFLINE):
+        if (
+            existing_affinity
+            and existing_affinity != node_id
+            and existing_affinity != to_node
+            and org
+        ):
+            affinity_node = org.get_node(existing_affinity)
+            target_node = org.get_node(to_node)
+            if (
+                affinity_node
+                and target_node
+                and affinity_node.status not in (NodeStatus.FROZEN, NodeStatus.OFFLINE)
+            ):
+                same_clone_group = (
+                    affinity_node.clone_source == target_node.id
+                    or target_node.clone_source == affinity_node.id
+                    or (
+                        affinity_node.clone_source is not None
+                        and affinity_node.clone_source == target_node.clone_source
+                    )
+                )
+                if same_clone_group:
                     to_node = existing_affinity
 
         if org:
@@ -533,18 +937,58 @@ class OrgToolHandler:
                 if caller_node else f"`{node_id}`"
             )
 
-            resolved = org.get_node(to_node)
-            if resolved:
-                to_node = resolved.id
-            else:
+            # _resolve_node_refs 在 strict 模式下只对 exact_id/exact_title 做了
+            # 改写；fuzzy/ambiguous/not_found 都原样保留在 to_node 里，必须在
+            # 这里用 resolve_reference 再跑一次严格解析，产出结构化错误，
+            # 否则 LLM 根本不知道该用哪个精确节点 id。
+            resolved, candidates, status = org.resolve_reference(to_node)
+            children = org.get_children(node_id)
+            children_hint = (
+                "你的直属下级：" + ", ".join(
+                    f"{c.role_title}(`{c.id}`)" for c in children
+                )
+                if children
+                else "你是叶子节点，没有直属下级，无法使用 org_delegate_task。"
+            )
+
+            if status == "ambiguous_title":
+                cand_list = ", ".join(
+                    f"`{c.id}`({c.role_title})" for c in candidates
+                )
+                return (
+                    f"[org_delegate_task 失败] 你是 {caller_label}，to_node='{to_node}' "
+                    f"对应多个节点：{cand_list}。请改用上面列出的精确节点 id（反引号包住的那一个）再试一次。"
+                    f"{children_hint}"
+                )
+            if status == "fuzzy":
+                cand = candidates[0] if candidates else None
+                cand_label = (
+                    f"`{cand.id}`({cand.role_title})" if cand else f"'{to_node}'"
+                )
+                # 对自指（模糊匹配恰好命中调用者自己）单独提示，堵上最常见的
+                # "产品总监把任务派给自己"死循环。
+                if cand and cand.id == node_id:
+                    return (
+                        f"[org_delegate_task 失败] 你是 {caller_label}，"
+                        f"to_node='{to_node}' 模糊匹配到的是你自己（{cand_label}），不能委派给自己。"
+                        f"请改用下方列出的下级精确节点 id。{children_hint}"
+                    )
+                return (
+                    f"[org_delegate_task 失败] 你是 {caller_label}，to_node='{to_node}' "
+                    f"不是精确匹配，最接近的是 {cand_label}。为避免误派，请把 to_node 改为 "
+                    f"上面建议的精确节点 id 再试。{children_hint}"
+                )
+            if status == "not_found":
                 avail = ", ".join(f"{n.id}({n.role_title})" for n in org.nodes)
                 return (
                     f"[org_delegate_task 失败] 你是 {caller_label}，目标节点 '{to_node}' 不存在。"
                     f"可用节点: {avail}。请检查 to_node 参数，或改用 org_submit_deliverable 自行完成。"
                 )
 
+            # exact_id / exact_title
+            to_node = resolved.id
+
             # Validate hierarchy: only direct children can receive delegated tasks
-            children = org.get_children(node_id)
             child_ids = {c.id for c in children}
             if to_node not in child_ids:
                 if to_node == node_id:
@@ -599,6 +1043,42 @@ class OrgToolHandler:
 
         messenger.bind_task_affinity(chain_id, to_node)
         self._runtime._chain_delegation_depth[chain_id] = chain_depth + 1
+
+        # 维护 chain 父子关系（org_chain_parent_enforced 路径下使用）。
+        # parent_chain 在上面的 chain_id 计算分支里已经决定：caller 已有
+        # current_chain 且本次新建子 chain 时 = caller_chain，其它路径 = None。
+        try:
+            if parent_chain and parent_chain != chain_id:
+                self._runtime._chain_parent.setdefault(chain_id, parent_chain)
+            else:
+                self._runtime._chain_parent.setdefault(chain_id, None)
+        except Exception:
+            logger.debug(
+                "[ToolHandler] chain_parent register failed", exc_info=True,
+            )
+
+        # 注册一个 chain 关闭事件，供 org_wait_for_deliverable 阻塞等待。
+        # 同一 chain 重复 delegate 时复用既有 event。
+        try:
+            if chain_id not in self._runtime._chain_events:
+                self._runtime._chain_events[chain_id] = asyncio.Event()
+        except Exception:
+            logger.debug(
+                "[ToolHandler] chain_event create failed", exc_info=True,
+            )
+
+        # 用户命令生命周期追踪：如果当前 org 上存在进行中的 UserCommandTracker
+        # 且本次派工源自 tracker 的 root 或其后代，则把新 chain 登记进 tracker，
+        # 作为"该命令尚未完成"的信号之一。关闭时由 _mark_chain_closed 反向解注册。
+        try:
+            register = getattr(self._runtime, "_tracker_register_chain", None)
+            if callable(register):
+                register(org_id, node_id, chain_id)
+        except Exception:
+            logger.debug(
+                "[ToolHandler] tracker_register_chain failed",
+                exc_info=True,
+            )
 
         self._runtime.get_event_store(org_id).emit(
             "task_assigned", node_id,
@@ -1102,7 +1582,34 @@ class OrgToolHandler:
         to_node = args.get("to_node", "")
         deliverable = args.get("deliverable", "")
         summary = args.get("summary", "")
-        chain_id = args.get("task_chain_id") or _now_iso()
+        raw_file_attachments = args.get("file_attachments") or []
+
+        # chain_id 强制策略（org_chain_parent_enforced=True 时启用）：
+        # submit 时必须使用 caller 当前 incoming chain（即上级派给我时的 chain）。
+        # 这是修复"content-op submit 时 LLM 漏传 task_chain_id 导致开新链、
+        # 整树 chain 关系断裂"的关键。LLM 传错时用 caller current_chain 强制覆盖
+        # 并 warn；caller 没有 current_chain 时 fall back 到 LLM 传值或新 chain
+        # （保持旧兼容路径，例如 root 节点意外调 submit 的边缘场景）。
+        try:
+            from openakita.config import settings as _settings_sd
+            _enforce_sd = bool(getattr(
+                _settings_sd, "org_chain_parent_enforced", True,
+            ))
+        except Exception:
+            _enforce_sd = True
+
+        explicit_chain_sd = args.get("task_chain_id") or None
+        caller_chain_sd = self._runtime.get_current_chain_id(org_id, node_id)
+        if _enforce_sd and caller_chain_sd:
+            if explicit_chain_sd and explicit_chain_sd != caller_chain_sd:
+                logger.warning(
+                    "[ToolHandler] submit_deliverable chain_id mismatch: "
+                    "node=%s LLM_passed=%s overridden_to=%s",
+                    node_id, explicit_chain_sd, caller_chain_sd,
+                )
+            chain_id = caller_chain_sd
+        else:
+            chain_id = explicit_chain_sd or _now_iso()
 
         if not to_node:
             org = self._runtime.get_org(org_id)
@@ -1117,11 +1624,143 @@ class OrgToolHandler:
                 "请直接在回复中总结成果即可。"
             )
 
-        metadata = {
+        # 幂等性拦截：同一 chain 已被验收(accepted) / 已被打回(rejected)时，
+        # 拒绝再次提交，避免出现"两份一模一样的交付物/附件"以及父级被再次唤醒。
+        # 注意：已 delivered 但未验收不拦截（允许 agent 补交修订版，由下游去重兜底）。
+        try:
+            from openakita.config import settings as _settings
+            if getattr(_settings, "org_reject_resubmit_after_accept", True) and chain_id:
+                events = self._runtime.get_event_store(org_id)
+                if events:
+                    recent_acc = events.query(event_type="task_accepted", limit=50)
+                    for ev in recent_acc:
+                        if ev.get("data", {}).get("chain_id") == chain_id:
+                            logger.info(
+                                "[ToolHandler] reject resubmit on closed chain=%s by=%s",
+                                chain_id, node_id,
+                            )
+                            return (
+                                f"[已关闭] 任务链 {chain_id} 已被验收通过，不能再次提交交付物。"
+                                "如有新的增量成果，请作为独立任务重新发起或直接在回复中总结，"
+                                "不要再调用 org_submit_deliverable/org_delegate_task。"
+                            )
+                    recent_rej = events.query(event_type="task_rejected", limit=50)
+                    for ev in recent_rej:
+                        if ev.get("data", {}).get("chain_id") == chain_id:
+                            # rejected 仍允许重新 submit 修正版本（这正是 rejected 的语义）
+                            break
+        except Exception as exc:
+            logger.debug("submit-idempotency check skipped: %s", exc)
+
+        # 把显式声明的 file_attachments 全部登记到黑板 + ProjectTask。
+        # 使用 runtime._register_file_output 作为唯一登记入口，确保和
+        # write_file / generate_image / deliver_artifacts 共用一条路径
+        # （避免双写黑板条目）。registered_attachments 里只保留登记成功
+        # 的条目（路径存在 + 黑板可写），随 TASK_DELIVERED 送到父节点。
+        registered_attachments: list[dict] = []
+        if isinstance(raw_file_attachments, list) and raw_file_attachments:
+            try:
+                org_for_ws = self._runtime.get_org(org_id)
+                workspace = (
+                    self._runtime._resolve_org_workspace(org_for_ws)
+                    if org_for_ws else None
+                )
+            except Exception:
+                workspace = None
+            for att in raw_file_attachments:
+                if not isinstance(att, dict):
+                    continue
+                fp = att.get("file_path") or att.get("path")
+                if not fp:
+                    continue
+                try:
+                    registered = self._runtime._register_file_output(
+                        org_id, node_id,
+                        chain_id=chain_id or None,
+                        filename=att.get("filename"),
+                        file_path=fp,
+                        workspace=workspace,
+                    )
+                except Exception:
+                    logger.debug(
+                        "submit-deliverable register_file_output failed",
+                        exc_info=True,
+                    )
+                    registered = None
+                if registered:
+                    registered_attachments.append(registered)
+                else:
+                    logger.info(
+                        "[ToolHandler] submit_deliverable skipped unregistrable "
+                        "attachment: %s (file missing?)", fp,
+                    )
+
+        # 自动附件兜底：CPO/PM 这类不带 filesystem 工具的角色，常常把整段
+        # markdown 长文塞进 deliverable 字段，前端只能看到聊天里一段长文，
+        # 没法点附件下载，也不进黑板。这里在没有任何显式 file_attachments
+        # 且 deliverable 看起来是结构化文档（含 markdown 标题/列表/代码块）
+        # 且字符数达到下限时，自动落盘到
+        # `<workspace>/deliverables/<chain_short>_<title>.md`，再走和
+        # write_file/generate_image 一样的 _register_file_output 唯一登记入口
+        # （runtime.py），保证不出现"双写黑板"。任何异常只 warning，不影响
+        # 原 submit_deliverable 主流程。
+        deliverable_stripped = (deliverable or "").strip()
+        should_auto_persist = (
+            not registered_attachments
+            and deliverable_stripped
+            and len(deliverable_stripped) >= self._DELIVERABLE_AUTO_PERSIST_MIN_CHARS
+            and self._looks_like_structured_document(deliverable_stripped)
+        )
+        if should_auto_persist:
+            try:
+                org_for_auto = self._runtime.get_org(org_id)
+                workspace_auto = (
+                    self._runtime._resolve_org_workspace(org_for_auto)
+                    if org_for_auto else None
+                )
+                if workspace_auto is not None:
+                    auto_path = self._auto_persist_deliverable(
+                        workspace=workspace_auto,
+                        chain_id=chain_id,
+                        title=summary or args.get("task_title") or "deliverable",
+                        body=deliverable,
+                    )
+                    if auto_path is not None:
+                        try:
+                            registered = self._runtime._register_file_output(
+                                org_id, node_id,
+                                chain_id=chain_id or None,
+                                filename=auto_path.name,
+                                file_path=str(auto_path),
+                                workspace=workspace_auto,
+                            )
+                        except Exception:
+                            logger.warning(
+                                "submit-deliverable auto-attachment register failed",
+                                exc_info=True,
+                            )
+                            registered = None
+                        if registered:
+                            registered_attachments.append(registered)
+                            logger.info(
+                                "[ToolHandler] auto-persisted deliverable to %s "
+                                "(node=%s chain=%s len=%d)",
+                                auto_path, node_id, chain_id,
+                                len(deliverable),
+                            )
+            except Exception:
+                logger.warning(
+                    "submit-deliverable auto-attachment persist failed",
+                    exc_info=True,
+                )
+
+        metadata: dict = {
             "deliverable": deliverable[:2000],
             "summary": summary[:500],
             "task_chain_id": chain_id,
         }
+        if registered_attachments:
+            metadata["file_attachments"] = registered_attachments
 
         msg = OrgMessage(
             org_id=org_id,
@@ -1135,7 +1774,11 @@ class OrgToolHandler:
 
         self._runtime.get_event_store(org_id).emit(
             "task_delivered", node_id,
-            {"to": to_node, "chain_id": chain_id, "deliverable_preview": deliverable[:_LIM_EVENT]},
+            {
+                "to": to_node, "chain_id": chain_id,
+                "deliverable_preview": deliverable[:_LIM_EVENT],
+                "file_count": len(registered_attachments),
+            },
         )
 
         if ok:
@@ -1154,7 +1797,11 @@ class OrgToolHandler:
                 f"提交交付物给 {to_node}: {summary[:_LIM_EXEC_LOG]}",
                 node_id,
             )
-            return f"交付物已提交给 {to_node}，等待验收。"
+            tail = (
+                f"（附带 {len(registered_attachments)} 个文件附件）"
+                if registered_attachments else ""
+            )
+            return f"交付物已提交给 {to_node}{tail}，等待验收。"
         return "提交失败"
 
     async def _handle_org_accept_deliverable(
@@ -1197,8 +1844,17 @@ class OrgToolHandler:
         await messenger.send(msg)
 
         if chain_id:
+            # 旧行为保留（messenger.release_task_affinity + chain_delegation_depth 清理）
+            # 由 _cleanup_accepted_chain 统一承担；此处仍显式调用以保证即便 cleanup 被禁用
+            # (未来扩展) 也不会退化为泄漏。
             messenger.release_task_affinity(chain_id)
             self._runtime._chain_delegation_depth.pop(chain_id, None)
+            try:
+                self._runtime._cleanup_accepted_chain(
+                    org_id, chain_id, reason="accepted",
+                )
+            except Exception as exc:
+                logger.debug("cleanup_accepted_chain on accept failed: %s", exc)
 
         self._runtime.get_event_store(org_id).emit(
             "task_accepted", node_id,
@@ -1208,6 +1864,7 @@ class OrgToolHandler:
             "org_id": org_id, "from_node": from_node, "accepted_by": node_id,
             "chain_id": chain_id, "feedback": feedback[:_LIM_WS],
         })
+        relayed_files: list[dict] = []
         if chain_id:
             self._link_project_task(org_id, chain_id, status="accepted")
             self._append_execution_log(
@@ -1219,15 +1876,17 @@ class OrgToolHandler:
                 from openakita.orgs.project_store import ProjectStore as _PS
                 _store = _PS(self._runtime._manager._org_dir(org_id))
                 _child = _store.find_task_by_chain(chain_id)
-                if _child and _child.parent_task_id:
+                if _child:
                     _child_files = getattr(_child, "file_attachments", None) or []
                     if _child_files:
+                        relayed_files = [dict(f) for f in _child_files]
+                    if _child.parent_task_id and _child_files:
                         _parent, _ = _store.get_task(_child.parent_task_id)
                         if _parent:
-                            _merged = list(getattr(_parent, "file_attachments", None) or [])
-                            for _fa in _child_files:
-                                if _fa not in _merged:
-                                    _merged.append(_fa)
+                            _merged = self._merge_file_attachments(
+                                list(getattr(_parent, "file_attachments", None) or []),
+                                list(_child_files),
+                            )
                             _store.update_task(
                                 _parent.project_id, _parent.id,
                                 {"file_attachments": _merged},
@@ -1244,7 +1903,28 @@ class OrgToolHandler:
                 tags=["acceptance", "completed"],
             )
 
-        return f"已验收 {from_node} 的交付物。"
+        # 返回结构化 JSON，对齐 deliver_artifacts 的 receipts 协议。
+        # reasoning_engine 会解析 receipts 进 delivery_receipts，让
+        # TaskVerify 认可"中继交付"——即父节点自己没调用 deliver_artifacts，
+        # 但子节点已经把文件交上来并被父节点 accept 的场景。
+        receipts = [
+            {
+                "status": "relayed",
+                "filename": f.get("filename", ""),
+                "file_path": f.get("file_path", ""),
+                "file_size": f.get("file_size"),
+                "source_node": from_node,
+            }
+            for f in relayed_files
+        ]
+        payload = {
+            "ok": True,
+            "accepted_from": from_node,
+            "chain_id": chain_id,
+            "receipts": receipts,
+            "message": f"已验收 {from_node} 的交付物。",
+        }
+        return json.dumps(payload, ensure_ascii=False)
 
     async def _handle_org_reject_deliverable(
         self, args: dict, org_id: str, node_id: str
@@ -1301,8 +1981,155 @@ class OrgToolHandler:
                 node_id,
             )
             self._recalc_parent_progress(org_id, chain_id)
+            # rejected 也需要清理：让下游 agent 不会再用旧 chain 继续送交付物；
+            # 但不级联 cancel 子任务（rejected 意味着重做，可能仍依赖子任务结果）。
+            try:
+                self._runtime._cleanup_accepted_chain(
+                    org_id, chain_id, reason="rejected",
+                    cascade_cancel_children=False,
+                )
+            except Exception as exc:
+                logger.debug("cleanup_accepted_chain on reject failed: %s", exc)
 
         return f"已打回 {from_node} 的交付物，原因：{reason[:50]}"
+
+    async def _handle_org_wait_for_deliverable(
+        self, args: dict, org_id: str, node_id: str
+    ) -> str:
+        """阻塞等待下级任务交付，避免 org_list_delegated_tasks 轮询触发死循环。
+
+        多事件 wait 防止死锁：
+          - 任一指定 chain 关闭（被 accept/reject/cancel）
+          - 节点 inbox 收到 question/escalate（需要 coordinator 立即处理）
+          - timeout 到期（默认 60s，最大 300s）
+          - 整个组织被 soft-stop / 命令被取消
+        所有路径出口都会 ``_touch_trackers_for_org``，避免命令看门狗误判。
+        """
+        try:
+            from openakita.config import settings as _s_wait
+            if not getattr(_s_wait, "org_wait_primitive_enabled", True):
+                return (
+                    "[org_wait_for_deliverable 已禁用] "
+                    "请改用 org_list_delegated_tasks 查询进度。"
+                )
+        except Exception:
+            pass
+
+        try:
+            timeout = int(args.get("timeout") or 60)
+        except (TypeError, ValueError):
+            timeout = 60
+        timeout = max(1, min(300, timeout))
+
+        runtime = self._runtime
+        my_chain = runtime.get_current_chain_id(org_id, node_id)
+        explicit_chains_raw = args.get("chain_ids")
+        if isinstance(explicit_chains_raw, list):
+            explicit_chains = [
+                c for c in explicit_chains_raw if isinstance(c, str) and c
+            ]
+        else:
+            explicit_chains = []
+
+        if explicit_chains:
+            target_chains = explicit_chains
+        else:
+            # 反查 _chain_parent：所有以 my_chain 为父的子 chain
+            target_chains = [
+                c for c, p in runtime._chain_parent.items() if p == my_chain
+            ]
+
+        # 过滤掉已关闭的 chain（不再有意义）
+        open_targets = [
+            c for c in target_chains
+            if not runtime.is_chain_closed(org_id, c)
+        ]
+        if not open_targets:
+            return (
+                "没有需要等待的未关闭子链。可能下级已全部交付——"
+                "请检查 inbox 中的 deliverable 消息后用 org_accept_deliverable 验收，"
+                "或调用 org_list_delegated_tasks 确认状态。"
+            )
+
+        # 准备 chain events（缺失时按需补建）
+        chain_events: list[tuple[str, asyncio.Event]] = []
+        for c in open_targets:
+            ev = runtime._chain_events.get(c)
+            if ev is None:
+                ev = asyncio.Event()
+                runtime._chain_events[c] = ev
+            chain_events.append((c, ev))
+
+        # 节点 inbox 事件：每次 wait 调用都重置，只关心"等待期内"的新消息
+        inbox_key = f"{org_id}:{node_id}"
+        inbox_event = runtime._node_inbox_events.get(inbox_key)
+        if inbox_event is None:
+            inbox_event = asyncio.Event()
+            runtime._node_inbox_events[inbox_key] = inbox_event
+        inbox_event.clear()
+
+        runtime._touch_trackers_for_org(org_id)
+
+        waiters: list[asyncio.Task] = []
+        for c, ev in chain_events:
+            waiters.append(
+                asyncio.create_task(ev.wait(), name=f"wait_chain:{c[:24]}")
+            )
+        waiters.append(
+            asyncio.create_task(inbox_event.wait(), name=f"wait_inbox:{node_id}")
+        )
+
+        try:
+            done, _pending = await asyncio.wait(
+                waiters, timeout=timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            for w in waiters:
+                if not w.done():
+                    w.cancel()
+            for w in waiters:
+                try:
+                    await w
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+        runtime._touch_trackers_for_org(org_id)
+
+        # 复检 chain 状态（asyncio.wait 返回时可能已有多个 chain 同时关闭）
+        closed_chains_now = [
+            c for c, _ in chain_events
+            if runtime.is_chain_closed(org_id, c)
+        ]
+        inbox_triggered = inbox_event.is_set()
+
+        if not done:
+            return (
+                f"[等待超时] {timeout}s 内未收到下级新交付/新消息。"
+                f"未关闭子链：{open_targets[:5]}{'...' if len(open_targets) > 5 else ''}。"
+                "建议：用 org_list_delegated_tasks 查看具体进度，"
+                "或继续 org_wait_for_deliverable 再等一轮；"
+                "若已等待较久且确实需要推进，可向用户输出阶段性汇总。"
+            )
+
+        parts: list[str] = []
+        if closed_chains_now:
+            preview = closed_chains_now[:5]
+            extra = "..." if len(closed_chains_now) > 5 else ""
+            parts.append(
+                f"以下子链已关闭，请检查相关 deliverable：{preview}{extra}"
+            )
+        if inbox_triggered:
+            parts.append(
+                "下级有新消息（question/escalate）需要你立即响应——"
+                "请先处理 inbox 中的消息，处理完可继续 org_wait_for_deliverable 等剩余子链。"
+            )
+        if not parts:
+            parts.append(
+                "[wait 已返回] 未识别到具体事件来源，可能是命令被取消或事件被竞态消化。"
+                "请检查组织状态后决定下一步。"
+            )
+        return " | ".join(parts)
 
     # ------------------------------------------------------------------
     # Meeting tools

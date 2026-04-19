@@ -957,18 +957,36 @@ export function OrgEditorView({
     }
   }, [currentOrg, apiBaseUrl, showToast]);
 
+  // 防抖：避免双击/连点导致同一组织连续两次 /stop（旧版本会让后端抛
+  // "无效状态转换: dormant -> dormant"）。
+  const stoppingRef = useRef(false);
   const handleStopOrg = useCallback(async () => {
-    if (!currentOrg) return;
+    if (!currentOrg || stoppingRef.current) return;
+    stoppingRef.current = true;
     try {
       await safeFetch(`${apiBaseUrl}/api/orgs/${currentOrg.id}/stop`, { method: "POST" });
-      setCurrentOrg({ ...currentOrg, status: "dormant" });
+      setCurrentOrg((prev) => prev ? { ...prev, status: "dormant" } : prev);
       setOrgList((prev) => prev.map((o) => o.id === currentOrg.id ? { ...o, status: "dormant" } : o));
+      // 不再依赖 WS：HTTP 成功立即把所有节点视觉状态清零，避免装机版 WS 被
+      // CSP 拦掉时残留 CPO/PM 等"执行中"状态。
+      setNodes((prev) => prev.map((n) => ({
+        ...n,
+        data: {
+          ...n.data,
+          status: "idle",
+          current_task: null,
+          _runtime: null,
+        },
+      })));
       setLayoutLocked(false);
     } catch (e: any) {
       console.error("Failed to stop org:", e);
       showToast(`停止失败：${e?.message || e}`, "error");
+    } finally {
+      // 800ms 内拒绝二次触发；正常 stop 链路远小于此阈值。
+      setTimeout(() => { stoppingRef.current = false; }, 800);
     }
-  }, [currentOrg, apiBaseUrl, showToast]);
+  }, [currentOrg, apiBaseUrl, showToast, setNodes, setLayoutLocked]);
 
   // ── Org export/import ──
   const orgImportRef = useRef<HTMLInputElement>(null);

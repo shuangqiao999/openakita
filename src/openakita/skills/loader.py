@@ -277,7 +277,7 @@ class SkillLoader:
                         full_path = rel_path.locate()
                         if isinstance(full_path, Path) and full_path.exists():
                             skill_dir = full_path.parent
-                            skill = self.load_skill(skill_dir)
+                            skill = self.load_skill(skill_dir, force=True)
                             if skill:
                                 loaded += 1
                                 logger.info(
@@ -290,7 +290,7 @@ class SkillLoader:
             logger.info(f"Loaded {loaded} cli-anything skills from pip packages")
         return loaded
 
-    def load_from_directory(self, directory: Path) -> int:
+    def load_from_directory(self, directory: Path, *, force: bool = True) -> int:
         """
         从目录加载所有技能
 
@@ -299,6 +299,8 @@ class SkillLoader:
 
         Args:
             directory: 技能目录
+            force: 是否允许覆盖已注册的同名 skill（默认 True，保证 ``load_all`` 的
+                重复调用能拾取用户对 SKILL.md 的最新修改；仅在需要保留首次注册者时传 False）
 
         Returns:
             加载的技能数量
@@ -315,15 +317,14 @@ class SkillLoader:
 
             skill_md = item / "SKILL.md"
             if skill_md.exists():
-                # 有 SKILL.md，作为技能加载
                 try:
-                    skill = self.load_skill(item)
+                    skill = self.load_skill(item, force=force)
                     if skill:
                         loaded += 1
                 except Exception as e:
                     logger.error(f"Failed to load skill from {item}: {e}")
             elif item.name in ("system", "external", "custom", "community", "builtin"):
-                loaded += self.load_from_directory(item)
+                loaded += self.load_from_directory(item, force=force)
 
         logger.info(f"Loaded {loaded} skills from {directory}")
         return loaded
@@ -343,12 +344,15 @@ class SkillLoader:
         skill_dir: Path,
         *,
         plugin_source: str | None = None,
+        force: bool = False,
     ) -> ParsedSkill | None:
         """
         加载单个技能
 
         Args:
             skill_dir: 技能目录
+            plugin_source: 插件来源标识
+            force: 允许覆盖已注册的同名 skill（用于 reload / 重装场景）
 
         Returns:
             ParsedSkill 或 None
@@ -386,6 +390,7 @@ class SkillLoader:
                 skill,
                 skill_id=sid,
                 plugin_source=plugin_source,
+                force=force,
             )
             if not registered:
                 logger.warning(f"Skill '{sid}' registration rejected (conflict)")
@@ -764,7 +769,7 @@ class SkillLoader:
         if entry:
             plugin_source = entry.plugin_source
         self.unload_skill(name)
-        return self.load_skill(skill_dir, plugin_source=plugin_source)
+        return self.load_skill(skill_dir, plugin_source=plugin_source, force=True)
 
     @property
     def loaded_count(self) -> int:

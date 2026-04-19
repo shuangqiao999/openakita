@@ -249,13 +249,12 @@ class AgentPackageHandler:
         return "\n".join(lines)
 
     def _try_reload_skills(self) -> None:
-        """Best-effort reload of skills after installation."""
+        """Agent 包导入后，走统一刷新入口让附带的技能立刻生效。"""
         try:
-            loader = getattr(self.agent, "skill_loader", None)
-            if loader:
-                from ...config import settings
+            from ...skills.events import SkillEvent
 
-                loader.load_all(settings.project_root)
+            if hasattr(self.agent, "propagate_skill_change"):
+                self.agent.propagate_skill_change(SkillEvent.INSTALL)
                 logger.info("Skills reloaded after agent package import")
         except Exception as e:
             logger.warning(f"Skill reload after import failed (non-blocking): {e}")
