@@ -22,5 +22,5 @@ human_intervention_timeout: 3600  # 等待人工响应超时（秒）
 on_timeout: abort                  # 超时后动作: abort, continue_auto, retry
 
 # 任务执行配置
-default_task_timeout: 300   # 默认任务超时（秒）
+default_task_timeout: 900   # 默认任务超时（秒）
 max_concurrent_tasks: 10    # 最大并发任务数
