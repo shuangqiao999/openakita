@@ -70,6 +70,27 @@ class CommanderConfig:
     human_intervention_timeout_seconds: int = 3600
     timeout_action: str = "continue_auto"
 
+    def __post_init__(self):
+        """验证配置有效性"""
+        if self.max_strategy_attempts < 1:
+            raise ValueError(f"max_strategy_attempts must be >= 1, got {self.max_strategy_attempts}")
+        
+        if self.auto_retry_threshold < 0:
+            raise ValueError(f"auto_retry_threshold must be >= 0, got {self.auto_retry_threshold}")
+        
+        if self.human_intervention_timeout_seconds < 0:
+            raise ValueError(f"human_intervention_timeout_seconds must be >= 0, got {self.human_intervention_timeout_seconds}")
+        
+        if self.timeout_action not in ["continue_auto", "abort", "retry"]:
+            raise ValueError(f"timeout_action must be one of 'continue_auto', 'abort', 'retry', got {self.timeout_action}")
+        
+        # 转换字符串为枚举
+        if isinstance(self.decision_mode, str):
+            try:
+                self.decision_mode = DecisionMode(self.decision_mode)
+            except ValueError:
+                raise ValueError(f"Invalid decision_mode: {self.decision_mode}")
+
 
 @dataclass
 class MissionRecord:
@@ -136,6 +157,10 @@ class Commander:
 
         self._running = True
         await self.dispatcher.start()
+        
+        # 启动人工介入处理循环
+        asyncio.create_task(self._process_human_interventions())
+        
         logger.info("Commander started")
 
     async def stop(self) -> None:
@@ -292,24 +317,41 @@ class Commander:
             f"Task failed: mission={record.mission_id}, "
             f"task={report.task_id}, error={report.error}"
         )
+        
+        # 安全提取错误信息
+        error_str = ""
+        error_type = "UnknownError"
+        
+        if report.error:
+            if isinstance(report.error, Exception):
+                error_type = type(report.error).__name__
+                error_str = f"{error_type}: {str(report.error)}"
+            elif isinstance(report.error, str):
+                error_str = report.error
+                if ":" in report.error:
+                    error_type = report.error.split(":")[0]
+                else:
+                    error_type = "Error"
+            else:
+                error_str = str(report.error)
+                error_type = type(report.error).__name__
+        else:
+            error_str = "unknown error"
 
         # 记录失败
         if report.task_id not in record.failed_tasks:
             record.failed_tasks[report.task_id] = []
-        record.failed_tasks[report.task_id].append(report.error or "unknown")
+        record.failed_tasks[report.task_id].append(error_str)
         record.total_attempts += 1
 
         # 记录任务失败到记忆系统
-        error_type = type(report.error).__name__ if report.error else "UnknownError"
-        error_details = str(report.error) if report.error else "unknown error"
-        
         try:
             asyncio.create_task(
                 self._memory.record_task_failure(
                     mission_id=report.mission_id,
                     task_id=report.task_id,
                     error_type=error_type,
-                    error_details=error_details,
+                    error_details=error_str,
                 )
             )
         except Exception as e:
@@ -454,3 +496,82 @@ class Commander:
                 callback(record)
             except Exception as e:
                 logger.error(f"Status callback error: {e}", exc_info=True)
+
+    async def _process_human_interventions(self) -> None:
+        """处理人工介入请求的循环"""
+        logger.info("Human intervention processor started")
+        
+        while self._running:
+            try:
+                mission_id = await asyncio.wait_for(
+                    self._human_intervention_queue.get(),
+                    timeout=1.0
+                )
+                await self._handle_human_intervention(mission_id)
+            except asyncio.TimeoutError:
+                continue
+            except Exception as e:
+                logger.error(f"Error processing human intervention: {e}", exc_info=True)
+        
+        logger.info("Human intervention processor stopped")
+
+    async def _handle_human_intervention(self, mission_id: MissionId) -> None:
+        """处理单个任务的人工介入"""
+        record = self._missions.get(mission_id)
+        if not record:
+            logger.warning(f"Mission not found for human intervention: {mission_id}")
+            return
+        
+        logger.info(f"Waiting for human intervention on mission: {mission_id}")
+        
+        self._notify_status_change(record)
+        
+        try:
+            await asyncio.wait_for(
+                self._wait_for_human_decision(mission_id),
+                timeout=self.config.human_intervention_timeout_seconds
+            )
+        except asyncio.TimeoutError:
+            logger.info(f"Human intervention timeout for mission: {mission_id}")
+            
+            if self.config.timeout_action == "continue_auto":
+                record.status = MissionStatus.IN_PROGRESS
+                asyncio.create_task(self._execute_mission(record))
+            elif self.config.timeout_action == "abort":
+                record.status = MissionStatus.FAILED
+                record.error = "Human intervention timeout"
+                self._notify_status_change(record)
+            else:
+                asyncio.create_task(self.retry_mission(mission_id))
+
+    async def _wait_for_human_decision(self, mission_id: MissionId) -> None:
+        """等待人工决策"""
+        record = self._missions.get(mission_id)
+        if not record:
+            return
+        
+        while self._running and record.status == MissionStatus.WAITING_FOR_HUMAN:
+            await asyncio.sleep(1)
+
+    def set_human_decision(self, mission_id: MissionId, action: str) -> bool:
+        """设置人工决策结果（由API调用）"""
+        record = self._missions.get(mission_id)
+        if not record:
+            return False
+        
+        if record.status != MissionStatus.WAITING_FOR_HUMAN:
+            return False
+        
+        if action == "continue":
+            record.status = MissionStatus.IN_PROGRESS
+            asyncio.create_task(self._execute_mission(record))
+        elif action == "abort":
+            record.status = MissionStatus.CANCELLED
+            self._notify_status_change(record)
+        elif action == "retry":
+            asyncio.create_task(self.retry_mission(mission_id))
+        else:
+            return False
+        
+        self._notify_status_change(record)
+        return True

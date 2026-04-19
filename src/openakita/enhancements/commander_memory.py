@@ -13,7 +13,7 @@ import asyncio
 import logging
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any
 
@@ -54,8 +54,18 @@ class CommanderMemoryRecord:
     mission_id: str = ""
     task_id: str = ""
     content: str = ""
+    trust_score: float = 0.0
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: datetime = field(default_factory=datetime.now)
+
+
+@dataclass
+class StrategyRecommendation:
+    """策略推荐结果"""
+    strategy: str
+    confidence: float
+    source_memory_id: str
+    source_task_id: str
 
 
 class CommanderMemoryExtension:
@@ -121,6 +131,12 @@ class CommanderMemoryExtension:
                 importance_score=0.6,
             )
             
+            mem.metadata = {
+                "subject_type": MemorySubjectType.COMMANDER.value,
+                "mission_id": mission_id,
+                "task_id": task_id,
+            }
+            
             mm.add_memory(mem)
             logger.debug(f"Recorded task start: {mission_id}/{task_id}")
             
@@ -175,6 +191,7 @@ class CommanderMemoryExtension:
         task_id: str,
         strategy_used: str,
         final_output: Any,
+        trust_score: float = 0.0,
     ) -> None:
         """记录任务成功"""
         try:
@@ -208,6 +225,7 @@ class CommanderMemoryExtension:
                 success=True,
                 strategy=strategy_used,
                 context=content,
+                trust_score=trust_score,
             )
             
         except Exception as e:
@@ -301,6 +319,7 @@ class CommanderMemoryExtension:
         success: bool,
         strategy: str,
         context: str,
+        trust_score: float = 0.0,
     ) -> None:
         """记录经验记忆"""
         try:
@@ -449,19 +468,138 @@ class CommanderMemoryExtension:
     async def get_strategy_recommendation(
         self,
         task_description: str,
-    ) -> str | None:
-        """获取策略推荐"""
+    ) -> StrategyRecommendation | None:
+        """获取策略推荐（返回结构化结果）"""
         try:
-            success_tasks = await self.retrieve_similar_success_tasks(task_description, top_k=3)
+            success_tasks = await self.retrieve_similar_success_tasks(
+                task_description, top_k=3
+            )
             
             if not success_tasks:
                 return None
             
-            return success_tasks[0].get("content", "")
+            best = success_tasks[0]
+            
+            importance = best.get("importance_score", 0.5)
+            confidence = min(0.95, importance * 1.1)
+            
+            metadata = best.get("metadata", {})
+            
+            return StrategyRecommendation(
+                strategy=best.get("content", ""),
+                confidence=confidence,
+                source_memory_id=best.get("memory_id", ""),
+                source_task_id=metadata.get("task_id", ""),
+            )
             
         except Exception as e:
             logger.error(f"Failed to get strategy recommendation: {e}", exc_info=True)
             return None
+
+    async def cleanup_old_memories(
+        self,
+        days_to_keep: int = 30,
+        max_memories: int = 10000,
+    ) -> dict[str, int]:
+        """
+        清理旧记忆
+        
+        Args:
+            days_to_keep: 保留多少天内的记忆
+            max_memories: 最大记忆数量
+        
+        Returns:
+            清理统计信息
+        """
+        try:
+            mm = self._ensure_memory_manager()
+            
+            all_memories = mm.search_memories(
+                query="",
+                tags=["commander"],
+                limit=max_memories * 2,
+            )
+            
+            before_count = len(all_memories)
+            deleted_count = 0
+            
+            cutoff_time = datetime.now() - timedelta(days=days_to_keep)
+            
+            for mem in all_memories:
+                if mem.priority != MemoryPriority.PERMANENT:
+                    if mem.created_at < cutoff_time:
+                        mm.delete_memory(mem.id)
+                        deleted_count += 1
+            
+            remaining = mm.search_memories(
+                query="",
+                tags=["commander"],
+                limit=max_memories * 2,
+            )
+            
+            if len(remaining) > max_memories:
+                to_delete = sorted(
+                    [m for m in remaining if m.priority != MemoryPriority.PERMANENT],
+                    key=lambda m: m.created_at
+                )
+                for mem in to_delete[:len(remaining) - max_memories]:
+                    mm.delete_memory(mem.id)
+                    deleted_count += 1
+            
+            after_count = len(mm.search_memories(
+                query="",
+                tags=["commander"],
+                limit=max_memories * 2,
+            ))
+            
+            return {
+                "before_count": before_count,
+                "after_count": after_count,
+                "deleted_count": deleted_count,
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to cleanup memories: {e}")
+            return {"before_count": 0, "after_count": 0, "deleted_count": 0}
+
+    async def get_memory_stats(self) -> dict[str, Any]:
+        """获取记忆统计信息"""
+        try:
+            mm = self._ensure_memory_manager()
+            
+            all_memories = mm.search_memories(
+                query="",
+                tags=["commander"],
+                limit=100000,
+            )
+            
+            type_counts = {}
+            for mem in all_memories:
+                mem_type = mem.type.value
+                type_counts[mem_type] = type_counts.get(mem_type, 0) + 1
+            
+            priority_counts = {}
+            for mem in all_memories:
+                priority = mem.priority.value
+                priority_counts[priority] = priority_counts.get(priority, 0) + 1
+            
+            avg_importance = sum(m.importance_score for m in all_memories) / len(all_memories) if all_memories else 0
+            
+            oldest_memory = min(m.created_at for m in all_memories) if all_memories else None
+            newest_memory = max(m.created_at for m in all_memories) if all_memories else None
+            
+            return {
+                "total_count": len(all_memories),
+                "type_counts": type_counts,
+                "priority_counts": priority_counts,
+                "avg_importance_score": avg_importance,
+                "oldest_memory": oldest_memory,
+                "newest_memory": newest_memory,
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to get memory stats: {e}")
+            return {"error": str(e)}
 
 
 # 便捷实例
