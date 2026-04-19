@@ -328,6 +328,63 @@ class Commander:
         self._notify_status_change(record)
         logger.info(f"Mission cancelled: {mission_id}")
 
+    async def pause_mission(self, mission_id: MissionId) -> bool:
+        """暂停任务"""
+        if mission_id not in self._missions:
+            logger.warning(f"Mission not found: {mission_id}")
+            return False
+
+        record = self._missions[mission_id]
+        if record.status != MissionStatus.IN_PROGRESS:
+            logger.warning(f"Cannot pause mission in status: {record.status}")
+            return False
+
+        record.status = MissionStatus.PAUSED
+        self._notify_status_change(record)
+        logger.info(f"Mission paused: {mission_id}")
+        return True
+
+    async def resume_mission(self, mission_id: MissionId) -> bool:
+        """恢复任务"""
+        if mission_id not in self._missions:
+            logger.warning(f"Mission not found: {mission_id}")
+            return False
+
+        record = self._missions[mission_id]
+        if record.status != MissionStatus.PAUSED:
+            logger.warning(f"Cannot resume mission in status: {record.status}")
+            return False
+
+        record.status = MissionStatus.IN_PROGRESS
+        self._notify_status_change(record)
+        logger.info(f"Mission resumed: {mission_id}")
+        asyncio.create_task(self._execute_mission(record))
+        return True
+
+    async def retry_mission(self, mission_id: MissionId) -> bool:
+        """重试任务"""
+        if mission_id not in self._missions:
+            logger.warning(f"Mission not found: {mission_id}")
+            return False
+
+        record = self._missions[mission_id]
+        if record.status not in (MissionStatus.FAILED, MissionStatus.CANCELLED):
+            logger.warning(f"Cannot retry mission in status: {record.status}")
+            return False
+
+        record.status = MissionStatus.IN_PROGRESS
+        record.completed_tasks.clear()
+        record.failed_tasks.clear()
+        record.total_attempts = 0
+        record.current_strategy_index = 0
+        record.error = None
+        record.result = None
+        record.updated_at = datetime.now()
+        self._notify_status_change(record)
+        logger.info(f"Mission retried: {mission_id}")
+        asyncio.create_task(self._execute_mission(record))
+        return True
+
     async def get_mission_status(self, mission_id: MissionId) -> MissionRecord | None:
         """获取任务状态"""
         return self._missions.get(mission_id)

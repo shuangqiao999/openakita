@@ -160,9 +160,11 @@ class Dashboard:
         Returns:
             是否成功
         """
-        # TODO: 实现暂停逻辑
-        logger.info(f"Dashboard: Pause mission requested: {mission_id}")
-        return True
+        try:
+            return await self.commander.pause_mission(mission_id)
+        except Exception as e:
+            logger.error(f"Failed to pause mission: {e}", exc_info=True)
+            return False
 
     async def resume_mission(self, mission_id: str) -> bool:
         """
@@ -174,9 +176,11 @@ class Dashboard:
         Returns:
             是否成功
         """
-        # TODO: 实现恢复逻辑
-        logger.info(f"Dashboard: Resume mission requested: {mission_id}")
-        return True
+        try:
+            return await self.commander.resume_mission(mission_id)
+        except Exception as e:
+            logger.error(f"Failed to resume mission: {e}", exc_info=True)
+            return False
 
     async def cancel_mission(self, mission_id: str) -> bool:
         """
@@ -205,9 +209,11 @@ class Dashboard:
         Returns:
             是否成功
         """
-        # TODO: 实现重试逻辑
-        logger.info(f"Dashboard: Retry mission requested: {mission_id}")
-        return True
+        try:
+            return await self.commander.retry_mission(mission_id)
+        except Exception as e:
+            logger.error(f"Failed to retry mission: {e}", exc_info=True)
+            return False
 
     def get_event_history(
         self, mission_id: str | None = None, limit: int = 100
