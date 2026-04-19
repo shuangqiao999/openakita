@@ -39,7 +39,7 @@ export interface ComponentHealth {
   name: string;
   status: ComponentHealthStatus;
   message?: string;
-  metrics?: Record<string, number>;
+  metrics?: Record<string, any>;
   lastCheckedAt: string;
 }
 

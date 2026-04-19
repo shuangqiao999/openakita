@@ -43,6 +43,10 @@ from .models import (
 )
 from .planner import Planner
 from .dispatcher import Dispatcher
+from ..enhancements.commander_memory import (
+    CommanderMemoryExtension,
+    get_commander_memory,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +101,7 @@ class Commander:
         planner: Planner,
         dispatcher: Dispatcher,
         config: CommanderConfig | None = None,
+        memory_extension: CommanderMemoryExtension | None = None,
     ):
         self.planner = planner
         self.dispatcher = dispatcher
@@ -107,12 +112,21 @@ class Commander:
         self._status_callbacks: list[Callable[[MissionRecord], None]] = []
         self._running = False
 
+        # 初始化记忆扩展
+        self._memory = memory_extension or get_commander_memory()
+        logger.info("Commander initialized with memory extension")
+
         # 注册汇报回调
         self.dispatcher.register_report_callback(self._handle_report)
 
     def register_status_callback(self, callback: Callable[[MissionRecord], None]) -> None:
         """注册状态变更回调"""
         self._status_callbacks.append(callback)
+
+    def set_memory_manager(self, memory_manager) -> None:
+        """设置记忆管理器"""
+        self._memory.set_memory_manager(memory_manager)
+        logger.info("Memory manager set for Commander")
 
     async def start(self) -> None:
         """启动指挥官"""
@@ -159,6 +173,17 @@ class Commander:
 
         self._missions[mission_id] = record
         self._notify_status_change(record)
+
+        # 记录任务开始到记忆系统
+        task_id = f"task_{uuid.uuid4().hex[:8]}"
+        try:
+            await self._memory.record_task_start(
+                mission_id=mission_id,
+                task_id=task_id,
+                task_input=request.content,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to record task start in memory: {e}")
 
         # 异步执行规划和执行
         asyncio.create_task(self._process_mission(mission_id))
@@ -238,6 +263,23 @@ class Commander:
         if report.status.is_terminal:
             if report.status == ReportStatus.COMPLETED:
                 record.completed_tasks.add(report.task_id)
+                
+                # 记录任务成功到记忆系统
+                strategy_name = "default"
+                if record.plan.strategies and record.current_strategy_index < len(record.plan.strategies):
+                    strategy_name = record.plan.strategies[record.current_strategy_index].get("name", "default")
+                
+                try:
+                    asyncio.create_task(
+                        self._memory.record_task_success(
+                            mission_id=report.mission_id,
+                            task_id=report.task_id,
+                            strategy_used=strategy_name,
+                            final_output=report.result or "completed",
+                        )
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to record task success in memory: {e}")
             else:
                 # 处理失败
                 self._handle_failure(record, report)
@@ -256,6 +298,22 @@ class Commander:
             record.failed_tasks[report.task_id] = []
         record.failed_tasks[report.task_id].append(report.error or "unknown")
         record.total_attempts += 1
+
+        # 记录任务失败到记忆系统
+        error_type = type(report.error).__name__ if report.error else "UnknownError"
+        error_details = str(report.error) if report.error else "unknown error"
+        
+        try:
+            asyncio.create_task(
+                self._memory.record_task_failure(
+                    mission_id=report.mission_id,
+                    task_id=report.task_id,
+                    error_type=error_type,
+                    error_details=error_details,
+                )
+            )
+        except Exception as e:
+            logger.warning(f"Failed to record task failure in memory: {e}")
 
         # 三层决策策略
         strategy_name = record.plan.strategies[record.current_strategy_index].get(
