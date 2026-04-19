@@ -18,16 +18,22 @@
 import asyncio
 import logging
 import time
+from datetime import datetime
 from typing import Any, Callable
 
 from ..config import settings
 from ..protocols.reporting import ReportStatus, SoldierId
 from ..scheduler.models import Order, ExecutionResult
+from ..scheduler.soldier_types import (
+    SoldierInfo,
+    SoldierStatus,
+    SoldierAgentProtocol,
+)
 
 logger = logging.getLogger(__name__)
 
 
-class SoldierAgent:
+class SoldierAgent(SoldierAgentProtocol):
     """
     军人 Agent - 执行层
 
@@ -35,7 +41,9 @@ class SoldierAgent:
     """
 
     def __init__(self, soldier_id: SoldierId):
-        self.soldier_id = soldier_id
+        self._soldier_id = soldier_id
+        self._name = f"军人_{soldier_id[-6:]}"
+        self._status = SoldierStatus.IDLE
         self._current_order: Order | None = None
         self._step_count: int = 0
         self._max_steps: int = getattr(settings, "soldier_max_steps", 10)
@@ -43,11 +51,56 @@ class SoldierAgent:
         self._pause_event = asyncio.Event()
         self._pause_event.set()  # 默认不暂停
         self._report_callback: Callable[..., Any] | None = None
+        self._created_at = datetime.now()
+        self._last_heartbeat = datetime.now()
+    
+    @property
+    def soldier_id(self) -> SoldierId:
+        return self._soldier_id
+    
+    @property
+    def name(self) -> str:
+        return self._name
+    
+    @property
+    def status(self) -> SoldierStatus:
+        return self._status
+    
+    def get_info(self) -> SoldierInfo:
+        """获取军人信息"""
+        return SoldierInfo(
+            soldier_id=self._soldier_id,
+            name=self._name,
+            status=self._status,
+            current_task_id=self._current_order.task_id if self._current_order else None,
+            current_task_name=self._current_order.description if self._current_order else None,
+            progress=self._step_count / self._max_steps if self._max_steps > 0 else 0,
+            steps_used=self._step_count,
+            max_steps=self._max_steps,
+            elapsed_time=0,
+            created_at=self._created_at,
+            last_heartbeat=self._last_heartbeat,
+        )
 
     def set_report_callback(self, callback: Callable[..., Any]) -> None:
         """设置状态汇报回调"""
         self._report_callback = callback
 
+    async def execute_task(self, task: Any) -> Any:
+        """
+        执行分派的任务
+        
+        Args:
+            task: 任务对象
+            
+        Returns:
+            执行结果
+        """
+        # 检查是否是 Order 类型
+        if isinstance(task, Order):
+            return await self.execute(task)
+        return f"Executed: {task}"
+    
     async def execute(self, order: Order) -> ExecutionResult:
         """
         执行命令
@@ -58,12 +111,13 @@ class SoldierAgent:
         Returns:
             ExecutionResult: 执行结果
         """
-        logger.info(f"[{self.soldier_id}] Executing order: {order.order_id}")
+        logger.info(f"[{self._soldier_id}] Executing order: {order.order_id}")
 
         self._current_order = order
         self._step_count = 0
         self._max_steps = order.max_steps
         self._cancel_event.clear()
+        self._status = SoldierStatus.RUNNING
 
         start_time = time.time()
 
@@ -88,6 +142,7 @@ class SoldierAgent:
                 result=result,
             )
 
+            self._status = SoldierStatus.IDLE
             return ExecutionResult(
                 success=True,
                 task_id=order.task_id,
@@ -99,7 +154,8 @@ class SoldierAgent:
 
         except asyncio.CancelledError:
             duration = time.time() - start_time
-            logger.info(f"[{self.soldier_id}] Execution cancelled")
+            logger.info(f"[{self._soldier_id}] Execution cancelled")
+            self._status = SoldierStatus.STOPPED
 
             await self._report_status(
                 status=ReportStatus.CANCELLED,
@@ -127,6 +183,7 @@ class SoldierAgent:
                 error=str(e),
             )
 
+            self._status = SoldierStatus.ERROR
             return ExecutionResult(
                 success=False,
                 task_id=order.task_id,
@@ -199,14 +256,25 @@ class SoldierAgent:
         self._cancel_event.set()
 
     async def pause(self) -> None:
-        """暂停执行"""
-        logger.info(f"[{self.soldier_id}] Pause requested")
-        self._pause_event.clear()
+        """暂停当前任务"""
+        if self._status == SoldierStatus.RUNNING:
+            self._status = SoldierStatus.PAUSED
+            logger.info(f"[{self._soldier_id}] paused")
 
     async def resume(self) -> None:
-        """恢复执行"""
-        logger.info(f"[{self.soldier_id}] Resume requested")
-        self._pause_event.set()
+        """恢复暂停的任务"""
+        if self._status == SoldierStatus.PAUSED:
+            self._status = SoldierStatus.RUNNING
+            logger.info(f"[{self._soldier_id}] resumed")
+
+    async def heartbeat(self) -> bool:
+        """发送心跳，检查是否健康"""
+        self._last_heartbeat = datetime.now()
+        if self._status == SoldierStatus.RUNNING:
+            if self._step_count > 0 and time.time() - (self._created_at.timestamp()) > 300:
+                logger.warning(f"Soldier {self._soldier_id} may be stuck")
+                return False
+        return True
 
     async def _report_status(
         self,
