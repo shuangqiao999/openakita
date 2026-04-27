@@ -5,6 +5,7 @@
   "description": "Pre-publish launch kit — VLM cover picker (Qwen-VL-max 6-axis aesthetics), smart-recompose horizontal->vertical with EMA-smoothed subject tracking, 5-platform SEO pack (Qwen-Plus), and chapter cards (Playwright + ffmpeg drawtext fallback)",
   "display_name_zh": "发布物料工坊",
   "display_name_en": "Launch Kit",
+  "icon": "icon.svg",
   "description_i18n": {
     "zh": "视频成片到发布前物料一站式 — VLM 智能选封面（Qwen-VL-max 6 维美学评分）/ 横竖屏智能重构图（EMA 平滑 + 主体跟踪）/ 5 平台 SEO 包（Qwen-Plus）/ 章节卡渲染（Playwright 主路径 + ffmpeg drawtext 降级）",
     "en": "Pre-publish launch kit from edited video to platform-ready assets — smart cover picking (Qwen-VL-max 6-axis scoring), horizontal-to-vertical smart recompose (EMA-smoothed subject tracking), 5-platform SEO pack (Qwen-Plus), chapter cards (Playwright primary + ffmpeg drawtext fallback)"
@@ -40,6 +41,7 @@
   },
   "ui": {
     "entry": "ui/dist/index.html",
+    "icon": "icon.svg",
     "title": "发布物料工坊",
     "title_i18n": {
       "zh": "发布物料工坊",

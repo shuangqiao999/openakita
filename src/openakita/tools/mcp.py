@@ -414,7 +414,7 @@ class MCPClient:
         Returns:
             (command, args) 如果需要适配；否则 None。
         """
-        from ..runtime_env import IS_FROZEN, get_python_executable
+        from ..runtime_env import get_app_python_executable
 
         if not (
             config.command in ("python", "python3")
@@ -424,10 +424,7 @@ class MCPClient:
         ):
             return None
 
-        if IS_FROZEN:
-            return (sys.executable, ["run-mcp-module", config.args[1], *config.args[2:]])
-
-        py = get_python_executable() or sys.executable
+        py = get_app_python_executable() or sys.executable
         py_path = Path(py)
         if py_path.name.lower() not in ("python.exe", "python3.exe", "python", "python3"):
             for candidate_name in ("python.exe", "python3.exe", "python", "python3"):

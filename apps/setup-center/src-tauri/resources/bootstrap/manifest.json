@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "app_name": "openakita",
+  "app_version": "1.27.9",
+  "python_version": "3.12",
+  "wheel": {
+    "name": "wheels/openakita-1.27.9-py3-none-any.whl",
+    "sha256": "be429deaf30301dcfd13074bed7deaa171e701ebbe5b0cdae89a18e34e14a823"
+  },
+  "uv": {
+    "path": "bin/uv",
+    "windows_path": "bin/uv.exe",
+    "version": "",
+    "sha256": "831730243cf7bbd496ff96353dcdba6f5d4dcbd22576af398130381ab44ac160"
+  },
+  "python_seed": null,
+  "default_pip_index": {
+    "id": "aliyun",
+    "url": "https://mirrors.aliyun.com/pypi/simple/",
+    "trusted_host": "mirrors.aliyun.com"
+  }
+}

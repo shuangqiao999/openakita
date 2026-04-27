@@ -18,9 +18,14 @@ except ImportError as exc:  # pragma: no cover — httpx ships with the host
     raise RuntimeError("fin-pulse requires httpx (host dependency)") from exc
 
 
+# Real-browser UA string. The previous ``Mozilla/5.0 (OpenAkita fin-pulse/1.0; ...)``
+# banner was flagged as a bot by Cloudflare on every edge it protects. NewsNow's
+# public aggregator is less noisy with a mainstream Chrome UA and the standard
+# Accept-Language headers used by browser traffic.
 DEFAULT_UA = (
-    "Mozilla/5.0 (OpenAkita fin-pulse/1.0; +https://github.com/openakita/openakita) "
-    "AppleWebKit/537.36 (KHTML, like Gecko)"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0.0.0 Safari/537.36"
 )
 
 
@@ -29,13 +34,23 @@ def make_client(
     timeout: float = 15.0,
     extra_headers: dict[str, str] | None = None,
     follow_redirects: bool = True,
+    user_agent: str | None = None,
 ) -> httpx.AsyncClient:
     """Build a short-lived ``httpx.AsyncClient``.
 
     Fetchers own their client lifetime (``async with`` form) so we never
     leak sockets across tasks.
+
+    ``user_agent`` overrides the shared Chrome UA — SEC EDGAR, for
+    example, explicitly requires ``Name email@example.com`` per its
+    public-access guidance and silently 403s on generic browser UAs.
     """
-    headers = {"User-Agent": DEFAULT_UA, "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"}
+    headers = {
+        "User-Agent": user_agent or DEFAULT_UA,
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+    }
     if extra_headers:
         headers.update(extra_headers)
     return httpx.AsyncClient(

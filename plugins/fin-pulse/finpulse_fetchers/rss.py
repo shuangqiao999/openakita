@@ -12,14 +12,18 @@ re-implementing the feedparser dance.
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
+from xml.etree import ElementTree as ET
 
 from finpulse_fetchers._http import fetch_text, make_client
 from finpulse_fetchers.base import BaseFetcher, NormalizedItem
 
-try:  # pragma: no cover — feedparser is optional
+try:  # pragma: no cover — feedparser is preferred when available
     import feedparser  # type: ignore
 
     FEEDPARSER_AVAILABLE = True
@@ -43,14 +47,20 @@ def _to_iso(struct_time: Any) -> str | None:
 def parse_feed(source_id: str, body: str) -> list[NormalizedItem]:
     """Parse an RSS/Atom ``body`` into canonical items.
 
-    Returns ``[]`` on parse failure — the caller is expected to examine
-    ``feedparser`` bozo state if it needs finer-grained narration.
+    Prefers :mod:`feedparser` when available (richer metadata, better
+    oddball-feed tolerance), falls back to a stdlib :mod:`xml.etree`
+    parser so ``nbs`` / ``fed_fomc`` / ``sec_edgar`` / ``rss_generic``
+    keep working on hosts where ``pip install feedparser`` hasn't been
+    run. The fallback handles RSS 2.0 and Atom 1.0 — the two shapes
+    every official regulator we target ships today.
     """
-    if not FEEDPARSER_AVAILABLE:
-        raise ImportError(
-            "feedparser is required for RSS sources; install via `pip install feedparser`"
-        )
-    parsed = feedparser.parse(body)
+    if FEEDPARSER_AVAILABLE:
+        return _parse_with_feedparser(source_id, body)
+    return _parse_with_stdlib(source_id, body)
+
+
+def _parse_with_feedparser(source_id: str, body: str) -> list[NormalizedItem]:
+    parsed = feedparser.parse(body)  # type: ignore[union-attr]
     items: list[NormalizedItem] = []
     for entry in parsed.entries or []:
         title = (entry.get("title") or "").strip()
@@ -76,25 +86,170 @@ def parse_feed(source_id: str, body: str) -> list[NormalizedItem]:
     return items
 
 
+_TAG_RE = re.compile(r"\{[^}]*\}")
+_HTML_STRIP_RE = re.compile(r"<[^>]+>")
+
+
+def _localname(tag: str) -> str:
+    """Strip XML namespace so ``{http://…/atom}title`` → ``title``."""
+    return _TAG_RE.sub("", tag or "")
+
+
+def _strip_html(text: str | None) -> str | None:
+    if text is None:
+        return None
+    stripped = _HTML_STRIP_RE.sub("", text).strip()
+    return stripped or None
+
+
+def _parse_rfc822(value: str | None) -> str | None:
+    """Parse an RFC-822 / ISO-8601 timestamp into a canonical ISO-8601 UTC string."""
+    if not value:
+        return None
+    try:
+        dt = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        dt = None
+    if dt is None:
+        # Atom ``<updated>`` tags already ship ISO-8601; keep them as-is.
+        return value.strip() or None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _parse_with_stdlib(source_id: str, body: str) -> list[NormalizedItem]:
+    """Minimal RSS 2.0 + Atom 1.0 reader backed by :mod:`xml.etree`.
+
+    Trades off a handful of edge cases (malformed feeds, media
+    enclosures, bozo flags) for zero extra dependencies. Every
+    regulator RSS we ship (Fed / SEC / NBS) parses fine here.
+    """
+    try:
+        root = ET.fromstring(body.encode("utf-8") if isinstance(body, str) else body)
+    except ET.ParseError as exc:
+        logger.warning("stdlib rss parse failed for %s: %s", source_id, exc)
+        return []
+
+    entries: list[ET.Element] = []
+    root_name = _localname(root.tag).lower()
+    if root_name == "rss":
+        channel = next((c for c in root if _localname(c.tag).lower() == "channel"), None)
+        if channel is None:
+            return []
+        entries = [c for c in channel if _localname(c.tag).lower() == "item"]
+    elif root_name == "feed":
+        entries = [c for c in root if _localname(c.tag).lower() == "entry"]
+    else:
+        return []
+
+    items: list[NormalizedItem] = []
+    for entry in entries:
+        title = None
+        link = None
+        summary_raw = None
+        published = None
+        entry_id = None
+        author = None
+        tags: list[str] = []
+
+        for child in entry:
+            lname = _localname(child.tag).lower()
+            if lname == "title" and child.text:
+                title = child.text.strip()
+            elif lname == "link":
+                # Atom links live in href attribute; RSS links sit in text.
+                href = (child.get("href") or "").strip()
+                if href:
+                    # Prefer rel=alternate (default) links when available.
+                    rel = (child.get("rel") or "alternate").lower()
+                    if rel == "alternate" and not link:
+                        link = href
+                elif child.text and not link:
+                    link = child.text.strip()
+            elif lname in {"description", "summary", "content"} and child.text:
+                summary_raw = _strip_html(child.text)
+            elif lname in {"pubdate", "published", "updated", "date"} and child.text:
+                published = _parse_rfc822(child.text) or published
+            elif lname in {"guid", "id"} and child.text:
+                entry_id = child.text.strip()
+            elif lname in {"author", "dc:creator", "creator"}:
+                if child.text:
+                    author = child.text.strip()
+            elif lname == "category":
+                term = (child.get("term") or "").strip() or (child.text or "").strip()
+                if term:
+                    tags.append(term)
+
+        if not title or not link:
+            continue
+        items.append(
+            NormalizedItem(
+                source_id=source_id,
+                title=title,
+                url=link,
+                summary=summary_raw,
+                published_at=published,
+                extra={
+                    "id": entry_id,
+                    "author": author,
+                    "tags": tags,
+                    "parser": "stdlib",
+                },
+            )
+        )
+    return items
+
+
 class GenericRSSFetcher(BaseFetcher):
     """Configurable RSS aggregator — reads feed URLs from config.
 
     ``config['rss_generic.feeds']`` is a newline-separated list of feed
-    URLs. Each URL emits items under ``source_id='rss_generic'``; the
-    originating feed host is preserved in ``extra['feed_host']`` so the
-    UI can distinguish sources within the same aggregator.
+    URLs. ``config['rss_generic.feeds_json']`` may also hold structured
+    entries (``[{name,url,enabled}]``). Each URL emits
+    items under ``source_id='rss_generic'``; the originating feed URL/name
+    is preserved in ``extra`` so the UI can distinguish sources within the
+    same aggregator.
     """
 
     source_id = "rss_generic"
 
-    async def fetch(self, **_: Any) -> list[NormalizedItem]:
+    def _resolve_feeds(self) -> list[dict[str, str]]:
+        raw_json = (self._config.get("rss_generic.feeds_json") or "").strip()
+        feeds: list[dict[str, str]] = []
+        if raw_json:
+            try:
+                parsed = json.loads(raw_json)
+                if isinstance(parsed, list):
+                    for entry in parsed:
+                        if not isinstance(entry, dict):
+                            continue
+                        if entry.get("enabled") is False:
+                            continue
+                        url = str(entry.get("url") or "").strip()
+                        if not url:
+                            continue
+                        name = str(entry.get("name") or url).strip()
+                        feeds.append({"url": url, "name": name})
+            except Exception as exc:  # noqa: BLE001 - fallback to legacy list
+                logger.warning("invalid rss_generic.feeds_json: %s", exc)
+        if feeds:
+            return feeds
         feeds_cfg = self._config.get("rss_generic.feeds", "")
-        feeds = [ln.strip() for ln in feeds_cfg.splitlines() if ln.strip()]
+        return [
+            {"url": ln.strip(), "name": ln.strip()}
+            for ln in feeds_cfg.splitlines()
+            if ln.strip()
+        ]
+
+    async def fetch(self, **_: Any) -> list[NormalizedItem]:
+        feeds = self._resolve_feeds()
         if not feeds:
             return []
         out: list[NormalizedItem] = []
         async with make_client(timeout=self._timeout_sec) as client:
-            for feed_url in feeds[:32]:  # hard cap so a huge paste cannot DoS the run
+            for feed in feeds[:32]:  # hard cap so a huge paste cannot DoS the run
+                feed_url = feed["url"]
                 try:
                     body = await fetch_text(client, feed_url)
                 except Exception as exc:  # noqa: BLE001 — per-feed isolation
@@ -109,6 +264,7 @@ class GenericRSSFetcher(BaseFetcher):
                     continue
                 for item in items:
                     item.extra.setdefault("feed_url", feed_url)
+                    item.extra.setdefault("feed_name", feed.get("name") or feed_url)
                 out.extend(items)
         return out
 

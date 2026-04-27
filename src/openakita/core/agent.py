@@ -32,6 +32,8 @@ if TYPE_CHECKING:
     from ..sessions import Session
 
 from ..config import settings
+from .confirmation_state import get_confirmation_store
+from .risk_intent import RiskIntentResult, classify_risk_intent
 
 # 记忆系统
 from ..memory import MemoryManager
@@ -230,6 +232,25 @@ MEDIUM_CTX_EXTRA_TOOLS = {
     "glob",
     "delete_file",
 }
+
+def _classify_risk_intent(intent: Any, message: str) -> RiskIntentResult:
+    """Single source of truth for the pre-ReAct risk gate."""
+    return classify_risk_intent(message, intent)
+
+
+def _build_destructive_intent_question(message: str, classification: RiskIntentResult | None = None) -> str:
+    target = (message or "").strip()
+    if len(target) > 240:
+        target = target[:240] + "..."
+    target_kind = classification.target_kind.value if classification else "unknown"
+    operation_kind = classification.operation_kind.value if classification else "unknown"
+    return (
+        "这个请求可能会删除、覆盖或修改安全/权限相关配置。"
+        "为避免误操作，我需要先确认，不会直接进入工具搜索或执行命令。\n\n"
+        f"风险分类：target={target_kind}, operation={operation_kind}\n"
+        f"请确认是否继续执行这项高风险操作：{target}\n\n"
+        "回复“确认继续”才会继续；如果只是想查看当前配置，请回复“只查看”。"
+    )
 
 # Prompt Compiler 系统提示词（两段式 Prompt 第一阶段）
 PROMPT_COMPILER_SYSTEM = """【角色】
@@ -652,6 +673,11 @@ class Agent:
 
         # Agent profile and custom prompt (set by AgentFactory)
         self._agent_profile = None
+        self._agent_profile_id = "default"
+        self._runtime_env_mode = "shared"
+        self._runtime_env_dependencies: list[str] = []
+        self._runtime_env_python: str | None = None
+        self._execution_env_spec = None
         self._custom_prompt_suffix: str = ""
         self._preferred_endpoint: str | None = None
 
@@ -728,6 +754,37 @@ class Agent:
             memory_manager=self.memory_manager,
             plan_exit_pending=self._plan_exit_pending,
         )
+
+    def configure_runtime_environment(self, profile) -> None:
+        """Apply AgentProfile runtime policy to tools created during __init__.
+
+        Agent instances are initialized before AgentFactory applies profile
+        filters. This hook lets the factory attach the stable profile id and an
+        optional managed agent venv without changing legacy shared behavior.
+        """
+        self._agent_profile = profile
+        self._agent_profile_id = getattr(profile, "id", "default") or "default"
+        self._runtime_env_mode = getattr(profile, "runtime_env_mode", "shared") or "shared"
+        self._runtime_env_dependencies = list(
+            getattr(profile, "runtime_env_dependencies", []) or []
+        )
+        self._runtime_env_python = getattr(profile, "runtime_env_python", None)
+        self._execution_env_spec = None
+
+        if self._runtime_env_mode == "agent":
+            try:
+                from ..runtime_envs import resolve_agent_env
+
+                self._execution_env_spec = resolve_agent_env(
+                    self._agent_profile_id,
+                    deps=self._runtime_env_dependencies,
+                )
+            except Exception as exc:
+                logger.warning("Failed to resolve agent runtime env for %s: %s", self._agent_profile_id, exc)
+
+        if hasattr(self.shell_tool, "execution_env_spec"):
+            self.shell_tool.execution_env_spec = self._execution_env_spec
+            self.shell_tool.runtime_env_mode = self._runtime_env_mode
 
         logger.info(f"Agent '{self.name}' created (with refactored sub-modules)")
 
@@ -1646,6 +1703,11 @@ class Agent:
             logger.warning("propagate_skill_change: catalog rebuild failed: %s", e)
 
         try:
+            self._invalidate_system_prompt_cache("skill change")
+        except Exception as e:
+            logger.warning("propagate_skill_change: prompt cache invalidation failed: %s", e)
+
+        try:
             self._update_skill_tools()
         except Exception as e:
             logger.warning("propagate_skill_change: tool mapping update failed: %s", e)
@@ -2147,8 +2209,28 @@ class Agent:
         )
         if self._custom_prompt_suffix:
             prompt += f"\n\n{self._custom_prompt_suffix}"
+        prompt += self._build_runtime_env_prompt_section()
         prompt += self._build_multi_agent_prompt_section()
         return prompt
+
+    def _build_runtime_env_prompt_section(self) -> str:
+        mode = getattr(self, "_runtime_env_mode", "shared") or "shared"
+        profile_id = getattr(self, "_agent_profile_id", "default") or "default"
+        spec = getattr(self, "_execution_env_spec", None)
+        if spec is None:
+            env_line = "当前 Agent 使用共享 `agent-venv` fallback；不要把长期任务依赖随意安装到共享环境。"
+        else:
+            env_line = (
+                f"当前 AgentProfile `{profile_id}` 使用独立 Python 环境 "
+                f"`{spec.venv_path}`；该 Agent 的临时 Python/pip 依赖应优先进入此环境。"
+            )
+        return (
+            "\n\n### Agent Python 环境策略\n"
+            f"- runtime_env_mode: `{mode}`\n"
+            f"- {env_line}\n"
+            "- 操作用户项目时，先检查项目自己的 `.venv`、`pyproject.toml`、`requirements.txt`、`uv.lock`，优先遵守项目环境。\n"
+            "- 运行 skill 预置 Python 脚本时，优先使用 skill 声明的 Python 环境和依赖。"
+        )
 
     async def _build_system_prompt_compiled(
         self,
@@ -2156,6 +2238,7 @@ class Agent:
         session_type: str = "cli",
         tools_enabled: bool = True,
         session: "Session | None" = None,
+        mode: str | None = None,
     ) -> str:
         """
         使用编译管线构建系统提示词 (v2)
@@ -2200,6 +2283,7 @@ class Agent:
                     "channel": getattr(session, "channel", "unknown"),
                     "chat_type": getattr(session, "chat_type", "private"),
                     "message_count": len(session.context.messages) if session.context else 0,
+                    "working_facts": getattr(session.context, "working_facts", {}) if session.context else {},
                     "has_sub_agents": bool(sub_records),
                     "sub_agent_count": len(sub_records),
                     "language": getattr(session_config, "language", "zh")
@@ -2209,7 +2293,7 @@ class Agent:
             except Exception:
                 pass
 
-        _effective_mode = getattr(self.tool_executor, "_current_mode", "agent")
+        _effective_mode = mode or getattr(self.tool_executor, "_current_mode", "agent")
         _model_id = getattr(self.brain, "model", "")
         _skip_catalogs = False
         if intent:
@@ -2219,7 +2303,7 @@ class Agent:
                 # 带图片附件时禁止降级为 ask，否则 vision 工具会被砍 + Ask 模式
                 # 提示词会让 LLM 拒绝执行视觉理解，用户体验断裂。
                 _has_image_atts = getattr(self, "_has_pending_image_attachments", False)
-                if not _has_image_atts:
+                if not _has_image_atts and _effective_mode == "agent":
                     _effective_mode = "ask"
                     _skip_catalogs = True
             elif intent.intent == IntentType.QUERY:
@@ -2236,6 +2320,15 @@ class Agent:
         # parameters (mode, catalogs, profile) haven't changed.  Memory
         # keywords vary per turn so the cache key includes them.
         _conv_id = session.id if session else ""
+        try:
+            _working_facts_cache_key = json.dumps(
+                (session_context or {}).get("working_facts", {}),
+                sort_keys=True,
+                ensure_ascii=False,
+                default=str,
+            )
+        except Exception:
+            _working_facts_cache_key = ""
         _cache_key = (
             _conv_id,
             _effective_mode,
@@ -2243,6 +2336,7 @@ class Agent:
             _prompt_profile,
             _prompt_tier,
             tuple(sorted(_mem_keywords)) if _mem_keywords else (),
+            _working_facts_cache_key,
         )
 
         if (
@@ -2272,8 +2366,10 @@ class Agent:
             self._system_prompt_cache_dirty = False
 
         self._last_effective_mode = _effective_mode
+        self._last_tool_policy_source = "prompt_build"
         if self._custom_prompt_suffix:
             prompt += f"\n\n{self._custom_prompt_suffix}"
+        prompt += self._build_runtime_env_prompt_section()
         prompt += self._build_multi_agent_prompt_section()
         return prompt
 
@@ -2324,7 +2420,8 @@ class Agent:
                 "直接用你自己的专业工具（如 web_search、browser、read_file 等）完成任务。\n"
                 "\n"
                 "### 数据结论零伪造原则（必须遵守）\n"
-                "- 若任务要求数值/统计/模拟/计算结果，必须通过 run_shell 执行 python "
+                "- 若任务要求数值/统计/模拟/计算结果，必须通过平台命令工具"
+                "（Windows 用 run_powershell，其他环境用 run_shell）执行 python，"
                 "或调用对应工具获得，不得凭经验估算。\n"
                 "- 任何没有工具输出佐证的数字、百分比、均值、标准差、概率一律视为违规。\n"
                 "- 无法获得真实数据时，明确返回：\"无法执行：<具体原因>，建议 <替代方案>\"，"
@@ -2828,6 +2925,7 @@ class Agent:
 
         _tt = set_tracking_context(
             TokenTrackingContext(
+                session_id=getattr(self, "_current_conversation_id", "") or getattr(self, "_current_session_id", "") or "",
                 operation_type="context_compress",
                 operation_detail=context_type,
             )
@@ -2994,6 +3092,7 @@ class Agent:
 
             _tt2 = set_tracking_context(
                 TokenTrackingContext(
+                    session_id=getattr(self, "_current_conversation_id", "") or getattr(self, "_current_session_id", "") or "",
                     operation_type="context_compress",
                     operation_detail=f"chunk_{i}",
                 )
@@ -3376,6 +3475,21 @@ class Agent:
 
         # 5. User turn memory record
         self.memory_manager.record_turn("user", message)
+        if session and hasattr(session, "context"):
+            try:
+                from .working_facts import extract_working_facts, merge_working_facts
+
+                turn_no = len(getattr(session.context, "messages", []) or [])
+                updates = extract_working_facts(message, source_turn=turn_no)
+                if updates:
+                    session.context.working_facts = merge_working_facts(
+                        getattr(session.context, "working_facts", {}),
+                        updates,
+                    )
+                    self._invalidate_system_prompt_cache("working facts updated")
+                    logger.info("[Session:%s] Working facts updated: %s", session_id, list(updates))
+            except Exception as exc:
+                logger.debug("[Session:%s] Working facts extraction failed: %s", session_id, exc)
 
         # 6. Trait mining
         if hasattr(self, "trait_miner") and self.trait_miner and self.trait_miner.brain:
@@ -4359,6 +4473,32 @@ class Agent:
             _fast_usage = None
             _fast_handled = False
 
+            _risk_intent = _classify_risk_intent(_intent, message) if _intent else None
+            if (
+                mode == "agent"
+                and _intent
+                and not getattr(self, "_is_sub_agent_call", False)
+                and _risk_intent
+                and _risk_intent.requires_confirmation
+            ):
+                response_text = _build_destructive_intent_question(message, _risk_intent)
+                pending = get_confirmation_store().create(
+                    conversation_id=session_id,
+                    original_message=message,
+                    classification=_risk_intent.to_dict(),
+                    request_id=f"{session_id}:sync",
+                )
+                self.reasoning_engine._last_exit_reason = "ask_user"
+                logger.warning(
+                    "[RiskIntentGate] blocked free-form execution before ReAct "
+                    "(session=%s, confirmation=%s, risk=%s, message=%r)",
+                    session_id,
+                    pending.confirmation_id,
+                    _risk_intent.to_dict(),
+                    message[:200],
+                )
+                _fast_handled = True
+
             if _intent and _intent.intent == _IT.CHAT and getattr(_intent, "fast_reply", False):
                 # Ultra-fast path: rule-based greeting only, use lightweight model
                 try:
@@ -4443,6 +4583,7 @@ class Agent:
                     session=session,
                     endpoint_override=endpoint_override,
                     intent_result=_intent,
+                    mode=mode,
                 )
 
             # === flush 残留的 IM 进度消息，确保思维链先于回答到达 ===
@@ -4487,6 +4628,8 @@ class Agent:
         attachments: list | None = None,
         thinking_mode: str | None = None,
         thinking_depth: str | None = None,
+        request_id: str = "",
+        turn_id: str = "",
     ):
         """
         流式版 chat_with_session，yield SSE 事件字典。
@@ -4627,6 +4770,7 @@ class Agent:
                 task_description=task_description,
                 session_type=session_type,
                 session=session,
+                mode=mode,
             )
 
             # 注入 TaskDefinition
@@ -4663,6 +4807,53 @@ class Agent:
 
             _intent = getattr(self, "_current_intent", None)
 
+            _risk_intent = _classify_risk_intent(_intent, message) if _intent else None
+            if (
+                mode == "agent"
+                and _intent
+                and not getattr(self, "_is_sub_agent_call", False)
+                and _risk_intent
+                and _risk_intent.requires_confirmation
+            ):
+                pending = get_confirmation_store().create(
+                    conversation_id=conversation_id,
+                    original_message=message,
+                    classification=_risk_intent.to_dict(),
+                    request_id=request_id or f"{conversation_id}:stream",
+                )
+                question_text = _build_destructive_intent_question(message, _risk_intent)
+                _reply_text = question_text
+                self.reasoning_engine._last_exit_reason = "ask_user"
+                logger.warning(
+                    "[RiskIntentGate] blocked free-form streaming execution before ReAct "
+                    "(session=%s, conversation=%s, confirmation=%s, risk=%s, message=%r)",
+                    session_id,
+                    conversation_id,
+                    pending.confirmation_id,
+                    _risk_intent.to_dict(),
+                    message[:200],
+                )
+                yield {
+                    "type": "ask_user",
+                    "question": question_text,
+                    "conversation_id": conversation_id,
+                    "confirmation_id": pending.confirmation_id,
+                    "risk_intent": _risk_intent.to_dict(),
+                    "options": [
+                        {"id": "confirm_continue", "label": "确认继续"},
+                        {"id": "inspect_only", "label": "只查看"},
+                        {"id": "cancel", "label": "取消"},
+                    ],
+                }
+                yield {"type": "done"}
+                await self._finalize_session(
+                    response_text=_reply_text,
+                    session=session,
+                    session_id=session_id,
+                    task_monitor=task_monitor,
+                )
+                return
+
             # Intent-driven ForceToolCall for streaming path
             _force_tool_retries = None
             if _intent:
@@ -4682,6 +4873,8 @@ class Agent:
                 )
 
             _fast_usage = None
+            _request_id = request_id or f"{conversation_id}:stream"
+            _turn_id = turn_id or f"{conversation_id}:{int(time.time() * 1000)}"
 
             if _intent and _intent.intent == _IT.CHAT and getattr(_intent, "fast_reply", False):
                 # Ultra-fast path: rule-based greeting only, use lightweight model
@@ -4838,6 +5031,8 @@ class Agent:
                 session=session,
                 force_tool_retries=_force_tool_retries,
                 is_sub_agent=getattr(self, "_is_sub_agent_call", False),
+                request_id=_request_id,
+                turn_id=_turn_id,
             ):
                 # 收集回复文本（用于 session 保存 & memory）
                 if event.get("type") == "text_delta":
@@ -5674,6 +5869,7 @@ class Agent:
         session: Any = None,
         endpoint_override: str | None = None,
         intent_result: Any = None,
+        mode: str = "agent",
     ) -> str:
         """
         使用指定的消息上下文进行对话（委托给 ReasoningEngine）
@@ -5705,6 +5901,7 @@ class Agent:
                 task_description=task_description,
                 session_type=session_type,
                 session=session or self._current_session,
+                mode=mode,
             )
         else:
             system_prompt = self._context.system
@@ -5751,6 +5948,7 @@ class Agent:
             endpoint_override=endpoint_override,
             force_tool_retries=force_tool_retries,
             is_sub_agent=getattr(self, "_is_sub_agent_call", False),
+            mode=mode,
         )
 
     # ==================== 取消状态代理属性 ====================

@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PPT Maker</title>
+    <script src="./_assets/bootstrap.js"></script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <link rel="stylesheet" href="./_assets/styles.css" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script src="./_assets/i18n.js"></script>
+    <script src="./_assets/icons.js"></script>
+    <script src="./_assets/markdown-mini.js"></script>
+    <script type="text/babel">
+      const { useEffect, useMemo, useState } = React;
+      const tabs = ["Create", "Projects", "Sources", "Tables", "Templates", "Exports", "Settings"];
+      const modes = ["topic_to_deck", "files_to_deck", "outline_to_deck", "table_to_deck", "template_deck", "revise_deck"];
+
+      function request(path, options = {}) {
+        const api = window.OpenAkita;
+        if (!api || typeof api.request !== "function") {
+          return Promise.reject(new Error("OpenAkita bridge is not ready."));
+        }
+        return api.request(path, options);
+      }
+
+      function useDraft(key, initial) {
+        const [value, setValue] = useState(() => {
+          try { return JSON.parse(localStorage.getItem(key)) || initial; } catch (_) { return initial; }
+        });
+        useEffect(() => localStorage.setItem(key, JSON.stringify(value)), [key, value]);
+        return [value, setValue];
+      }
+
+      function ErrorPanel({ error }) {
+        return error ? <div className="error-panel">错误：{String(error.message || error)}</div> : null;
+      }
+
+      function ProgressPanel({ event }) {
+        if (!event) return <div className="muted">等待 task_update 进度事件...</div>;
+        return <div className="progress-card"><b>{event.status || event.step}</b><span>{Math.round((event.progress || 0) * 100)}%</span></div>;
+      }
+
+      function CostBreakdown({ draft }) {
+        const complexity = draft.mode === "table_to_deck" || draft.mode === "template_deck" ? "中" : "低";
+        return <div className="hint">预估：{draft.slide_count} 页，复杂度 {complexity}，会生成 outline/design/IR/audit。</div>;
+      }
+
+      function FileUploadZone() {
+        return <div className="upload-zone">拖拽上传区：PDF、DOCX、Markdown、PPTX、CSV、XLSX。后续可接 host uploadFile。</div>;
+      }
+
+      function CreateTab({ setError, refreshProjects, datasets, templates }) {
+        const [draft, setDraft] = useDraft("ppt-maker:create", {
+          mode: "topic_to_deck",
+          title: "OpenAkita 插件生态路线图",
+          prompt: "面向企业管理层，科技商务风",
+          audience: "企业管理层",
+          style: "tech_business",
+          slide_count: 8,
+          dataset_id: "",
+          template_id: "",
+        });
+        const [result, setResult] = useState(null);
+        async function startProject() {
+          setError(null);
+          const data = await request("/projects", { method: "POST", body: draft });
+          setResult(data);
+          refreshProjects();
+        }
+        async function generateDeck() {
+          if (!result?.project?.id) return;
+          setError(null);
+          setResult(await request(`/projects/${result.project.id}/retry`, { method: "POST" }));
+          refreshProjects();
+        }
+        return (
+          <section className="panel">
+            <h2>Create</h2>
+            <div className="chips">{modes.map((mode) => <button key={mode} className={draft.mode === mode ? "chip active" : "chip"} onClick={() => setDraft({ ...draft, mode })}>{mode}</button>)}</div>
+            <label>标题<input value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} /></label>
+            <label>受众<input value={draft.audience} onChange={(e) => setDraft({ ...draft, audience: e.target.value })} /></label>
+            <label>页数<input type="number" value={draft.slide_count} onChange={(e) => setDraft({ ...draft, slide_count: Number(e.target.value) })} /></label>
+            <label>数据集（table_to_deck）<select value={draft.dataset_id || ""} onChange={(e) => setDraft({ ...draft, dataset_id: e.target.value || null })}><option value="">不使用数据集</option>{datasets.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.status}</option>)}</select></label>
+            <label>企业模板（template_deck）<select value={draft.template_id || ""} onChange={(e) => setDraft({ ...draft, template_id: e.target.value || null })}><option value="">不使用模板</option>{templates.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.status}</option>)}</select></label>
+            <label>需求<textarea value={draft.prompt} onChange={(e) => setDraft({ ...draft, prompt: e.target.value })} /></label>
+            <div className="actions"><button onClick={startProject}>创建项目</button><button onClick={generateDeck} disabled={!result?.project?.id}>生成 PPTX</button></div>
+            <CostBreakdown draft={draft} />
+            <pre>{JSON.stringify(result, null, 2)}</pre>
+          </section>
+        );
+      }
+
+      function ProjectsTab({ projects, refreshProjects, setError }) {
+        const [detail, setDetail] = useState(null);
+        async function load(projectId) {
+          setError(null);
+          setDetail(await request(`/projects/${projectId}`));
+        }
+        async function retry(projectId) {
+          setError(null);
+          setDetail(await request(`/projects/${projectId}/retry`, { method: "POST" }));
+          refreshProjects();
+        }
+        async function cancel(projectId) {
+          setError(null);
+          await request(`/projects/${projectId}/cancel`, { method: "POST" });
+          refreshProjects();
+        }
+        async function remove(projectId) {
+          setError(null);
+          await request(`/projects/${projectId}`, { method: "DELETE" });
+          setDetail(null);
+          refreshProjects();
+        }
+        return <section className="panel"><h2>Projects</h2><button onClick={refreshProjects}>刷新</button><div className="table">{projects.map((p) => <div className="row" key={p.id}><b>{p.title}</b><span>{p.mode}</span><span>{p.status}</span><code>{p.id}</code><button onClick={() => load(p.id)}>详情</button><button onClick={() => retry(p.id)}>继续/重试</button><button onClick={() => cancel(p.id)}>取消</button><button onClick={() => remove(p.id)}>删除</button></div>)}</div><pre>{JSON.stringify(detail, null, 2)}</pre></section>;
+      }
+
+      function SourcesTab({ setError }) {
+        const [path, setPath] = useState("");
+        const [parsed, setParsed] = useState(null);
+        async function parse() {
+          setError(null);
+          setParsed(await request("/sources/parse", { method: "POST", body: { path } }));
+        }
+        return <section className="panel"><h2>Sources</h2><FileUploadZone /><label>文件路径<input value={path} onChange={(e) => setPath(e.target.value)} /></label><button onClick={parse}>解析资料</button><pre>{JSON.stringify(parsed, null, 2)}</pre></section>;
+      }
+
+      function TablesTab({ setError, refreshData }) {
+        const [path, setPath] = useState("");
+        const [dataset, setDataset] = useState(null);
+        async function create() {
+          setError(null);
+          setDataset(await request("/datasets", { method: "POST", body: { path } }));
+          refreshData();
+        }
+        async function profile() {
+          if (!dataset?.dataset?.id) return;
+          setDataset(await request(`/datasets/${dataset.dataset.id}/profile`, { method: "POST" }));
+          refreshData();
+        }
+        return <section className="panel"><h2>Tables</h2><label>CSV/XLSX 路径<input value={path} onChange={(e) => setPath(e.target.value)} /></label><div className="actions"><button onClick={create}>登记数据集</button><button onClick={profile}>生成 profile/insights/chart specs</button></div><pre>{JSON.stringify(dataset, null, 2)}</pre></section>;
+      }
+
+      function TemplatesTab({ setError, refreshData }) {
+        const [path, setPath] = useState("");
+        const [template, setTemplate] = useState(null);
+        async function upload() {
+          setError(null);
+          setTemplate(await request("/templates/upload", { method: "POST", body: { path } }));
+          refreshData();
+        }
+        async function diagnose() {
+          if (!template?.template?.id) return;
+          setTemplate(await request(`/templates/${template.template.id}/diagnose`, { method: "POST" }));
+          refreshData();
+        }
+        return <section className="panel"><h2>Templates</h2><label>企业 PPTX 模板路径<input value={path} onChange={(e) => setPath(e.target.value)} /></label><div className="actions"><button onClick={upload}>上传模板</button><button onClick={diagnose}>诊断模板</button></div><div className="hint">MVP 抽取 brand_tokens 和 layout_map，不承诺 1:1 复刻动画、SmartArt 或复杂母版。</div><pre>{JSON.stringify(template, null, 2)}</pre></section>;
+      }
+
+      function ExportsTab({ projects }) {
+        const exports = projects.flatMap((p) => (p.exports || []).map((e) => ({ ...e, project_title: p.title })));
+        return <section className="panel"><h2>Exports</h2><div className="table">{exports.map((e) => <div className="row" key={e.id}><b>{e.project_title}</b><span>{e.kind}</span><code>{e.id}</code><a className="button" href={`/exports/${e.id}/download`} target="_blank">下载 PPTX</a></div>)}</div></section>;
+      }
+
+      function SettingsTab({ health, setHealth, setError }) {
+        const [deps, setDeps] = useState(null);
+        async function checkHealth() {
+          setError(null);
+          setHealth(await request("/healthz"));
+        }
+        async function loadDeps() {
+          setError(null);
+          setDeps(await request("/system/python-deps"));
+        }
+        async function installDep(depId) {
+          setError(null);
+          setDeps(await request(`/system/python-deps/${depId}/install`, { method: "POST" }));
+        }
+        return <section className="panel"><h2>Settings</h2><div className="actions"><button onClick={checkHealth}>健康检查</button><button onClick={loadDeps}>检测可选依赖</button></div><div className="hint">PythonDepsPanel：只允许安装白名单依赖组，禁止输入任意 pip 包名。</div>{deps?.groups?.map((dep) => <div className="row" key={dep.id}><b>{dep.id}</b><span>{dep.installed ? "已安装" : "未安装"}</span><span>{dep.status}</span><button onClick={() => installDep(dep.id)} disabled={dep.detect_only || dep.busy}>安装</button></div>)}<pre>{JSON.stringify({ health, deps }, null, 2)}</pre></section>;
+      }
+
+      function App() {
+        const [active, setActive] = useState("Create");
+        const [projects, setProjects] = useState([]);
+        const [datasets, setDatasets] = useState([]);
+        const [templates, setTemplates] = useState([]);
+        const [health, setHealth] = useState(null);
+        const [error, setError] = useState(null);
+        const [event, setEvent] = useState(null);
+        async function refreshProjects() {
+          try {
+            const data = await request("/projects");
+            setProjects(data.projects || []);
+          } catch (err) { setError(err); }
+        }
+        async function refreshData() {
+          try {
+            const [datasetData, templateData] = await Promise.all([request("/datasets"), request("/templates")]);
+            setDatasets(datasetData.datasets || []);
+            setTemplates(templateData.templates || []);
+          } catch (err) { setError(err); }
+        }
+        useEffect(() => {
+          refreshProjects();
+          refreshData();
+          const onTask = (e) => setEvent(e.detail || e);
+          window.addEventListener("task_update", onTask);
+          return () => window.removeEventListener("task_update", onTask);
+        }, []);
+        const props = { projects, refreshProjects, datasets, templates, refreshData, health, setHealth, setError };
+        const body = useMemo(() => ({
+          Create: <CreateTab {...props} />,
+          Projects: <ProjectsTab {...props} />,
+          Sources: <SourcesTab {...props} />,
+          Tables: <TablesTab {...props} />,
+          Templates: <TemplatesTab {...props} />,
+          Exports: <ExportsTab {...props} />,
+          Settings: <SettingsTab {...props} />,
+        }[active]), [active, projects, datasets, templates, health]);
+        return <main className="app-shell"><section className="hero"><p className="eyebrow">OpenAkita Plugin</p><h1>PPT 制作助手</h1><p>需求梳理、资料理解、表格洞察、模板适配、可编辑 PPTX 导出与质量检查。</p></section><nav className="tabs">{tabs.map((tab) => <button key={tab} className={active === tab ? "active" : ""} onClick={() => setActive(tab)}>{tab}</button>)}</nav><ErrorPanel error={error} /><ProgressPanel event={event} />{body}</main>;
+      }
+
+      ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+    </script>
+  </body>
+</html>
+

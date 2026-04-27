@@ -348,7 +348,7 @@ def ensure_playwright_chromium():
         run_cmd([sys.executable, "-m", "playwright", "install", "chromium"])
 
 
-def build_backend(mode: str, fast: bool = False):
+def build_backend(mode: str, fast: bool = False, skip_web_build: bool = False):
     """Execute PyInstaller packaging"""
     label = f"{mode.upper()}" + (" [FAST]" if fast else "")
     print(f"\n{'='*60}")
@@ -415,10 +415,14 @@ def build_backend(mode: str, fast: bool = False):
     ensure_bundled_pth_file(OUTPUT_DIR)
     verify_bundled_python_contract(OUTPUT_DIR)
 
-    # Build & include web frontend
+    # Include web frontend. In the parallel packager, dist-web is built before
+    # PyInstaller starts so the wheel and fallback backend share the same assets.
     web_src = PROJECT_ROOT / "apps" / "setup-center"
     web_dist = web_src / "dist-web"
-    _build_web_frontend(web_src, web_dist)
+    if skip_web_build:
+        print("  [OK] Reusing prebuilt web frontend (dist-web/)")
+    else:
+        _build_web_frontend(web_src, web_dist)
     if web_dist.exists() and (web_dist / "index.html").exists():
         web_dest = OUTPUT_DIR / "_internal" / "openakita" / "web"
         if web_dest.exists():
@@ -451,8 +455,13 @@ def main():
         action="store_true",
         help="Fast build: skip UPX compression and incremental build (no --clean)",
     )
+    parser.add_argument(
+        "--skip-web-build",
+        action="store_true",
+        help="Reuse existing apps/setup-center/dist-web instead of running npm run build:web",
+    )
     args = parser.parse_args()
-    build_backend(args.mode, fast=args.fast)
+    build_backend(args.mode, fast=args.fast, skip_web_build=args.skip_web_build)
 
 
 if __name__ == "__main__":

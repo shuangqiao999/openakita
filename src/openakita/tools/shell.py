@@ -212,6 +212,24 @@ class ShellTool:
         self.shell = shell
         self._is_windows = sys.platform == "win32"
         self._oem_encoding: str | None = None
+        self.runtime_env_mode = "shared"
+        self.execution_env_spec = None
+
+    def _apply_runtime_environment(self, env: dict[str, str]) -> dict[str, str]:
+        spec = getattr(self, "execution_env_spec", None)
+        if spec is not None:
+            try:
+                from ..runtime_envs import apply_execution_environment, ensure_execution_env
+
+                return apply_execution_environment(env, ensure_execution_env(spec))
+            except Exception as exc:
+                logger.warning("Falling back to shared agent Python env: %s", exc)
+        try:
+            from ..runtime_env import apply_agent_python_environment
+
+            return apply_agent_python_environment(env)
+        except Exception:
+            return env
 
     # ------------------------------------------------------------------
     # 进程清理（Windows 安全杀死进程树）
@@ -437,20 +455,9 @@ class ShellTool:
         except Exception:
             pass
 
-        # 打包模式：将外置 Python 目录 prepend 到子进程 PATH，
-        # 使 `python script.py` 自动找到正确解释器
-        try:
-            from ..runtime_env import IS_FROZEN, get_python_executable
-
-            if IS_FROZEN:
-                _ext_py = get_python_executable()
-                if _ext_py:
-                    from pathlib import Path
-
-                    _py_dir = str(Path(_ext_py).parent)
-                    cmd_env["PATH"] = _py_dir + os.pathsep + cmd_env.get("PATH", "")
-        except Exception:
-            pass
+        # Dual runtime: prefer the current AgentProfile env when configured,
+        # otherwise keep the historical shared agent tools venv.
+        cmd_env = self._apply_runtime_environment(cmd_env)
 
         # Windows 命令编码处理
         original_command = command
@@ -532,18 +539,7 @@ class ShellTool:
                 cmd_env["PATH"] = _shell_path
         except Exception:
             pass
-        try:
-            from ..runtime_env import IS_FROZEN, get_python_executable
-
-            if IS_FROZEN:
-                _ext_py = get_python_executable()
-                if _ext_py:
-                    from pathlib import Path
-
-                    _py_dir = str(Path(_ext_py).parent)
-                    cmd_env["PATH"] = _py_dir + os.pathsep + cmd_env.get("PATH", "")
-        except Exception:
-            pass
+        cmd_env = self._apply_runtime_environment(cmd_env)
 
         # Windows 命令编码处理
         if self._is_windows and self._needs_powershell(command):
@@ -575,42 +571,35 @@ class ShellTool:
         return result.success
 
     async def pip_install(self, package: str) -> CommandResult:
-        """使用 pip 安装包（PyInstaller 兼容：使用 runtime_env 获取正确的 Python 解释器）。
+        """Install packages into the agent tools venv."""
+        import shlex
 
-        Windows 下若 site-packages 目录无写权限（系统 Python / 受保护安装目录），
-        自动追加 --user 重试，避免 LLM 看到 PermissionError 后陷入"反复加 sudo / 改路径"
-        的死循环。
-        """
-        from openakita.runtime_env import IS_FROZEN, get_python_executable
+        packages = shlex.split(package) if isinstance(package, str) else [str(package)]
+        spec = getattr(self, "execution_env_spec", None)
+        if spec is not None:
+            try:
+                from openakita.runtime_env import get_pip_install_args
+                from openakita.runtime_envs import ensure_execution_env
 
-        py = get_python_executable()
-        if py:
-            base_cmd = f'"{py}" -m pip install {package}'
+                ensured = ensure_execution_env(spec)
+                cmd = [str(ensured.python_path), *get_pip_install_args(packages)]
+            except Exception as exc:
+                return CommandResult(returncode=-1, stdout="", stderr=str(exc))
         else:
-            if IS_FROZEN:
-                return CommandResult(
-                    returncode=-1,
-                    stdout="",
-                    stderr="未找到可用的 Python 解释器，无法执行 pip install。"
-                    "请前往「设置中心 → Python 环境」使用「一键修复」。",
-                )
-            base_cmd = f"pip install {package}"
+            from openakita.runtime_env import get_agent_pip_command
 
-        result = await self.run(base_cmd)
-        if (
-            self._is_windows
-            and not result.success
-            and any(
-                kw in (result.stderr or "").lower()
-                for kw in ("permission denied", "winerror 5", "access is denied", "errno 13")
+            cmd = get_agent_pip_command(packages)
+        if not cmd:
+            return CommandResult(
+                returncode=-1,
+                stdout="",
+                stderr=(
+                    "Agent Python 环境不可用，无法执行 pip install。"
+                    "请在设置中心重试创建 OpenAkita runtime。"
+                ),
             )
-        ):
-            logger.info(
-                f"[ShellTool.pip_install] PermissionError on Windows, retrying with --user: {package}"
-            )
-            return await self.run(f"{base_cmd} --user")
 
-        return result
+        return await self.run(" ".join(shlex.quote(part) for part in cmd))
 
     async def npm_install(self, package: str, global_: bool = False) -> CommandResult:
         """使用 npm 安装包"""

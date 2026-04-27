@@ -55,6 +55,7 @@
   },
   "ui": {
     "entry": "ui/dist/index.html",
+    "icon": "icon.svg",
     "title": "选题研析室",
     "title_i18n": {
       "zh": "选题研析室",
@@ -79,6 +80,6 @@
     "playwright",
     "mdrm"
   ],
-  "icon": "telescope",
+  "icon": "icon.svg",
   "load_timeout": 15
 }

@@ -6,6 +6,8 @@ PyInstaller 打包后 sys.executable 指向 openakita-server.exe 而非 Python �
 """
 
 import logging
+import json
+import os
 import sys
 from pathlib import Path
 
@@ -211,6 +213,258 @@ def can_pip_install() -> bool:
 _DEFAULT_PIP_INDEX = "https://mirrors.aliyun.com/pypi/simple/"
 _DEFAULT_PIP_TRUSTED_HOST = "mirrors.aliyun.com"
 
+PIP_INDEX_PRESETS: dict[str, dict[str, str]] = {
+    "aliyun": {
+        "id": "aliyun",
+        "label": "Aliyun PyPI",
+        "url": "https://mirrors.aliyun.com/pypi/simple/",
+        "trusted_host": "mirrors.aliyun.com",
+    },
+    "tuna": {
+        "id": "tuna",
+        "label": "Tsinghua PyPI",
+        "url": "https://pypi.tuna.tsinghua.edu.cn/simple/",
+        "trusted_host": "pypi.tuna.tsinghua.edu.cn",
+    },
+    "ustc": {
+        "id": "ustc",
+        "label": "USTC PyPI",
+        "url": "https://pypi.mirrors.ustc.edu.cn/simple/",
+        "trusted_host": "pypi.mirrors.ustc.edu.cn",
+    },
+    "official": {
+        "id": "official",
+        "label": "Official PyPI",
+        "url": "https://pypi.org/simple/",
+        "trusted_host": "",
+    },
+}
+
+
+def get_runtime_root() -> Path:
+    """Return the dual-venv runtime root under ~/.openakita/runtime."""
+    return _get_openakita_root() / "runtime"
+
+
+def get_runtime_manifest_path() -> Path:
+    return get_runtime_root() / "manifest.json"
+
+
+def get_runtime_logs_dir() -> Path:
+    return get_runtime_root() / "logs"
+
+
+def get_runtime_cache_dir() -> Path:
+    return get_runtime_root() / "cache"
+
+
+def get_app_venv_path() -> Path:
+    return get_runtime_root() / "app-venv"
+
+
+def get_agent_venv_path() -> Path:
+    return get_runtime_root() / "agent-venv"
+
+
+def ensure_runtime_layout() -> dict[str, str]:
+    """Create the standard dual-venv runtime directory layout."""
+    runtime_root = get_runtime_root()
+    paths = {
+        "runtime_root": runtime_root,
+        "manifest": get_runtime_manifest_path(),
+        "app_venv": get_app_venv_path(),
+        "agent_venv": get_agent_venv_path(),
+        "cache": get_runtime_cache_dir(),
+        "cache_wheels": get_runtime_cache_dir() / "wheels",
+        "cache_uv": get_runtime_cache_dir() / "uv",
+        "cache_python": get_runtime_cache_dir() / "python",
+        "logs": get_runtime_logs_dir(),
+    }
+    for key, path in paths.items():
+        if key == "manifest":
+            path.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            path.mkdir(parents=True, exist_ok=True)
+    return {key: str(path) for key, path in paths.items()}
+
+
+def read_runtime_manifest() -> dict:
+    try:
+        return json.loads(get_runtime_manifest_path().read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+
+def _venv_python(venv_root: Path) -> Path:
+    if sys.platform == "win32":
+        return venv_root / "Scripts" / "python.exe"
+    return venv_root / "bin" / "python"
+
+
+def _venv_bin_dir(venv_root: Path) -> Path:
+    if sys.platform == "win32":
+        return venv_root / "Scripts"
+    return venv_root / "bin"
+
+
+def resolve_pip_index() -> dict[str, str]:
+    """Resolve the effective PyPI mirror for bootstrap, tools, and channel deps.
+
+    Priority follows the migration plan:
+    runtime manifest/settings -> OPENAKITA_PIP_INDEX_URL -> PIP_INDEX_URL -> Aliyun.
+    """
+    manifest = read_runtime_manifest()
+    pip_index = manifest.get("pip_index")
+    if isinstance(pip_index, dict) and pip_index.get("url"):
+        return {
+            "id": str(pip_index.get("id") or "custom"),
+            "url": str(pip_index["url"]),
+            "trusted_host": str(pip_index.get("trusted_host") or _trusted_host_for_url(pip_index["url"])),
+        }
+
+    env_url = os.environ.get("OPENAKITA_PIP_INDEX_URL", "").strip()
+    if env_url:
+        return {
+            "id": "env-openakita",
+            "url": env_url,
+            "trusted_host": os.environ.get("OPENAKITA_PIP_TRUSTED_HOST", "").strip()
+            or _trusted_host_for_url(env_url),
+        }
+
+    pip_url = os.environ.get("PIP_INDEX_URL", "").strip()
+    if pip_url:
+        return {
+            "id": "env-pip",
+            "url": pip_url,
+            "trusted_host": os.environ.get("PIP_TRUSTED_HOST", "").strip()
+            or _trusted_host_for_url(pip_url),
+        }
+
+    return PIP_INDEX_PRESETS["aliyun"].copy()
+
+
+def _trusted_host_for_url(index_url: str) -> str:
+    return index_url.split("//", 1)[1].split("/", 1)[0] if "//" in index_url else ""
+
+
+def get_pip_install_args(packages: list[str], *, index_url: str | None = None) -> list[str]:
+    """Return common pip install args without choosing the Python executable."""
+    index = resolve_pip_index()
+    effective_index = index_url or index["url"]
+    trusted_host = index["trusted_host"] if effective_index == index["url"] else _trusted_host_for_url(effective_index)
+    args = ["-m", "pip", "install", "-i", effective_index]
+    if trusted_host:
+        args.extend(["--trusted-host", trusted_host])
+    args.extend(["--prefer-binary", *packages])
+    return args
+
+
+def get_app_python_executable() -> str | None:
+    env_py = os.environ.get("OPENAKITA_APP_PYTHON", "").strip()
+    if env_py and verify_python_executable(env_py):
+        return env_py
+
+    app_py = _venv_python(get_app_venv_path())
+    if app_py.exists() and verify_python_executable(str(app_py)):
+        return str(app_py)
+
+    if not IS_FROZEN:
+        return sys.executable
+    return None
+
+
+def get_agent_python_executable() -> str | None:
+    env_py = os.environ.get("OPENAKITA_AGENT_PYTHON", "").strip()
+    if env_py and verify_python_executable(env_py):
+        return env_py
+
+    agent_py = _venv_python(get_agent_venv_path())
+    if agent_py.exists() and verify_python_executable(str(agent_py)):
+        return str(agent_py)
+
+    if not IS_FROZEN:
+        return sys.executable
+    return None
+
+
+def get_agent_bin_dir() -> str | None:
+    agent_py = get_agent_python_executable()
+    if not agent_py:
+        return None
+    py_path = Path(agent_py)
+    if py_path.parent.name in ("Scripts", "bin"):
+        return str(py_path.parent)
+    return str(_venv_bin_dir(get_agent_venv_path()))
+
+
+def apply_agent_python_environment(env: dict[str, str]) -> dict[str, str]:
+    """Return env with agent-venv Python/pip naturally preferred."""
+    merged = dict(env)
+    agent_py = get_agent_python_executable()
+    agent_bin = get_agent_bin_dir()
+    pip_index = resolve_pip_index()
+
+    if agent_py:
+        merged["OPENAKITA_AGENT_PYTHON"] = agent_py
+    if agent_bin:
+        merged["OPENAKITA_AGENT_BIN"] = agent_bin
+        merged["PATH"] = agent_bin + os.pathsep + merged.get("PATH", "")
+
+    app_py = get_app_python_executable()
+    if app_py:
+        merged["OPENAKITA_APP_PYTHON"] = app_py
+
+    merged["PIP_INDEX_URL"] = pip_index["url"]
+    merged["UV_INDEX_URL"] = pip_index["url"]
+    if pip_index.get("trusted_host"):
+        merged["PIP_TRUSTED_HOST"] = pip_index["trusted_host"]
+    # Keep agent subprocesses isolated from any host/app PYTHONPATH.
+    merged.pop("PYTHONPATH", None)
+    merged["PYTHONNOUSERSITE"] = "1"
+    return merged
+
+
+def get_agent_pip_command(packages: list[str], *, index_url: str | None = None) -> list[str] | None:
+    py = get_agent_python_executable()
+    if not py:
+        return None
+    return [py, *get_pip_install_args(packages, index_url=index_url)]
+
+
+def get_runtime_environment_report() -> dict:
+    manifest = read_runtime_manifest()
+    app_py = get_app_python_executable()
+    agent_py = get_agent_python_executable()
+    pip_index = resolve_pip_index()
+    legacy_mode = bool(manifest.get("legacy_mode"))
+
+    if legacy_mode:
+        mode = "legacy-pyinstaller"
+    elif app_py and agent_py and get_runtime_root() in Path(app_py).parents:
+        mode = "dual-venv"
+    elif IS_FROZEN:
+        mode = "degraded"
+    else:
+        mode = "source"
+
+    return {
+        "mode": mode,
+        "runtime_root": str(get_runtime_root()),
+        "manifest": str(get_runtime_manifest_path()),
+        "app_python": app_py,
+        "app_venv": str(get_app_venv_path()),
+        "agent_python": agent_py,
+        "agent_venv": str(get_agent_venv_path()),
+        "agent_bin": get_agent_bin_dir(),
+        "pip_install_target": "agent-venv" if agent_py else "unavailable",
+        "pip_index_id": pip_index.get("id"),
+        "pip_index_url": pip_index.get("url"),
+        "pip_trusted_host": pip_index.get("trusted_host", ""),
+        "can_pip_install": bool(agent_py),
+        "legacy_mode": legacy_mode,
+        "last_error": manifest.get("last_error"),
+    }
+
 
 def get_pip_command(packages: list[str], *, index_url: str | None = None) -> list[str] | None:
     """获取 pip install 命令列表（默认使用国内镜像源）。
@@ -222,29 +476,7 @@ def get_pip_command(packages: list[str], *, index_url: str | None = None) -> lis
     Returns:
         命令参数列表，若不支持则返回 None。
     """
-    import os
-
-    py = get_python_executable()
-    if not py:
-        return None
-    if IS_FROZEN and py == sys.executable:
-        return None
-
-    effective_index = os.environ.get("PIP_INDEX_URL", "").strip() or index_url or _DEFAULT_PIP_INDEX
-    trusted_host = effective_index.split("//")[1].split("/")[0] if "//" in effective_index else ""
-
-    return [
-        py,
-        "-m",
-        "pip",
-        "install",
-        "-i",
-        effective_index,
-        "--trusted-host",
-        trusted_host,
-        "--prefer-binary",
-        *packages,
-    ]
+    return get_agent_pip_command(packages, index_url=index_url)
 
 
 def get_channel_deps_dir() -> Path:

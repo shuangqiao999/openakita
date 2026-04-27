@@ -287,7 +287,7 @@ jobs:
           # 资源（与 ci.yml 第 341 行保持一致）。
           pip install ./openakita-plugin-sdk
           pip install -e ".[all]"
-          pip install "pyinstaller>=6.18.0"
+          pip install build "pyinstaller>=6.18.0"
 
       - name: Clean previous PyInstaller output
         shell: bash
@@ -303,6 +303,43 @@ jobs:
 
       - name: Package Python backend (PyInstaller)
         run: python build/build_backend.py
+
+      - name: Prepare bootstrap wheel resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf build/bootstrap-wheels
+          mkdir -p build/bootstrap-wheels
+          python -m build --wheel --outdir build/bootstrap-wheels
+          python - <<'PY'
+          import hashlib
+          import json
+          import shutil
+          from pathlib import Path
+
+          root = Path.cwd()
+          bootstrap_dir = root / "apps" / "setup-center" / "src-tauri" / "resources" / "bootstrap"
+          wheel_dir = bootstrap_dir / "wheels"
+          wheels = sorted((root / "build" / "bootstrap-wheels").glob("openakita-*.whl"))
+          if len(wheels) != 1:
+              raise SystemExit(f"expected exactly one openakita wheel, found {len(wheels)}")
+
+          wheel = wheels[0]
+          wheel_dir.mkdir(parents=True, exist_ok=True)
+          for stale in wheel_dir.glob("openakita-*.whl"):
+              stale.unlink()
+          dest = wheel_dir / wheel.name
+          shutil.copy2(wheel, dest)
+
+          sha256 = hashlib.sha256(dest.read_bytes()).hexdigest()
+          manifest_path = bootstrap_dir / "manifest.json"
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          manifest["wheel"]["name"] = f"wheels/{dest.name}"
+          manifest["wheel"]["sha256"] = sha256
+          manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+          print(f"Bootstrap wheel: {dest}")
+          print(f"sha256: {sha256}")
+          PY
 
       - name: Copy backend to Tauri resources
         shell: bash

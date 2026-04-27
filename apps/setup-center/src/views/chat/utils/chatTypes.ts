@@ -127,6 +127,7 @@ export type StreamContext = {
   subAgentTasks: SubAgentTask[];
   isDelegating: boolean;
   pollingTimer: ReturnType<typeof setInterval> | null;
+  _hadError: boolean;
 };
 
 /** Agent profile for agent selector */

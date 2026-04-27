@@ -27,7 +27,6 @@ export type SidebarProps = {
   desktopVersion: string;
   backendVersion: string | null;
   serviceRunning: boolean;
-  onBugReport: () => void;
   onRefreshStatus: () => Promise<void>;
   isWeb?: boolean;
   mobileOpen?: boolean;
@@ -93,7 +92,7 @@ export function Sidebar({
   disabledViews,
   storeVisible,
   desktopVersion, backendVersion, serviceRunning,
-  onBugReport, onRefreshStatus, isWeb, mobileOpen, httpApiBase,
+  onRefreshStatus, isWeb, mobileOpen, httpApiBase,
   unreadFeedbackCount,
 }: SidebarProps) {
   const { t, i18n } = useTranslation();
@@ -131,20 +130,55 @@ export function Sidebar({
   // Refetch the Apps sidebar list. Triggered initially, when backend
   // availability changes, and on the global "openakita:plugin-apps-changed"
   // event dispatched by PluginManagerView after install/enable/disable/etc.
+  //
+  // Tauri can mark the backend process as "running" before FastAPI has mounted
+  // plugin UI routes. Use sparse startup retries as a fallback; the main
+  // trigger is the backend-ready event dispatched after /api/health succeeds.
   useEffect(() => {
     if (!httpApiBase || !serviceRunning) { setPluginApps([]); return; }
     let cancelled = false;
-    const refetch = () => {
-      fetch(`${httpApiBase}/api/plugins/ui-apps`)
-        .then(r => r.ok ? r.json() : [])
-        .then(data => { if (!cancelled) setPluginApps(Array.isArray(data) ? data : []); })
-        .catch(() => { if (!cancelled) setPluginApps([]); });
+    const retryDelays = [2_000, 8_000, 20_000, 60_000, 120_000];
+    const timers = new Set<ReturnType<typeof setTimeout>>();
+
+    const clearTimers = () => {
+      timers.forEach(timer => clearTimeout(timer));
+      timers.clear();
     };
+
+    const scheduleRetry = (attempt: number) => {
+      const delay = retryDelays[attempt];
+      if (delay == null) return false;
+      const timer = setTimeout(() => {
+        timers.delete(timer);
+        void refetch(attempt + 1);
+      }, delay);
+      timers.add(timer);
+      return true;
+    };
+
+    const refetch = async (attempt = 0) => {
+      try {
+        const r = await fetch(`${httpApiBase}/api/plugins/ui-apps`);
+        const data = r.ok ? await r.json() : [];
+        if (cancelled) return;
+        const apps = Array.isArray(data) ? data : [];
+        setPluginApps(apps);
+        if (apps.length === 0) scheduleRetry(attempt);
+      } catch {
+        if (cancelled) return;
+        if (!scheduleRetry(attempt)) setPluginApps([]);
+      }
+    };
+
     refetch();
-    const onChanged = () => refetch();
+    const onChanged = () => {
+      clearTimers();
+      void refetch();
+    };
     window.addEventListener("openakita:plugin-apps-changed", onChanged);
     return () => {
       cancelled = true;
+      clearTimers();
       window.removeEventListener("openakita:plugin-apps-changed", onChanged);
     };
   }, [httpApiBase, serviceRunning]);
@@ -363,7 +397,7 @@ export function Sidebar({
         )}
       </div>
 
-      {/* Version info + website link + bug report at sidebar bottom */}
+      {/* Version info + website and feedback links at sidebar bottom */}
       {!collapsed && (
         <div style={{
           padding: "10px 16px",
@@ -385,16 +419,6 @@ export function Sidebar({
             >
               <IconGlobe size={11} />
               openakita.ai
-            </span>
-            <span
-              onClick={onBugReport}
-              title={t("feedback.trigger")}
-              style={{ cursor: "pointer", opacity: 1, color: "var(--accent, #5B8DEF)", display: "inline-flex", alignItems: "center", gap: 2 }}
-              onMouseEnter={(e) => { const s = e.currentTarget.querySelector<HTMLElement>(".feedbackText"); if (s) s.style.textDecoration = "underline"; }}
-              onMouseLeave={(e) => { const s = e.currentTarget.querySelector<HTMLElement>(".feedbackText"); if (s) s.style.textDecoration = "none"; }}
-            >
-              <IconBug size={12} />
-              <span className="feedbackText" style={{ fontSize: 11 }}>{t("feedback.trigger")}</span>
             </span>
             {serviceRunning && (
               <span
@@ -459,13 +483,6 @@ export function Sidebar({
               style={{ color: "var(--accent, #5B8DEF)", opacity: 0.5, display: "flex", cursor: "pointer" }}
             >
               <IconGlobe size={14} />
-            </span>
-            <span
-              onClick={onBugReport}
-              title={t("feedback.trigger")}
-              style={{ color: "var(--accent, #5B8DEF)", opacity: 0.5, display: "flex", cursor: "pointer" }}
-            >
-              <IconBug size={14} />
             </span>
             {serviceRunning && (
               <span

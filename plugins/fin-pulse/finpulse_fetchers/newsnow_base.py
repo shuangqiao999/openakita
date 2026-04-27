@@ -1,9 +1,8 @@
-"""Shared NewsNow aggregator helper — single TrendRadar-style call.
+"""Shared NewsNow aggregator helper.
 
-TrendRadar's ``crawler/fetcher.py::DataFetcher`` survives every upstream
-HTML/JSON drift because it only ever speaks one protocol: the NewsNow
-envelope ``{status, items:[{title, url, mobileUrl, desc, ...}]}``. We
-mirror the same contract here so the CN hot-list fetchers
+The public NewsNow API speaks a compact envelope
+``{status, items:[{title, url, mobileUrl, desc, ...}]}``. We keep that
+contract in one helper so the CN hot-list fetchers
 (``wallstreetcn`` / ``cls`` / ``eastmoney`` / ``xueqiu``) can try the
 aggregator first and only fall back to their fragile direct scrapers
 when the aggregator is unavailable.
@@ -13,26 +12,51 @@ gives us one testable surface: the parse rules, the retry behaviour,
 and the rate-limit hook live in one place and every CN fetcher opts in
 by pointing at a platform id.
 
-Reference: ``D:/plugin-research-refs/repos/TrendRadar/trendradar/crawler/fetcher.py``
-(L20-115) — we share its envelope + item-shape expectations but keep
-our own canonical-item payload (``NormalizedItem``) so dedupe via
-``articles.url_hash`` stays consistent.
+The helper keeps our own canonical-item payload (``NormalizedItem``) so
+dedupe via ``articles.url_hash`` stays consistent.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import re
+from datetime import datetime, timezone
 from typing import Any
 
-from finpulse_fetchers._http import fetch_json, make_client
+from finpulse_fetchers._http import make_client
 from finpulse_fetchers.base import NormalizedItem
+
+try:  # pragma: no cover — httpx ships with the host.
+    import httpx  # type: ignore
+except ImportError:  # pragma: no cover
+    httpx = None  # type: ignore
 
 logger = logging.getLogger(__name__)
 
 
-# The public NewsNow endpoint maintained by the open-source author. The
-# default lines up with TrendRadar's ``DataFetcher.DEFAULT_API_URL`` so
-# users who migrate from there don't need to reconfigure anything.
+class NewsNowTransportError(RuntimeError):
+    """Raised when the NewsNow upstream call surfaces a retryable problem.
+
+    Common causes observed in the wild:
+
+    - ``cloudflare_blocked`` — upstream returns an HTML challenge page
+      (we switched the shared UA to a real Chrome banner but the flag
+      stays so ops can eyeball Cloudflare re-classification).
+    - ``invalid_source_id`` — NewsNow responds 500 with
+      ``{"error": true, "message": "Invalid source id"}``; typically
+      means the ``platform_id`` never existed on the aggregator (e.g.
+      eastmoney) and we should stop retrying for that source.
+    - ``http_<status>`` — any other non-2xx; callers may choose to
+      retry or fall back.
+    """
+
+    def __init__(self, kind: str, message: str):
+        super().__init__(message)
+        self.kind = kind
+
+
+# The public NewsNow endpoint maintained by the open-source author.
 DEFAULT_NEWSNOW_URL = "https://newsnow.busiyi.world/api/s"
 
 # Only these statuses are treated as usable — matches
@@ -85,10 +109,74 @@ async def fetch_from_newsnow(
         return []
 
     url = f"{api_url}?id={platform_id}&latest"
-    async with make_client(timeout=timeout_sec) as client:
-        payload = await fetch_json(client, url)
+    # Chrome UA (already default) + explicit JSON Accept header keeps us
+    # off the Cloudflare bot list. One transparent
+    # retry absorbs the volunteer-run upstream's occasional cold-start
+    # 502/504s without flooding the failure drawer.
+    payload = await _call_newsnow(url, timeout_sec=timeout_sec)
 
     return _parse_envelope(payload, platform_id=platform_id, source_id=source_id)
+
+
+async def _call_newsnow(url: str, *, timeout_sec: float) -> Any:
+    """One HTTP call against the NewsNow endpoint with a single retry.
+
+    Raises :class:`NewsNowTransportError` on unambiguous transport
+    problems (Cloudflare challenge, invalid source id, persistent 5xx)
+    so the caller can classify them instead of swallowing them as an
+    empty-payload.
+    """
+    headers = {"Accept": "application/json, text/plain, */*"}
+    last_exc: Exception | None = None
+    for attempt in range(2):
+        try:
+            async with make_client(
+                timeout=timeout_sec, extra_headers=headers
+            ) as client:
+                resp = await client.get(url)
+            # Surface Cloudflare challenge pages (403/503 + HTML body)
+            # as a distinct error — swallowing them as "empty" hid the
+            # real cause from users for weeks before the UA bump.
+            if resp.status_code in (403, 503):
+                body_head = (resp.text or "")[:160].lower()
+                if "cloudflare" in body_head or "attention required" in body_head:
+                    raise NewsNowTransportError(
+                        "cloudflare_blocked",
+                        f"newsnow blocked by cloudflare ({resp.status_code})",
+                    )
+            if resp.status_code >= 400:
+                # NewsNow ships a JSON envelope for its own 500s
+                # (``{error:true, message:"Invalid source id"}``). Pull
+                # that out so the failure breadcrumb is useful.
+                detail = ""
+                try:
+                    body = resp.json()
+                    if isinstance(body, dict) and body.get("error"):
+                        detail = str(body.get("message") or "").strip()
+                        if detail.lower().startswith("invalid source id"):
+                            raise NewsNowTransportError(
+                                "invalid_source_id", detail or "invalid source id"
+                            )
+                except NewsNowTransportError:
+                    raise
+                except ValueError:
+                    pass
+                raise NewsNowTransportError(
+                    f"http_{resp.status_code}",
+                    detail or f"newsnow returned http {resp.status_code}",
+                )
+            return resp.json()
+        except NewsNowTransportError as exc:
+            # ``invalid_source_id`` is permanent — short-circuit the retry.
+            if exc.kind == "invalid_source_id":
+                raise
+            last_exc = exc
+        except Exception as exc:  # noqa: BLE001 — single retry on transport glitches
+            last_exc = exc
+        if attempt == 0:
+            await asyncio.sleep(1.5)
+    assert last_exc is not None
+    raise last_exc
 
 
 def _parse_envelope(
@@ -96,8 +184,7 @@ def _parse_envelope(
 ) -> list[NormalizedItem]:
     """Turn a NewsNow response body into :class:`NormalizedItem` rows.
 
-    Guard rails mirror TrendRadar's ``crawl_websites`` (L151-173):
-    skip ``None`` / ``float`` / empty titles, use ``url`` with
+    Guard rails: skip ``None`` / ``float`` / empty titles, use ``url`` with
     ``mobileUrl`` fallback, and leave ranking / extra metadata inside
     ``extra`` so downstream consumers can opt into the signal.
     """
@@ -181,9 +268,9 @@ def _first_non_empty(*values: Any) -> str | None:
 
 def _coerce_published(value: Any) -> str | None:
     """NewsNow payloads use either an ISO string, a human date, or a
-    millisecond timestamp. We keep ISO / human as-is (the AI layer
-    tolerates both) and convert ms → ISO so downstream sort queries
-    get a sortable lexical form.
+    millisecond timestamp. We only return lexically sortable ISO-ish
+    timestamps; relative/human labels are left as ``None`` so the
+    database falls back to ``fetched_at`` for time-window queries.
     """
     if value is None:
         return None
@@ -197,15 +284,38 @@ def _coerce_published(value: Any) -> str | None:
         # NewsNow ships both 10-digit and 13-digit timestamps; normalise.
         if ts > 1e12:
             ts /= 1000.0
-        import time as _time
 
-        return _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime(ts))
+        return datetime.fromtimestamp(ts, tz=timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
     s = str(value).strip()
-    return s or None
+    if not s:
+        return None
+    if re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", s):
+        return s
+
+    # Common NewsNow/direct-source shape: "2026-04-25 15:30[:00]".
+    # Treat it as source-local wall time. Do not append "Z": that makes
+    # browsers display the value as UTC and shifts Chinese news by +8h.
+    m = re.match(
+        r"^(?P<year>\d{4})-(?P<month>\d{1,2})-(?P<day>\d{1,2})"
+        r"\s+(?P<hour>\d{1,2}):(?P<minute>\d{2})(?::(?P<second>\d{2}))?",
+        s,
+    )
+    if m:
+        second = m.group("second") or "00"
+        return (
+            f"{int(m.group('year')):04d}-{int(m.group('month')):02d}-"
+            f"{int(m.group('day')):02d}T{int(m.group('hour')):02d}:"
+            f"{int(m.group('minute')):02d}:{int(second):02d}"
+        )
+
+    return None
 
 
 __all__ = [
     "DEFAULT_NEWSNOW_URL",
+    "NewsNowTransportError",
     "fetch_from_newsnow",
     "newsnow_mode",
 ]

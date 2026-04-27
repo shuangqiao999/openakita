@@ -141,6 +141,20 @@ windows = [
     "psutil>=5.9.0",
 ]
 
+# 桌面运行时依赖（Tauri Setup Center 默认安装到 app-venv）
+# 包含运行 OpenAkita 桌面后端所必需的默认能力：
+#   - 桌面交互所需进程/剪贴板工具
+#   - Windows 平台自动化（仅在 Windows 上生效，靠 marker 控制）
+# 不强制拉所有 IM 通道依赖；channel deps 由 Tauri runtime manager / channel
+# bootstrap 在 agent-venv / app-venv 按需安装。
+desktop = [
+    "psutil>=5.9.0",
+    "pyperclip>=1.8.2",
+    "mss>=9.0.0; platform_system == 'Windows'",
+    "pyautogui>=0.9.54; platform_system == 'Windows'",
+    "pywinauto>=0.6.8; platform_system == 'Windows'",
+]
+
 # 全部可选依赖（core + 所有 IM 通道 + 桌面自动化 + 插件 SDK）
 all = [
     # -- IM 通道 --

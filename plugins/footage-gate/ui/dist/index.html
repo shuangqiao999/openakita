@@ -19,38 +19,45 @@
   <link rel="preload" as="script" href="https://unpkg.com/@babel/standalone/babel.min.js" />
   <style>
     :root {
-      --bg: #f8fafc; --bg-card: #ffffff; --bg-hover: #f1f5f9;
-      --text: #1e293b; --text-muted: #64748b; --text-dim: #94a3b8;
-      --primary: #6366f1; --primary-hover: #4f46e5; --primary-light: rgba(99,102,241,.1);
-      --success: #22c55e; --warning: #f59e0b; --danger: #ef4444;
-      --border: #e2e8f0; --radius: 8px;
+      --bg: #F8FAFC; --bg-card: #FFFFFF; --bg-hover: #F1F5F9;
+      --text: #172326; --text-muted: #49666A; --text-dim: #789096;
+      --primary: #0F766E; --primary-hover: #115E59; --primary-light: rgba(15,118,110,.10);
+      --primary-soft: #CCFBF1; --border-strong: #0F766E;
+      --success: #16a34a; --warning: #f59e0b; --danger: #ef4444;
+      --border: #CBD5E1; --radius: 8px;
     }
     [data-theme="dark"] {
       --bg: #0f172a; --bg-card: #1e293b; --bg-hover: #334155;
       --text: #f1f5f9; --text-muted: #94a3b8; --text-dim: #64748b;
-      --border: #334155;
+      --border: #475569; --border-strong: #2DD4BF;
+      --primary: #2DD4BF; --primary-hover: #14B8A6; --primary-light: rgba(45,212,191,.14); --primary-soft: #134E4A;
     }
     @media (prefers-color-scheme: dark) {
       :root:not([data-theme="light"]) {
         --bg: #0f172a; --bg-card: #1e293b; --bg-hover: #334155;
         --text: #f1f5f9; --text-muted: #94a3b8; --text-dim: #64748b;
-        --border: #334155;
+        --border: #475569; --border-strong: #2DD4BF;
+        --primary: #2DD4BF; --primary-hover: #14B8A6; --primary-light: rgba(45,212,191,.14); --primary-soft: #134E4A;
       }
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); line-height: 1.5; }
     .app { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
     .header { display: flex; align-items: center; justify-content: space-between; padding: 10px 18px; border-bottom: 1px solid var(--border); background: var(--bg-card); }
-    .header h1 { font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+    .oa-hero-title { display: inline-flex; align-items: center; gap: 12px; font-size: 20px; font-weight: 700; color: var(--text); letter-spacing: -0.01em; margin: 0; }
+    .oa-hero-title__icon { width: 40px; height: 40px; border-radius: 10px; flex-shrink: 0; background: #071A1F; color: #fff; display: inline-flex; align-items: center; justify-content: center; box-shadow: 0 4px 12px rgba(15,118,110,.28), inset 0 0 0 1px rgba(255,255,255,.10); position: relative; overflow: hidden; }
+    .oa-hero-title__icon svg { width: 100%; height: 100%; display: block; }
+    .oa-hero-title__text { display: inline-flex; flex-direction: column; line-height: 1.15; color: var(--text); }
+    .oa-hero-title__sub { font-size: 12px; font-weight: 500; color: var(--text-muted); margin-top: 4px; letter-spacing: .3px; }
     .header-right { display: flex; align-items: center; gap: 12px; font-size: 13px; color: var(--text-muted); }
     .api-pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; font-size: 11px; font-weight: 500; background: rgba(34,197,94,.12); color: var(--success); border: 1px solid rgba(34,197,94,.3); }
     .api-pill--missing { background: rgba(239,68,68,.12); color: var(--danger); border-color: rgba(239,68,68,.3); }
     .api-pill--warning { background: rgba(245,158,11,.12); color: var(--warning); border-color: rgba(245,158,11,.3); }
     .tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); background: var(--bg-card); padding: 0 16px; }
-    .tab { padding: 9px 16px; font-size: 13px; cursor: pointer; border-bottom: 2px solid transparent; color: var(--text-muted); transition: all .15s; white-space: nowrap; }
+    .tab { padding: 9px 16px; font-size: 13px; cursor: pointer; border-bottom: 2px solid transparent; color: var(--text-muted); transition: all .15s; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }
     .tab:hover { color: var(--text); background: var(--bg-hover); }
     .tab.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 500; }
-    .content { flex: 1; overflow: hidden; padding: 14px 16px; position: relative; }
+    .content { flex: 1; min-height: 0; overflow: hidden; padding: 14px 16px; position: relative; }
     .content > div { overflow-y: auto; }
     .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; margin-bottom: 12px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
     .card-title { font-size: 14px; font-weight: 600; margin-bottom: 12px; }
@@ -62,11 +69,11 @@
     .btn-sm { padding: 4px 10px; font-size: 12px; }
     .btn-danger { color: var(--danger); border-color: var(--danger); }
     .input { width: 100%; padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font-size: 13px; outline: none; }
-    .input:focus { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(99,102,241,.15); }
+    .input:focus { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(15,118,110,.15); }
     .textarea { resize: vertical; min-height: 80px; font-family: inherit; }
-    .label { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--text); margin: 0 0 8px; line-height: 1.3; }
-    .label::before { content: ""; display: inline-block; width: 3px; height: 14px; border-radius: 2px; background: var(--primary); flex-shrink: 0; }
-    .form-row { margin-bottom: 14px; }
+    .label { display: flex; align-items: center; gap: 9px; font-size: 14px; font-weight: 650; color: var(--text); margin: 0 0 10px; line-height: 1.35; }
+    .label::before { content: ""; display: inline-block; width: 3px; height: 17px; border-radius: 2px; background: var(--primary); flex-shrink: 0; }
+    .form-row { margin-bottom: 18px; }
     .flex { display: flex; } .gap-2 { gap: 8px; } .gap-3 { gap: 12px; }
     .items-center { align-items: center; } .justify-between { justify-content: space-between; }
     .flex-1 { flex: 1; } .flex-wrap { flex-wrap: wrap; }
@@ -74,8 +81,8 @@
     .text-sm { font-size: 13px; } .text-xs { font-size: 11px; }
     .text-muted { color: var(--text-muted); } .text-dim { color: var(--text-dim); }
     .text-success { color: var(--success); } .text-warning { color: var(--warning); } .text-danger { color: var(--danger); }
-    .tag { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; }
-    .tag-blue { background: rgba(99,102,241,.15); color: #818cf8; }
+    .tag { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; }
+    .tag-blue { background: rgba(15,118,110,.15); color: var(--primary); }
     .tag-orange { background: rgba(245,158,11,.15); color: #fbbf24; }
     .tag-green { background: rgba(34,197,94,.15); color: #4ade80; }
     .tag-red { background: rgba(239,68,68,.15); color: #f87171; }
@@ -83,13 +90,40 @@
     .mode-btn { padding: 6px 14px; border-radius: 6px; border: 1px solid var(--border); background: transparent; color: var(--text-muted); font-size: 12px; cursor: pointer; transition: all .15s; }
     .mode-btn:hover { background: var(--bg-hover); color: var(--text); }
     .mode-btn.active { background: var(--primary); color: #fff; border-color: var(--primary); }
-    .upload-zone { border: 2px dashed var(--border); border-radius: var(--radius); padding: 24px; text-align: center; cursor: pointer; transition: .15s; color: var(--text-muted); }
-    .upload-zone:hover { border-color: var(--primary); background: rgba(99,102,241,.04); }
+    .upload-zone { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; width: 100%; min-height: 112px; border: 2px dashed var(--border); border-radius: var(--radius); padding: 24px; text-align: center; cursor: pointer; transition: .15s; color: var(--text-muted); }
+    .upload-zone:hover { border-color: var(--primary); background: rgba(15,118,110,.05); }
     .upload-zone.has-file { padding: 12px; border-style: solid; text-align: left; }
-    .split-layout { display: flex; gap: 20px; height: 100%; }
+    .split-layout { display: flex; gap: 16px; height: 100%; min-height: 0; overflow: hidden; align-items: stretch; }
     .split-left { width: 42%; min-width: 380px; overflow-y: auto; flex-shrink: 0; }
-    .split-right { flex: 1; overflow-y: auto; }
+    .split-right { flex: 1; min-width: 0; overflow-y: auto; }
+    .create-workbench { display: grid; grid-template-columns: minmax(420px, 520px) minmax(0, 1fr); gap: 16px; height: 100%; min-height: 0; align-items: stretch; overflow: hidden; }
+    .create-main { min-width: 0; overflow-y: auto; padding-right: 4px; display: flex; flex-direction: column; }
+    .create-side { min-width: 0; min-height: 0; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); display: flex; flex-direction: column; overflow: auto; }
+    .create-card { padding: 20px; flex: 1; min-height: 100%; }
+    .mode-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .mode-grid .mode-btn { justify-content: flex-start; min-height: 42px; padding: 9px 12px; font-size: 13px; }
+    .mode-grid .mode-btn .oa-icon { width: 16px; height: 16px; font-size: 16px; }
+    .mode-desc { margin-top: 10px; padding: 9px 12px; border-left: 3px solid var(--primary); background: var(--primary-light); border-radius: 6px; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
+    .create-side .card { border: 0; box-shadow: none; margin: 0; min-height: 240px; }
+    .create-side .empty-state { flex: 1; min-height: 360px; }
+    @media (max-width: 980px) {
+      .create-workbench { grid-template-columns: 1fr; height: auto; overflow: visible; }
+    }
     .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 60px 20px; color: var(--text-dim); text-align: center; gap: 8px; }
+    .task-workbench { display: grid; grid-template-columns: minmax(420px, 520px) minmax(0, 1fr); gap: 16px; height: 100%; min-height: 0; overflow: hidden; }
+    .task-left, .task-right { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+    .task-left { overflow: hidden; }
+    .task-filter-card { flex: 0 0 auto; margin-bottom: 10px; padding: 16px 18px; }
+    .task-filter-label { margin-bottom: 8px; }
+    .task-list-panel, .task-detail-panel { flex: 1; min-height: 0; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); overflow: auto; }
+    .task-list-panel { padding: 12px; display: flex; flex-direction: column; }
+    .task-list-panel__items { flex: 1; min-height: 0; overflow: auto; }
+    .task-list-panel__footer { padding-top: 8px; border-top: 1px solid var(--border); }
+    .task-detail-panel { padding: 16px; display: flex; flex-direction: column; }
+    @media (max-width: 980px) {
+      .task-workbench { grid-template-columns: 1fr; height: auto; overflow: visible; }
+      .task-list-panel, .task-detail-panel { min-height: 320px; }
+    }
     .task-card { display: flex; gap: 12px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); transition: .15s; cursor: pointer; margin-bottom: 8px; }
     .task-card:hover { background: var(--bg-hover); }
     .task-card.selected { border-color: var(--primary); background: var(--primary-light); }
@@ -101,14 +135,44 @@
     .spinner { width: 20px; height: 20px; border: 2px solid var(--border); border-top-color: var(--primary); border-radius: 50%; animation: spin .6s linear infinite; }
     .spinner-sm { width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--primary); border-radius: 50%; animation: spin .6s linear infinite; display: inline-block; }
     @keyframes spin { to { transform: rotate(360deg); } }
+    .guide-shell { max-width: 980px; margin: 0 auto; padding: 12px 4px 32px; }
+    .guide-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px 20px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+    .guide-intro { font-size: 13px; color: var(--text-muted); line-height: 1.8; margin: 0 0 14px; }
+    .guide-mode-row { padding: 10px 0; border-bottom: 1px solid var(--border); }
+    .guide-mode-row:last-child { border-bottom: 0; }
+    .guide-mode-title { font-size: 14px; font-weight: 650; display: flex; align-items: center; gap: 8px; }
+    .guide-mode-title .oa-icon { width: 18px; height: 18px; font-size: 18px; color: var(--primary); }
+    .guide-tip-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .guide-tip-item { display: flex; align-items: flex-start; gap: 10px; padding: 11px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text-muted); font-size: 13px; line-height: 1.55; }
+    .guide-tip-item .oa-icon { width: 18px; height: 18px; font-size: 18px; color: var(--primary); margin-top: 1px; }
+    @media (max-width: 760px) { .guide-tip-grid { grid-template-columns: 1fr; } }
     .setting-section { margin-bottom: 20px; }
     .setting-section h3 { font-size: 14px; font-weight: 600; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; }
-    .collapsible { border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 8px; }
-    .collapsible-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; cursor: pointer; font-size: 13px; font-weight: 500; }
+    .centered-tab { height: 100%; overflow: auto; padding: 0 0 32px; }
+    .centered-tab__inner { max-width: 720px; margin: 0 auto; padding: 0 4px; }
+    .oa-settings-section {
+      border: 1px solid var(--border); border-radius: var(--radius);
+      background: var(--bg-card); padding: 16px 18px; margin-bottom: 14px;
+      box-shadow: 0 1px 2px rgba(0,0,0,.04);
+    }
+    .oa-settings-section__title {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 14px; font-weight: 600; color: var(--text);
+      padding-bottom: 10px; margin-bottom: 12px; border-bottom: 1px solid var(--border);
+    }
+    .deps-help {
+      font-size: 12px; color: var(--text); line-height: 1.6;
+      background: var(--bg-hover); padding: 8px 12px; border-radius: 6px;
+      border-left: 3px solid var(--primary); margin-bottom: 10px;
+    }
+    .deps-help ul { margin: 6px 0 0 18px; padding: 0; }
+    .deps-help li { margin: 2px 0; }
+    .collapsible { border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 10px; overflow: hidden; background: var(--bg-card); }
+    .collapsible-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; cursor: pointer; font-size: 14px; font-weight: 650; }
     .collapsible-header:hover { background: var(--bg-hover); }
-    .collapsible-body { padding: 0 14px 12px; display: none; }
+    .collapsible-body { padding: 2px 14px 14px; display: none; }
     .collapsible.open .collapsible-body { display: block; }
-    .collapsible .arrow { transition: transform .2s; font-size: 10px; display: inline-block; }
+    .collapsible .arrow { transition: transform .2s; font-size: 15px; display: inline-block; }
     .collapsible.open .arrow { transform: rotate(90deg); }
     .switch { width: 36px; height: 20px; border-radius: 10px; cursor: pointer; position: relative; transition: .2s; }
     .switch-knob { position: absolute; top: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: .2s; }
@@ -121,7 +185,7 @@
     .issue-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 4px; font-size: 12px; }
     .issue-row--error { background: rgba(239,68,68,.08); color: var(--danger); }
     .issue-row--warning { background: rgba(245,158,11,.08); color: var(--warning); }
-    .issue-row--info { background: rgba(99,102,241,.08); color: var(--text-muted); }
+    .issue-row--info { background: rgba(15,118,110,.08); color: var(--text-muted); }
     .perms-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
     .perms-table th, .perms-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
     .perms-table th { color: var(--text-muted); font-weight: 500; }
@@ -131,7 +195,7 @@
     .sysdep-card__badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; }
     .sysdep-card__badge--ok { background: rgba(34,197,94,.15); color: var(--success); }
     .sysdep-card__badge--missing { background: rgba(239,68,68,.15); color: var(--danger); }
-    .sysdep-card__badge--busy { background: rgba(99,102,241,.15); color: var(--primary); }
+    .sysdep-card__badge--busy { background: rgba(15,118,110,.15); color: var(--primary); }
     .sysdep-card__path { font-size: 11px; color: var(--text-dim); margin: 4px 0 8px; word-break: break-all; }
     .sysdep-card__actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
     .sysdep-card__sudo-hint { margin-top: 10px; padding: 10px; border: 1px solid var(--border); border-left: 3px solid var(--warning); background: var(--bg); border-radius: 4px; font-size: 12px; line-height: 1.6; }
@@ -141,12 +205,33 @@
     .sysdep-log__head { display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; font-size: 11px; color: var(--text-muted); border-bottom: 1px solid var(--border); }
     .sysdep-log__body { padding: 8px 10px; font-family: ui-monospace, SFMono-Regular, monospace; font-size: 11px; max-height: 160px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; color: var(--text-muted); margin: 0; }
     .sysdep-log__body--empty { color: var(--text-dim); font-style: italic; }
+    .settings-switch-list { margin-top: 12px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--bg-card); }
+    .settings-switch-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 14px; border-top: 1px solid var(--border); }
+    .settings-switch-row:first-child { border-top: 0; }
+    .settings-switch-row__title { font-size: 13px; font-weight: 650; color: var(--text); }
+    .settings-switch-row__desc { font-size: 12px; color: var(--text-muted); line-height: 1.55; margin-top: 3px; }
+    .folder-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .folder-row .input { flex: 1; min-width: 0; }
+    .storage-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+    .storage-card { border: 1px solid var(--border); border-radius: 8px; padding: 12px; background: var(--bg-card); }
+    .storage-card__name { font-size: 12px; color: var(--text-muted); margin-bottom: 4px; }
+    .storage-card__size { font-size: 18px; font-weight: 700; color: var(--primary); line-height: 1.2; }
+    .storage-card__path { font-size: 10px; color: var(--text-dim); word-break: break-all; margin-top: 6px; line-height: 1.45; }
+    .about-copy { font-size: 13px; color: var(--text-muted); line-height: 1.75; }
+    @media (max-width: 760px) { .storage-summary { grid-template-columns: 1fr; } .folder-row { flex-wrap: wrap; } }
     .modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: flex; align-items: center; justify-content: center; z-index: 2000; padding: 20px; }
     .modal-card { background: var(--bg-card); border-radius: 12px; padding: 22px 24px; max-width: 420px; width: 100%; box-shadow: 0 20px 50px rgba(0,0,0,.25); }
     .modal-title { font-size: 16px; font-weight: 600; margin-bottom: 6px; color: var(--text); }
     .modal-desc { font-size: 13px; color: var(--text-muted); line-height: 1.6; margin-bottom: 18px; }
     .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
     .preview-block { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-family: ui-monospace, SFMono-Regular, monospace; font-size: 11px; max-height: 320px; overflow-y: auto; white-space: pre-wrap; }
+    .oa-icon { display: inline-flex; align-items: center; justify-content: center; line-height: 0; flex-shrink: 0; }
+    .oa-icon > svg { width: 1em; height: 1em; display: block; }
+    .tab .oa-icon, .btn .oa-icon, .mode-btn .oa-icon { width: 1em; height: 1em; }
+    .mode-btn { display: inline-flex; align-items: center; gap: 6px; }
+    .upload-icon, .empty-state__icon { display: inline-flex; align-items: center; justify-content: center; color: var(--primary); background: var(--primary-light); border: 1px solid rgba(15,118,110,.18); border-radius: 12px; }
+    .upload-icon { width: 42px; height: 42px; margin: 0 auto 10px; font-size: 22px; }
+    .empty-state__icon { width: 54px; height: 54px; font-size: 28px; opacity: .72; }
     .stats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
     .stats-cell { padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; }
     .stats-cell h5 { font-size: 11px; color: var(--text-muted); margin-bottom: 4px; font-weight: 500; }
@@ -295,6 +380,7 @@ const I18N_DICT = {
     "banner.noFfmpeg.title": "未检测到 FFmpeg",
     "banner.noFfmpeg.desc": "所有模式都依赖 FFmpeg ≥ 4.4。请到「设置 → 系统依赖」一键安装。",
     "banner.noFfmpeg.cta": "去安装",
+    "create.mode.label": "选择模式",
     "modes.source_review": "源素材审核",
     "modes.silence_cut": "静默剪除",
     "modes.auto_color": "自动调色",
@@ -384,6 +470,11 @@ const I18N_DICT = {
     "settings.section.api": "转写 API（可选）",
     "settings.section.permissions": "权限",
     "settings.section.system": "系统依赖",
+    "settings.system.intro.strong": "FFmpeg 是成片质量门的核心本地依赖。",
+    "settings.system.intro.body": "源素材审核、静默剪除、自动调色和剪辑边界 QC 都会调用 FFmpeg / FFprobe。已安装的系统级 FFmpeg 会被自动检测到；一键安装/卸载会影响同一台机器上其他依赖 FFmpeg 的程序。",
+    "settings.system.platform.win": "Windows: 一键安装会优先调用 winget 安装 Gyan.FFmpeg。",
+    "settings.system.platform.mac": "macOS: 一键安装会优先调用 Homebrew。",
+    "settings.system.platform.linux": "Linux: 一键安装会按发行版尝试 apt / dnf 等包管理器。",
     "settings.section.defaults": "默认参数",
     "settings.section.storage": "存储",
     "settings.section.about": "关于",
@@ -398,23 +489,31 @@ const I18N_DICT = {
     "settings.defaults.silenceDb": "默认静默阈值 (dB)",
     "settings.defaults.silenceMin": "默认最小静默时长 (秒)",
     "settings.defaults.silencePad": "默认 pad (秒)",
-    "settings.defaults.autoRemux": "cut_qc 默认开启自动重渲",
+    "settings.defaults.autoRemux": "剪辑边界 QC 默认自动修复",
+    "settings.defaults.autoRemux.desc": "开启后，边界检测发现可修复问题时会自动尝试重新封装/重渲；适合 EDL 来源可信的流程。",
     "settings.defaults.maxAttempts": "cut_qc 最大重渲次数",
     "settings.defaults.minMarginV": "竖版字幕最小 MarginV",
     "settings.defaults.timeout": "FFmpeg 超时 (秒)",
-    "settings.defaults.hdrTonemap": "auto_color 默认开启 HDR tone-map",
+    "settings.defaults.hdrTonemap": "自动调色默认处理 HDR 转 SDR",
+    "settings.defaults.hdrTonemap.desc": "开启后会把 iPhone HLG / Sony PQ 等 HDR 素材自动映射到更通用的 SDR 输出。",
     "settings.defaults.retention": "任务保留天数",
     "settings.defaults.outputDir": "输出目录",
+    "settings.defaults.outputDir.placeholder": "默认: ~/footage-gate-output",
     "settings.defaults.naming": "输出命名规则",
+    "settings.storage.outputTitle": "成片输出目录",
+    "settings.storage.outputHelp": "留空时使用默认目录；填写路径并保存后，后续任务输出会写入该目录。",
+    "settings.storage.save": "保存",
     "settings.storage.path": "路径",
     "settings.storage.size": "{size} MB",
     "settings.storage.files": "{count} 个文件",
     "settings.storage.open": "打开",
     "settings.storage.cleanup": "清理",
+    "settings.storage.outputDir": "输出目录",
+    "settings.storage.uploads": "上传缓存",
+    "settings.storage.tasks": "任务工作区",
     "settings.storage.confirmCleanup": "确认清空 {dir}? 已生成的文件无法恢复。",
     "settings.about.version": "版本 {ver}",
-    "settings.about.docs": "文档",
-    "settings.about.issues": "提交反馈",
+    "settings.about.desc": "成片质量门用于本地素材质检与后期预处理，覆盖源素材审核、静默剪除、自动调色和剪辑边界 QC。插件会优先复用系统 FFmpeg，并把上传缓存、任务工作区和最终输出分开管理。",
     "settings.system.detecting": "正在检测...",
     "settings.system.status.ok": "已安装 {ver}",
     "settings.system.status.foundNoVer": "已安装",
@@ -480,6 +579,7 @@ const I18N_DICT = {
     "banner.noFfmpeg.title": "FFmpeg not detected",
     "banner.noFfmpeg.desc": "Every mode needs FFmpeg ≥ 4.4. Open Settings → System Dependencies and click Install.",
     "banner.noFfmpeg.cta": "Install now",
+    "create.mode.label": "Choose mode",
     "modes.source_review": "Source Review",
     "modes.silence_cut": "Silence Cut",
     "modes.auto_color": "Auto Color",
@@ -569,6 +669,11 @@ const I18N_DICT = {
     "settings.section.api": "Transcription API (optional)",
     "settings.section.permissions": "Permissions",
     "settings.section.system": "System dependencies",
+    "settings.system.intro.strong": "FFmpeg is the core local dependency for Footage Gate.",
+    "settings.system.intro.body": "Source review, silence cut, auto color and cut-boundary QC all call FFmpeg / FFprobe. Existing system FFmpeg installs are auto-detected; one-click install/uninstall affects other programs on this machine that also use FFmpeg.",
+    "settings.system.platform.win": "Windows: one-click install prefers winget with Gyan.FFmpeg.",
+    "settings.system.platform.mac": "macOS: one-click install prefers Homebrew.",
+    "settings.system.platform.linux": "Linux: one-click install tries package managers such as apt / dnf by distribution.",
     "settings.section.defaults": "Defaults",
     "settings.section.storage": "Storage",
     "settings.section.about": "About",
@@ -583,23 +688,31 @@ const I18N_DICT = {
     "settings.defaults.silenceDb": "Default silence threshold (dB)",
     "settings.defaults.silenceMin": "Default min silence (s)",
     "settings.defaults.silencePad": "Default pad (s)",
-    "settings.defaults.autoRemux": "cut_qc auto-remux on by default",
+    "settings.defaults.autoRemux": "Auto-fix cut-boundary QC by default",
+    "settings.defaults.autoRemux.desc": "When enabled, fixable boundary issues will trigger an automatic remux/re-render attempt. Use it for trusted EDL workflows.",
     "settings.defaults.maxAttempts": "cut_qc max remux attempts",
     "settings.defaults.minMarginV": "Portrait subtitle min MarginV",
     "settings.defaults.timeout": "FFmpeg timeout (s)",
-    "settings.defaults.hdrTonemap": "auto_color HDR tone-map on by default",
+    "settings.defaults.hdrTonemap": "Handle HDR to SDR in auto color by default",
+    "settings.defaults.hdrTonemap.desc": "Maps HDR sources such as iPhone HLG / Sony PQ to a more compatible SDR output.",
     "settings.defaults.retention": "Task retention (days)",
     "settings.defaults.outputDir": "Output directory",
+    "settings.defaults.outputDir.placeholder": "Default: ~/footage-gate-output",
     "settings.defaults.naming": "Output naming rule",
+    "settings.storage.outputTitle": "Rendered output folder",
+    "settings.storage.outputHelp": "Leave empty to use the default folder. After saving a custom path, future task outputs will be written there.",
+    "settings.storage.save": "Save",
     "settings.storage.path": "Path",
     "settings.storage.size": "{size} MB",
     "settings.storage.files": "{count} files",
     "settings.storage.open": "Open",
     "settings.storage.cleanup": "Clean up",
+    "settings.storage.outputDir": "Output",
+    "settings.storage.uploads": "Upload cache",
+    "settings.storage.tasks": "Task workspace",
     "settings.storage.confirmCleanup": "Wipe {dir}? Generated files cannot be recovered.",
     "settings.about.version": "Version {ver}",
-    "settings.about.docs": "Docs",
-    "settings.about.issues": "Report an issue",
+    "settings.about.desc": "Footage Gate is a local media quality gate for source review, silence cutting, auto color and cut-boundary QC. It reuses system FFmpeg when available and keeps upload cache, task workspace and final outputs separated.",
     "settings.system.detecting": "Detecting…",
     "settings.system.status.ok": "Installed {ver}",
     "settings.system.status.foundNoVer": "Installed",
@@ -655,12 +768,44 @@ const I18N_DICT = {
 };
 
 if (window.OpenAkitaI18n && typeof window.OpenAkitaI18n.register === "function") {
-  window.OpenAkitaI18n.register("footageGate", I18N_DICT);
+  window.OpenAkitaI18n.register(I18N_DICT);
 }
 
-const _i18n = (window.OpenAkitaI18n && typeof window.OpenAkitaI18n.t === "function")
-  ? window.OpenAkitaI18n
-  : { t: function(k, vars) { return _tr(k, vars, k); }, getLocale: function(){ return "zh"; }, onChange: function(){ return function(){}; } };
+function _currentLocale() {
+  if (window.OpenAkitaI18n) {
+    if (typeof window.OpenAkitaI18n.locale === "function") return window.OpenAkitaI18n.locale();
+    if (typeof window.OpenAkitaI18n.getLocale === "function") return window.OpenAkitaI18n.getLocale();
+  }
+  return "zh";
+}
+
+function _localT(key, vars) {
+  const loc = _currentLocale();
+  const base = String(loc || "zh").split(/[-_]/)[0];
+  const dict = I18N_DICT[loc] || I18N_DICT[base] || I18N_DICT.zh || I18N_DICT.en || {};
+  let tpl = dict[key] || (I18N_DICT.zh && I18N_DICT.zh[key]) || (I18N_DICT.en && I18N_DICT.en[key]) || key;
+  if (!vars) return tpl;
+  return String(tpl).replace(/\{(\w+)\}/g, function (_m, name) {
+    return vars[name] != null ? String(vars[name]) : "{" + name + "}";
+  });
+}
+
+const _i18n = {
+  t: function(key, vars) {
+    if (window.OpenAkitaI18n && typeof window.OpenAkitaI18n.t === "function") {
+      const v = window.OpenAkitaI18n.t(key, vars);
+      if (v && v !== key) return v;
+    }
+    return _localT(key, vars);
+  },
+  locale: _currentLocale,
+  onChange: function(fn) {
+    if (window.OpenAkitaI18n && typeof window.OpenAkitaI18n.onChange === "function") {
+      return window.OpenAkitaI18n.onChange(fn);
+    }
+    return function(){};
+  },
+};
 
 function useT() {
   const [, force] = useState(0);
@@ -674,10 +819,10 @@ function useT() {
 }
 
 function useLocale() {
-  const [locale, setLocale] = useState(() => (_i18n.getLocale && _i18n.getLocale()) || "zh");
+  const [locale, setLocale] = useState(() => (_i18n.locale && _i18n.locale()) || "zh");
   useEffect(() => {
     if (window.OpenAkitaI18n && typeof window.OpenAkitaI18n.onChange === "function") {
-      return window.OpenAkitaI18n.onChange(() => setLocale(_i18n.getLocale()));
+      return window.OpenAkitaI18n.onChange(() => setLocale(_i18n.locale()));
     }
     return undefined;
   }, []);
@@ -687,6 +832,59 @@ function useLocale() {
 // ─── Constants ──────────────────────────────────────────────────────────
 
 const MODE_IDS = ["source_review", "silence_cut", "auto_color", "cut_qc"];
+const TAB_ICONS = { create: "clapper", tasks: "tasks", guide: "book", settings: "settings" };
+const MODE_ICONS = {
+  source_review: "clapper",
+  silence_cut: "scissors",
+  auto_color: "palette",
+  cut_qc: "checklist",
+};
+
+const ICON_ALIAS = {
+  tasks: "listTask",
+  book: "book",
+  settings: "settings",
+  warning: "warning",
+  folder: "folder",
+  upload: "upload",
+  download: "download",
+  key: "key",
+  shield: "check",
+  package: "folder",
+  refresh: "refresh",
+  link: "arrowRight",
+  bug: "warning",
+  check: "check",
+  trash: "close",
+};
+
+const ICONIFY_SVG = {
+  /* SVGs adapted from Iconify icons:
+     carbon:media-library (brand), solar:clapperboard-play-bold-duotone,
+     solar:scissors-square-bold-duotone, solar:palette-round-bold-duotone,
+     solar:checklist-minimalistic-bold-duotone. */
+  brand: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" aria-hidden="true"><defs><linearGradient id="fg-bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#071A1F"/><stop offset=".58" stop-color="#12383C"/><stop offset="1" stop-color="#0F766E"/></linearGradient><linearGradient id="fg-mark" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ECFEFF"/><stop offset=".48" stop-color="#99F6E4"/><stop offset="1" stop-color="#FFFFFF"/></linearGradient><filter id="fg-glow" x="-35%" y="-35%" width="170%" height="170%"><feGaussianBlur stdDeviation="1.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs><rect width="64" height="64" rx="18" fill="url(#fg-bg)"/><circle cx="48" cy="13" r="18" fill="#5EEAD4" opacity=".18"/><circle cx="12" cy="51" r="18" fill="#22D3EE" opacity=".12"/><rect x="8" y="8" width="48" height="48" rx="15" fill="rgba(255,255,255,.08)" stroke="rgba(255,255,255,.18)"/><g transform="translate(13 13) scale(1.18)" fill="url(#fg-mark)" filter="url(#fg-glow)"><path d="M13 15v8l7-4z"/><path d="M26 28H6a2 2 0 0 1-2-2V12a2 2 0 0 1 2-2h20a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2M6 12v14h20V12Zm0-6h20v2H6zm2-4h16v2H8z"/></g></svg>',
+  clapper: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" opacity=".35" d="M3 8.8h18v8.7A3.5 3.5 0 0 1 17.5 21h-11A3.5 3.5 0 0 1 3 17.5V8.8Z"/><path fill="currentColor" d="M5.2 3h13.6A2.2 2.2 0 0 1 21 5.2v3.6H3V5.2A2.2 2.2 0 0 1 5.2 3Zm1.1 0L3.8 8.8h3.4L9.7 3H6.3Zm7.2 0L11 8.8h3.4L16.9 3h-3.4ZM10 12.2v5.1l4.6-2.55L10 12.2Z"/></svg>',
+  scissors: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" opacity=".35" d="M3 7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4v10a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V7Z"/><path fill="currentColor" d="M8 7.25A2.25 2.25 0 1 1 5.75 9.5A2.25 2.25 0 0 1 8 7.25Zm0 7A2.25 2.25 0 1 1 5.75 16.5A2.25 2.25 0 0 1 8 14.25Zm3.2-1.6l6.08-5.37a1 1 0 0 1 1.32 1.5l-5.36 4.74l5.27 3.7a1 1 0 1 1-1.15 1.64L11.2 14.5l-1.18 1.04a2.2 2.2 0 0 0 0-2.08l1.18-1.04Z"/></svg>',
+  palette: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" opacity=".35" d="M12 2a10 10 0 0 0 0 20c1.16 0 2-.76 2-1.8c0-.5-.2-.94-.48-1.28c-.3-.36-.52-.74-.52-1.18c0-.97.79-1.74 1.76-1.74H16a6 6 0 0 0 6-6c0-4.42-4.48-8-10-8Z"/><path fill="currentColor" d="M7.2 11.4a1.35 1.35 0 1 1 0-2.7a1.35 1.35 0 0 1 0 2.7Zm3.1-4.2a1.35 1.35 0 1 1 0-2.7a1.35 1.35 0 0 1 0 2.7Zm4.4.5a1.35 1.35 0 1 1 0-2.7a1.35 1.35 0 0 1 0 2.7Zm2.6 4a1.35 1.35 0 1 1 0-2.7a1.35 1.35 0 0 1 0 2.7Z"/></svg>',
+  checklist: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" opacity=".35" d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z"/><path fill="currentColor" d="M8.7 8.25a1 1 0 0 1 1.41 0l.55.55l2.23-2.23a1 1 0 0 1 1.42 1.42l-2.94 2.94a1 1 0 0 1-1.42 0L8.7 9.66a1 1 0 0 1 0-1.41ZM8 14a1 1 0 0 1 1-1h6.5a1 1 0 1 1 0 2H9a1 1 0 0 1-1-1Zm0 3.5a1 1 0 0 1 1-1h4.5a1 1 0 1 1 0 2H9a1 1 0 0 1-1-1Z"/></svg>',
+};
+
+function Ico(props) {
+  const name = props.name || "";
+  if (ICONIFY_SVG[name]) return <span className="oa-icon" dangerouslySetInnerHTML={{__html: ICONIFY_SVG[name]}} />;
+  const lib = window.OpenAkitaIcons;
+  if (lib) {
+    const key = typeof lib[name] === "function" ? name
+              : typeof lib[ICON_ALIAS[name]] === "function" ? ICON_ALIAS[name] : "";
+    if (key) return <span className="oa-icon" dangerouslySetInnerHTML={{__html: lib[key]()}} />;
+  }
+  return <span className="oa-icon" aria-hidden="true">·</span>;
+}
+
+function BrandMark() {
+  return <span className="oa-hero-title__icon" dangerouslySetInnerHTML={{__html: ICONIFY_SVG.brand}} />;
+}
 
 function modeList(t) {
   return MODE_IDS.map(id => ({ id, name: t("modes." + id), desc: t("modes." + id + ".desc") }));
@@ -760,10 +958,10 @@ function App() {
   }, [tab]);
 
   const TABS = [
-    { id: "create", name: t("tabs.create") },
-    { id: "tasks", name: t("tabs.tasks") },
-    { id: "guide", name: t("tabs.guide") },
-    { id: "settings", name: t("tabs.settings") },
+    { id: "create", name: t("tabs.create"), icon: TAB_ICONS.create },
+    { id: "tasks", name: t("tabs.tasks"), icon: TAB_ICONS.tasks },
+    { id: "guide", name: t("tabs.guide"), icon: TAB_ICONS.guide },
+    { id: "settings", name: t("tabs.settings"), icon: TAB_ICONS.settings },
   ];
 
   const ffmpegOk = !!(ffmpegSnap && ffmpegSnap.found);
@@ -778,10 +976,12 @@ function App() {
   return (
     <div className="app">
       <div className="header">
-        <h1>
-          <span aria-hidden="true">🎬</span>
-          <span>{t("app.title")}</span>
-          <span className="text-xs text-dim" style={{marginLeft: 8, fontWeight: 400}}>{t("app.subtitle")}</span>
+        <h1 className="oa-hero-title">
+          <BrandMark />
+          <span className="oa-hero-title__text">
+            {t("app.title")}
+            <span className="oa-hero-title__sub">{t("app.subtitle")}</span>
+          </span>
         </h1>
         <div className="header-right">
           <span className={ffmpegPillCls}>{ffmpegPillLabel}</span>
@@ -790,13 +990,13 @@ function App() {
       <div className="tabs">
         {TABS.map(item => (
           <div key={item.id} className={"tab " + (tab === item.id ? "active" : "")}
-               onClick={() => goToTab(item.id)}>{item.name}</div>
+               onClick={() => goToTab(item.id)}><Ico name={item.icon} /> {item.name}</div>
         ))}
       </div>
       {!ffmpegOk && tab !== "settings" && ffmpegSnap != null && (
         <div className="oa-config-banner" role="alert"
              style={{ margin: "12px 18px 0", flexShrink: 0 }}>
-          <span style={{ fontSize: 16 }}>⚠️</span>
+          <span style={{ fontSize: 16, color: "var(--warning)" }}><Ico name="warning" /></span>
           <div className="oa-config-banner__text">
             <strong>{t("banner.noFfmpeg.title")}</strong>
             <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
@@ -804,7 +1004,7 @@ function App() {
             </div>
           </div>
           <button className="oa-config-banner__action" type="button"
-                  onClick={() => goToTab("settings")}>{t("banner.noFfmpeg.cta")} →</button>
+                  onClick={() => goToTab("settings")}>{t("banner.noFfmpeg.cta")} <Ico name="arrowRight" /></button>
         </div>
       )}
       <div className="content">
@@ -942,21 +1142,21 @@ function CreateTab({ ffmpegOk, goToTasks }) {
 
   return (
     <>
-      <div className="split-layout">
-        <div className="split-left">
+      <div className="create-workbench">
+        <div className="create-main">
           {/* Mode picker — left-rail .mode-btn horizontal row */}
-          <div className="card">
+          <div className="card create-card">
             <div className="form-row">
-              <div className="label">{t("modes.source_review").replace("源素材审核", "选择模式") /* fallback */}</div>
-              <div className="flex gap-2 flex-wrap">
+              <div className="label">{t("create.mode.label")}</div>
+              <div className="mode-grid">
                 {MODES.map(m => (
                   <button key={m.id}
                           className={"mode-btn " + (mode === m.id ? "active" : "")}
                           onClick={() => setMode(m.id)}
-                          title={m.desc}>{m.name}</button>
+                          title={m.desc}><Ico name={MODE_ICONS[m.id]} /> {m.name}</button>
                 ))}
               </div>
-              <div className="text-xs text-dim" style={{ marginTop: 6 }}>
+              <div className="text-xs mode-desc">
                 {MODES.find(m => m.id === mode)?.desc}
               </div>
             </div>
@@ -966,7 +1166,7 @@ function CreateTab({ ffmpegOk, goToTasks }) {
               <div className="label">{t("create.input.label")}</div>
               {!upload ? (
                 <label className="upload-zone">
-                  <div style={{ fontSize: 22, marginBottom: 6 }}>📂</div>
+                  <span className="upload-icon"><Ico name="upload" /></span>
                   <div className="text-sm">{t("create.input.upload")}</div>
                   <input type="file" style={{ display: "none" }}
                          accept="video/*,audio/*,image/*"
@@ -1024,7 +1224,7 @@ function CreateTab({ ffmpegOk, goToTasks }) {
           </div>
         </div>
 
-        <div className="split-right">
+        <div className="create-side">
           {result ? <CreatePreview task={result} goToTasks={goToTasks} /> : <CreateEmpty />}
         </div>
       </div>
@@ -1041,7 +1241,7 @@ function CreateEmpty() {
   const t = useT();
   return (
     <div className="empty-state" style={{ padding: 60 }}>
-      <div style={{ fontSize: 32, opacity: .4 }}>🎞️</div>
+      <span className="empty-state__icon"><Ico name="clapper" /></span>
       <div className="text-sm" style={{ fontWeight: 500 }}>{t("create.preview.empty.title")}</div>
       <div className="text-xs text-dim">{t("create.preview.empty.hint")}</div>
     </div>
@@ -1276,11 +1476,11 @@ function TasksTab({ refreshSignal }) {
   };
 
   return (
-    <div className="split-layout">
-      <div className="split-left">
-        <div className="card">
+    <div className="task-workbench">
+      <div className="task-left">
+        <div className="card task-filter-card">
           <div className="form-row" style={{ marginBottom: 8 }}>
-            <div className="text-xs text-dim" style={{ marginBottom: 4 }}>{t("tasks.filter.status")}</div>
+            <div className="label task-filter-label">{t("tasks.filter.status")}</div>
             <div className="flex gap-2 flex-wrap">
               {[
                 { v: "", l: t("tasks.filter.all") },
@@ -1295,23 +1495,24 @@ function TasksTab({ refreshSignal }) {
             </div>
           </div>
           <div>
-            <div className="text-xs text-dim" style={{ marginBottom: 4 }}>{t("tasks.filter.mode")}</div>
+            <div className="label task-filter-label">{t("tasks.filter.mode")}</div>
             <div className="flex gap-2 flex-wrap">
               <button className={"mode-btn " + (modeFilter === "" ? "active" : "")}
-                      onClick={() => setModeFilter("")}>{t("tasks.filter.allModes")}</button>
+                      onClick={() => setModeFilter("")}><Ico name="tasks" /> {t("tasks.filter.allModes")}</button>
               {MODES.map(m => (
                 <button key={m.id} className={"mode-btn " + (modeFilter === m.id ? "active" : "")}
-                        onClick={() => setModeFilter(m.id)}>{m.name}</button>
+                        onClick={() => setModeFilter(m.id)}><Ico name={MODE_ICONS[m.id]} /> {m.name}</button>
               ))}
             </div>
           </div>
         </div>
-        <div>
+        <div className="task-list-panel">
+          <div className="task-list-panel__items">
           {loading && tasks.length === 0 ? (
             <div className="empty-state"><div className="spinner" /></div>
           ) : tasks.length === 0 ? (
             <div className="empty-state" style={{ padding: 30 }}>
-              <div style={{ fontSize: 22, opacity: .4 }}>📂</div>
+              <span className="empty-state__icon" style={{ fontSize: 22 }}><Ico name="folder" /></span>
               <div className="text-sm" style={{ fontWeight: 500 }}>{t("tasks.empty.title")}</div>
               <div className="text-xs text-dim">{t("tasks.empty.hint")}</div>
             </div>
@@ -1338,13 +1539,15 @@ function TasksTab({ refreshSignal }) {
               </div>
             ))
           )}
-          <div className="text-xs text-dim" style={{ padding: "8px 4px", textAlign: "center" }}>
+          </div>
+          <div className="task-list-panel__footer text-xs text-dim" style={{ textAlign: "left" }}>
             {t("tasks.totalCount", { n: total })}
           </div>
         </div>
       </div>
 
-      <div className="split-right">
+      <div className="task-right">
+        <div className="task-detail-panel">
         {selected ? (
           <TaskDetail t={t} task={selected}
                       onCancel={() => handleCancel(selected.id)}
@@ -1353,11 +1556,12 @@ function TasksTab({ refreshSignal }) {
                       onOpenFolder={handleOpenFolder} />
         ) : (
           <div className="empty-state" style={{ padding: 60 }}>
-            <div style={{ fontSize: 28, opacity: .4 }}>📄</div>
+            <span className="empty-state__icon"><Ico name="checklist" /></span>
             <div className="text-sm" style={{ fontWeight: 500 }}>{t("tasks.empty.noSelection.title")}</div>
             <div className="text-xs text-dim">{t("tasks.empty.noSelection.hint")}</div>
           </div>
         )}
+        </div>
       </div>
     </div>
   );
@@ -1385,7 +1589,7 @@ function TaskDetail({ t, task, onCancel, onRetry, onDelete, onOpenFolder }) {
           <KV label={t("tasks.detail.removed")} value={task.removed_seconds != null ? task.removed_seconds.toFixed(2) + "s" : "—"} />
           <KV label={t("tasks.detail.attempts")} value={task.qc_attempts || 0} />
           <KV label={t("tasks.detail.issues")} value={task.qc_issues_count != null ? task.qc_issues_count : "—"} />
-          <KV label={t("tasks.detail.hdr")} value={task.is_hdr_source ? "✅" : "—"} />
+          <KV label={t("tasks.detail.hdr")} value={task.is_hdr_source ? <Ico name="check" /> : "—"} />
         </div>
       </div>
 
@@ -1451,36 +1655,40 @@ function GuideTab() {
   const t = useT();
   const MODES = modeList(t);
   return (
-    <div style={{ maxWidth: 800, padding: "0 4px" }}>
-      <div className="text-xs text-dim" style={{ marginBottom: 12 }}>{t("guide.intro")}</div>
+    <div className="guide-shell">
+      <div className="guide-card">
+        <div className="guide-intro">{t("guide.intro")}</div>
 
-      <Collapsible title={t("guide.modes.title")} defaultOpen>
-        <div>
-          {MODES.map(m => (
-            <div key={m.id} style={{ marginBottom: 10 }}>
-              <h4 style={{ fontSize: 13, fontWeight: 600 }}>{m.name}</h4>
-              <p className="text-xs text-muted" style={{ marginTop: 2 }}>{m.desc}</p>
-            </div>
-          ))}
-        </div>
-      </Collapsible>
+        <Collapsible title={t("guide.modes.title")} defaultOpen>
+          <div>
+            {MODES.map(m => (
+              <div key={m.id} className="guide-mode-row">
+                <h4 className="guide-mode-title">
+                  <Ico name={MODE_ICONS[m.id]} /> {m.name}
+                </h4>
+                <p className="text-sm text-muted" style={{ marginTop: 4, lineHeight: 1.6 }}>{m.desc}</p>
+              </div>
+            ))}
+          </div>
+        </Collapsible>
 
-      <Collapsible title={t("guide.workflow.title")}>
-        <div className="text-sm text-muted" style={{ lineHeight: 1.7 }}>{t("guide.workflow.body")}</div>
-      </Collapsible>
+        <Collapsible title={t("guide.workflow.title")}>
+          <div className="text-sm text-muted" style={{ lineHeight: 1.8 }}>{t("guide.workflow.body")}</div>
+        </Collapsible>
 
-      <Collapsible title={t("guide.tips.title")}>
-        <ul style={{ paddingLeft: 18, fontSize: 13, color: "var(--text-muted)" }}>
-          <li>silence_cut 默认阈值 -45 dB 适合普通对话；纯音乐场景请提高到 -30 dB。</li>
-          <li>auto_color 默认开启 HDR tone-map — iPhone HLG / Sony PQ 视频请保持开启。</li>
-          <li>cut_qc 默认 OFF auto_remux；在确认 EDL 来源可信后再勾选。</li>
-          <li>EDL JSON 字段命名同时支持 in_seconds/out_seconds 与 start_seconds/end_seconds。</li>
-        </ul>
-      </Collapsible>
+        <Collapsible title={t("guide.tips.title")}>
+          <div className="guide-tip-grid">
+            <div className="guide-tip-item"><Ico name="scissors" /><span>静默剪除默认阈值 -45 dB，适合普通对话；纯音乐或环境音场景建议提高到 -30 dB。</span></div>
+            <div className="guide-tip-item"><Ico name="palette" /><span>自动调色默认开启 HDR tone-map，iPhone HLG / Sony PQ 视频建议保持开启。</span></div>
+            <div className="guide-tip-item"><Ico name="checklist" /><span>剪辑边界 QC 默认不自动 remux，确认 EDL 来源可信后再开启自动修复。</span></div>
+            <div className="guide-tip-item"><Ico name="checklist" /><span>EDL JSON 字段同时支持 in_seconds / out_seconds 与 start_seconds / end_seconds。</span></div>
+          </div>
+        </Collapsible>
 
-      <Collapsible title={t("guide.upstream.title")}>
-        <div className="text-sm text-muted" style={{ lineHeight: 1.7 }}>{t("guide.upstream.desc")}</div>
-      </Collapsible>
+        <Collapsible title={t("guide.upstream.title")}>
+          <div className="text-sm text-muted" style={{ lineHeight: 1.8 }}>{t("guide.upstream.desc")}</div>
+        </Collapsible>
+      </div>
     </div>
   );
 }
@@ -1491,7 +1699,7 @@ function Collapsible({ title, children, defaultOpen }) {
     <div className={"collapsible " + (open ? "open" : "")}>
       <div className="collapsible-header" onClick={() => setOpen(!open)}>
         <span>{title}</span>
-        <span className="arrow">▶</span>
+        <span className="arrow"><Ico name="chevronRight" /></span>
       </div>
       <div className="collapsible-body">{children}</div>
     </div>
@@ -1556,10 +1764,11 @@ function SettingsTab({ onFfmpegChanged }) {
   };
 
   return (
-    <div style={{ maxWidth: 720, padding: "0 4px" }}>
+    <div className="centered-tab">
+      <div className="centered-tab__inner">
       {/* Section 1 — Transcription API */}
-      <div className="setting-section">
-        <h3>🔑 {t("settings.section.api")}</h3>
+      <div className="setting-section oa-settings-section">
+        <h3 className="oa-settings-section__title"><Ico name="key" /> {t("settings.section.api")}</h3>
         <div className="form-row">
           <div className="label">{t("settings.api.key.label")}</div>
           <div className="flex gap-2">
@@ -1579,20 +1788,29 @@ function SettingsTab({ onFfmpegChanged }) {
       </div>
 
       {/* Section 2 — Permissions */}
-      <div className="setting-section">
-        <h3>🛡️ {t("settings.section.permissions")}</h3>
+      <div className="setting-section oa-settings-section">
+        <h3 className="oa-settings-section__title"><Ico name="shield" /> {t("settings.section.permissions")}</h3>
         <PermissionsPanel status={permsStatus} onChanged={reloadPerms} />
       </div>
 
       {/* Section 3 — System dependency (FFmpeg) */}
-      <div className="setting-section">
-        <h3>📦 {t("settings.section.system")}</h3>
+      <div className="setting-section oa-settings-section">
+        <h3 className="oa-settings-section__title"><Ico name="package" /> {t("settings.section.system")}</h3>
+        <div className="deps-help">
+          <strong>{t("settings.system.intro.strong")}</strong>
+          <div style={{ marginTop: 4 }}>{t("settings.system.intro.body")}</div>
+          <ul>
+            <li>{t("settings.system.platform.win")}</li>
+            <li>{t("settings.system.platform.mac")}</li>
+            <li>{t("settings.system.platform.linux")}</li>
+          </ul>
+        </div>
         <FfmpegInstaller onInstalled={onFfmpegChanged} onUninstalled={onFfmpegChanged} />
       </div>
 
       {/* Section 4 — Defaults */}
-      <div className="setting-section">
-        <h3>⚙️ {t("settings.section.defaults")}</h3>
+      <div className="setting-section oa-settings-section">
+        <h3 className="oa-settings-section__title"><Ico name="settings" /> {t("settings.section.defaults")}</h3>
         <div className="grid-2">
           <SelectField label={t("settings.defaults.mode")} value={config.default_mode || "source_review"}
                        options={MODE_IDS.map(id => ({ v: id, l: t("modes." + id) }))}
@@ -1617,39 +1835,45 @@ function SettingsTab({ onFfmpegChanged }) {
                          onChange={v => update({ ffmpeg_timeout_sec: v })} />
           <NumberSetting label={t("settings.defaults.retention")} value={config.task_retention_days || "30"}
                          onChange={v => update({ task_retention_days: v })} />
-          <TextSetting label={t("settings.defaults.outputDir")} value={config.output_dir || ""}
-                       placeholder="~/footage-gate-output"
-                       onChange={v => update({ output_dir: v })} />
           <TextSetting label={t("settings.defaults.naming")} value={config.output_naming_rule || ""}
                        placeholder="{date}_{mode}_{shortid}"
                        onChange={v => update({ output_naming_rule: v })} />
         </div>
-        <div style={{ marginTop: 10 }}>
+        <div className="settings-switch-list">
           <SwitchSetting label={t("settings.defaults.autoRemux")}
+                         desc={t("settings.defaults.autoRemux.desc")}
                          on={config.cut_qc_auto_remux_default === "true"}
                          onChange={v => update({ cut_qc_auto_remux_default: v ? "true" : "false" })} />
           <SwitchSetting label={t("settings.defaults.hdrTonemap")}
+                         desc={t("settings.defaults.hdrTonemap.desc")}
                          on={config.auto_color_hdr_tonemap !== "false"}
                          onChange={v => update({ auto_color_hdr_tonemap: v ? "true" : "false" })} />
         </div>
       </div>
 
       {/* Section 5 — Storage */}
-      <div className="setting-section">
-        <h3>📁 {t("settings.section.storage")}</h3>
-        <StoragePanel stats={stats} onRefresh={reload} t={t} />
+      <div className="setting-section oa-settings-section">
+        <h3 className="oa-settings-section__title"><Ico name="folder" /> {t("settings.section.storage")}</h3>
+        <StoragePanel
+          stats={stats}
+          outputDir={config.output_dir || ""}
+          onOutputDirChange={v => setField("output_dir", v)}
+          onSaveOutputDir={v => update({ output_dir: v })}
+          onRefresh={reload}
+          t={t}
+        />
       </div>
 
       {/* Section 6 — About */}
-      <div className="setting-section">
-        <h3>ℹ️ {t("settings.section.about")}</h3>
-        <div className="text-sm text-muted" style={{ marginBottom: 6 }}>
+      <div className="setting-section oa-settings-section">
+        <h3 className="oa-settings-section__title"><Ico name="info" /> {t("settings.section.about")}</h3>
+        <div className="about-copy" style={{ marginBottom: 8 }}>
+          {t("settings.about.desc")}
+        </div>
+        <div className="text-xs text-dim">
           {t("settings.about.version", { ver: "1.0.0" })}
         </div>
-        <div className="flex gap-2">
-          <a className="btn btn-sm" href="https://github.com/calesthio/OpenAkita" target="_blank" rel="noopener noreferrer">📖 {t("settings.about.docs")}</a>
-          <a className="btn btn-sm" href="https://github.com/calesthio/OpenAkita/issues" target="_blank" rel="noopener noreferrer">🐛 {t("settings.about.issues")}</a>
-        </div>
+      </div>
       </div>
     </div>
   );
@@ -1692,10 +1916,13 @@ function TextSetting({ label, value, placeholder, onChange }) {
   );
 }
 
-function SwitchSetting({ label, on, onChange }) {
+function SwitchSetting({ label, desc, on, onChange }) {
   return (
-    <div className="flex items-center justify-between" style={{ padding: "8px 0", borderTop: "1px solid var(--border)" }}>
-      <div className="text-sm">{label}</div>
+    <div className="settings-switch-row">
+      <div>
+        <div className="settings-switch-row__title">{label}</div>
+        {desc ? <div className="settings-switch-row__desc">{desc}</div> : null}
+      </div>
       <Switch on={on} onChange={onChange} ariaLabel={label} />
     </div>
   );
@@ -1744,9 +1971,9 @@ function PermissionsPanel({ status, onChanged }) {
     <div className="sysdep-card">
       <div className="sysdep-card__head">
         <div className="sysdep-card__title">
-          🔐 {t("settings.section.permissions")}
-          {allOk ? <span className="sysdep-card__badge sysdep-card__badge--ok" style={{ marginLeft: 8 }}>✓ {t("settings.perms.allOk")}</span>
-                 : <span className="sysdep-card__badge sysdep-card__badge--missing" style={{ marginLeft: 8 }}>⚠ {missing.length}</span>}
+          <Ico name="shield" /> {t("settings.section.permissions")}
+          {allOk ? <span className="sysdep-card__badge sysdep-card__badge--ok" style={{ marginLeft: 8 }}><Ico name="check" /> {t("settings.perms.allOk")}</span>
+                 : <span className="sysdep-card__badge sysdep-card__badge--missing" style={{ marginLeft: 8 }}><Ico name="warning" /> {missing.length}</span>}
         </div>
       </div>
       {!allOk && checks.length > 0 && (
@@ -1769,8 +1996,8 @@ function PermissionsPanel({ status, onChanged }) {
               <tr key={c.permission}>
                 <td><code>{c.permission}</code></td>
                 <td>{c.feature}</td>
-                <td>{c.granted ? <span className="tag tag-green">✓ {t("settings.perms.status.ok")}</span>
-                              : <span className="tag tag-red">⚠ {t("settings.perms.status.missing")}</span>}</td>
+                <td>{c.granted ? <span className="tag tag-green"><Ico name="check" /> {t("settings.perms.status.ok")}</span>
+                              : <span className="tag tag-red"><Ico name="warning" /> {t("settings.perms.status.missing")}</span>}</td>
               </tr>
             ))}
           </tbody>
@@ -1980,12 +2207,12 @@ function FfmpegInstaller({ onInstalled, onUninstalled }) {
     <div className="sysdep-card">
       <div className="sysdep-card__head">
         <div className="sysdep-card__title">
-          📦 FFmpeg
+          <Ico name="package" /> FFmpeg
           <span style={{ marginLeft: 8 }}>
             {uninstalling ? <span className="sysdep-card__badge sysdep-card__badge--busy"><span className="spinner-sm" /> {t("settings.system.uninstalling", { elapsed: formatElapsed(liveStatus?.elapsed_sec) })}</span>
              : installing ? <span className="sysdep-card__badge sysdep-card__badge--busy"><span className="spinner-sm" /> {t("settings.system.installing", { elapsed: formatElapsed(liveStatus?.elapsed_sec) })}</span>
-             : found ? <span className="sysdep-card__badge sysdep-card__badge--ok">✓ {snap.version ? t("settings.system.status.ok", { ver: snap.version }) : t("settings.system.status.foundNoVer")}</span>
-             : <span className="sysdep-card__badge sysdep-card__badge--missing">⚠ {t("settings.system.status.missing")}</span>}
+             : found ? <span className="sysdep-card__badge sysdep-card__badge--ok"><Ico name="check" /> {snap.version ? t("settings.system.status.ok", { ver: snap.version }) : t("settings.system.status.foundNoVer")}</span>
+             : <span className="sysdep-card__badge sysdep-card__badge--missing"><Ico name="warning" /> {t("settings.system.status.missing")}</span>}
           </span>
         </div>
       </div>
@@ -1998,23 +2225,23 @@ function FfmpegInstaller({ onInstalled, onUninstalled }) {
           <button className="btn btn-sm btn-primary"
                   onClick={() => startInstall(primaryIdx)}
                   title={primary.command_hint || primary.strategy}>
-            📦 {t("settings.system.btn.install")} ({primary.strategy})
+            <Ico name="package" /> {t("settings.system.btn.install")} ({primary.strategy})
           </button>
         )}
         {!busy && found && uninstallPrimary && !confirmingUninstall && (
           <button className="btn btn-sm btn-danger"
                   onClick={() => setConfirmingUninstall(true)}
                   title={uninstallPrimary.command_hint || uninstallPrimary.strategy}>
-            🗑 {t("settings.system.btn.uninstall")}
+            <Ico name="trash" /> {t("settings.system.btn.uninstall")}
           </button>
         )}
         {!busy && (
           <button className="btn btn-sm" onClick={handleRecheck} disabled={rechecking}>
-            {rechecking ? <><span className="spinner-sm" /> {t("settings.system.detecting")}</> : <>🔄 {t("settings.system.btn.recheck")}</>}
+            {rechecking ? <><span className="spinner-sm" /> {t("settings.system.detecting")}</> : <><Ico name="refresh" /> {t("settings.system.btn.recheck")}</>}
           </button>
         )}
         {snap?.homepage && (
-          <a className="btn btn-sm" href={snap.homepage} target="_blank" rel="noopener noreferrer">🔗 {t("settings.system.btn.openHome")}</a>
+          <a className="btn btn-sm" href={snap.homepage} target="_blank" rel="noopener noreferrer"><Ico name="link" /> {t("settings.system.btn.openHome")}</a>
         )}
       </div>
 
@@ -2064,8 +2291,9 @@ function FfmpegInstaller({ onInstalled, onUninstalled }) {
 
 // ─── Storage Panel ──────────────────────────────────────────────────────
 
-function StoragePanel({ stats, onRefresh, t }) {
+function StoragePanel({ stats, outputDir, onOutputDirChange, onSaveOutputDir, onRefresh, t }) {
   const [cleaning, setCleaning] = useState("");
+  const [savingOutput, setSavingOutput] = useState(false);
 
   const cleanup = async (dirType) => {
     if (!confirm(t("settings.storage.confirmCleanup", { dir: dirType }))) return;
@@ -2084,28 +2312,62 @@ function StoragePanel({ stats, onRefresh, t }) {
     await pluginApi("POST", "/storage/open-folder", { key });
   };
 
+  const saveOutputDir = async () => {
+    setSavingOutput(true);
+    await onSaveOutputDir(outputDir || "");
+    setSavingOutput(false);
+    if (onRefresh) onRefresh();
+  };
+
+  const statLabel = (key) => {
+    if (key === "output_dir") return t("settings.storage.outputDir");
+    if (key === "uploads") return t("settings.storage.uploads");
+    if (key === "tasks") return t("settings.storage.tasks");
+    return key;
+  };
+
   if (!stats) {
     return <div className="text-xs text-dim"><span className="spinner-sm" /> {t("settings.system.detecting")}</div>;
   }
 
   return (
-    <div className="stats-grid">
-      {Object.entries(stats).map(([key, info]) => (
-        <div key={key} className="stats-cell">
-          <h5>{key}</h5>
-          <div className="stats-value">{t("settings.storage.size", { size: info.size_mb || 0 })}</div>
-          <div className="text-xs text-dim">{t("settings.storage.files", { count: info.file_count || 0 })}</div>
-          <div className="stats-path">{info.path}</div>
-          <div className="flex gap-2" style={{ marginTop: 6 }}>
-            <button className="btn btn-sm" onClick={() => openFolder(key)}>{t("settings.storage.open")}</button>
-            {(key === "uploads" || key === "tasks") && (
-              <button className="btn btn-sm btn-danger" onClick={() => cleanup(key)} disabled={cleaning === key}>
-                {cleaning === key ? <span className="spinner-sm" /> : t("settings.storage.cleanup")}
-              </button>
-            )}
-          </div>
+    <div>
+      <div className="form-row">
+        <div className="label">{t("settings.storage.outputTitle")}</div>
+        <div className="folder-row">
+          <input
+            className="input"
+            value={outputDir}
+            placeholder={t("settings.defaults.outputDir.placeholder")}
+            onChange={e => onOutputDirChange(e.target.value)}
+            onBlur={saveOutputDir}
+          />
+          <button className="btn btn-sm btn-primary" onClick={saveOutputDir} disabled={savingOutput}>
+            {savingOutput ? <span className="spinner-sm" /> : t("settings.storage.save")}
+          </button>
+          <button className="btn btn-sm" onClick={() => openFolder("output_dir")}>{t("settings.storage.open")}</button>
         </div>
-      ))}
+        <div className="text-xs text-dim">{t("settings.storage.outputHelp")}</div>
+      </div>
+
+      <div className="storage-summary">
+        {Object.entries(stats).map(([key, info]) => (
+          <div key={key} className="storage-card">
+            <div className="storage-card__name">{statLabel(key)}</div>
+            <div className="storage-card__size">{t("settings.storage.size", { size: info.size_mb || 0 })}</div>
+            <div className="text-xs text-dim">{t("settings.storage.files", { count: info.file_count || 0 })}</div>
+            <div className="storage-card__path">{info.path}</div>
+            <div className="flex gap-2 flex-wrap" style={{ marginTop: 8 }}>
+              <button className="btn btn-sm" onClick={() => openFolder(key)}>{t("settings.storage.open")}</button>
+              {(key === "uploads" || key === "tasks") && (
+                <button className="btn btn-sm btn-danger" onClick={() => cleanup(key)} disabled={cleaning === key}>
+                  {cleaning === key ? <span className="spinner-sm" /> : t("settings.storage.cleanup")}
+                </button>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -2128,7 +2390,7 @@ class PluginErrorBoundary extends React.Component {
     return (
       <div style={{ padding: 24, maxWidth: 820, margin: "0 auto" }}>
         <div className="oa-config-banner" role="alert" style={{ borderColor: "var(--danger)", background: "rgba(239,68,68,.08)" }}>
-          <span style={{ fontSize: 18 }}>⚠️</span>
+          <span style={{ fontSize: 18, color: "var(--danger)" }}><Ico name="warning" /></span>
           <div className="oa-config-banner__text">
             <strong>{tr("err.title")}</strong>
             <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4 }}>{err && err.message ? err.message : String(err)}</div>

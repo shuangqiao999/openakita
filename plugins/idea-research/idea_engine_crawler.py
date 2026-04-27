@@ -112,6 +112,14 @@ class CookiesVault:
             self._init_crypto()
         return bool(self._encryption_ready)
 
+    def refresh_crypto_status(self) -> bool:
+        """Re-probe optional crypto deps after in-plugin installation."""
+
+        self._warn_messages.clear()
+        self._fernet = None
+        self._encryption_ready = None
+        return self.encryption_ready
+
     # ---- crypto bootstrap --------------------------------------------------
 
     def _init_crypto(self) -> None:

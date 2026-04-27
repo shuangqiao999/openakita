@@ -30,18 +30,58 @@ tests in ``tests/test_routes.py``.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 import logging
 import os
 import shutil
+import subprocess
+import sys
 import time
 import uuid
+from collections import deque
 from contextlib import suppress
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query
+from openakita.plugins.api import PluginBase
+from pydantic import BaseModel, ConfigDict, Field
+
+
+def _purge_idea_research_module_cache() -> int:
+    """Drop helper modules so host hot-reload cannot mix plugin versions.
+
+    The host reloads ``plugin.py`` from the fresh runtime copy, but Python's
+    module cache may still hold old ``idea_task_manager`` / ``idea_pipeline``
+    modules. Clear them before importing local helpers so route handlers and
+    task objects are built from the same code version.
+    """
+
+    prefixes = (
+        "idea_collectors",
+        "idea_dashscope_client",
+        "idea_engine_api",
+        "idea_engine_crawler",
+        "idea_models",
+        "idea_pipeline",
+        "idea_task_manager",
+        "idea_research_inline",
+    )
+    removed = 0
+    for name in list(sys.modules):
+        if name == __name__:
+            continue
+        if name.startswith(prefixes):
+            sys.modules.pop(name, None)
+            removed += 1
+    return removed
+
+
+_PURGED_MODULES_ON_IMPORT = _purge_idea_research_module_cache()
+
 from idea_collectors import CollectorRegistry, Normalizer, Ranker
 from idea_dashscope_client import DashScopeClient
 from idea_engine_crawler import CookiesVault, PlaywrightDriver
@@ -61,9 +101,6 @@ from idea_pipeline import (
 from idea_research_inline.mdrm_adapter import MdrmAdapter
 from idea_research_inline.upload_preview import add_upload_preview_routes
 from idea_task_manager import IdeaTaskManager
-from pydantic import BaseModel, ConfigDict, Field
-
-from openakita.plugins.api import PluginBase
 
 if TYPE_CHECKING:  # pragma: no cover
     from openakita.plugins.api import PluginAPI
@@ -129,6 +166,163 @@ class MdrmReindexBody(_StrictBase):
     from_days_ago: int = Field(default=30, ge=1, le=365)
 
 
+class PythonDepOpBody(_StrictBase):
+    confirm: bool = False
+
+
+class OpenFolderBody(_StrictBase):
+    key: str | None = None
+    path: str | None = None
+
+
+# --------------------------------------------------------------------------- #
+# Optional Python dependencies                                                 #
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class _PythonDepSpec:
+    id: str
+    display_name: str
+    packages: tuple[str, ...]
+    import_names: tuple[str, ...]
+    description: str
+
+
+@dataclass
+class _PythonDepState:
+    busy: bool = False
+    op_kind: str = ""
+    started_at: float = 0.0
+    finished_at: float = 0.0
+    return_code: int | None = None
+    error: str = ""
+    log_tail: deque[str] = field(default_factory=lambda: deque(maxlen=80))
+
+
+_PYTHON_DEPS: dict[str, _PythonDepSpec] = {
+    "secure_cookies": _PythonDepSpec(
+        id="secure_cookies",
+        display_name="Cookies 安全存储",
+        packages=("cryptography", "keyring"),
+        import_names=("cryptography.fernet", "keyring"),
+        description="用于把 5 平台 cookies 用 Fernet 加密，并把主密钥托管到系统 keyring。",
+    ),
+    "browser_crawler": _PythonDepSpec(
+        id="browser_crawler",
+        display_name="浏览器爬虫引擎",
+        packages=("playwright",),
+        import_names=("playwright.async_api",),
+        description="用于引擎 B 的抖音、小红书、快手、B 站登录态、微博浏览器采集。",
+    ),
+}
+
+
+class PythonDepsManager:
+    """Small whitelist-only pip installer for optional plugin packages."""
+
+    def __init__(self) -> None:
+        self._state = {dep_id: _PythonDepState() for dep_id in _PYTHON_DEPS}
+
+    def list_components(self) -> list[dict[str, Any]]:
+        return [self.detect(dep_id) for dep_id in _PYTHON_DEPS]
+
+    def detect(self, dep_id: str) -> dict[str, Any]:
+        spec = self._require(dep_id)
+        st = self._state[dep_id]
+        missing = [
+            name for name in spec.import_names if not self._is_importable(name)
+        ]
+        return {
+            "id": spec.id,
+            "display_name": spec.display_name,
+            "description": spec.description,
+            "packages": list(spec.packages),
+            "imports": list(spec.import_names),
+            "found": not missing,
+            "missing": missing,
+            "busy": st.busy,
+            "last_op": self.status(dep_id),
+        }
+
+    def status(self, dep_id: str) -> dict[str, Any]:
+        self._require(dep_id)
+        st = self._state[dep_id]
+        return {
+            "busy": st.busy,
+            "op_kind": st.op_kind,
+            "elapsed_sec": round((time.time() - st.started_at) if st.started_at else 0, 1),
+            "return_code": st.return_code,
+            "error": st.error,
+            "log_tail": list(st.log_tail),
+        }
+
+    async def start_install(self, dep_id: str) -> dict[str, Any]:
+        spec = self._require(dep_id)
+        argv = [sys.executable, "-m", "pip", "install", *spec.packages]
+        return await self._start(dep_id, "install", argv)
+
+    async def start_uninstall(self, dep_id: str) -> dict[str, Any]:
+        spec = self._require(dep_id)
+        argv = [sys.executable, "-m", "pip", "uninstall", "-y", *spec.packages]
+        return await self._start(dep_id, "uninstall", argv)
+
+    async def _start(self, dep_id: str, op_kind: str, argv: list[str]) -> dict[str, Any]:
+        self._require(dep_id)
+        st = self._state[dep_id]
+        if st.busy:
+            return {"ok": True, "busy": True, "status": self.status(dep_id)}
+        st.busy = True
+        st.op_kind = op_kind
+        st.started_at = time.time()
+        st.finished_at = 0.0
+        st.return_code = None
+        st.error = ""
+        st.log_tail.clear()
+        st.log_tail.append("$ " + " ".join(argv))
+        asyncio.create_task(self._run(dep_id, argv), name=f"{PLUGIN_ID}:pydep:{dep_id}:{op_kind}")
+        return {"ok": True, "busy": True, "status": self.status(dep_id)}
+
+    async def _run(self, dep_id: str, argv: list[str]) -> None:
+        st = self._state[dep_id]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            assert proc.stdout is not None
+            while True:
+                line = await proc.stdout.readline()
+                if not line:
+                    break
+                st.log_tail.append(line.decode("utf-8", errors="replace").rstrip())
+            st.return_code = await proc.wait()
+            if st.return_code:
+                st.error = f"pip exited with code {st.return_code}"
+        except Exception as exc:  # noqa: BLE001
+            st.return_code = -1
+            st.error = str(exc)
+            st.log_tail.append(str(exc))
+        finally:
+            st.busy = False
+            st.finished_at = time.time()
+
+    @staticmethod
+    def _is_importable(name: str) -> bool:
+        try:
+            return importlib.util.find_spec(name) is not None
+        except (ImportError, ModuleNotFoundError, ValueError):
+            return False
+
+    @staticmethod
+    def _require(dep_id: str) -> _PythonDepSpec:
+        try:
+            return _PYTHON_DEPS[dep_id]
+        except KeyError as exc:
+            raise ValueError(f"unknown python dependency group: {dep_id}") from exc
+
+
 # --------------------------------------------------------------------------- #
 # Plugin                                                                       #
 # --------------------------------------------------------------------------- #
@@ -150,12 +344,18 @@ class Plugin(PluginBase):
         self._tasks: dict[str, asyncio.Task[Any]] = {}
         self._running_tasks: set[str] = set()
         self._scheduler_stop = asyncio.Event()
+        self._pydeps = PythonDepsManager()
 
     # ------------------------------------------------------------------ #
     # Lifecycle                                                            #
     # ------------------------------------------------------------------ #
 
     def on_load(self, api: PluginAPI) -> None:
+        if _PURGED_MODULES_ON_IMPORT:
+            api.log(
+                f"[{PLUGIN_ID}] cleared {_PURGED_MODULES_ON_IMPORT} cached helper modules before reload",
+                "debug",
+            )
         self._api = api
         data_dir = api.get_data_dir() or Path.cwd() / "data" / PLUGIN_ID
         data_dir.mkdir(parents=True, exist_ok=True)
@@ -252,6 +452,93 @@ class Plugin(PluginBase):
         if self._tm is None:
             return {}
         return await self._tm.get_all_settings()
+
+    async def _storage_stats(self) -> dict[str, Any]:
+        assert self._data_dir is not None
+        settings = await self._read_settings_async()
+        export_dir = Path(
+            settings.get("export_dir") or str(self._data_dir / "exports")
+        ).expanduser()
+        folders = [
+            ("data_dir", "数据根目录", self._data_dir),
+            ("tasks_dir", "任务产物", self._data_dir / "tasks"),
+            ("uploads_dir", "上传文件", self._data_dir / "uploads"),
+            ("exports_dir", "导出目录", export_dir),
+        ]
+        items = [
+            await asyncio.to_thread(self._folder_stat, key, label, path)
+            for key, label, path in folders
+        ]
+        db_path = self._tm.db_path if self._tm is not None else self._data_dir / "idea.sqlite"
+        db_size = db_path.stat().st_size if db_path.is_file() else 0
+        total_bytes = sum(int(item["bytes"]) for item in items) + db_size
+        return {
+            "data_dir": str(self._data_dir),
+            "db_path": str(db_path),
+            "total_mb": round(total_bytes / 1024 / 1024, 2),
+            "items": [
+                *items,
+                {
+                    "key": "database",
+                    "label": "SQLite 数据库",
+                    "path": str(db_path),
+                    "bytes": db_size,
+                    "mb": round(db_size / 1024 / 1024, 2),
+                    "files": 1 if db_path.is_file() else 0,
+                    "is_file": True,
+                },
+            ],
+        }
+
+    @staticmethod
+    def _folder_stat(key: str, label: str, path: Path) -> dict[str, Any]:
+        total = 0
+        files = 0
+        if path.exists():
+            for child in path.rglob("*"):
+                try:
+                    if child.is_file():
+                        files += 1
+                        total += child.stat().st_size
+                except OSError:
+                    continue
+        return {
+            "key": key,
+            "label": label,
+            "path": str(path),
+            "bytes": total,
+            "mb": round(total / 1024 / 1024, 2),
+            "files": files,
+            "is_file": False,
+        }
+
+    async def _storage_path_for_key(self, key: str) -> Path:
+        assert self._data_dir is not None
+        settings = await self._read_settings_async()
+        mapping = {
+            "data_dir": self._data_dir,
+            "tasks_dir": self._data_dir / "tasks",
+            "uploads_dir": self._data_dir / "uploads",
+            "exports_dir": Path(settings.get("export_dir") or str(self._data_dir / "exports")).expanduser(),
+            "database": self._tm.db_path if self._tm is not None else self._data_dir / "idea.sqlite",
+        }
+        if key not in mapping:
+            raise HTTPException(status_code=400, detail=f"Unknown storage key: {key}")
+        return mapping[key]
+
+    @staticmethod
+    def _open_in_file_manager(path: Path) -> None:
+        target = path.parent if path.is_file() or path.suffix else path
+        target.mkdir(parents=True, exist_ok=True)
+        try:
+            if sys.platform == "win32":
+                subprocess.Popen(["explorer", str(target)])
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(target)])
+            else:
+                subprocess.Popen(["xdg-open", str(target)])
+        except (OSError, FileNotFoundError) as exc:
+            raise HTTPException(status_code=500, detail=f"Cannot open folder: {exc}") from exc
 
     def _get_loop(self) -> asyncio.AbstractEventLoop | None:
         try:
@@ -420,14 +707,15 @@ class Plugin(PluginBase):
             assert plugin._tm is not None and plugin._cookies_vault is not None
             settings = await plugin._tm.get_all_settings()
             engine_b = bool(settings.get("engine_b_enabled", False))
+            encryption_ready = plugin._cookies_vault.refresh_crypto_status()
             return {
                 "engine_a": {"enabled": True, "channels": ["bilibili", "youtube", "rsshub"]},
                 "engine_b": {
                     "enabled": engine_b,
                     "platforms": ["douyin", "xhs", "ks", "bilibili", "weibo"],
                     "cookies_status": await plugin._cookies_vault.list_status(),
-                    "encryption_ready": plugin._cookies_vault.encryption_ready,
-                    "warnings": plugin._cookies_vault.warn_messages,
+                    "encryption_ready": encryption_ready,
+                    "warnings": [] if encryption_ready else plugin._cookies_vault.warn_messages,
                 },
             }
 
@@ -465,14 +753,21 @@ class Plugin(PluginBase):
             )
             return {"ok": ok, "message": message}
 
-        # 19 POST /accounts/preview
+        # 19 POST /sources/cookies/{platform}/clear
+        @r.post("/sources/cookies/{platform}/clear")
+        async def clear_cookies(platform: str) -> dict[str, Any]:
+            assert plugin._cookies_vault is not None
+            deleted = await plugin._cookies_vault.delete(platform)
+            return {"ok": True, "deleted": deleted}
+
+        # 20 POST /accounts/preview
         @r.post("/accounts/preview")
         async def accounts_preview(body: AccountsPreviewBody) -> dict[str, Any]:
             return {
                 "accounts": [{"url": u, "platform_guess": _platform_guess(u)} for u in body.urls]
             }
 
-        # 20 POST /cleanup
+        # 21 POST /cleanup
         @r.post("/cleanup")
         async def cleanup(body: CleanupBody) -> dict[str, Any]:
             assert plugin._tm is not None and plugin._data_dir is not None
@@ -491,6 +786,21 @@ class Plugin(PluginBase):
                     deleted += 1
             return {"deleted": deleted, "freed_mb": round(freed, 2)}
 
+        @r.get("/storage/stats")
+        async def storage_stats() -> dict[str, Any]:
+            return await plugin._storage_stats()
+
+        @r.post("/storage/open-folder")
+        async def storage_open_folder(body: OpenFolderBody) -> dict[str, Any]:
+            if body.path:
+                target = Path(body.path).expanduser()
+            elif body.key:
+                target = await plugin._storage_path_for_key(body.key)
+            else:
+                raise HTTPException(status_code=400, detail="key or path is required")
+            await asyncio.to_thread(plugin._open_in_file_manager, target)
+            return {"ok": True, "path": str(target)}
+
         # 21 GET /healthz
         @r.get("/healthz")
         async def healthz() -> dict[str, Any]:
@@ -504,10 +814,39 @@ class Plugin(PluginBase):
                 "ok": True,
                 "version": PLUGIN_VERSION,
                 "db": str(plugin._tm.db_path),
+                "data_dir": str(plugin._data_dir) if plugin._data_dir else "",
                 "dashscope_key": bool(plugin._dashscope and plugin._dashscope.api_key),
                 "engine_b": bool((await plugin._tm.get_all_settings()).get("engine_b_enabled")),
                 "mdrm": mdrm_stats,
             }
+
+        @r.get("/system/python-deps")
+        async def python_deps() -> dict[str, Any]:
+            return {"ok": True, "items": plugin._pydeps.list_components()}
+
+        @r.get("/system/python-deps/{dep_id}/status")
+        async def python_dep_status(dep_id: str) -> dict[str, Any]:
+            try:
+                return plugin._pydeps.status(dep_id)
+            except ValueError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        @r.post("/system/python-deps/{dep_id}/install")
+        async def python_dep_install(dep_id: str, body: PythonDepOpBody) -> dict[str, Any]:
+            _ = body
+            try:
+                return await plugin._pydeps.start_install(dep_id)
+            except ValueError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        @r.post("/system/python-deps/{dep_id}/uninstall")
+        async def python_dep_uninstall(dep_id: str, body: PythonDepOpBody) -> dict[str, Any]:
+            if not body.confirm:
+                raise HTTPException(status_code=422, detail="confirm required")
+            try:
+                return await plugin._pydeps.start_uninstall(dep_id)
+            except ValueError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
 
         # 22/23 upload + uploads
         # add_upload_preview_routes wires both POST /upload and GET /uploads/{path}.

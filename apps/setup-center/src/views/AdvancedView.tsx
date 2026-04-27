@@ -45,7 +45,7 @@ export interface AdvancedViewProps {
   askConfirm: (msg: string, onConfirm: () => void) => void;
   refreshAll: () => Promise<void>;
   restartService: () => Promise<void>;
-  setView: React.Dispatch<React.SetStateAction<ViewId>>;
+  setView: (view: ViewId) => void;
 }
 
 export function AdvancedView(props: AdvancedViewProps) {

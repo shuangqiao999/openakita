@@ -770,9 +770,12 @@ def ensure_channel_deps(workspace_dir: str) -> None:
 
     from openakita.python_compat import patch_simplejson_jsondecodeerror
     from openakita.runtime_env import (
+        apply_agent_python_environment,
+        get_app_python_executable,
         get_channel_deps_dir,
         get_python_executable,
         inject_module_paths_runtime,
+        resolve_pip_index,
     )
 
     def _build_pip_env(py_path: Path) -> dict[str, str]:
@@ -887,7 +890,7 @@ def ensure_channel_deps(workspace_dir: str) -> None:
         _json_print({"status": "ok", "installed": [], "message": "所有依赖已就绪"})
         return
 
-    py = get_python_executable() or sys.executable
+    py = get_app_python_executable() or get_python_executable() or sys.executable
     py_path = Path(py)
     target_dir = get_channel_deps_dir()
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -896,7 +899,7 @@ def ensure_channel_deps(workspace_dir: str) -> None:
     if sys.platform == "win32":
         extra["creationflags"] = subprocess.CREATE_NO_WINDOW
 
-    pip_env = _build_pip_env(py_path)
+    pip_env = apply_agent_python_environment(_build_pip_env(py_path))
     ok, probe = _probe_python(py, pip_env, extra)
     if not ok and py_path.parent.name == "_internal":
         pip_env["PYTHONHOME"] = str(py_path.parent)
@@ -924,8 +927,6 @@ def ensure_channel_deps(workspace_dir: str) -> None:
                 "--no-index",
                 "--find-links",
                 str(wheels_dir),
-                "--target",
-                str(target_dir),
                 "--prefer-binary",
                 *missing,
             ]
@@ -953,16 +954,16 @@ def ensure_channel_deps(workspace_dir: str) -> None:
         except Exception:
             pass
 
-    # 在线镜像回退
-    user_index = os.environ.get("PIP_INDEX_URL", "").strip()
-    mirrors: list[tuple[str, str]] = []
-    if user_index:
-        host = user_index.split("//")[1].split("/")[0] if "//" in user_index else ""
-        mirrors.append((user_index, host))
+    # 在线镜像回退：优先统一 runtime manifest / 设置中心选择。
+    effective_index = resolve_pip_index()
+    mirrors: list[tuple[str, str]] = [
+        (effective_index["url"], effective_index.get("trusted_host", ""))
+    ]
     mirrors.extend(
         [
             ("https://mirrors.aliyun.com/pypi/simple/", "mirrors.aliyun.com"),
             ("https://pypi.tuna.tsinghua.edu.cn/simple/", "pypi.tuna.tsinghua.edu.cn"),
+            ("https://pypi.mirrors.ustc.edu.cn/simple/", "pypi.mirrors.ustc.edu.cn"),
             ("https://pypi.org/simple/", "pypi.org"),
         ]
     )
@@ -974,8 +975,6 @@ def ensure_channel_deps(workspace_dir: str) -> None:
             "-m",
             "pip",
             "install",
-            "--target",
-            str(target_dir),
             "-i",
             index_url,
             "--prefer-binary",

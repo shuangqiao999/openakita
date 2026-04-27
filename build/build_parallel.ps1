@@ -13,7 +13,8 @@
 param(
     [ValidateSet("core", "full")]
     [string]$Mode = "core",
-    [switch]$Fast
+    [switch]$Fast,
+    [switch]$SkipBootstrap
 )
 
 $ErrorActionPreference = "Stop"
@@ -31,9 +32,9 @@ Write-Host "==================================================" -ForegroundColor
 Write-Host "  OpenAkita Parallel Build (mode: $modeLabel)" -ForegroundColor Cyan
 Write-Host "==================================================" -ForegroundColor Cyan
 
-# ── Phase 1: Three parallel jobs ──────────────────────────
+# ── Resolve tools ─────────────────────────────────────────
 Write-Host ""
-Write-Host "[Phase 1/3] Starting 3 parallel build tasks..." -ForegroundColor Yellow
+Write-Host "[Setup] Resolving build tools..." -ForegroundColor Yellow
 
 # Resolve full native paths for tools so Start-Job can find them.
 # On Windows, npm/cargo are .cmd batch files; Get-Command may return extensionless bash scripts
@@ -59,13 +60,44 @@ if (-not $npmCmd)    { Write-Host "  [WARN] npm not found in PATH" -ForegroundCo
 if (-not $cargoCmd)  { Write-Host "  [WARN] cargo not found in PATH" -ForegroundColor Yellow }
 if (-not $pythonCmd) { Write-Host "  [WARN] python not found in PATH" -ForegroundColor Yellow }
 
-# Job A: PyInstaller
+# ── Phase 1: Build shared web frontend ────────────────────
+# dist-web is consumed by both:
+#   1) python -m build --wheel (bootstrap/app-venv install)
+#   2) PyInstaller fallback backend (_internal/openakita/web)
+# Build it once up front so the two downstream packagers reuse identical assets.
+Write-Host ""
+Write-Host "[Phase 1/4] Building web frontend (dist-web)..." -ForegroundColor Yellow
+Push-Location $SetupCenter
+try {
+    $oldEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    & $npmCmd run build:web 2>&1
+    $webExit = $LASTEXITCODE
+    $ErrorActionPreference = $oldEap
+    if ($webExit -ne 0) { throw "Web frontend build failed (exit $webExit)" }
+} finally {
+    if ($oldEap) { $ErrorActionPreference = $oldEap }
+    Pop-Location
+}
+Write-Host "  ✓ Web frontend built" -ForegroundColor Green
+$phase0Time = [math]::Round($sw.Elapsed.TotalSeconds)
+
+# ── Phase 2: Four parallel jobs ───────────────────────────
+Write-Host ""
+if ($SkipBootstrap) {
+    Write-Host "[Phase 2/4] Starting 3 parallel build tasks..." -ForegroundColor Yellow
+} else {
+    Write-Host "[Phase 2/4] Starting 4 parallel build tasks..." -ForegroundColor Yellow
+}
+
+# Job A: PyInstaller fallback backend
 $jobPy = Start-Job -Name "PyInstaller" -ScriptBlock {
     param($root, $scriptDir, $mode, $py, $useFast)
     Set-Location $root
-    $args = @("$scriptDir\build_backend.py", "--mode", $mode)
-    if ($useFast) { $args += "--fast" }
-    & $py @args 2>&1
+    $backendArgs = @("$scriptDir\build_backend.py", "--mode", $mode, "--skip-web-build")
+    if ($useFast) { $backendArgs += "--fast" }
+    $ErrorActionPreference = "Continue"
+    & $py @backendArgs 2>&1
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed (exit $LASTEXITCODE)" }
 } -ArgumentList $ProjectRoot, $ScriptDir, $Mode, $pythonCmd, $Fast.IsPresent
 Write-Host "  → [A] PyInstaller backend packaging  (Job: $($jobPy.Id))"
@@ -75,6 +107,7 @@ $jobFe = Start-Job -Name "Frontend" -ScriptBlock {
     param($dir, $npm)
     Set-Location $dir
     $env:VITE_PREVIEW_BUILD = "true"
+    $ErrorActionPreference = "Continue"
     & $npm run build 2>&1
     if ($LASTEXITCODE -ne 0) { throw "Frontend build failed (exit $LASTEXITCODE)" }
 } -ArgumentList $SetupCenter, $npmCmd
@@ -84,16 +117,30 @@ Write-Host "  → [B] Frontend build (Vite)          (Job: $($jobFe.Id))"
 $jobRs = Start-Job -Name "RustCompile" -ScriptBlock {
     param($dir, $cargo)
     Set-Location $dir
+    $ErrorActionPreference = "Continue"
     & $cargo build --release --features tauri/custom-protocol 2>&1
     if ($LASTEXITCODE -ne 0) { throw "Rust compile failed (exit $LASTEXITCODE)" }
 } -ArgumentList $SrcTauri, $cargoCmd
 Write-Host "  → [C] Rust release compile           (Job: $($jobRs.Id))"
+
+# Job D: Bootstrap resources for dual-venv runtime
+if (-not $SkipBootstrap) {
+    $jobBootstrap = Start-Job -Name "Bootstrap" -ScriptBlock {
+        param($root, $scriptDir, $py)
+        Set-Location $root
+        $ErrorActionPreference = "Continue"
+        & $py "$scriptDir\prepare_bootstrap_resources.py" 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "Bootstrap resources failed (exit $LASTEXITCODE)" }
+    } -ArgumentList $ProjectRoot, $ScriptDir, $pythonCmd
+    Write-Host "  → [D] Bootstrap resources            (Job: $($jobBootstrap.Id))"
+}
 
 Write-Host ""
 Write-Host "  Waiting for all tasks to complete..."
 
 # Wait for all jobs
 $allJobs = @($jobPy, $jobFe, $jobRs)
+if (-not $SkipBootstrap) { $allJobs += $jobBootstrap }
 $failed = $false
 
 # Poll with progress
@@ -130,8 +177,9 @@ foreach ($job in $allJobs) {
 Remove-Job $allJobs -Force
 
 $phase1Time = [math]::Round($sw.Elapsed.TotalSeconds)
+$parallelTime = [math]::Round($sw.Elapsed.TotalSeconds - $phase0Time)
 Write-Host ""
-Write-Host "  Phase 1 completed in ${phase1Time}s" -ForegroundColor Cyan
+Write-Host "  Phase 2 completed in ${parallelTime}s" -ForegroundColor Cyan
 
 if ($failed) {
     Write-Host "ERROR: Critical task failed. Aborting." -ForegroundColor Red
@@ -140,7 +188,7 @@ if ($failed) {
 
 # ── Phase 2: Copy resources ──────────────────────────────
 Write-Host ""
-Write-Host "[Phase 2/3] Copying backend to Tauri resources..." -ForegroundColor Yellow
+Write-Host "[Phase 3/4] Copying backend to Tauri resources..." -ForegroundColor Yellow
 
 $DistServerDir = Join-Path $ProjectRoot "dist\openakita-server"
 $TargetDir = Join-Path $ResourceDir "openakita-server"
@@ -161,7 +209,7 @@ Write-Host "  ✓ Resources copied" -ForegroundColor Green
 
 # ── Phase 3: Tauri NSIS bundling ──────────────────────────
 Write-Host ""
-Write-Host "[Phase 3/3] Creating NSIS installer..." -ForegroundColor Yellow
+Write-Host "[Phase 4/4] Creating NSIS installer..." -ForegroundColor Yellow
 
 Push-Location $SetupCenter
 try {
@@ -178,8 +226,9 @@ $totalTime = [math]::Round($sw.Elapsed.TotalSeconds)
 Write-Host ""
 Write-Host "==================================================" -ForegroundColor Green
 Write-Host "  Build completed in ${totalTime}s" -ForegroundColor Green
-Write-Host "  Phase 1 (parallel): ${phase1Time}s" -ForegroundColor Green
-Write-Host "  Phase 2+3 (sequential): $($totalTime - $phase1Time)s" -ForegroundColor Green
+Write-Host "  Phase 1 (web): ${phase0Time}s" -ForegroundColor Green
+Write-Host "  Phase 2 (parallel): ${parallelTime}s" -ForegroundColor Green
+Write-Host "  Phase 3+4 (sequential): $($totalTime - $phase1Time)s" -ForegroundColor Green
 Write-Host "==================================================" -ForegroundColor Green
 
 # Rename latest installer with timestamp + git hash

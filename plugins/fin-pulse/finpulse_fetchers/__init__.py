@@ -24,17 +24,23 @@ from finpulse_fetchers.base import (
 )
 
 
-# module_path → exported class name
+# module_path → exported class name.
+# NewsNow-backed sources are NOT listed here individually — they are
+# all served by the unified NewsNowFetcher which iterates SOURCE_DEFS
+# at runtime.  Only direct/rss fetchers need explicit entries.
 SOURCE_REGISTRY: dict[str, tuple[str, str]] = {
-    "wallstreetcn": ("finpulse_fetchers.wallstreetcn", "WallStreetCNFetcher"),
-    "cls": ("finpulse_fetchers.cls", "CLSFetcher"),
-    "xueqiu": ("finpulse_fetchers.xueqiu", "XueqiuFetcher"),
+    # direct fetchers
     "eastmoney": ("finpulse_fetchers.eastmoney", "EastmoneyFetcher"),
     "pbc_omo": ("finpulse_fetchers.pbc_omo", "PbcOmoFetcher"),
+    "yicai": ("finpulse_fetchers.yicai", "YicaiFetcher"),
+    "nbd": ("finpulse_fetchers.nbd", "NBDFetcher"),
+    "stcn": ("finpulse_fetchers.stcn", "STCNFetcher"),
+    # rss fetchers
     "nbs": ("finpulse_fetchers.nbs", "NBSFetcher"),
     "fed_fomc": ("finpulse_fetchers.fed_fomc", "FedFOMCFetcher"),
     "sec_edgar": ("finpulse_fetchers.sec_edgar", "SecEdgarFetcher"),
     "rss_generic": ("finpulse_fetchers.rss", "GenericRSSFetcher"),
+    # unified newsnow (handles all kind=newsnow sources internally)
     "newsnow": ("finpulse_fetchers.newsnow", "NewsNowFetcher"),
 }
 

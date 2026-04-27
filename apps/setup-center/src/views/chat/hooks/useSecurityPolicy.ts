@@ -22,24 +22,23 @@ const TRUST_ESCALATION_THRESHOLD = 3;
 function shouldAutoAllow(
   mode: PermissionMode,
   riskLevel: string,
-  sessionTrust: Map<string, SessionTrustEntry>,
+  _sessionTrust: Map<string, SessionTrustEntry>,
 ): boolean {
   const rl = riskLevel.toLowerCase();
 
   if (mode === "yolo") {
     if (rl === "low" || rl === "medium" || rl === "high") return true;
   } else if (mode === "smart") {
-    if (rl === "low") return true;
-    const entry = sessionTrust.get("*");
-    if (entry && entry.allows >= TRUST_ESCALATION_THRESHOLD && rl === "medium")
-      return true;
+    // The backend owns smart-mode escalation. If it emitted a confirmation,
+    // the client should not auto-resolve it with a separate counter.
+    return false;
   }
 
   return false;
 }
 
 export function useSecurityPolicy(apiBase: string) {
-  const [permissionMode, setPermissionModeLocal] = useState<PermissionMode>("smart");
+  const [permissionMode, setPermissionModeLocal] = useState<PermissionMode>("yolo");
   const sessionTrustRef = useRef(new Map<string, SessionTrustEntry>());
 
   const fetchMode = useCallback(() => {
@@ -63,14 +62,28 @@ export function useSecurityPolicy(apiBase: string) {
 
   const setPermissionMode = useCallback(
     (mode: PermissionMode) => {
+      const previousMode = permissionMode;
       setPermissionModeLocal(mode);
       fetch(`${apiBase}/api/config/permission-mode`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mode }),
-      }).catch(() => {});
+      })
+        .then((r) => r.json())
+        .then((d) => {
+          const m = d.mode === "trust" ? "yolo" : d.mode;
+          if (d.status === "error" || !["cautious", "smart", "yolo"].includes(m)) {
+            setPermissionModeLocal(previousMode);
+            return;
+          }
+          setPermissionModeLocal(m);
+        })
+        .catch((e) => {
+          logger.warn?.("[useSecurityPolicy] set mode failed", e);
+          setPermissionModeLocal(previousMode);
+        });
     },
-    [apiBase],
+    [apiBase, permissionMode],
   );
 
   const recordAllow = useCallback((toolName: string) => {

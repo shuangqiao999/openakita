@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from ..core.log_health import record_health_event
 from .api import PluginAPI, PluginBase
 from .asset_bus import AssetBus
 from .compat import check_compatibility
@@ -152,11 +153,30 @@ class PluginManager:
         """Check plugin compatibility (system version, API version, Python, SDK)."""
         result = check_compatibility(manifest)
         for w in result.warnings:
-            logger.warning(w)
+            if record_health_event(
+                "plugin",
+                f"{manifest.id}:compat_warning",
+                w,
+                suggestion="插件兼容性警告已聚合；详情可在插件管理页查看。",
+            ):
+                logger.warning(w)
         for e in result.errors:
-            logger.error(e)
+            if record_health_event(
+                "plugin",
+                f"{manifest.id}:compat_error",
+                e,
+                severity="error",
+                suggestion="插件与当前 OpenAkita/API 版本不兼容，请升级插件或禁用它。",
+            ):
+                logger.error(e)
         if not result.ok:
-            logger.warning("Plugin '%s' skipped due to compatibility errors", manifest.id)
+            if record_health_event(
+                "plugin",
+                f"{manifest.id}:skipped_compat",
+                "skipped due to compatibility errors",
+                suggestion="插件已降级为跳过加载，避免持续刷屏。",
+            ):
+                logger.warning("Plugin '%s' skipped due to compatibility errors", manifest.id)
         return result.ok
 
     # --- Discovery ---
@@ -232,7 +252,14 @@ class PluginManager:
                 manifest = parse_manifest(plugin_dir)
                 parsed.append((plugin_dir, manifest))
             except ManifestError as e:
-                logger.error("Skipping %s: %s", plugin_dir.name, e)
+                if record_health_event(
+                    "plugin",
+                    f"{plugin_dir.name}:manifest",
+                    str(e),
+                    severity="error",
+                    suggestion="请检查 plugin.json/manifest 字段是否完整且 JSON 格式正确。",
+                ):
+                    logger.error("Skipping %s: %s", plugin_dir.name, e)
                 self._failed[plugin_dir.name] = str(e)
 
         sorted_plugins, cyclic_ids = self._topological_sort(parsed)
@@ -1199,7 +1226,13 @@ class PluginManager:
             assert ui is not None
             icon_url = ""
             if ui.icon:
-                icon_url = f"/api/plugins/{lp.manifest.id}/ui/{ui.icon}"
+                version = ""
+                ui_icon_path = (lp.plugin_dir / ui.entry).parent / ui.icon
+                try:
+                    version = f"?v={ui_icon_path.stat().st_mtime_ns}"
+                except OSError:
+                    version = ""
+                icon_url = f"/api/plugins/{lp.manifest.id}/ui/{ui.icon}{version}"
             result.append({
                 "id": lp.manifest.id,
                 "title": ui.title or lp.manifest.name,

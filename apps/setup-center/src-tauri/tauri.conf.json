@@ -16,7 +16,8 @@
       "icons/icon.icns"
     ],
     "resources": [
-      "resources/openakita-server/"
+      "resources/openakita-server/",
+      "resources/bootstrap/"
     ],
     "macOS": {
       "entitlements": "Entitlements.plist",

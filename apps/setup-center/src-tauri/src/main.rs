@@ -585,6 +585,533 @@ fn bundled_backend_dir() -> PathBuf {
     primary
 }
 
+fn bootstrap_resource_dir() -> PathBuf {
+    let exe_path = std::env::current_exe().ok();
+    let exe_dir = exe_path
+        .as_ref()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(contents_dir) = exe_dir.parent() {
+            let primary = contents_dir
+                .join("Resources")
+                .join("resources")
+                .join("bootstrap");
+            if primary.exists() {
+                return primary;
+            }
+            let fallback = contents_dir.join("Resources").join("bootstrap");
+            if fallback.exists() {
+                return fallback;
+            }
+        }
+    }
+
+    let primary = exe_dir.join("resources").join("bootstrap");
+    if primary.exists() {
+        return primary;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let static_names: &[&str] = &[
+            "openakita-setup-center",
+            "openakita-desktop",
+            "open-akita-desktop",
+        ];
+        let exe_name = exe_path
+            .as_ref()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()));
+        let mut candidates: Vec<PathBuf> = vec![];
+        if let Some(ref name) = exe_name {
+            candidates.push(PathBuf::from(format!("/usr/lib/{}/resources/bootstrap", name)));
+        }
+        for app_name in static_names {
+            candidates.push(PathBuf::from(format!("/usr/lib/{}/resources/bootstrap", app_name)));
+        }
+        if let Some(usr_dir) = exe_dir.parent() {
+            if let Some(ref name) = exe_name {
+                candidates.push(usr_dir.join("lib").join(name).join("resources").join("bootstrap"));
+            }
+            for app_name in static_names {
+                candidates.push(
+                    usr_dir
+                        .join("lib")
+                        .join(app_name)
+                        .join("resources")
+                        .join("bootstrap"),
+                );
+            }
+        }
+        for c in candidates {
+            if c.exists() {
+                return c;
+            }
+        }
+    }
+
+    primary
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RuntimePipIndex {
+    id: String,
+    url: String,
+    #[serde(default)]
+    trusted_host: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RuntimeEnvState {
+    path: String,
+    status: String,
+    #[serde(default)]
+    created_at: String,
+    #[serde(default)]
+    last_verified_at: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RuntimeManifest {
+    schema_version: u32,
+    app_version: String,
+    wheel_hash: String,
+    python_version: String,
+    app_venv: RuntimeEnvState,
+    agent_venv: RuntimeEnvState,
+    pip_index: RuntimePipIndex,
+    legacy_mode: bool,
+    last_error: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct BootstrapWheel {
+    name: String,
+    #[serde(default)]
+    sha256: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct BootstrapManifest {
+    #[serde(default = "default_python_version")]
+    python_version: String,
+    wheel: BootstrapWheel,
+    #[serde(default)]
+    default_pip_index: Option<RuntimePipIndex>,
+}
+
+#[derive(Clone, Debug)]
+struct RuntimeEnvInfo {
+    app_python: PathBuf,
+    agent_python: PathBuf,
+    app_venv: PathBuf,
+    agent_venv: PathBuf,
+    pip_index: RuntimePipIndex,
+}
+
+fn default_python_version() -> String {
+    "3.12".to_string()
+}
+
+fn runtime_root_dir() -> PathBuf {
+    openakita_root_dir().join("runtime")
+}
+
+fn runtime_manifest_path() -> PathBuf {
+    runtime_root_dir().join("manifest.json")
+}
+
+fn app_venv_dir() -> PathBuf {
+    runtime_root_dir().join("app-venv")
+}
+
+fn agent_venv_dir() -> PathBuf {
+    runtime_root_dir().join("agent-venv")
+}
+
+fn runtime_logs_dir() -> PathBuf {
+    runtime_root_dir().join("logs")
+}
+
+fn runtime_cache_dir() -> PathBuf {
+    runtime_root_dir().join("cache")
+}
+
+fn runtime_venv_python_path(venv_dir: &Path) -> PathBuf {
+    if cfg!(windows) {
+        venv_dir.join("Scripts").join("python.exe")
+    } else {
+        venv_dir.join("bin").join("python")
+    }
+}
+
+fn runtime_venv_home_python_path(venv_dir: &Path) -> Option<PathBuf> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let cfg_path = venv_dir.join("pyvenv.cfg");
+    let content = fs::read_to_string(cfg_path).ok()?;
+    for line in content.lines() {
+        let Some(home) = line.strip_prefix("home = ") else {
+            continue;
+        };
+        let py = PathBuf::from(home.trim()).join("python.exe");
+        if py.exists() {
+            return Some(py);
+        }
+    }
+    None
+}
+
+fn runtime_venv_site_packages_dir(venv_dir: &Path) -> Option<PathBuf> {
+    if cfg!(windows) {
+        let sp = venv_dir.join("Lib").join("site-packages");
+        return sp.exists().then_some(sp);
+    }
+    None
+}
+
+fn python_string_literal(value: &Path) -> String {
+    format!("{:?}", value.to_string_lossy().to_string())
+}
+
+fn runtime_venv_backend_args(venv_dir: &Path) -> Vec<String> {
+    if cfg!(windows) && runtime_venv_home_python_path(venv_dir).is_some() {
+        if let Some(site_packages) = runtime_venv_site_packages_dir(venv_dir) {
+            let venv_python = runtime_venv_python_path(venv_dir);
+            let code = format!(
+                "import runpy, site, sys; sys.prefix = sys.exec_prefix = {}; sys.executable = {}; site.addsitedir({}); runpy.run_module('openakita.main', run_name='__main__')",
+                python_string_literal(venv_dir),
+                python_string_literal(&venv_python),
+                python_string_literal(&site_packages)
+            );
+            return vec!["-u".into(), "-c".into(), code, "serve".into()];
+        }
+    }
+    vec!["-u".into(), "-m".into(), "openakita.main".into(), "serve".into()]
+}
+
+fn runtime_venv_backend_python_path(venv_dir: &Path) -> PathBuf {
+    // Do not use the python.exe/pythonw.exe launcher files created by uv on
+    // Windows. They delegate to the managed CPython executable as a grandchild,
+    // which escapes our CREATE_NO_WINDOW flag and leaves a visible console.
+    if let Some(py) = runtime_venv_home_python_path(venv_dir) {
+        return py;
+    }
+    runtime_venv_python_path(venv_dir)
+}
+
+fn runtime_venv_bin_dir(venv_dir: &Path) -> PathBuf {
+    if cfg!(windows) {
+        venv_dir.join("Scripts")
+    } else {
+        venv_dir.join("bin")
+    }
+}
+
+fn ensure_runtime_layout() -> Result<(), String> {
+    let root = runtime_root_dir();
+    for dir in [
+        root.clone(),
+        app_venv_dir(),
+        agent_venv_dir(),
+        runtime_logs_dir(),
+        runtime_cache_dir().join("wheels"),
+        runtime_cache_dir().join("uv"),
+        runtime_cache_dir().join("python"),
+    ] {
+        fs::create_dir_all(&dir).map_err(|e| format!("create runtime dir {} failed: {e}", dir.display()))?;
+    }
+    Ok(())
+}
+
+fn default_pip_index() -> RuntimePipIndex {
+    RuntimePipIndex {
+        id: "aliyun".into(),
+        url: "https://mirrors.aliyun.com/pypi/simple/".into(),
+        trusted_host: "mirrors.aliyun.com".into(),
+    }
+}
+
+fn trusted_host_for_url(url: &str) -> String {
+    url.split_once("://")
+        .map(|(_, rest)| rest.split('/').next().unwrap_or("").to_string())
+        .unwrap_or_default()
+}
+
+fn read_runtime_manifest() -> Option<RuntimeManifest> {
+    let content = fs::read_to_string(runtime_manifest_path()).ok()?;
+    serde_json::from_str::<RuntimeManifest>(&content).ok()
+}
+
+fn resolve_runtime_pip_index() -> RuntimePipIndex {
+    if let Some(manifest) = read_runtime_manifest() {
+        if !manifest.pip_index.url.trim().is_empty() {
+            return manifest.pip_index;
+        }
+    }
+    if let Ok(url) = std::env::var("OPENAKITA_PIP_INDEX_URL") {
+        if !url.trim().is_empty() {
+            let trusted_host = std::env::var("OPENAKITA_PIP_TRUSTED_HOST")
+                .unwrap_or_else(|_| trusted_host_for_url(&url));
+            return RuntimePipIndex {
+                id: "env-openakita".into(),
+                url,
+                trusted_host,
+            };
+        }
+    }
+    if let Ok(url) = std::env::var("PIP_INDEX_URL") {
+        if !url.trim().is_empty() {
+            let trusted_host = std::env::var("PIP_TRUSTED_HOST")
+                .unwrap_or_else(|_| trusted_host_for_url(&url));
+            return RuntimePipIndex {
+                id: "env-pip".into(),
+                url,
+                trusted_host,
+            };
+        }
+    }
+    default_pip_index()
+}
+
+fn read_bootstrap_manifest() -> Result<BootstrapManifest, String> {
+    let path = bootstrap_resource_dir().join("manifest.json");
+    let content = fs::read_to_string(&path)
+        .map_err(|e| format!("read bootstrap manifest {} failed: {e}", path.display()))?;
+    serde_json::from_str(&content)
+        .map_err(|e| format!("parse bootstrap manifest {} failed: {e}", path.display()))
+}
+
+fn bootstrap_uv_path() -> PathBuf {
+    let bootstrap = bootstrap_resource_dir();
+    let local = if cfg!(windows) {
+        bootstrap.join("bin").join("uv.exe")
+    } else {
+        bootstrap.join("bin").join("uv")
+    };
+    if local.exists() {
+        local
+    } else {
+        PathBuf::from("uv")
+    }
+}
+
+fn run_and_log(mut cmd: Command, log_path: &Path) -> Result<(), String> {
+    let output = cmd
+        .output()
+        .map_err(|e| format!("run command failed: {e}"))?;
+    let mut log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+        .map_err(|e| format!("open runtime log {} failed: {e}", log_path.display()))?;
+    let _ = writeln!(log, "\n$ {:?}", cmd);
+    let _ = log.write_all(&output.stdout);
+    let _ = log.write_all(&output.stderr);
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!("command failed with status {}", output.status))
+    }
+}
+
+fn health_check_python(py: &Path, code: &str, log_path: &Path) -> bool {
+    if !py.exists() {
+        return false;
+    }
+    let mut cmd = Command::new(py);
+    cmd.args(["-c", code]);
+    apply_no_window(&mut cmd);
+    match cmd.output() {
+        Ok(output) if output.status.success() => true,
+        Ok(output) => {
+            let mut log = OpenOptions::new().create(true).append(true).open(log_path).ok();
+            if let Some(ref mut log) = log {
+                let _ = writeln!(log, "health check failed for {}", py.display());
+                let _ = log.write_all(&output.stdout);
+                let _ = log.write_all(&output.stderr);
+            }
+            false
+        }
+        Err(_) => false,
+    }
+}
+
+fn ensure_venv(venv_dir: &Path, python_version: &str, log_path: &Path) -> Result<PathBuf, String> {
+    let py = runtime_venv_python_path(venv_dir);
+    if health_check_python(&py, "import pip", log_path) {
+        return Ok(py);
+    }
+    let uv = bootstrap_uv_path();
+    let mut cmd = Command::new(&uv);
+    // uv does not guarantee pip is present unless the venv is seeded. The
+    // runtime manager immediately uses `uv pip install` and the health checks
+    // require `import pip`, so seed the venv at creation time.
+    cmd.args(["venv", "--python", python_version, "--seed", "--clear"]);
+    cmd.arg(venv_dir);
+    apply_no_window(&mut cmd);
+    run_and_log(cmd, log_path)?;
+    if health_check_python(&py, "import pip", log_path) {
+        Ok(py)
+    } else {
+        Err(format!("venv health check failed after creation: {}", py.display()))
+    }
+}
+
+fn ensure_app_venv(
+    bootstrap: &BootstrapManifest,
+    pip_index: &RuntimePipIndex,
+) -> Result<PathBuf, String> {
+    let log_path = runtime_logs_dir().join("app-venv.log");
+    let app_py = runtime_venv_python_path(&app_venv_dir());
+    let expected_version = env!("CARGO_PKG_VERSION");
+    let manifest_ok = read_runtime_manifest()
+        .map(|m| {
+            m.app_version == expected_version
+                && m.wheel_hash == bootstrap.wheel.sha256
+                && !m.legacy_mode
+        })
+        .unwrap_or(false);
+    if manifest_ok && health_check_python(&app_py, "import openakita, pip, certifi", &log_path) {
+        return Ok(app_py);
+    }
+
+    let app_py = ensure_venv(&app_venv_dir(), &bootstrap.python_version, &log_path)?;
+    let wheel_path = bootstrap_resource_dir().join(&bootstrap.wheel.name);
+    if !wheel_path.exists() {
+        return Err(format!("bootstrap wheel not found: {}", wheel_path.display()));
+    }
+    let wheel_arg = format!("{}[desktop]", wheel_path.display());
+    let mut cmd = Command::new(bootstrap_uv_path());
+    cmd.args(["pip", "install", "--python"]);
+    cmd.arg(&app_py);
+    cmd.arg(wheel_arg);
+    cmd.args(["--reinstall-package", "openakita"]);
+    // `uv pip install` does not support pip's `--prefer-binary` flag.
+    // Keep binary preference on Python-side `pip install` calls only.
+    cmd.args(["--index-url", &pip_index.url]);
+    if !pip_index.trusted_host.trim().is_empty() {
+        cmd.args(["--trusted-host", &pip_index.trusted_host]);
+    }
+    apply_no_window(&mut cmd);
+    run_and_log(cmd, &log_path)?;
+    if health_check_python(&app_py, "import openakita, pip, certifi", &log_path) {
+        Ok(app_py)
+    } else {
+        Err("app venv health check failed after OpenAkita install".into())
+    }
+}
+
+fn ensure_agent_venv(
+    bootstrap: &BootstrapManifest,
+    _pip_index: &RuntimePipIndex,
+) -> Result<PathBuf, String> {
+    let log_path = runtime_logs_dir().join("agent-venv.log");
+    ensure_venv(&agent_venv_dir(), &bootstrap.python_version, &log_path)
+}
+
+fn write_runtime_manifest(info: &RuntimeEnvInfo, bootstrap: &BootstrapManifest) {
+    let now = now_epoch_secs().to_string();
+    let manifest = RuntimeManifest {
+        schema_version: 1,
+        app_version: env!("CARGO_PKG_VERSION").into(),
+        wheel_hash: bootstrap.wheel.sha256.clone(),
+        python_version: bootstrap.python_version.clone(),
+        app_venv: RuntimeEnvState {
+            path: info.app_venv.to_string_lossy().to_string(),
+            status: "ready".into(),
+            created_at: now.clone(),
+            last_verified_at: now.clone(),
+        },
+        agent_venv: RuntimeEnvState {
+            path: info.agent_venv.to_string_lossy().to_string(),
+            status: "ready".into(),
+            created_at: now.clone(),
+            last_verified_at: now,
+        },
+        pip_index: info.pip_index.clone(),
+        legacy_mode: false,
+        last_error: None,
+    };
+    if let Ok(content) = serde_json::to_string_pretty(&manifest) {
+        let _ = fs::write(runtime_manifest_path(), content);
+    }
+}
+
+fn mark_legacy_runtime_mode(error: &str) {
+    let pip_index = resolve_runtime_pip_index();
+    let now = now_epoch_secs().to_string();
+    let manifest = RuntimeManifest {
+        schema_version: 1,
+        app_version: env!("CARGO_PKG_VERSION").into(),
+        wheel_hash: String::new(),
+        python_version: "3.12".into(),
+        app_venv: RuntimeEnvState {
+            path: app_venv_dir().to_string_lossy().to_string(),
+            status: "failed".into(),
+            created_at: now.clone(),
+            last_verified_at: now.clone(),
+        },
+        agent_venv: RuntimeEnvState {
+            path: agent_venv_dir().to_string_lossy().to_string(),
+            status: "unknown".into(),
+            created_at: now.clone(),
+            last_verified_at: now,
+        },
+        pip_index,
+        legacy_mode: true,
+        last_error: Some(error.to_string()),
+    };
+    if let Ok(content) = serde_json::to_string_pretty(&manifest) {
+        let _ = fs::write(runtime_manifest_path(), content);
+    }
+}
+
+fn ensure_dual_runtime_env() -> Result<RuntimeEnvInfo, String> {
+    ensure_runtime_layout()?;
+    let bootstrap = read_bootstrap_manifest()?;
+    let pip_index = resolve_runtime_pip_index();
+    let app_python = ensure_app_venv(&bootstrap, &pip_index)?;
+    let agent_python = ensure_agent_venv(&bootstrap, &pip_index)?;
+    let info = RuntimeEnvInfo {
+        app_python,
+        agent_python,
+        app_venv: app_venv_dir(),
+        agent_venv: agent_venv_dir(),
+        pip_index,
+    };
+    write_runtime_manifest(&info, &bootstrap);
+    Ok(info)
+}
+
+fn prepend_path(cmd: &mut Command, dir: &Path) {
+    let current = std::env::var_os("PATH").unwrap_or_default();
+    let mut paths = vec![dir.to_path_buf()];
+    paths.extend(std::env::split_paths(&current));
+    if let Ok(joined) = std::env::join_paths(paths) {
+        cmd.env("PATH", joined);
+    }
+}
+
+fn apply_dual_runtime_env(cmd: &mut Command) {
+    strip_harmful_python_env(cmd);
+    let pip_index = resolve_runtime_pip_index();
+    cmd.env("PYTHONNOUSERSITE", "1");
+    cmd.env("OPENAKITA_RUNTIME_ROOT", runtime_root_dir());
+    cmd.env("OPENAKITA_APP_PYTHON", runtime_venv_python_path(&app_venv_dir()));
+    cmd.env("OPENAKITA_AGENT_PYTHON", runtime_venv_python_path(&agent_venv_dir()));
+    cmd.env("OPENAKITA_AGENT_BIN", runtime_venv_bin_dir(&agent_venv_dir()));
+    cmd.env("PIP_INDEX_URL", &pip_index.url);
+    cmd.env("UV_INDEX_URL", &pip_index.url);
+    if !pip_index.trusted_host.trim().is_empty() {
+        cmd.env("PIP_TRUSTED_HOST", &pip_index.trusted_host);
+    }
+    prepend_path(cmd, &runtime_venv_bin_dir(&agent_venv_dir()));
+}
+
 /// 获取安装包内置的 Python 解释器路径（openakita-server/_internal）
 fn bundled_internal_python_path() -> Option<PathBuf> {
     let bundled = bundled_backend_dir();
@@ -618,9 +1145,30 @@ fn bundled_internal_python_path() -> Option<PathBuf> {
 }
 
 /// 获取后端可执行文件及参数
-/// 优先使用内嵌的 PyInstaller 打包后端，降级到 venv python
+/// 优先使用 dual app-venv，失败后保留 PyInstaller legacy fallback。
 fn get_backend_executable(venv_dir: &str) -> (PathBuf, Vec<String>) {
-    // 1. 优先: 内嵌的 PyInstaller 打包后端
+    // 1. 优先: dual runtime app venv
+    match ensure_dual_runtime_env() {
+        Ok(runtime) => {
+            let backend_python = runtime_venv_backend_python_path(&runtime.app_venv);
+            log_to_file(&format!(
+                "[runtime] dual venv ready: app_python={}, backend_python={}, agent_python={}",
+                runtime.app_python.display(),
+                backend_python.display(),
+                runtime.agent_python.display()
+            ));
+            return (
+                backend_python,
+                runtime_venv_backend_args(&runtime.app_venv),
+            );
+        }
+        Err(e) => {
+            log_to_file(&format!("[runtime] dual venv unavailable, fallback to legacy: {e}"));
+            mark_legacy_runtime_mode(&e);
+        }
+    }
+
+    // 2. fallback: 内嵌的 PyInstaller 打包后端
     let bundled_dir = bundled_backend_dir();
     let bundled_exe = if cfg!(windows) {
         bundled_dir.join("openakita-server.exe")
@@ -630,9 +1178,9 @@ fn get_backend_executable(venv_dir: &str) -> (PathBuf, Vec<String>) {
     if bundled_exe.exists() {
         return (bundled_exe, vec!["serve".to_string()]);
     }
-    // 2. 降级: venv python（开发模式 / 旧安装）
+    // 3. 最后降级: 旧 ~/.openakita/venv python（开发模式 / 旧安装）
     eprintln!(
-        "[backend] bundled openakita-server not found at: {}\n\
+        "[backend] dual runtime and bundled openakita-server unavailable at: {}\n\
          [backend] current_exe: {:?}\n\
          [backend] falling back to venv python in: {}",
         bundled_exe.display(),
@@ -2043,7 +2591,7 @@ fn openakita_list_processes() -> Vec<OpenAkitaProcess> {
         let mut pe: win::PROCESSENTRY32W = unsafe { std::mem::zeroed() };
         pe.dw_size = std::mem::size_of::<win::PROCESSENTRY32W>() as u32;
 
-        let mut python_pids: Vec<u32> = Vec::new();
+        let mut python_pids: Vec<(u32, u32)> = Vec::new();
 
         if unsafe { win::Process32FirstW(snap, &mut pe) } != 0 {
             loop {
@@ -2056,7 +2604,7 @@ fn openakita_list_processes() -> Vec<OpenAkitaProcess> {
                 );
                 let name_lower = name.to_ascii_lowercase();
                 if name_lower.contains("python") {
-                    python_pids.push(pe.th32_process_id);
+                    python_pids.push((pe.th32_process_id, pe.th32_parent_process_id));
                 }
                 if unsafe { win::Process32NextW(snap, &mut pe) } == 0 {
                     break;
@@ -2067,8 +2615,10 @@ fn openakita_list_processes() -> Vec<OpenAkitaProcess> {
             win::CloseHandle(snap);
         }
 
+        let mut matched: Vec<(u32, u32, String)> = Vec::new();
+
         // Step 2: 对每个 python 进程查命令行
-        for ppid in python_pids {
+        for (ppid, parent_pid) in python_pids {
             let mut c = Command::new("powershell");
             c.args([
                 "-NoProfile",
@@ -2086,12 +2636,21 @@ fn openakita_list_processes() -> Vec<OpenAkitaProcess> {
                 // 精确匹配模块调用签名，避免 venv 路径中 .openakita 误报
                 if s_lower.contains("openakita.main") && (s_lower.contains(" serve") || s_lower.ends_with("serve")) {
                     if is_pid_running(ppid) {
-                        out.push(OpenAkitaProcess {
-                            pid: ppid,
-                            cmd: s.trim().to_string(),
-                        });
+                        matched.push((ppid, parent_pid, s.trim().to_string()));
                     }
                 }
+            }
+        }
+
+        // uv-created venv python.exe can be a launcher parent that delegates to
+        // the managed CPython executable. Count only the leaf backend process.
+        for (pid, _parent, cmd) in &matched {
+            let has_matched_child = matched.iter().any(|(_, parent, _)| parent == pid);
+            if !has_matched_child {
+                out.push(OpenAkitaProcess {
+                    pid: *pid,
+                    cmd: cmd.clone(),
+                });
             }
         }
     }
@@ -2514,6 +3073,45 @@ enum VersionCheckResult {
     Upgraded,
 }
 
+fn runtime_wheel_hash_matches_bootstrap() -> bool {
+    let bootstrap_hash = match read_bootstrap_manifest() {
+        Ok(b) => b.wheel.sha256,
+        Err(e) => {
+            log_to_file(&format!("[version_check] bootstrap manifest unavailable: {e}"));
+            return true;
+        }
+    };
+    if bootstrap_hash.trim().is_empty() {
+        return true;
+    }
+    read_runtime_manifest()
+        .map(|m| !m.legacy_mode && m.wheel_hash == bootstrap_hash)
+        .unwrap_or(false)
+}
+
+fn stop_backend_for_restart(pid: u32, port: u16) -> VersionCheckResult {
+    if let Err(e) = graceful_stop_pid(pid, Some(port)) {
+        eprintln!(
+            "Failed to stop old backend (pid={}): {}. Keeping current backend.",
+            pid, e
+        );
+        return VersionCheckResult::RunningOk;
+    }
+
+    // 清理被终止进程对应的 PID 文件
+    for ent in list_service_pids() {
+        if let Some(data) = read_pid_file(&ent.workspace_id) {
+            if data.pid == pid || !is_pid_running(data.pid) {
+                let _ = fs::remove_file(service_pid_file(&ent.workspace_id));
+                remove_heartbeat_file(&ent.workspace_id);
+            }
+        }
+    }
+
+    eprintln!("Old backend (pid={}) stopped. New backend will be started automatically.", pid);
+    VersionCheckResult::Upgraded
+}
+
 /// DMG 覆盖安装后版本对账：检查运行中后端的版本，必要时替换。
 ///
 /// macOS 上通过 DMG 拖拽覆盖安装后，旧的 openakita-server 进程可能仍在端口上
@@ -2561,12 +3159,27 @@ fn startup_version_check(app_version: &str, port: u16) -> VersionCheckResult {
         .trim_start_matches('v');
     let desktop_version = app_version.trim_start_matches('v');
 
-    // 版本一致、dev 版本、或无法判断 → 保持现有后端
-    if backend_version.is_empty()
-        || backend_version == "0.0.0-dev"
-        || backend_version == desktop_version
-    {
+    // 版本无法判断或 dev 后端 → 保守保持现有后端。
+    if backend_version.is_empty() || backend_version == "0.0.0-dev" {
         return VersionCheckResult::RunningOk;
+    }
+
+    if backend_version == desktop_version {
+        if runtime_wheel_hash_matches_bootstrap() {
+            return VersionCheckResult::RunningOk;
+        }
+        let pid = match json.get("pid").and_then(|v| v.as_u64()).map(|p| p as u32) {
+            Some(p) => p,
+            None => {
+                eprintln!("Runtime wheel changed but backend PID is unavailable; keeping current backend.");
+                return VersionCheckResult::RunningOk;
+            }
+        };
+        eprintln!(
+            "Runtime wheel changed for version {}. Stopping backend to refresh app-venv...",
+            desktop_version
+        );
+        return stop_backend_for_restart(pid, port);
     }
 
     // 核心防护：检查安装包内 bundled 后端版本。
@@ -2602,26 +3215,7 @@ fn startup_version_check(app_version: &str, port: u16) -> VersionCheckResult {
         }
     };
 
-    if let Err(e) = graceful_stop_pid(pid, Some(port)) {
-        eprintln!(
-            "Failed to stop old backend (pid={}): {}. Keeping current backend.",
-            pid, e
-        );
-        return VersionCheckResult::RunningOk;
-    }
-
-    // 清理被终止进程对应的 PID 文件
-    for ent in list_service_pids() {
-        if let Some(data) = read_pid_file(&ent.workspace_id) {
-            if data.pid == pid || !is_pid_running(data.pid) {
-                let _ = fs::remove_file(service_pid_file(&ent.workspace_id));
-                remove_heartbeat_file(&ent.workspace_id);
-            }
-        }
-    }
-
-    eprintln!("Old backend (pid={}) stopped. New backend will be started automatically.", pid);
-    VersionCheckResult::Upgraded
+    stop_backend_for_restart(pid, port)
 }
 
 /// 启动对账：清理残留锁文件和已死的 PID 文件
@@ -3605,10 +4199,10 @@ fn openakita_service_start(venv_dir: String, workspace_id: String) -> Result<Ser
     cmd.current_dir(&ws_dir);
     cmd.args(&backend_args);
 
-    // ── 清除可能干扰 PyInstaller 打包环境的外部 Python 变量 ──
-    // 用户电脑的 Anaconda、系统 PYTHONPATH 等会污染模块搜索路径，
-    // 导致内置包（如 pydantic_core）被外部版本覆盖后崩溃。
-    strip_harmful_python_env(&mut cmd);
+    // ── 注入 dual runtime 环境 ──
+    // 清除 Anaconda/PYTHONPATH 等污染源，同时把 agent-venv 的 Scripts/bin
+    // 前置到 PATH，让后端工具执行 python/pip 时自然落到 agent tools venv。
+    apply_dual_runtime_env(&mut cmd);
 
     // Force UTF-8 output on Windows and make logs clean & realtime.
     // Without this, Rich may try to write unicode symbols (e.g. ✓) using GBK and crash.

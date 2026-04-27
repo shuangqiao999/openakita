@@ -138,6 +138,14 @@ class FetchReport:
     error_kind: str | None = None
     duration_ms: float = 0.0
     via: str = "direct"
+    # ``via_reason`` is a short machine tag explaining *why* the chosen
+    # transport was not the preferred one — e.g. ``newsnow:cloudflare_blocked``
+    # when the NewsNow aggregator was rejected by Cloudflare and we had
+    # to fall back. The Today drawer pulls this through to render
+    # "NewsNow 被拦截 → 回退直连" so users see the full causal chain
+    # instead of a bare "直连" badge.
+    via_reason: str | None = None
+    channel_reports: list[dict[str, Any]] = field(default_factory=list)
 
 
 class BaseFetcher(abc.ABC):

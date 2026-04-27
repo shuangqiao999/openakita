@@ -1,7 +1,7 @@
 {
   "id": "omni-post",
   "name": "Omni Post",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "python",
   "entry": "plugin.py",
   "description": "Cross-platform publishing studio: one asset, N platforms x M accounts, Playwright + MultiPost-Extension dual engines, Asset Bus handoff, MDRM publish memory.",
@@ -25,12 +25,12 @@
     "assets.consume",
     "memory.read",
     "memory.write",
-    "channel.push",
-    "brain.access"
+    "brain.access",
+    "vector.access"
   ],
   "requires": {
     "openakita": ">=1.27.0",
-    "plugin_api": "~1",
+    "plugin_api": "~2",
     "plugin_ui_api": "~1",
     "sdk": ">=0.7.0,<0.8.0"
   },
@@ -56,7 +56,7 @@
   },
   "ui": {
     "entry": "ui/dist/index.html",
-    "icon": "send",
+    "icon": "icon.svg",
     "title": "\u5168\u5a92\u53d1\u5e03",
     "title_i18n": {
       "zh": "\u5168\u5a92\u53d1\u5e03",

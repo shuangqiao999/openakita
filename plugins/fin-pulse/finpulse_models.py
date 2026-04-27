@@ -14,10 +14,13 @@ Sections:
   with bilingual operator hints, aligned to ``footage-gate`` /
   ``avatar-studio`` / ``subtitle-craft`` so the host task-detail panel
   renders one uniform badge.
-* :data:`SOURCE_DEFS` — the eight finance-first sources plus the
-  generic RSS aggregator slot and the optional NewsNow enhancer.
+* :data:`SOURCE_DEFS` — finance sources spanning three *kinds*
+  (``newsnow`` / ``direct`` / ``rss``), each annotated with a
+  ``content_type`` and an optional ``newsnow_id``.
   ``source_id`` is the primary key used by ``articles.source_id`` and
   the ``config['source.{id}.last_ok']`` health probe keys.
+* :data:`FRESHNESS_DEFAULTS` — per-content-type maximum article age
+  in hours; sources may override with an explicit ``max_age_hours``.
 * :data:`SESSIONS` — ``morning`` / ``noon`` / ``evening`` labels for the
   ``daily_brief`` mode; the :data:`DEFAULT_CRONS` map ships the
   Mon-Fri defaults surfaced in the Settings → Schedules section.
@@ -25,7 +28,7 @@ Sections:
 
 from __future__ import annotations
 
-from typing import Final
+from typing import Any, Final
 
 # ── Modes ────────────────────────────────────────────────────────────────
 
@@ -147,60 +150,316 @@ ERROR_HINTS: Final[dict[str, dict[str, list[str]]]] = {
 ERROR_KINDS: Final[tuple[str, ...]] = tuple(ERROR_HINTS.keys())
 
 
+# ── Content-type freshness defaults (hours) ──────────────────────────────
+
+FRESHNESS_DEFAULTS: Final[dict[str, int]] = {
+    "flash": 12,
+    "news": 72,
+    "hot_stock": 4,
+    "policy": 168,
+    "filing": 168,
+    "data": 168,
+    "custom": 72,
+}
+
+CONTENT_TYPES: Final[tuple[str, ...]] = tuple(FRESHNESS_DEFAULTS.keys())
+
+
 # ── Data sources ─────────────────────────────────────────────────────────
 #
-# Eight prime finance sources ship enabled by default; the generic RSS
-# aggregator is on by default with an empty feed list; NewsNow is off by
-# default and surfaces a Settings wizard (§11.7 of the plan).
+# Each entry carries:
+#   kind          – "newsnow" | "direct" | "rss"
+#   content_type  – one of CONTENT_TYPES
+#   newsnow_id    – upstream NewsNow channel id (only for kind=newsnow)
+#   max_age_hours – per-source freshness override (0 = use FRESHNESS_DEFAULTS)
+#
+# fin-pulse keeps NewsNow platforms and RSS feeds editable in config while
+# OpenAkita's host scheduler and IM channels remain the delivery layer.
 
 
 SOURCE_DEFS: Final[dict[str, dict[str, object]]] = {
+    # ── NewsNow: Chinese finance core ────────────────────────────────
     "wallstreetcn": {
-        "display_zh": "华尔街见闻",
+        "display_zh": "华尔街见闻·最热",
         "display_en": "WallStreet CN",
-        "kind": "rss_first",
+        "kind": "newsnow",
+        "content_type": "news",
+        "newsnow_id": "wallstreetcn",
+        "default_enabled": True,
+        "homepage": "https://wallstreetcn.com/",
+    },
+    "wallstreetcn-quick": {
+        "display_zh": "华尔街见闻·快讯",
+        "display_en": "WallStreet CN Flash",
+        "kind": "newsnow",
+        "content_type": "flash",
+        "newsnow_id": "wallstreetcn-quick",
+        "default_enabled": True,
+        "homepage": "https://wallstreetcn.com/live",
+    },
+    "wallstreetcn-news": {
+        "display_zh": "华尔街见闻·新闻",
+        "display_en": "WallStreet CN News",
+        "kind": "newsnow",
+        "content_type": "news",
+        "newsnow_id": "wallstreetcn-news",
         "default_enabled": True,
         "homepage": "https://wallstreetcn.com/",
     },
     "cls": {
-        "display_zh": "财联社电报",
-        "display_en": "CLS Telegram",
-        "kind": "api",
+        "display_zh": "财联社·综合",
+        "display_en": "CLS Telegraph",
+        "kind": "newsnow",
+        "content_type": "news",
+        "newsnow_id": "cls",
         "default_enabled": True,
         "homepage": "https://www.cls.cn/telegraph",
     },
-    "xueqiu": {
-        "display_zh": "雪球热帖",
-        "display_en": "XueQiu Hot",
-        "kind": "rss",
+    "cls-telegraph": {
+        "display_zh": "财联社·电报",
+        "display_en": "CLS Telegraph",
+        "kind": "newsnow",
+        "content_type": "flash",
+        "newsnow_id": "cls-telegraph",
         "default_enabled": True,
-        "homepage": "https://xueqiu.com/hots/rss",
+        "homepage": "https://www.cls.cn/telegraph",
     },
+    "cls-depth": {
+        "display_zh": "财联社·深度",
+        "display_en": "CLS In-depth",
+        "kind": "newsnow",
+        "content_type": "news",
+        "newsnow_id": "cls-depth",
+        "default_enabled": True,
+        "homepage": "https://www.cls.cn/",
+    },
+    "cls-hot": {
+        "display_zh": "财联社·热门",
+        "display_en": "CLS Hot",
+        "kind": "newsnow",
+        "content_type": "news",
+        "newsnow_id": "cls-hot",
+        "default_enabled": True,
+        "homepage": "https://www.cls.cn/",
+    },
+    "jin10": {
+        "display_zh": "金十数据",
+        "display_en": "Jin10",
+        "kind": "newsnow",
+        "content_type": "flash",
+        "newsnow_id": "jin10",
+        "default_enabled": True,
+        "homepage": "https://www.jin10.com/",
+    },
+    "gelonghui": {
+        "display_zh": "格隆汇",
+        "display_en": "Gelonghui",
+        "kind": "newsnow",
+        "content_type": "news",
+        "newsnow_id": "gelonghui",
+        "default_enabled": True,
+        "homepage": "https://www.gelonghui.com/",
+    },
+    "xueqiu-hotstock": {
+        "display_zh": "雪球·热门股票",
+        "display_en": "Xueqiu Hot Stocks",
+        "kind": "newsnow",
+        "content_type": "hot_stock",
+        "newsnow_id": "xueqiu-hotstock",
+        "default_enabled": True,
+        "homepage": "https://xueqiu.com/",
+    },
+    "xueqiu": {
+        "display_zh": "雪球·新闻热榜",
+        "display_en": "Xueqiu News",
+        "kind": "newsnow",
+        "content_type": "news",
+        "newsnow_id": "xueqiu",
+        "default_enabled": True,
+        "homepage": "https://xueqiu.com/",
+    },
+    "fastbull": {
+        "display_zh": "快牛快讯",
+        "display_en": "Fastbull Express",
+        "kind": "newsnow",
+        "content_type": "flash",
+        "newsnow_id": "fastbull",
+        "default_enabled": True,
+        "homepage": "https://www.fastbull.com/",
+    },
+    "fastbull-news": {
+        "display_zh": "快牛资讯",
+        "display_en": "Fastbull News",
+        "kind": "newsnow",
+        "content_type": "news",
+        "newsnow_id": "fastbull-news",
+        "default_enabled": True,
+        "homepage": "https://www.fastbull.com/news",
+    },
+    "mktnews": {
+        "display_zh": "市场新闻·综合",
+        "display_en": "MktNews",
+        "kind": "newsnow",
+        "content_type": "flash",
+        "newsnow_id": "mktnews",
+        "default_enabled": True,
+        "homepage": "https://mktnews.net/",
+    },
+    "mktnews-flash": {
+        "display_zh": "市场新闻·快讯",
+        "display_en": "MktNews Flash",
+        "kind": "newsnow",
+        "content_type": "flash",
+        "newsnow_id": "mktnews-flash",
+        "default_enabled": True,
+        "homepage": "https://mktnews.net/",
+    },
+    # ── NewsNow: general media / hot-list discovery ────────────────
+    "baidu-hot": {
+        "display_zh": "百度热搜",
+        "display_en": "Baidu Hot Search",
+        "kind": "newsnow",
+        "content_type": "news",
+        "newsnow_id": "baidu",
+        "default_enabled": False,
+        "homepage": "https://top.baidu.com/",
+    },
+    "weibo-hot": {
+        "display_zh": "微博热搜",
+        "display_en": "Weibo Hot Search",
+        "kind": "newsnow",
+        "content_type": "news",
+        "newsnow_id": "weibo",
+        "default_enabled": False,
+        "homepage": "https://s.weibo.com/top/summary",
+    },
+    "zhihu-hot": {
+        "display_zh": "知乎热榜",
+        "display_en": "Zhihu Hot List",
+        "kind": "newsnow",
+        "content_type": "news",
+        "newsnow_id": "zhihu",
+        "default_enabled": False,
+        "homepage": "https://www.zhihu.com/hot",
+    },
+    "toutiao-hot": {
+        "display_zh": "今日头条热榜",
+        "display_en": "Toutiao Trending",
+        "kind": "newsnow",
+        "content_type": "news",
+        "newsnow_id": "toutiao",
+        "default_enabled": False,
+        "homepage": "https://www.toutiao.com/",
+    },
+    "thepaper": {
+        "display_zh": "澎湃新闻",
+        "display_en": "The Paper",
+        "kind": "newsnow",
+        "content_type": "news",
+        "newsnow_id": "thepaper",
+        "default_enabled": False,
+        "homepage": "https://www.thepaper.cn/",
+    },
+    "ithome": {
+        "display_zh": "IT之家",
+        "display_en": "ITHome",
+        "kind": "newsnow",
+        "content_type": "news",
+        "newsnow_id": "ithome",
+        "default_enabled": False,
+        "homepage": "https://www.ithome.com/",
+    },
+    "bilibili-hot": {
+        "display_zh": "B站热榜",
+        "display_en": "Bilibili Trending",
+        "kind": "newsnow",
+        "content_type": "news",
+        "newsnow_id": "bilibili",
+        "default_enabled": False,
+        "homepage": "https://www.bilibili.com/",
+    },
+    "36kr": {
+        "display_zh": "36氪",
+        "display_en": "36Kr",
+        "kind": "newsnow",
+        "content_type": "news",
+        "newsnow_id": "36kr",
+        "default_enabled": False,
+        "homepage": "https://www.36kr.com/newsflashes",
+    },
+    "36kr-quick": {
+        "display_zh": "36氪快讯",
+        "display_en": "36Kr Newsflash",
+        "kind": "newsnow",
+        "content_type": "flash",
+        "newsnow_id": "36kr-quick",
+        "default_enabled": False,
+        "homepage": "https://www.36kr.com/newsflashes",
+    },
+    "36kr-renqi": {
+        "display_zh": "36氪人气榜",
+        "display_en": "36Kr Popular",
+        "kind": "newsnow",
+        "content_type": "news",
+        "newsnow_id": "36kr-renqi",
+        "default_enabled": False,
+        "homepage": "https://www.36kr.com/",
+    },
+    # ── Direct fetchers ──────────────────────────────────────────────
     "eastmoney": {
-        "display_zh": "东方财富快讯",
-        "display_en": "EastMoney News",
-        "kind": "api",
+        "display_zh": "东方财富",
+        "display_en": "EastMoney",
+        "kind": "direct",
+        "content_type": "news",
         "default_enabled": True,
         "homepage": "https://www.eastmoney.com/",
     },
     "pbc_omo": {
         "display_zh": "央行公开市场",
         "display_en": "PBC OMO",
-        "kind": "html_execjs",
+        "kind": "direct",
+        "content_type": "policy",
         "default_enabled": True,
         "homepage": "http://www.pbc.gov.cn/",
     },
+    "yicai": {
+        "display_zh": "第一财经",
+        "display_en": "Yicai",
+        "kind": "direct",
+        "content_type": "news",
+        "default_enabled": True,
+        "homepage": "https://www.yicai.com/",
+    },
+    "nbd": {
+        "display_zh": "每日经济新闻",
+        "display_en": "National Business Daily",
+        "kind": "direct",
+        "content_type": "news",
+        "default_enabled": True,
+        "homepage": "https://www.nbd.com.cn/",
+    },
+    "stcn": {
+        "display_zh": "证券时报",
+        "display_en": "Securities Times",
+        "kind": "direct",
+        "content_type": "news",
+        "default_enabled": True,
+        "homepage": "https://www.stcn.com/",
+    },
+    # ── RSS / institutional ──────────────────────────────────────────
     "nbs": {
         "display_zh": "国家统计局",
         "display_en": "NBS of China",
-        "kind": "rss_first",
+        "kind": "rss",
+        "content_type": "data",
         "default_enabled": True,
         "homepage": "https://www.stats.gov.cn/",
     },
     "fed_fomc": {
         "display_zh": "美联储 FOMC",
         "display_en": "Fed FOMC",
-        "kind": "calendar_html",
+        "kind": "rss",
+        "content_type": "policy",
         "default_enabled": True,
         "homepage": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
     },
@@ -208,6 +467,7 @@ SOURCE_DEFS: Final[dict[str, dict[str, object]]] = {
         "display_zh": "美国 SEC EDGAR",
         "display_en": "SEC EDGAR",
         "kind": "rss",
+        "content_type": "filing",
         "default_enabled": True,
         "homepage": "https://www.sec.gov/cgi-bin/browse-edgar",
     },
@@ -215,21 +475,108 @@ SOURCE_DEFS: Final[dict[str, dict[str, object]]] = {
         "display_zh": "自定义 RSS",
         "display_en": "Custom RSS",
         "kind": "rss",
+        "content_type": "custom",
         "default_enabled": True,
         "homepage": "",
-    },
-    "newsnow": {
-        "display_zh": "NewsNow 聚合",
-        "display_en": "NewsNow Aggregator",
-        "kind": "newsnow",
-        # Public aggregator is on by default; the pipeline enforces a
-        # 5-minute floor so we never hammer the volunteer-run node.
-        "default_enabled": True,
-        "homepage": "https://github.com/ourongxing/newsnow",
     },
 }
 
 SOURCE_IDS: Final[tuple[str, ...]] = tuple(SOURCE_DEFS.keys())
+
+
+def get_source_group(source_id: str) -> str:
+    """Return the UI/source-management group for *source_id*."""
+    defn = SOURCE_DEFS.get(source_id, {})
+    kind = str(defn.get("kind") or "")
+    if kind == "newsnow":
+        return "newsnow"
+    if source_id == "rss_generic":
+        return "custom_rss"
+    if kind == "rss":
+        return "builtin_rss"
+    if kind == "direct":
+        return "direct"
+    return "other"
+
+
+def get_source_fetcher_id(source_id: str) -> str:
+    """Return the executable fetcher id used by SOURCE_REGISTRY."""
+    defn = SOURCE_DEFS.get(source_id, {})
+    if defn.get("kind") == "newsnow":
+        return "newsnow"
+    return source_id
+
+
+def get_source_probe_target(source_id: str) -> str:
+    """Return the source id that should be used for health probing."""
+    return get_source_fetcher_id(source_id)
+
+
+def get_source_capabilities(source_id: str) -> tuple[str, ...]:
+    """Return compact capabilities for UI badges and grouped source chips."""
+    defn = SOURCE_DEFS.get(source_id, {})
+    kind = str(defn.get("kind") or "")
+    content_type = str(defn.get("content_type") or "news")
+    caps: list[str] = []
+    if kind == "newsnow":
+        caps.append("hotlist")
+    elif kind == "rss":
+        caps.append("rss")
+    elif kind == "direct":
+        caps.append("direct")
+    if content_type == "custom":
+        caps.append("custom_rss")
+    elif content_type:
+        caps.append(content_type)
+    # Preserve order while removing duplicates.
+    return tuple(dict.fromkeys(caps))
+
+
+def iter_sources_for_ui() -> list[dict[str, Any]]:
+    """Return SOURCE_DEFS with derived UI/fetch contract fields.
+
+    The fetcher registry executes at a different granularity than the
+    display catalog: all NewsNow channels share the single ``newsnow``
+    fetcher. Exposing that mapping here keeps frontend probing/ingest
+    logic from guessing.
+    """
+    items: list[dict[str, Any]] = []
+    for order, (sid, meta) in enumerate(SOURCE_DEFS.items()):
+        group = get_source_group(sid)
+        fetcher_id = get_source_fetcher_id(sid)
+        items.append(
+            {
+                "id": sid,
+                "display_zh": str(meta.get("display_zh") or sid),
+                "display_en": str(meta.get("display_en") or sid),
+                "kind": str(meta.get("kind") or ""),
+                "group": group,
+                "content_type": str(meta.get("content_type") or "news"),
+                "capabilities": list(get_source_capabilities(sid)),
+                "newsnow_id": str(meta.get("newsnow_id") or ""),
+                "fetcher_id": fetcher_id,
+                "probe_target": get_source_probe_target(sid),
+                "can_probe_individual": group != "newsnow",
+                "default_enabled": bool(meta.get("default_enabled")),
+                "homepage": str(meta.get("homepage") or ""),
+                "ui_order": order,
+            }
+        )
+    return items
+
+
+def get_max_age_hours(source_id: str) -> int:
+    """Return the freshness ceiling for *source_id* in hours.
+
+    Per-source ``max_age_hours`` wins; falls back to the content-type
+    default from :data:`FRESHNESS_DEFAULTS`.
+    """
+    defn = SOURCE_DEFS.get(source_id, {})
+    explicit = defn.get("max_age_hours")
+    if isinstance(explicit, int) and explicit > 0:
+        return explicit
+    ct = defn.get("content_type", "news")
+    return FRESHNESS_DEFAULTS.get(ct, 72)  # type: ignore[arg-type]
 
 
 # ── Scoring scale (Horizon-style 0-10) ───────────────────────────────────
@@ -246,13 +593,21 @@ SCORE_THRESHOLDS: Final[dict[str, float]] = {
 
 
 __all__ = [
+    "CONTENT_TYPES",
     "DEFAULT_CRONS",
     "ERROR_HINTS",
     "ERROR_KINDS",
+    "FRESHNESS_DEFAULTS",
     "MODE_IDS",
     "MODES",
     "SCORE_THRESHOLDS",
     "SESSIONS",
     "SOURCE_DEFS",
     "SOURCE_IDS",
+    "get_source_capabilities",
+    "get_source_fetcher_id",
+    "get_source_group",
+    "get_source_probe_target",
+    "get_max_age_hours",
+    "iter_sources_for_ui",
 ]

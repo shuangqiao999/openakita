@@ -211,6 +211,7 @@ class MemoryHandler:
             "skill": MemoryType.SKILL,
             "error": MemoryType.ERROR,
             "rule": MemoryType.RULE,
+            "experience": MemoryType.EXPERIENCE,
         }
         mem_type = type_map.get(mem_type_str, MemoryType.FACT)
 

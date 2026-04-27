@@ -48,6 +48,7 @@ def _build_fake_agent(*, initialized: bool = True, ctx_system: str | None = "old
     fake._initialized = initialized
     fake._context = SimpleNamespace(system=ctx_system)
     fake._build_system_prompt = MagicMock(return_value="NEW-PROMPT")
+    fake._invalidate_system_prompt_cache = MagicMock()
     fake._update_skill_tools = MagicMock()
     fake._sync_available_toolsets = MagicMock()
     fake._skill_activation = MagicMock()
@@ -129,6 +130,7 @@ class TestHappyPath:
         agent.skill_catalog.invalidate_cache.assert_called_once()
         agent.skill_catalog.generate_catalog.assert_called_once()
         assert agent._skill_catalog_text == "NEW-CATALOG"
+        agent._invalidate_system_prompt_cache.assert_called_once_with("skill change")
         agent._update_skill_tools.assert_called_once()
         agent._skill_activation.clear.assert_called_once()
         patched_env.notify_pools.assert_called_once()
@@ -143,6 +145,7 @@ class TestHappyPath:
         # 其他步骤仍然执行
         patched_env.clear_caches.assert_called_once()
         agent.skill_catalog.generate_catalog.assert_called_once()
+        agent._invalidate_system_prompt_cache.assert_called_once_with("skill change")
         patched_env.notify_pools.assert_called_once()
         patched_env.notify_changed.assert_called_once_with("enable")
 
@@ -235,6 +238,17 @@ class TestExceptionIsolation:
     def test_catalog_rebuild_failure_does_not_abort(self, patched_env):
         agent = _build_fake_agent()
         agent.skill_catalog.generate_catalog.side_effect = ValueError("bad catalog")
+
+        agent.propagate_skill_change("reload")
+
+        agent._invalidate_system_prompt_cache.assert_called_once_with("skill change")
+        agent._update_skill_tools.assert_called_once()
+        patched_env.notify_pools.assert_called_once()
+        patched_env.notify_changed.assert_called_once()
+
+    def test_prompt_cache_invalidation_failure_does_not_abort(self, patched_env):
+        agent = _build_fake_agent()
+        agent._invalidate_system_prompt_cache.side_effect = RuntimeError("cache fail")
 
         agent.propagate_skill_change("reload")
 

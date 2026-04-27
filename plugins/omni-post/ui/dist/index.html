@@ -20,25 +20,29 @@
   <link rel="preload" as="script" crossorigin href="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" />
   <link rel="preload" as="script" href="https://unpkg.com/@babel/standalone/babel.min.js" />
   <style>
-    /* ── Theme tokens (1:1 with avatar-studio so the tab iframe keeps the
-         host's colour + dark-mode semantics without an extra bridge hop) ── */
+    /* ── Theme tokens ──
+       White/ink base with the existing Omni Post purple-pink identity
+       carried through selected borders, tab underlines, and title bars. */
     :root {
-      --bg: #f8fafc; --bg-card: #ffffff; --bg-hover: #f1f5f9;
-      --text: #1e293b; --text-muted: #64748b; --text-dim: #94a3b8;
-      --primary: #6366f1; --primary-hover: #4f46e5;
+      --bg: #FFFFFF; --bg-card: #FFFFFF; --bg-hover: #F8F5FF;
+      --text: #1e1b2e; --text-muted: #6B5B7D; --text-dim: #8B7AA1;
+      --primary: #7C3AED; --primary-hover: #6D28D9;
+      --primary-soft: #F3E8FF; --accent: #EC4899;
       --success: #22c55e; --warning: #f59e0b; --danger: #ef4444;
-      --border: #e2e8f0; --radius: 8px;
+      --border: #DDD6FE; --border-strong: #7C3AED; --radius: 8px;
     }
     [data-theme="dark"] {
       --bg: #0f172a; --bg-card: #1e293b; --bg-hover: #334155;
       --text: #f1f5f9; --text-muted: #94a3b8; --text-dim: #64748b;
-      --border: #334155;
+      --border: #475569; --border-strong: #A78BFA;
+      --primary: #A78BFA; --primary-hover: #C4B5FD; --primary-soft: #312E81;
     }
     @media (prefers-color-scheme: dark) {
       :root:not([data-theme="light"]) {
         --bg: #0f172a; --bg-card: #1e293b; --bg-hover: #334155;
         --text: #f1f5f9; --text-muted: #94a3b8; --text-dim: #64748b;
-        --border: #334155;
+        --border: #475569; --border-strong: #A78BFA;
+        --primary: #A78BFA; --primary-hover: #C4B5FD; --primary-soft: #312E81;
       }
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -54,31 +58,81 @@
       padding: 10px 18px; border-bottom: 1px solid var(--border);
       background: var(--bg-card);
     }
-    .header h1 { font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 10px; }
-    .header h1 .ak-logo {
-      width: 28px; height: 28px; border-radius: 6px;
-      background: linear-gradient(135deg, var(--primary) 0%, #ec4899 100%);
-      color: #fff; display: inline-flex; align-items: center; justify-content: center;
+    .oa-hero-title {
+      display: inline-flex; align-items: center; gap: 12px;
+      font-size: 20px; font-weight: 700; color: var(--text);
+      letter-spacing: -0.01em; margin: 0;
     }
-    .header h1 .ak-sub {
-      font-size: 12px; font-weight: 400; color: var(--text-muted);
-      margin-left: 6px;
+    .oa-hero-title__icon {
+      width: 40px; height: 40px; border-radius: 10px; flex-shrink: 0;
+      background: #1E1038; color: #fff; display: inline-flex;
+      align-items: center; justify-content: center;
+      box-shadow: 0 4px 12px rgba(124,58,237,.28), inset 0 0 0 1px rgba(255,255,255,.10);
+      position: relative; overflow: hidden;
     }
+    .oa-hero-title__icon img,
+    .oa-hero-title__icon svg { width: 100%; height: 100%; display: block; }
+    .oa-hero-title__text { display: inline-flex; flex-direction: column; line-height: 1.15; color: var(--text); }
+    .oa-hero-title__sub { font-size: 12px; font-weight: 500; color: var(--text-muted); margin-top: 4px; letter-spacing: .3px; }
     .header-right { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--text-muted); }
     .tabs {
-      display: flex; gap: 0; border-bottom: 1px solid var(--border);
-      background: var(--bg-card); padding: 0 14px;
+      display: flex; gap: 4px; padding: 0 18px; border-bottom: 1px solid var(--border);
+      background: var(--bg-card);
     }
     .tab {
-      padding: 9px 16px; font-size: 13px; cursor: pointer;
+      padding: 10px 14px; font-size: 13px; cursor: pointer;
       border-bottom: 2px solid transparent; color: var(--text-muted);
-      transition: all .15s; white-space: nowrap;
+      transition: color .15s; white-space: nowrap;
       display: inline-flex; align-items: center; gap: 6px;
     }
-    .tab:hover { color: var(--text); background: var(--bg-hover); }
+    .tab:hover { color: var(--text); }
     .tab.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 500; }
-    .content { flex: 1; min-height: 0; overflow: hidden; padding: 14px 16px; position: relative; }
-    .content > div { max-height: 100%; overflow-y: auto; }
+    .content { flex: 1; min-height: 0; overflow: hidden; padding: 0; position: relative; }
+    .content > div { max-height: 100%; overflow-y: auto; padding: 14px 16px 24px; scrollbar-gutter: stable; }
+    /* Publish-pane override: the root is a flex column so the split
+       scrolls internally and the publish dock stays pinned at the tab
+       bottom from page load (no sticky-bottom activation lag). */
+    .content > .publish-pane {
+      display: flex; flex-direction: column; overflow: hidden;
+      padding: 14px 16px 14px;
+    }
+    .publish-pane .split-layout-scroll {
+      flex: 1; min-height: 0; overflow-y: auto;
+      padding-right: 2px; padding-bottom: 4px;
+      scrollbar-gutter: stable;
+    }
+    /* Consistent section heading (with accent bar) used across tabs.
+       The bar mirrors `.label::before` so form labels and tab titles share
+       the same visual language — operators can spot structure at a glance. */
+    .section-head {
+      display: flex; align-items: flex-start; gap: 10px;
+      margin: 0 0 12px; flex-wrap: wrap; row-gap: 6px;
+    }
+    .section-head__title { display: flex; align-items: center; gap: 10px; }
+    .section-head__title::before {
+      content: ""; display: inline-block; width: 4px; height: 18px;
+      border-radius: 2px; background: var(--primary); flex-shrink: 0;
+    }
+    .section-head__title h2 {
+      font-size: 15.5px; font-weight: 600; margin: 0; color: var(--text); line-height: 1.25;
+    }
+    .section-head__sub {
+      font-size: 12px; color: var(--text-muted); margin: 0; padding-left: 14px;
+      flex-basis: 100%;
+    }
+    .section-head__actions { margin-left: auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    /* Tab panel — a single white-base card that wraps each tab's body so
+       every tab has a consistent ground even when content is sparse,
+       removing the "grey empty space at the bottom" problem. */
+    .tab-panel {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 16px 16px;
+      box-shadow: 0 1px 2px rgba(0,0,0,.04);
+      min-height: calc(100% - 52px);
+    }
+    .tab-panel--flat { padding: 0; background: transparent; border: none; box-shadow: none; }
     /* Cards + forms */
     .card {
       background: var(--bg-card); border: 1px solid var(--border);
@@ -94,7 +148,7 @@
       border-radius: 6px; background: var(--bg); color: var(--text);
       font-size: 13px; outline: none; transition: border-color .15s, box-shadow .15s;
     }
-    .input:focus { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(99,102,241,.18); }
+    .input:focus { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(124,58,237,.18); }
     .textarea { resize: vertical; min-height: 80px; font-family: inherit; }
     .select {
       appearance: none; padding-right: 28px;
@@ -135,7 +189,7 @@
     .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
     /* Tags + badges */
     .tag { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; }
-    .tag-blue { background: rgba(99,102,241,.15); color: #818cf8; }
+    .tag-blue { background: rgba(124,58,237,.15); color: var(--primary); }
     .tag-orange { background: rgba(245,158,11,.15); color: #fbbf24; }
     .tag-green { background: rgba(34,197,94,.15); color: #4ade80; }
     .tag-red { background: rgba(239,68,68,.15); color: #f87171; }
@@ -146,18 +200,99 @@
       font-size: 11px; font-weight: 500; line-height: 1.4;
     }
     .badge-pending { background: rgba(148,163,184,.15); color: #94a3b8; }
-    .badge-running { background: rgba(99,102,241,.15); color: #818cf8; }
+    .badge-running { background: rgba(124,58,237,.15); color: var(--primary); }
     .badge-done { background: rgba(34,197,94,.15); color: #4ade80; }
     .badge-failed { background: rgba(239,68,68,.15); color: #f87171; }
     .badge-cancelled { background: rgba(245,158,11,.15); color: #fbbf24; }
-    /* Split layout */
-    .split-layout { display: flex; gap: 16px; height: 100%; }
-    .split-left { width: 55%; min-width: 380px; overflow-y: auto; flex-shrink: 0; padding-right: 4px; }
-    .split-right { flex: 1; overflow-y: auto; padding-left: 4px; }
-    @media (max-width: 980px) {
-      .split-layout { flex-direction: column; }
-      .split-left { width: 100%; min-width: unset; }
+    /* Split layout — responsive. Panels stack vertically below ≤1100px
+       so the right column never gets clipped off-screen on medium
+       laptops. Columns stretch to equal heights and the last card on
+       the left grows so there's no blank space beneath the caption. */
+    .split-layout {
+      display: flex; gap: 16px; align-items: stretch;
+      min-height: calc(100% - 4px);
     }
+    .split-left {
+      flex: 1.05; min-width: 0;
+      display: flex; flex-direction: column; gap: 12px;
+    }
+    .split-right {
+      flex: 1; min-width: 0; position: relative;
+      display: flex; flex-direction: column; gap: 12px;
+    }
+    .split-left > .card, .split-right > .card { margin-bottom: 0; }
+    /* Caption card expands to fill remaining vertical space on the
+       left so the column never ends short of the right column. The
+       description textarea inside grows with it so the caption area
+       always feels intentional rather than padded with empty rows. */
+    .split-left > .card:last-child { flex: 1; display: flex; flex-direction: column; }
+    .split-left > .card:last-child .form-row--grow { flex: 1; display: flex; flex-direction: column; min-height: 140px; }
+    .split-left > .card:last-child .form-row--grow .textarea { flex: 1; resize: none; min-height: 100px; }
+    @media (max-width: 1100px) {
+      .split-layout { flex-direction: column; align-items: stretch; }
+      .split-left, .split-right { width: 100%; min-width: 0; }
+      .split-left > .card:last-child { flex: 0 0 auto; }
+      .split-left > .card:last-child .textarea { flex: 0 0 auto; }
+    }
+    /* Publish dock — always-visible full-width action bar anchored to
+       the bottom of the Publish tab. Rendered as a sibling of the
+       scrolling split area so it never hides behind scroll. FAB-style
+       elevation so the user never loses sight of the primary publish
+       action while picking accounts. */
+    .publish-dock {
+      flex: 0 0 auto;
+      background: var(--bg-card);
+      border: 1px solid var(--border); border-radius: 10px;
+      padding: 10px 14px;
+      box-shadow: 0 -2px 14px rgba(15,23,42,.08), 0 1px 2px rgba(0,0,0,.04);
+      display: flex; align-items: center; gap: 14px;
+      margin-top: 10px;
+    }
+    .publish-dock__head {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 13px; font-weight: 600; color: var(--text);
+      flex-shrink: 0;
+    }
+    .publish-dock__head::before {
+      content: ""; width: 3px; height: 14px; border-radius: 2px; background: var(--primary);
+    }
+    .publish-dock__summary {
+      flex: 1; min-width: 0;
+      font-size: 12.5px; color: var(--text-muted); line-height: 1.5;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .publish-dock__summary b { color: var(--text); font-weight: 600; }
+    .publish-dock__actions { display: flex; gap: 8px; flex-shrink: 0; }
+    .publish-dock__actions .btn { min-width: 110px; justify-content: center; }
+    @media (max-width: 720px) {
+      .publish-dock { flex-direction: column; align-items: stretch; gap: 10px; }
+      .publish-dock__summary { white-space: normal; }
+      .publish-dock__actions .btn { flex: 1; min-width: 0; }
+    }
+    /* Outline-primary variant — used for the secondary "dry run" action
+       so it reads as paired to the main publish button without visually
+       competing with it. */
+    .btn-outline {
+      background: transparent;
+      color: var(--primary);
+      border-color: var(--primary);
+      font-weight: 500;
+    }
+    .btn-outline:hover { background: rgba(124,58,237,.10); color: var(--primary-hover); border-color: var(--primary-hover); }
+    .btn-outline:disabled { opacity: .55; }
+    /* Account picker — capped height + internal scroll so the outer
+       split-right never sprouts an overall scrollbar. */
+    .acc-picker {
+      max-height: 340px; overflow-y: auto; padding-right: 2px;
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    .acc-picker .acc-row { margin-bottom: 0; }
+    /* Label variant where the row has a side meta (e.g. "n / m") */
+    .label-row {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 8px; gap: 12px;
+    }
+    .label-row .label { margin: 0; }
     /* Spinner */
     .spinner { width: 20px; height: 20px; border: 2px solid var(--border); border-top-color: var(--primary); border-radius: 50%; animation: spin .6s linear infinite; }
     .spinner-sm { width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--primary); border-radius: 50%; animation: spin .6s linear infinite; display: inline-block; vertical-align: -2px; }
@@ -170,29 +305,31 @@
       padding: 18px; text-align: center; cursor: pointer; transition: .15s;
       color: var(--text-muted); position: relative;
     }
-    .upload-zone:hover { border-color: var(--primary); background: rgba(99,102,241,.04); }
+    .upload-zone:hover { border-color: var(--primary); background: rgba(124,58,237,.04); }
     .upload-zone.has-file { border-style: solid; border-color: var(--primary); }
     /* Ico */
     .ico { display: inline-flex; align-items: center; justify-content: center; width: 1em; height: 1em; vertical-align: -0.125em; flex-shrink: 0; }
-    .ico svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-    /* Platform matrix — the publish tab's centerpiece */
+    .ico svg { width: 100%; height: 100%; display: block; fill: currentColor; }
+    /* Platform matrix — compact grid so all ~10 platforms fit without
+       forcing an outer scrollbar on the right column. Cards wrap their
+       chips on a second line if needed. */
     .pm {
-      display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-      gap: 10px;
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+      gap: 8px;
     }
     .pm-card {
       display: flex; flex-direction: column; align-items: flex-start;
-      gap: 4px; padding: 10px 12px;
-      border: 1px solid var(--border); border-radius: 10px;
+      gap: 3px; padding: 8px 10px;
+      border: 1px solid var(--border); border-radius: 8px;
       background: var(--bg-card); cursor: pointer; transition: .15s;
       text-align: left; user-select: none;
     }
     .pm-card:hover { border-color: var(--primary); background: var(--bg-hover); }
-    .pm-card.selected { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary) inset; background: rgba(99,102,241,.08); }
-    .pm-card__name { font-size: 13px; font-weight: 600; color: var(--text); display: flex; align-items: center; gap: 6px; }
-    .pm-card__sub { font-size: 11px; color: var(--text-muted); line-height: 1.35; }
-    .pm-card__kinds { display: flex; gap: 4px; margin-top: 2px; }
-    .pm-card__kind { font-size: 10px; padding: 1px 6px; border-radius: 3px; background: rgba(99,102,241,.12); color: #818cf8; }
+    .pm-card.selected { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary) inset; background: rgba(124,58,237,.08); }
+    .pm-card__name { font-size: 12.5px; font-weight: 600; color: var(--text); display: flex; align-items: center; gap: 6px; line-height: 1.2; }
+    .pm-card__sub { font-size: 10.5px; color: var(--text-muted); line-height: 1.3; }
+    .pm-card__kinds { display: flex; gap: 3px; margin-top: 2px; flex-wrap: wrap; }
+    .pm-card__kind { font-size: 9.5px; padding: 1px 5px; border-radius: 3px; background: rgba(124,58,237,.12); color: var(--primary); line-height: 1.4; }
     /* Account row */
     .acc-row {
       display: flex; align-items: center; gap: 10px;
@@ -201,8 +338,8 @@
       cursor: pointer; transition: background .15s;
     }
     .acc-row:hover { background: var(--bg-hover); }
-    .acc-row.selected { border-color: var(--primary); background: rgba(99,102,241,.06); }
-    .acc-avatar { width: 28px; height: 28px; border-radius: 50%; background: rgba(99,102,241,.2); display: flex; align-items: center; justify-content: center; font-weight: 600; color: var(--primary); flex-shrink: 0; }
+    .acc-row.selected { border-color: var(--primary); background: rgba(124,58,237,.06); }
+    .acc-avatar { width: 28px; height: 28px; border-radius: 50%; background: rgba(124,58,237,.2); display: flex; align-items: center; justify-content: center; font-weight: 600; color: var(--primary); flex-shrink: 0; }
     .acc-info { flex: 1; min-width: 0; }
     .acc-info__name { font-size: 13px; font-weight: 500; color: var(--text); }
     .acc-info__meta { font-size: 11px; color: var(--text-dim); }
@@ -221,7 +358,7 @@
     }
     .ak-table tr.row { cursor: pointer; transition: background .12s; }
     .ak-table tr.row:hover { background: var(--bg-hover); }
-    .ak-table tr.row.selected { background: rgba(99,102,241,.08); }
+    .ak-table tr.row.selected { background: rgba(124,58,237,.08); }
     /* Drawer */
     .drawer {
       position: fixed; top: 0; right: 0; width: 460px; max-width: 100vw;
@@ -347,7 +484,7 @@
     .acc-card__top { display: flex; align-items: center; gap: 10px; }
     .acc-card__avatar {
       width: 36px; height: 36px; border-radius: 50%;
-      background: rgba(99,102,241,.2); color: var(--primary);
+      background: rgba(124,58,237,.2); color: var(--primary);
       display: flex; align-items: center; justify-content: center; font-weight: 600;
       flex-shrink: 0;
     }
@@ -387,35 +524,93 @@
       display: flex; justify-content: flex-end; gap: 8px;
     }
     /* Calendar ─────────────────────────────────────────────────────── */
-    .cal-header {
-      display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap;
-    }
-    .cal-title { font-size: 15px; font-weight: 600; color: var(--text); }
     .cal-sub { font-size: 12px; color: var(--text-muted); }
+    /* KPI summary strip above the week grid — gives operators at-a-glance
+       situational awareness (total / today / conflicts) so the top of
+       the pane isn't just metadata text. */
+    .cal-kpis {
+      display: grid; gap: 10px;
+      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      margin-bottom: 14px;
+    }
+    .cal-kpi {
+      padding: 10px 12px;
+      background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+      display: flex; flex-direction: column; gap: 2px;
+    }
+    .cal-kpi__label { font-size: 11px; color: var(--text-muted); }
+    .cal-kpi__value { font-size: 22px; font-weight: 700; color: var(--text); line-height: 1.1; }
+    .cal-kpi--primary .cal-kpi__value { color: var(--primary); }
+    .cal-kpi--warn .cal-kpi__value { color: var(--warning); }
+    .cal-kpi--danger .cal-kpi__value { color: var(--danger); }
     .cal-grid {
-      display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px;
+      display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 8px;
+    }
+    @media (max-width: 1100px) {
+      .cal-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    }
+    @media (max-width: 720px) {
+      .cal-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     .cal-day {
       background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px;
-      min-height: 120px; padding: 8px; display: flex; flex-direction: column; gap: 6px;
+      min-height: 160px; padding: 10px; display: flex; flex-direction: column; gap: 6px;
+      transition: border-color .15s, background .15s;
     }
+    .cal-day:hover { border-color: var(--primary); }
     .cal-day__header {
-      font-size: 11px; color: var(--text-muted); font-weight: 600;
+      font-size: 11.5px; color: var(--text-muted); font-weight: 600;
       display: flex; justify-content: space-between; align-items: center;
-      border-bottom: 1px dashed var(--border); padding-bottom: 4px;
+      border-bottom: 1px dashed var(--border); padding-bottom: 6px;
     }
+    .cal-day__date { color: var(--text); font-size: 13px; font-weight: 700; }
     .cal-day--today { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary) inset; }
-    .cal-day--today .cal-day__header { color: var(--primary); }
+    .cal-day--today .cal-day__date { color: var(--primary); }
+    .cal-day__body { display: flex; flex-direction: column; gap: 5px; overflow: hidden; }
     .cal-item {
-      border-radius: 6px; padding: 6px 8px; font-size: 11px;
-      background: rgba(99,102,241,.1); color: var(--text);
-      display: flex; flex-direction: column; gap: 2px; cursor: default;
+      border-radius: 6px; padding: 6px 8px; font-size: 11.5px;
+      background: rgba(124,58,237,.1); color: var(--text);
+      display: flex; flex-direction: column; gap: 2px;
+      cursor: pointer; transition: transform .12s;
       border-left: 3px solid var(--primary);
     }
+    .cal-item:hover { transform: translateX(2px); }
     .cal-item--conflict { border-left-color: var(--danger, #ef4444); background: rgba(239,68,68,.1); }
-    .cal-item__time { font-weight: 600; font-size: 11px; }
-    .cal-item__meta { color: var(--text-muted); font-size: 10.5px; }
-    .cal-day__empty { color: var(--text-muted); font-size: 11px; opacity: .6; padding: 6px 0; }
+    .cal-item__time { font-weight: 600; font-size: 11.5px; }
+    .cal-item__meta { color: var(--text-muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .cal-day__empty { color: var(--text-muted); font-size: 11px; opacity: .55; padding: 6px 0; text-align: center; }
+    /* Upcoming strip — densely lists the next N scheduled tasks below
+       the week grid so the previously empty bottom half of the pane is
+       used for something actionable. */
+    .cal-upcoming {
+      margin-top: 16px;
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: 8px; padding: 10px 14px 12px;
+    }
+    .cal-upcoming__head {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 8px; font-size: 13px; font-weight: 600; color: var(--text);
+    }
+    .cal-upcoming__head::before {
+      content: ""; display: inline-block; width: 3px; height: 14px; border-radius: 2px;
+      background: var(--primary); margin-right: 8px;
+    }
+    .cal-upcoming__title { display: flex; align-items: center; flex: 1; }
+    .cal-upcoming__list { display: flex; flex-direction: column; gap: 6px; }
+    .cal-upcoming__row {
+      display: grid; grid-template-columns: 110px 110px minmax(0, 1fr) auto;
+      gap: 10px; align-items: center;
+      padding: 7px 10px; border-radius: 6px;
+      background: var(--bg-card); border: 1px solid var(--border);
+      font-size: 12.5px;
+    }
+    @media (max-width: 720px) {
+      .cal-upcoming__row { grid-template-columns: 1fr 1fr; }
+    }
+    .cal-upcoming__when { font-weight: 600; color: var(--primary); font-variant-numeric: tabular-nums; }
+    .cal-upcoming__plat { color: var(--text); font-weight: 500; }
+    .cal-upcoming__acc { color: var(--text-muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .cal-upcoming__empty { color: var(--text-muted); font-size: 12px; padding: 14px 0; text-align: center; }
     /* Platform accent colours — chosen for adequate contrast against the
        soft indigo card background while still being visually distinct. */
     .cal-item[data-platform="douyin"]      { border-left-color: #000; background: rgba(0,0,0,.08); }
@@ -645,7 +840,10 @@ const I18N_DICT = {
     "omniPost.publish.toast.publishFail": "创建发布任务失败：{msg}",
     "omniPost.publish.toast.dryRunOk": "预检通过",
     "omniPost.publish.toast.dryRunIssues": "预检发现 {count} 个问题",
+    "omniPost.publish.accounts.empty.title": "还没有匹配的账号",
+    "omniPost.publish.accounts.empty.desc": "在「账号」Tab 导入 Cookie 后，选择对应平台会出现在这里。",
     "omniPost.tasks.header": "发布任务",
+    "omniPost.tasks.subtitle": "所有发布任务的实时状态 · 失败项保留截图与错误码 · 支持一键重试 / 取消。",
     "omniPost.tasks.filter.all": "全部",
     "omniPost.tasks.filter.pending": "等待",
     "omniPost.tasks.filter.running": "执行中",
@@ -718,7 +916,15 @@ const I18N_DICT = {
     "omniPost.calendar.item.status": "状态：{status}",
     "omniPost.calendar.reschedule.ok": "已改期",
     "omniPost.calendar.reschedule.fail": "改期失败：{msg}",
-    "omniPost.calendar.timezone": "时区：{tz}",
+    "omniPost.calendar.timezone": "时区 {tz}",
+    "omniPost.calendar.kpi.weekTotal": "本周任务总数",
+    "omniPost.calendar.kpi.today": "今日任务",
+    "omniPost.calendar.kpi.conflicts": "冲突任务",
+    "omniPost.calendar.kpi.timezone": "时区",
+    "omniPost.calendar.upcoming.title": "即将到来",
+    "omniPost.calendar.upcoming.empty": "近期暂无已排程的发布任务。",
+    "omniPost.calendar.upcoming.todayAt": "今天 {time}",
+    "omniPost.calendar.conflict.short": "冲突",
     "omniPost.library.header": "素材 / 模板库",
     "omniPost.library.subtitle": "已收录的多媒体素材 · 可复用的文案 / 话题 / 封面模板。",
     "omniPost.library.tab.assets": "素材",
@@ -847,7 +1053,10 @@ const I18N_DICT = {
     "omniPost.publish.toast.publishFail": "Failed to create tasks: {msg}",
     "omniPost.publish.toast.dryRunOk": "Dry run passed",
     "omniPost.publish.toast.dryRunIssues": "Dry run found {count} issue(s)",
+    "omniPost.publish.accounts.empty.title": "No matching accounts",
+    "omniPost.publish.accounts.empty.desc": "Import cookies in the Accounts tab and the accounts for the selected platforms will appear here.",
     "omniPost.tasks.header": "Publish tasks",
+    "omniPost.tasks.subtitle": "Live status of every publish task · screenshots kept on failure · one-click retry / cancel.",
     "omniPost.tasks.filter.all": "All",
     "omniPost.tasks.filter.pending": "Pending",
     "omniPost.tasks.filter.running": "Running",
@@ -920,7 +1129,15 @@ const I18N_DICT = {
     "omniPost.calendar.item.status": "Status: {status}",
     "omniPost.calendar.reschedule.ok": "Rescheduled",
     "omniPost.calendar.reschedule.fail": "Reschedule failed: {msg}",
-    "omniPost.calendar.timezone": "Timezone: {tz}",
+    "omniPost.calendar.timezone": "TZ {tz}",
+    "omniPost.calendar.kpi.weekTotal": "This week total",
+    "omniPost.calendar.kpi.today": "Today",
+    "omniPost.calendar.kpi.conflicts": "Conflicts",
+    "omniPost.calendar.kpi.timezone": "Timezone",
+    "omniPost.calendar.upcoming.title": "Upcoming",
+    "omniPost.calendar.upcoming.empty": "No scheduled publishes coming up.",
+    "omniPost.calendar.upcoming.todayAt": "Today {time}",
+    "omniPost.calendar.conflict.short": "Conflict",
     "omniPost.library.header": "Asset & template library",
     "omniPost.library.subtitle": "All ingested media · reusable caption / topic / cover templates.",
     "omniPost.library.tab.assets": "Assets",
@@ -1036,26 +1253,26 @@ function useT() {
   }, [loc]);
 }
 
-/* ─── Tiny <Ico> wrapper so we never embed an emoji (CI rule) ──────── */
+/* ─── Iconify mdi:* inline SVG bodies; no emoji or icon fonts. ──────── */
 const ICONS = {
-  send: '<path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/>',
-  list: '<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>',
-  user: '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
-  calendar: '<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>',
-  grid: '<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>',
-  cog: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
-  upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>',
-  plus: '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
-  refresh: '<polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"/><path d="M20.49 15a9 9 0 0 1-14.85 3.36L1 14"/>',
-  close: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
-  check: '<polyline points="20 6 9 17 4 12"/>',
-  external: '<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>',
-  trash: '<polyline points="3 6 5 6 21 6"/><path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/>',
-  warn: '<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
-  info: '<circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>',
-  copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
-  "chevron-down": '<polyline points="6 9 12 15 18 9"/>',
-  "chevron-up": '<polyline points="18 15 12 9 6 15"/>',
+  send: '<path fill="currentColor" d="M3 20v-6l8-2l-8-2V4l19 8Z"/>',
+  list: '<path fill="currentColor" d="M3 5h6v6H3zm2 2v2h2V7zm6 0h10v2H11zm0 8h10v2H11zm-6 5l-3.5-3.5l1.41-1.41L5 17.17l4.59-4.58L11 14z"/>',
+  user: '<path fill="currentColor" d="M13.07 10.41a5 5 0 0 0 0-5.82A3.4 3.4 0 0 1 15 4a3.5 3.5 0 0 1 0 7a3.4 3.4 0 0 1-1.93-.59M5.5 7.5A3.5 3.5 0 1 1 9 11a3.5 3.5 0 0 1-3.5-3.5m2 0A1.5 1.5 0 1 0 9 6a1.5 1.5 0 0 0-1.5 1.5M16 17v2H2v-2s0-4 7-4s7 4 7 4m-2 0c-.14-.78-1.33-2-5-2s-4.93 1.31-5 2m11.95-4A5.32 5.32 0 0 1 18 17v2h4v-2s0-3.63-6.06-4Z"/>',
+  calendar: '<path fill="currentColor" d="M6 1v2H5c-1.11 0-2 .89-2 2v14a2 2 0 0 0 2 2h6.1c1.26 1.24 2.99 2 4.9 2c3.87 0 7-3.13 7-7c0-1.91-.76-3.64-2-4.9V5a2 2 0 0 0-2-2h-1V1h-2v2H8V1M5 5h14v2H5m0 2h14v.67c-.91-.43-1.93-.67-3-.67c-3.87 0-7 3.13-7 7c0 1.07.24 2.09.67 3H5m11-7.85c2.68 0 4.85 2.17 4.85 4.85s-2.17 4.85-4.85 4.85s-4.85-2.17-4.85-4.85s2.17-4.85 4.85-4.85M15 13v3.69l3.19 1.84l.75-1.3l-2.44-1.41V13Z"/>',
+  grid: '<path fill="currentColor" d="m7 15l4.5-6l3.5 4.5l2.5-3L21 15m1-11h-8l-2-2H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2M2 6H0v14a2 2 0 0 0 2 2h18v-2H2z"/>',
+  cog: '<path fill="currentColor" d="M12 8a4 4 0 0 1 4 4a4 4 0 0 1-4 4a4 4 0 0 1-4-4a4 4 0 0 1 4-4m0 2a2 2 0 0 0-2 2a2 2 0 0 0 2 2a2 2 0 0 0 2-2a2 2 0 0 0-2-2m-2 12c-.25 0-.46-.18-.5-.42l-.37-2.65c-.63-.25-1.17-.59-1.69-.99l-2.49 1.01c-.22.08-.49 0-.61-.22l-2-3.46a.493.493 0 0 1 .12-.64l2.11-1.66L4.5 12l.07-1l-2.11-1.63a.493.493 0 0 1-.12-.64l2-3.46c.12-.22.39-.31.61-.22l2.49 1c.52-.39 1.06-.73 1.69-.98l.37-2.65c.04-.24.25-.42.5-.42h4c.25 0 .46.18.5.42l.37 2.65c.63.25 1.17.59 1.69.98l2.49-1c.22-.09.49 0 .61.22l2 3.46c.13.22.07.49-.12.64L19.43 11l.07 1l-.07 1l2.11 1.63c.19.15.25.42.12.64l-2 3.46c-.12.22-.39.31-.61.22l-2.49-1c-.52.39-1.06.73-1.69.98l-.37 2.65c-.04.24-.25.42-.5.42zm1.25-18l-.37 2.61c-1.2.25-2.26.89-3.03 1.78L5.44 7.35l-.75 1.3L6.8 10.2a5.55 5.55 0 0 0 0 3.6l-2.12 1.56l.75 1.3l2.43-1.04c.77.88 1.82 1.52 3.01 1.76l.37 2.62h1.52l.37-2.61c1.19-.25 2.24-.89 3.01-1.77l2.43 1.04l.75-1.3l-2.12-1.55c.4-1.17.4-2.44 0-3.61l2.11-1.55l-.75-1.3l-2.41 1.04a5.42 5.42 0 0 0-3.03-1.77L12.75 4z"/>',
+  upload: '<path fill="currentColor" d="M6.5 20q-2.28 0-3.89-1.57Q1 16.85 1 14.58q0-1.95 1.17-3.48q1.18-1.53 3.08-1.95q.63-2.3 2.5-3.72Q9.63 4 12 4q2.93 0 4.96 2.04Q19 8.07 19 11q1.73.2 2.86 1.5q1.14 1.28 1.14 3q0 1.88-1.31 3.19T18.5 20H13q-.82 0-1.41-.59Q11 18.83 11 18v-5.15L9.4 14.4L8 13l4-4l4 4l-1.4 1.4l-1.6-1.55V18h5.5q1.05 0 1.77-.73q.73-.72.73-1.77t-.73-1.77Q19.55 13 18.5 13H17v-2q0-2.07-1.46-3.54Q14.08 6 12 6Q9.93 6 8.46 7.46Q7 8.93 7 11h-.5q-1.45 0-2.47 1.03Q3 13.05 3 14.5T4.03 17q1.02 1 2.47 1H9v2m3-7"/>',
+  plus: '<path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6z"/>',
+  refresh: '<path fill="currentColor" d="M17.65 6.35A7.96 7.96 0 0 0 12 4a8 8 0 0 0-8 8a8 8 0 0 0 8 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18a6 6 0 0 1-6-6a6 6 0 0 1 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4z"/>',
+  close: '<path fill="currentColor" d="M19 6.41L17.59 5L12 10.59L6.41 5L5 6.41L10.59 12L5 17.59L6.41 19L12 13.41L17.59 19L19 17.59L13.41 12z"/>',
+  check: '<path fill="currentColor" d="M21 7L9 19l-5.5-5.5l1.41-1.41L9 16.17L19.59 5.59z"/>',
+  external: '<path fill="currentColor" d="M14 3v2h3.59l-9.83 9.83l1.41 1.41L19 6.41V10h2V3m-2 16H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2z"/>',
+  trash: '<path fill="currentColor" d="M9 3v1H4v2h1v13a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V6h1V4h-5V3zM7 6h10v13H7zm2 2v9h2V8zm4 0v9h2V8z"/>',
+  warn: '<path fill="currentColor" d="M12 2L1 21h22M12 6l7.53 13H4.47M11 10v4h2v-4m-2 6v2h2v-2"/>',
+  info: '<path fill="currentColor" d="M11 9h2V7h-2m1 13c-4.41 0-8-3.59-8-8s3.59-8 8-8s8 3.59 8 8s-3.59 8-8 8m0-18A10 10 0 0 0 2 12a10 10 0 0 0 10 10a10 10 0 0 0 10-10A10 10 0 0 0 12 2m-1 15h2v-6h-2z"/>',
+  copy: '<path fill="currentColor" d="M19 21H8V7h11m0-2H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2m-3-4H4a2 2 0 0 0-2 2v14h2V3h12z"/>',
+  "chevron-down": '<path fill="currentColor" d="M7.41 8.58L12 13.17l4.59-4.59L18 10l-6 6l-6-6z"/>',
+  "chevron-up": '<path fill="currentColor" d="M7.41 15.41L12 10.83l4.59 4.58L18 14l-6-6l-6 6z"/>',
 };
 function Ico(props) {
   const svg = ICONS[props.name] || "";
@@ -1063,6 +1280,10 @@ function Ico(props) {
     <span className={"ico " + (props.cls || "")} aria-hidden="true"
           dangerouslySetInnerHTML={{ __html: '<svg viewBox="0 0 24 24">' + svg + '</svg>' }} />
   );
+}
+
+function BrandMark() {
+  return <span className="oa-hero-title__icon"><img src="omni-post-brand.svg" alt="" /></span>;
 }
 
 /* ─── Format helpers ─────────────────────────────────────────────── */
@@ -1314,12 +1535,15 @@ function TopShell({ tab, onTab }) {
   return (
     <>
       <div className="header">
-        <h1>
-          <span className="ak-logo" aria-hidden="true"><Ico name="send" /></span>
-          <span>{t("omniPost.app.title")}<span className="ak-sub">· {t("omniPost.app.subtitle")}</span></span>
+        <h1 className="oa-hero-title">
+          <BrandMark />
+          <span className="oa-hero-title__text">
+            {t("omniPost.app.title")}
+            <span className="oa-hero-title__sub">{t("omniPost.app.subtitle")}</span>
+          </span>
         </h1>
         <div className="header-right">
-          <span className="text-dim text-xs">v0.1.0</span>
+          <span className="text-dim text-xs">v0.2.0</span>
         </div>
       </div>
       <div className="tabs" role="tablist" aria-label={t("omniPost.app.title")}>
@@ -1498,7 +1722,9 @@ function PublishTab() {
   }
 
   return (
-    <div className="split-layout" role="tabpanel" id="omnipost-pane-publish" aria-label={t("omniPost.tabs.publish")}>
+    <div className="publish-pane" role="tabpanel" id="omnipost-pane-publish" aria-label={t("omniPost.tabs.publish")}>
+      <div className="split-layout-scroll">
+      <div className="split-layout">
       <div className="split-left">
         {/* Asset */}
         <div className="card">
@@ -1547,7 +1773,7 @@ function PublishTab() {
                    onChange={function (e) { setTitle(e.target.value); }}
                    placeholder={t("omniPost.publish.field.titlePlaceholder")} maxLength={120} />
           </div>
-          <div className="form-row">
+          <div className="form-row form-row--grow">
             <label className="text-sm" htmlFor="omp-desc">{t("omniPost.publish.field.description")}</label>
             <textarea id="omp-desc" className="input textarea" value={description}
                       onChange={function (e) { setDescription(e.target.value); }}
@@ -1596,63 +1822,76 @@ function PublishTab() {
 
         {/* Accounts picker */}
         <div className="card">
-          <div className="label flex items-center justify-between">
-            <span>{t("omniPost.publish.section.accounts")}</span>
-            <span className="text-dim text-xs">
+          <div className="label-row">
+            <div className="label">{t("omniPost.publish.section.accounts")}</div>
+            <span className="text-dim text-xs mono">
               {accountsOfPickedPlatforms.length} / {accounts.length}
             </span>
           </div>
           {accountsOfPickedPlatforms.length === 0 ? (
-            <div className="empty-state" style={{ padding: "24px 8px" }}>
+            <div className="empty-state" style={{ padding: "20px 8px" }}>
               <Ico name="user" />
-              <h4>还没有匹配的账号</h4>
-              <p>在 S2 的「账号」Tab 导入 Cookie 后，选择对应平台会出现在这里。</p>
+              <h4>{t("omniPost.publish.accounts.empty.title")}</h4>
+              <p>{t("omniPost.publish.accounts.empty.desc")}</p>
             </div>
           ) : (
-            accountsOfPickedPlatforms.map(function (a) {
-              const selected = pickedAccounts.indexOf(a.id) >= 0;
-              return (
-                <div key={a.id}
-                     className={"acc-row" + (selected ? " selected" : "")}
-                     role="checkbox" aria-checked={selected} tabIndex={0}
-                     onClick={function () { toggleAccount(a.id); }}>
-                  <div className="acc-avatar">{(a.nickname || a.id).slice(0, 1).toUpperCase()}</div>
-                  <div className="acc-info">
-                    <div className="acc-info__name">{a.nickname || shortId(a.id)}</div>
-                    <div className="acc-info__meta">
-                      <span className="mono">{a.platform}</span>
-                      {" · "}
-                      <span className={"acc-health-" + (a.health_status || "unknown")}>
-                        {a.health_status || "unknown"}
-                      </span>
+            <div className="acc-picker">
+              {accountsOfPickedPlatforms.map(function (a) {
+                const selected = pickedAccounts.indexOf(a.id) >= 0;
+                return (
+                  <div key={a.id}
+                       className={"acc-row" + (selected ? " selected" : "")}
+                       role="checkbox" aria-checked={selected} tabIndex={0}
+                       onClick={function () { toggleAccount(a.id); }}>
+                    <div className="acc-avatar">{(a.nickname || a.id).slice(0, 1).toUpperCase()}</div>
+                    <div className="acc-info">
+                      <div className="acc-info__name">{a.nickname || shortId(a.id)}</div>
+                      <div className="acc-info__meta">
+                        <span className="mono">{a.platform}</span>
+                        {" · "}
+                        <span className={"acc-health-" + (a.health_status || "unknown")}>
+                          {a.health_status || "unknown"}
+                        </span>
+                      </div>
                     </div>
                   </div>
-                </div>
-              );
-            })
+                );
+              })}
+            </div>
           )}
         </div>
 
-        {/* Summary + actions */}
-        <div className="card">
-          <div className="label">{t("omniPost.publish.section.summary")}</div>
-          <div className="text-sm text-muted" style={{ marginBottom: 10 }}>
-            {pickedAsset && pickedPlatforms.length && pickedAccounts.length
-              ? t("omniPost.publish.summary.headline", {
-                  platforms: pickedPlatforms.length,
-                  accounts: pickedAccounts.length,
-                  tasks: matchingTaskCount,
-                })
-              : t("omniPost.publish.summary.empty")}
-          </div>
-          <div className="flex gap-2">
-            <button className="btn btn-primary btn-block" disabled={submitting} onClick={doPublish}>
-              <Ico name="send" /> {t("omniPost.publish.action.publishNow")}
-            </button>
-            <button className="btn" onClick={doDryRun}>
-              <Ico name="check" /> {t("omniPost.publish.action.dryRun")}
-            </button>
-          </div>
+      </div>
+      </div>
+      </div>
+
+      {/* Publish dock — summary + primary/secondary actions, pinned at the
+          bottom of the tab so the publish button is visible at all times. */}
+      <div className="publish-dock">
+        <div className="publish-dock__head">
+          <span>{t("omniPost.publish.section.summary")}</span>
+        </div>
+        <div className="publish-dock__summary">
+          {pickedAsset && pickedPlatforms.length && pickedAccounts.length ? (
+            <span>
+              {t("omniPost.publish.summary.headline", {
+                platforms: pickedPlatforms.length,
+                accounts: pickedAccounts.length,
+                tasks: matchingTaskCount,
+              })}
+            </span>
+          ) : (
+            t("omniPost.publish.summary.empty")
+          )}
+        </div>
+        <div className="publish-dock__actions">
+          <button className="btn btn-outline" onClick={doDryRun}
+                  title={t("omniPost.publish.action.dryRun")}>
+            <Ico name="check" /> {t("omniPost.publish.action.dryRun")}
+          </button>
+          <button className="btn btn-primary" disabled={submitting} onClick={doPublish}>
+            <Ico name="send" /> {t("omniPost.publish.action.publishNow")}
+          </button>
         </div>
       </div>
     </div>
@@ -1706,30 +1945,36 @@ function TasksTab() {
   const filters = ["all","pending","running","succeeded","failed","cancelled"];
   return (
     <div role="tabpanel" id="omnipost-pane-tasks">
-      <div className="flex gap-2 items-center" style={{ marginBottom: 10 }}>
-        <div className="card-title flex-1" style={{ marginBottom: 0 }}>{t("omniPost.tasks.header")}</div>
-        <button className="btn btn-sm" onClick={refresh}><Ico name="refresh" /> {t("omniPost.common.refresh")}</button>
-      </div>
-      <div className="flex gap-2 flex-wrap" style={{ marginBottom: 10 }}>
-        {filters.map(function (f) {
-          return (
-            <button key={f}
-                    className={"btn btn-sm" + (statusFilter === f ? " btn-primary" : "")}
-                    onClick={function () { setStatusFilter(f); }}>
-              {t("omniPost.tasks.filter." + f)}
-            </button>
-          );
-        })}
-      </div>
-      {tasks.length === 0 ? (
-        <div className="empty-state">
-          <Ico name="list" />
-          <h4>{t("omniPost.tasks.empty.title")}</h4>
-          <p>{t("omniPost.tasks.empty.desc")}</p>
+      <div className="section-head">
+        <div className="section-head__title">
+          <h2>{t("omniPost.tasks.header")}</h2>
         </div>
-      ) : (
-        <div style={{ overflowX: "auto" }}>
-          <table className="ak-table">
+        <div className="section-head__actions">
+          <button className="btn btn-sm" onClick={refresh}><Ico name="refresh" /> {t("omniPost.common.refresh")}</button>
+        </div>
+        <p className="section-head__sub">{t("omniPost.tasks.subtitle")}</p>
+      </div>
+      <div className="tab-panel">
+        <div className="flex gap-2 flex-wrap" style={{ marginBottom: 12 }}>
+          {filters.map(function (f) {
+            return (
+              <button key={f}
+                      className={"btn btn-sm" + (statusFilter === f ? " btn-primary" : "")}
+                      onClick={function () { setStatusFilter(f); }}>
+                {t("omniPost.tasks.filter." + f)}
+              </button>
+            );
+          })}
+        </div>
+        {tasks.length === 0 ? (
+          <div className="empty-state">
+            <Ico name="list" />
+            <h4>{t("omniPost.tasks.empty.title")}</h4>
+            <p>{t("omniPost.tasks.empty.desc")}</p>
+          </div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table className="ak-table">
             <thead>
               <tr>
                 <th>{t("omniPost.tasks.col.created")}</th>
@@ -1773,10 +2018,11 @@ function TasksTab() {
                   </tr>
                 );
               })}
-            </tbody>
-          </table>
-        </div>
-      )}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
 
       {active ? <TaskDrawer task={active} onClose={function () { setActive(null); }} /> : null}
     </div>
@@ -2140,44 +2386,46 @@ function AccountsTab() {
 
   const empty = !accounts.length;
   return (
-    <div>
-      <div className="acc-tab__header">
-        <div>
+    <div role="tabpanel" id="omnipost-pane-accounts">
+      <div className="section-head">
+        <div className="section-head__title">
           <h2>{t("omniPost.accounts.header")}</h2>
-          <p>{t("omniPost.accounts.subtitle")}</p>
         </div>
-        <div className="flex gap-2">
+        <div className="section-head__actions">
           <button className="btn btn-sm" onClick={refresh}><Ico name="refresh" /> {t("omniPost.common.refresh")}</button>
           <button className="btn btn-sm btn-primary" onClick={function () { setModal(true); }}>
             <Ico name="plus" /> {t("omniPost.accounts.action.add")}
           </button>
         </div>
+        <p className="section-head__sub">{t("omniPost.accounts.subtitle")}</p>
       </div>
-      {empty ? (
-        <div className="stub">
-          <Ico name="user" />
-          <h2>{t("omniPost.accounts.empty.title")}</h2>
-          <p>{t("omniPost.accounts.empty.desc")}</p>
-        </div>
-      ) : (
-        Object.keys(grouped).sort().map(function (pid) {
-          const meta = platformMeta[pid];
-          const name = meta ? (meta.display_name_zh || meta.display_name_en || pid) : pid;
-          return (
-            <div className="acc-group" key={pid}>
-              <div className="acc-group__head">
-                <span>{name}</span>
-                <span className="acc-group__count">· {grouped[pid].length}</span>
+      <div className="tab-panel">
+        {empty ? (
+          <div className="empty-state">
+            <Ico name="user" />
+            <h4>{t("omniPost.accounts.empty.title")}</h4>
+            <p>{t("omniPost.accounts.empty.desc")}</p>
+          </div>
+        ) : (
+          Object.keys(grouped).sort().map(function (pid) {
+            const meta = platformMeta[pid];
+            const name = meta ? (meta.display_name_zh || meta.display_name_en || pid) : pid;
+            return (
+              <div className="acc-group" key={pid}>
+                <div className="acc-group__head">
+                  <span>{name}</span>
+                  <span className="acc-group__count">· {grouped[pid].length}</span>
+                </div>
+                <div className="acc-grid">
+                  {grouped[pid].map(function (a) {
+                    return <AccountMatrixCard key={a.id} account={a} platform={pid} onChanged={refresh} />;
+                  })}
+                </div>
               </div>
-              <div className="acc-grid">
-                {grouped[pid].map(function (a) {
-                  return <AccountMatrixCard key={a.id} account={a} platform={pid} onChanged={refresh} />;
-                })}
-              </div>
-            </div>
-          );
-        })
-      )}
+            );
+          })
+        )}
+      </div>
       {modal ? (
         <AccountAddModal platforms={catalog.platforms || []} onClose={function () { setModal(false); }} onAdded={refresh} />
       ) : null}
@@ -2287,64 +2535,146 @@ function CalendarTab() {
 
   const tz = (Intl && Intl.DateTimeFormat) ? Intl.DateTimeFormat().resolvedOptions().timeZone : "UTC";
   const today = new Date(); today.setHours(0,0,0,0);
+
+  // KPIs consumed by the summary strip above the week grid.
+  const kpiTotal = items.length;
+  const kpiToday = useMemo(function () {
+    const tomorrow = addDays(today, 1);
+    return items.filter(function (x) {
+      const d = new Date(x.scheduled_at);
+      return d >= today && d < tomorrow;
+    }).length;
+  }, [items, today]);
+  const kpiConflicts = conflictIds.size;
+
+  // Upcoming list — next 8 scheduled tasks across the visible week,
+  // sorted chronologically, rendered in the previously unused bottom
+  // half of the pane.
+  const upcoming = useMemo(function () {
+    const now = new Date();
+    return items
+      .filter(function (x) { return new Date(x.scheduled_at) >= now; })
+      .sort(function (a, b) { return a.scheduled_at < b.scheduled_at ? -1 : 1; })
+      .slice(0, 8);
+  }, [items]);
+
+  function formatUpcomingWhen(iso) {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return "—";
+    const sameDay = d.toDateString() === new Date().toDateString();
+    const hm = String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+    if (sameDay) return t("omniPost.calendar.upcoming.todayAt", { time: hm });
+    return (d.getMonth() + 1) + "/" + d.getDate() + " " + hm;
+  }
+
   return (
     <div role="tabpanel" id="omnipost-pane-calendar">
-      <div className="cal-header">
-        <div className="flex-1">
-          <div className="cal-title">{t("omniPost.calendar.header")}</div>
-          <div className="cal-sub">{t("omniPost.calendar.subtitle")}</div>
-          <div className="cal-sub">{t("omniPost.calendar.timezone", { tz: tz })}</div>
+      <div className="section-head">
+        <div className="section-head__title">
+          <h2>{t("omniPost.calendar.header")}</h2>
         </div>
-        <button className="btn btn-sm" onClick={function () { setWeekStart(addDays(weekStart, -7)); }}>
-          <Ico name="chevron-up" /> {t("omniPost.calendar.prev")}
-        </button>
-        <button className="btn btn-sm" onClick={function () { setWeekStart(startOfWeek(new Date())); }}>
-          {t("omniPost.calendar.today")}
-        </button>
-        <button className="btn btn-sm" onClick={function () { setWeekStart(addDays(weekStart, 7)); }}>
-          {t("omniPost.calendar.next")} <Ico name="chevron-down" />
-        </button>
-        <button className="btn btn-sm" onClick={refresh}><Ico name="refresh" /> {t("omniPost.common.refresh")}</button>
+        <div className="section-head__actions">
+          <button className="btn btn-sm" onClick={function () { setWeekStart(addDays(weekStart, -7)); }}>
+            <Ico name="chevron-up" /> {t("omniPost.calendar.prev")}
+          </button>
+          <button className="btn btn-sm" onClick={function () { setWeekStart(startOfWeek(new Date())); }}>
+            {t("omniPost.calendar.today")}
+          </button>
+          <button className="btn btn-sm" onClick={function () { setWeekStart(addDays(weekStart, 7)); }}>
+            {t("omniPost.calendar.next")} <Ico name="chevron-down" />
+          </button>
+          <button className="btn btn-sm" onClick={refresh}><Ico name="refresh" /> {t("omniPost.common.refresh")}</button>
+        </div>
+        <p className="section-head__sub">
+          {t("omniPost.calendar.subtitle")} · {t("omniPost.calendar.timezone", { tz: tz })}
+        </p>
       </div>
-      {items.length === 0 ? (
-        <div className="stub"><Ico name="info" /><p>{t("omniPost.calendar.empty")}</p></div>
-      ) : null}
-      <div className="cal-grid">
-        {Array.from({ length: 7 }, function (_u, i) {
-          const day = addDays(weekStart, i);
-          const isToday = day.getTime() === today.getTime();
-          const bucket = byDay[i];
-          return (
-            <div key={i} className={"cal-day" + (isToday ? " cal-day--today" : "")}>
-              <div className="cal-day__header">
-                <span>{(day.getMonth() + 1) + "/" + day.getDate()}</span>
-                <span>{formatWeekdayShort(day, loc)}</span>
+      <div className="tab-panel">
+        <div className="cal-kpis">
+          <div className="cal-kpi cal-kpi--primary">
+            <span className="cal-kpi__label">{t("omniPost.calendar.kpi.weekTotal")}</span>
+            <span className="cal-kpi__value">{kpiTotal}</span>
+          </div>
+          <div className="cal-kpi">
+            <span className="cal-kpi__label">{t("omniPost.calendar.kpi.today")}</span>
+            <span className="cal-kpi__value">{kpiToday}</span>
+          </div>
+          <div className={"cal-kpi" + (kpiConflicts > 0 ? " cal-kpi--danger" : "")}>
+            <span className="cal-kpi__label">{t("omniPost.calendar.kpi.conflicts")}</span>
+            <span className="cal-kpi__value">{kpiConflicts}</span>
+          </div>
+          <div className="cal-kpi">
+            <span className="cal-kpi__label">{t("omniPost.calendar.kpi.timezone")}</span>
+            <span className="cal-kpi__value" style={{ fontSize: 13, fontWeight: 600 }}>{tz}</span>
+          </div>
+        </div>
+
+        <div className="cal-grid">
+          {Array.from({ length: 7 }, function (_u, i) {
+            const day = addDays(weekStart, i);
+            const isToday = day.getTime() === today.getTime();
+            const bucket = byDay[i];
+            return (
+              <div key={i} className={"cal-day" + (isToday ? " cal-day--today" : "")}>
+                <div className="cal-day__header">
+                  <span className="cal-day__date">{(day.getMonth() + 1) + "/" + day.getDate()}</span>
+                  <span>{formatWeekdayShort(day, loc)}</span>
+                </div>
+                <div className="cal-day__body">
+                  {bucket.length === 0
+                    ? <div className="cal-day__empty">—</div>
+                    : bucket.map(function (task) {
+                      const d = new Date(task.scheduled_at);
+                      const hm = (String(d.getHours()).padStart(2, "0")) + ":" + (String(d.getMinutes()).padStart(2, "0"));
+                      const acc = accById[task.account_id];
+                      const conflict = conflictIds.has(task.id);
+                      return (
+                        <div key={task.id}
+                             className={"cal-item" + (conflict ? " cal-item--conflict" : "")}
+                             data-platform={task.platform}
+                             title={t("omniPost.calendar.item.status", { status: task.status })}>
+                          <div className="cal-item__time">{hm} · {task.platform}</div>
+                          <div className="cal-item__meta">
+                            {acc ? acc.nickname : shortId(task.account_id)}
+                            {conflict ? (<span style={{ color: "var(--danger, #ef4444)", marginLeft: 6 }}>
+                              <Ico name="warn" /> {t("omniPost.calendar.conflict")}
+                            </span>) : null}
+                          </div>
+                        </div>
+                      );
+                    })}
+                </div>
               </div>
-              {bucket.length === 0
-                ? <div className="cal-day__empty">—</div>
-                : bucket.map(function (task) {
-                  const d = new Date(task.scheduled_at);
-                  const hm = (String(d.getHours()).padStart(2, "0")) + ":" + (String(d.getMinutes()).padStart(2, "0"));
-                  const acc = accById[task.account_id];
-                  const conflict = conflictIds.has(task.id);
-                  return (
-                    <div key={task.id}
-                         className={"cal-item" + (conflict ? " cal-item--conflict" : "")}
-                         data-platform={task.platform}
-                         title={t("omniPost.calendar.item.status", { status: task.status })}>
-                      <div className="cal-item__time">{hm} · {task.platform}</div>
-                      <div className="cal-item__meta">
-                        {acc ? acc.nickname : shortId(task.account_id)}
-                        {conflict ? (<span style={{ color: "var(--danger, #ef4444)", marginLeft: 6 }}>
-                          <Ico name="warn" /> {t("omniPost.calendar.conflict")}
-                        </span>) : null}
-                      </div>
-                    </div>
-                  );
-                })}
+            );
+          })}
+        </div>
+
+        <div className="cal-upcoming">
+          <div className="cal-upcoming__head">
+            <div className="cal-upcoming__title">{t("omniPost.calendar.upcoming.title")}</div>
+            <span className="text-dim text-xs">{upcoming.length}</span>
+          </div>
+          {upcoming.length === 0 ? (
+            <div className="cal-upcoming__empty">{t("omniPost.calendar.upcoming.empty")}</div>
+          ) : (
+            <div className="cal-upcoming__list">
+              {upcoming.map(function (task) {
+                const acc = accById[task.account_id];
+                const conflict = conflictIds.has(task.id);
+                return (
+                  <div key={task.id} className="cal-upcoming__row">
+                    <span className="cal-upcoming__when">{formatUpcomingWhen(task.scheduled_at)}</span>
+                    <span className="cal-upcoming__plat">{task.platform}</span>
+                    <span className="cal-upcoming__acc">{acc ? acc.nickname : shortId(task.account_id)}</span>
+                    <span className={"badge " + (conflict ? "badge-failed" : "badge-pending")}>
+                      {conflict ? t("omniPost.calendar.conflict.short") : task.status}
+                    </span>
+                  </div>
+                );
+              })}
             </div>
-          );
-        })}
+          )}
+        </div>
       </div>
     </div>
   );
@@ -2359,23 +2689,27 @@ function LibraryTab() {
   const [seg, setSeg] = useState("assets");
   return (
     <div role="tabpanel" id="omnipost-pane-library">
-      <div className="flex gap-2 items-center" style={{ marginBottom: 10 }}>
-        <div className="flex-1">
-          <div className="card-title" style={{ marginBottom: 0 }}>{t("omniPost.library.header")}</div>
-          <div className="cal-sub">{t("omniPost.library.subtitle")}</div>
+      <div className="section-head">
+        <div className="section-head__title">
+          <h2>{t("omniPost.library.header")}</h2>
         </div>
+        <div className="section-head__actions">
+          <div className="lib-tabs" style={{ margin: 0 }}>
+            <button className={"btn-pill" + (seg === "assets" ? " is-active" : "")}
+                    onClick={function () { setSeg("assets"); }}>
+              {t("omniPost.library.tab.assets")}
+            </button>
+            <button className={"btn-pill" + (seg === "templates" ? " is-active" : "")}
+                    onClick={function () { setSeg("templates"); }}>
+              {t("omniPost.library.tab.templates")}
+            </button>
+          </div>
+        </div>
+        <p className="section-head__sub">{t("omniPost.library.subtitle")}</p>
       </div>
-      <div className="lib-tabs">
-        <button className={"btn-pill" + (seg === "assets" ? " is-active" : "")}
-                onClick={function () { setSeg("assets"); }}>
-          {t("omniPost.library.tab.assets")}
-        </button>
-        <button className={"btn-pill" + (seg === "templates" ? " is-active" : "")}
-                onClick={function () { setSeg("templates"); }}>
-          {t("omniPost.library.tab.templates")}
-        </button>
+      <div className="tab-panel">
+        {seg === "assets" ? <LibraryAssets /> : <LibraryTemplates />}
       </div>
-      {seg === "assets" ? <LibraryAssets /> : <LibraryTemplates />}
     </div>
   );
 }
@@ -2827,10 +3161,19 @@ function SettingsTab() {
   const engine = draft.engine || "auto";
 
   return (
-    <div style={{ padding: 16, maxWidth: 820 }}>
-      <h2 style={{ marginTop: 0 }}>{t("omniPost.settings.coming.title")}</h2>
-      <p className="cal-sub">{t("omniPost.settings.coming.desc")}</p>
-
+    <div role="tabpanel" id="omnipost-pane-settings">
+      <div className="section-head">
+        <div className="section-head__title">
+          <h2>{t("omniPost.settings.coming.title")}</h2>
+        </div>
+        <div className="section-head__actions">
+          <button className="btn btn-primary btn-sm" disabled={saving} onClick={save}>
+            {t("omniPost.settings.save")}
+          </button>
+        </div>
+        <p className="section-head__sub">{t("omniPost.settings.coming.desc")}</p>
+      </div>
+      <div className="tab-panel" style={{ maxWidth: 880 }}>
       <MultiPostGuide />
 
       {/* Engine ---------------------------------------------------- */}
@@ -2922,10 +3265,11 @@ function SettingsTab() {
         <p className="cal-sub" style={{ margin: "4px 0 0 24px" }}>{t("omniPost.settings.field.probe.desc")}</p>
       </div>
 
-      <div style={{ display: "flex", justifyContent: "flex-end" }}>
-        <button className="btn btn-primary" disabled={saving} onClick={save}>
-          {t("omniPost.settings.save")}
-        </button>
+        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+          <button className="btn btn-primary" disabled={saving} onClick={save}>
+            {t("omniPost.settings.save")}
+          </button>
+        </div>
       </div>
     </div>
   );

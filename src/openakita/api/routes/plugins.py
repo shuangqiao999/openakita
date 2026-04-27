@@ -103,6 +103,12 @@ def _find_icon(plugin_dir: Path) -> str | None:
 def _manifest_meta(manifest, plugin_dir: Path) -> dict[str, Any]:
     """Common metadata extracted from manifest + files."""
     icon_file = _find_icon(plugin_dir)
+    icon_mtime = 0
+    if icon_file is not None:
+        try:
+            icon_mtime = (plugin_dir / icon_file).stat().st_mtime_ns
+        except OSError:
+            icon_mtime = 0
     # i18n surfacing: pass through the manifest's per-language fields so
     # the frontend can pick the right text without doing a second API call.
     # We always include the dict (even if empty) so the client can do a
@@ -135,6 +141,7 @@ def _manifest_meta(manifest, plugin_dir: Path) -> dict[str, Any]:
         "has_readme": (plugin_dir / "README.md").is_file() or (plugin_dir / "readme.md").is_file(),
         "has_config_schema": (plugin_dir / "config_schema.json").is_file(),
         "has_icon": icon_file is not None,
+        "icon_mtime": icon_mtime,
         "onboard": manifest.raw.get("onboard"),
         # i18n: clients should prefer these when present, fall back to `name`/`description`.
         "display_name_i18n": display_name_i18n,
@@ -836,7 +843,7 @@ async def update_plugin_config(
 
 
 @router.get("/{plugin_id}/_admin/readme")
-async def get_plugin_readme(plugin_id: str) -> dict[str, str]:
+async def get_plugin_readme(plugin_id: str) -> dict[str, Any]:
     _check_plugin_id(plugin_id)
     plugin_dir = _plugins_dir() / plugin_id
     if not plugin_dir.is_dir():
@@ -1005,7 +1012,7 @@ async def get_plugin_logs(
     plugin_id: str,
     request: Request,
     lines: int = 100,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     _check_plugin_id(plugin_id)
     pm = _get_plugin_manager(request)
     if pm is not None:
@@ -1045,7 +1052,10 @@ async def get_plugin_icon(plugin_id: str) -> Response:
         ".jpg": "image/jpeg",
         ".jpeg": "image/jpeg",
     }
-    return Response(content=data, media_type=media_map.get(ext, "application/octet-stream"))
+    response = Response(content=data, media_type=media_map.get(ext, "application/octet-stream"))
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    return response
 
 
 @router.post("/{plugin_id}/_admin/open-folder")

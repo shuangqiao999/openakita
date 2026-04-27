@@ -82,6 +82,7 @@ CREATE TABLE IF NOT EXISTS articles (
     dedupe_primary_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_articles_fetched ON articles(fetched_at DESC);
+CREATE INDEX IF NOT EXISTS idx_articles_event_time ON articles(COALESCE(published_at, fetched_at) DESC);
 CREATE INDEX IF NOT EXISTS idx_articles_score ON articles(ai_score DESC);
 CREATE INDEX IF NOT EXISTS idx_articles_source ON articles(source_id, fetched_at DESC);
 
@@ -114,6 +115,14 @@ CREATE TABLE IF NOT EXISTS assets_bus (
     created_at TEXT
 );
 """
+
+_ARTICLE_EVENT_TIME_SQL = (
+    "CASE "
+    "WHEN published_at GLOB '????-??-??T??:??*' THEN published_at "
+    "WHEN published_at GLOB '????-??-?? ??:??*' THEN REPLACE(published_at, ' ', 'T') "
+    "ELSE fetched_at "
+    "END"
+)
 
 
 # ── Default config ───────────────────────────────────────────────────────
@@ -243,8 +252,25 @@ class FinpulseTaskManager:
         await self._db.execute("PRAGMA synchronous=NORMAL")
         await self._db.execute("PRAGMA foreign_keys=ON")
         await self._db.executescript(SCHEMA_SQL)
+        await self._migrate_v2()
         await self._init_default_config()
         await self._db.commit()
+
+    async def _migrate_v2(self) -> None:
+        """Add columns introduced in the backend source refactor."""
+        assert self._db is not None
+        cols = {
+            row[1]
+            for row in await self._db.execute_fetchall("PRAGMA table_info(articles)")
+        }
+        if "is_stale" not in cols:
+            await self._db.execute(
+                "ALTER TABLE articles ADD COLUMN is_stale INTEGER DEFAULT 0"
+            )
+        if "extra_json" not in cols:
+            await self._db.execute(
+                "ALTER TABLE articles ADD COLUMN extra_json TEXT DEFAULT '{}'"
+            )
 
     async def close(self) -> None:
         if self._db is not None:
@@ -258,6 +284,19 @@ class FinpulseTaskManager:
             await self._db.execute(
                 "INSERT OR IGNORE INTO config (key, value, updated_at) VALUES (?, ?, ?)",
                 (key, val, now),
+            )
+        for key in (
+            "newsnow.mode",
+            "newsnow.api_url",
+            "newsnow.min_interval_s",
+        ):
+            default_val = DEFAULT_CONFIG.get(key, "")
+            if not default_val:
+                continue
+            await self._db.execute(
+                "UPDATE config SET value = ?, updated_at = ? "
+                "WHERE key = ? AND TRIM(value) = ''",
+                (default_val, now, key),
             )
 
     # ── Config ───────────────────────────────────────────────────────
@@ -453,15 +492,16 @@ class FinpulseTaskManager:
         raw_json = json.dumps(raw or {}, ensure_ascii=False)
 
         rows = await self._db.execute_fetchall(
-            "SELECT id, published_at, raw_json FROM articles WHERE url_hash = ?",
+            "SELECT id, published_at, raw_json, title, extra_json "
+            "FROM articles WHERE url_hash = ?",
             (url_hash,),
         )
         if rows:
             existing_id = rows[0][0]
             existing_pub = rows[0][1]
             existing_raw = json.loads(rows[0][2] or "{}")
-            # Fetch the stored source_id so we can track cross-source
-            # re-sightings without clobbering the original provenance.
+            existing_title = rows[0][3] or ""
+            existing_extra = json.loads(rows[0][4] or "{}")
             prior_rows = await self._db.execute_fetchall(
                 "SELECT source_id FROM articles WHERE id = ?", (existing_id,)
             )
@@ -472,6 +512,16 @@ class FinpulseTaskManager:
             merged = {**existing_raw, **(raw or {})}
             if also_seen:
                 merged["also_seen_from"] = also_seen
+
+            if title and existing_title and title != existing_title:
+                history: list[dict[str, str]] = existing_extra.get("title_history", [])
+                history.append({
+                    "old": existing_title,
+                    "new": title,
+                    "at": fetched_at,
+                })
+                existing_extra["title_history"] = history[-10:]
+
             newer_pub = (
                 published_at
                 if published_at and (not existing_pub or published_at > existing_pub)
@@ -479,7 +529,8 @@ class FinpulseTaskManager:
             )
             await self._db.execute(
                 "UPDATE articles SET title = ?, summary = ?, content = ?, "
-                "published_at = ?, fetched_at = ?, raw_json = ? WHERE id = ?",
+                "published_at = ?, fetched_at = ?, raw_json = ?, extra_json = ? "
+                "WHERE id = ?",
                 (
                     title,
                     summary,
@@ -487,6 +538,7 @@ class FinpulseTaskManager:
                     newer_pub,
                     fetched_at,
                     json.dumps(merged, ensure_ascii=False),
+                    json.dumps(existing_extra, ensure_ascii=False),
                     existing_id,
                 ),
             )
@@ -513,6 +565,30 @@ class FinpulseTaskManager:
         await self._db.commit()
         return article_id, True
 
+    async def mark_stale_articles(self, cutoffs: dict[str, str]) -> int:
+        """Mark articles older than their source's freshness ceiling.
+
+        ``cutoffs`` maps ``source_id`` → ISO timestamp string.  Articles
+        from that source with sortable ``published_at < cutoff`` (or
+        ``fetched_at`` if ``published_at`` is missing / non-ISO) get
+        ``is_stale = 1``.
+
+        Returns the total number of rows updated.
+        """
+        assert self._db is not None
+        total = 0
+        for sid, cutoff in cutoffs.items():
+            cur = await self._db.execute(
+                "UPDATE articles SET is_stale = 1 "
+                "WHERE source_id = ? AND is_stale = 0 "
+                f"AND {_ARTICLE_EVENT_TIME_SQL} < ?",
+                (sid, cutoff),
+            )
+            total += cur.rowcount
+        if total:
+            await self._db.commit()
+        return total
+
     async def get_article(self, article_id: str) -> dict[str, Any] | None:
         assert self._db is not None
         rows = await self._db.execute_fetchall(
@@ -527,6 +603,7 @@ class FinpulseTaskManager:
         *,
         source_id: str | None = None,
         since: str | None = None,
+        until: str | None = None,
         q: str | None = None,
         min_score: float | None = None,
         sort: str = "time",
@@ -540,8 +617,11 @@ class FinpulseTaskManager:
             wheres.append("source_id = ?")
             args.append(source_id)
         if since:
-            wheres.append("fetched_at >= ?")
+            wheres.append(f"{_ARTICLE_EVENT_TIME_SQL} >= ?")
             args.append(since)
+        if until:
+            wheres.append(f"{_ARTICLE_EVENT_TIME_SQL} <= ?")
+            args.append(until)
         if q:
             wheres.append("(title LIKE ? OR summary LIKE ?)")
             like = f"%{q}%"
@@ -550,11 +630,9 @@ class FinpulseTaskManager:
             wheres.append("ai_score >= ?")
             args.append(float(min_score))
         where_sql = (" WHERE " + " AND ".join(wheres)) if wheres else ""
-        order_sql = (
-            " ORDER BY ai_score DESC, fetched_at DESC"
-            if sort == "score"
-            else " ORDER BY fetched_at DESC"
-        )
+        sort_key = (sort or "time_desc").lower()
+        direction = "ASC" if sort_key in {"time_asc", "asc", "oldest"} else "DESC"
+        order_sql = f" ORDER BY {_ARTICLE_EVENT_TIME_SQL} {direction}"
         count_rows = await self._db.execute_fetchall(
             f"SELECT COUNT(*) FROM articles{where_sql}", args
         )
@@ -672,6 +750,22 @@ class FinpulseTaskManager:
         if not rows:
             return None
         return self._row_to_digest(rows[0])
+
+    async def update_digest_push_results(
+        self, digest_id: str, push_results: dict[str, Any]
+    ) -> None:
+        assert self._db is not None
+        await self._db.execute(
+            "UPDATE digests SET push_results_json = ? WHERE id = ?",
+            (json.dumps(push_results or {}, ensure_ascii=False), digest_id),
+        )
+        await self._db.commit()
+
+    async def delete_digest(self, digest_id: str) -> bool:
+        assert self._db is not None
+        result = await self._db.execute("DELETE FROM digests WHERE id = ?", (digest_id,))
+        await self._db.commit()
+        return (result.rowcount or 0) > 0
 
     async def list_digests(
         self, *, session: str | None = None, offset: int = 0, limit: int = 50

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Seedance Video Generator</title>
+  <title>即梦工作室</title>
   <!--
     Self-contained plugin UI: bootstrap + UI Kit are inlined under _assets/.
     Plugins MUST NOT depend on host-mounted /api/plugins/_sdk/* (removed in
@@ -49,10 +49,15 @@
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); line-height: 1.5; }
     .app { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
     .header { display: flex; align-items: center; justify-content: space-between; padding: 12px 20px; border-bottom: 1px solid var(--border); background: var(--bg-card); }
-    .header h1 { font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+    .header h1 { font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 10px; margin: 0; }
+    .header-icon { width: 36px; height: 36px; flex-shrink: 0; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 6px rgba(67,56,202,.25); }
+    .header-icon svg { width: 100%; height: 100%; display: block; }
+    .header-title-wrap { display: flex; flex-direction: column; gap: 1px; }
+    .header-title-main { font-size: 16px; font-weight: 600; line-height: 1.3; }
+    .header-title-sub { font-size: 11px; font-weight: 400; color: var(--text-muted); line-height: 1.3; }
     .header-right { display: flex; align-items: center; gap: 12px; font-size: 13px; color: var(--text-muted); }
     .tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); background: var(--bg-card); padding: 0 16px; }
-    .tab { padding: 10px 18px; font-size: 13px; cursor: pointer; border-bottom: 2px solid transparent; color: var(--text-muted); transition: all .15s; white-space: nowrap; }
+    .tab { padding: 10px 18px; font-size: 13px; cursor: pointer; border-bottom: 2px solid transparent; color: var(--text-muted); transition: all .15s; white-space: nowrap; display: flex; align-items: center; gap: 6px; }
     .tab:hover { color: var(--text); background: var(--bg-hover); }
     .tab.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 500; }
     .content { flex: 1; min-height: 0; overflow: hidden; padding: 20px; position: relative; }
@@ -103,9 +108,9 @@
     .switch.on::after { left: 18px; }
     .upload-zone { border: 2px dashed var(--border); border-radius: var(--radius); padding: 24px; text-align: center; cursor: pointer; transition: .15s; color: var(--text-muted); }
     .upload-zone:hover { border-color: var(--primary); background: rgba(59,130,246,.04); }
-    .split-layout { display: flex; gap: 20px; height: 100%; }
-    .split-left { width: 42%; min-width: 380px; overflow-y: auto; flex-shrink: 0; }
-    .split-right { flex: 1; overflow-y: auto; }
+    .split-layout { display: flex; gap: 20px; height: 100%; overflow: hidden; }
+    .split-left { width: 42%; min-width: 320px; overflow-y: auto; flex-shrink: 0; }
+    .split-right { flex: 1; min-width: 0; overflow-y: auto; }
     .video-player-wrap { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; aspect-ratio: 16/9; position: relative; display: flex; align-items: center; justify-content: center; }
     .video-player-wrap video { max-width: 100%; max-height: 100%; }
     .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 60px 20px; color: var(--text-dim); }
@@ -144,7 +149,10 @@
     .video-controls button:hover { color: var(--primary); }
     .progress-bar { height: 3px; background: var(--border); border-radius: 2px; flex: 1; position: relative; cursor: pointer; }
     .progress-bar-fill { height: 100%; background: var(--primary); border-radius: 2px; transition: width .1s; }
-    @media (max-width: 860px) { .split-layout { flex-direction: column; } .split-left { width: 100%; min-width: unset; } }
+    @media (max-width: 860px) {
+      .split-layout { flex-direction: column; overflow-y: auto; }
+      .split-left { width: 100%; min-width: unset; flex-shrink: 0; }
+    }
     .ico { display: inline-flex; align-items: center; justify-content: center; width: 1em; height: 1em; vertical-align: -0.125em; flex-shrink: 0; }
     .ico svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
     .ico-sm { width: 14px; height: 14px; }
@@ -368,6 +376,34 @@
     .folder-picker__foot { display: flex; align-items: center; gap: 10px; padding: 12px 20px; border-top: 1px solid var(--border); background: var(--bg-card); }
     .folder-picker__current { flex: 1; font-size: 12px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
     .folder-picker__newinput { flex: 1; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; background: var(--bg-card); color: var(--text); }
+    /* ── centered tab layout (used by PromptGuide + Settings) ── */
+    .centered-tab { display: flex; flex-direction: column; align-items: center; width: 100%; max-height: 100%; overflow-y: auto; padding-bottom: 24px; }
+    .centered-tab__inner { width: 100%; max-width: 720px; }
+    .centered-tab__footer { width: 100%; max-width: 720px; background: #fff; border-radius: var(--radius); padding: 18px 22px; margin-top: 8px; border: 1px solid var(--border); box-shadow: 0 1px 4px rgba(0,0,0,.06); }
+    @media (prefers-color-scheme: dark) {
+      .centered-tab__footer { background: var(--bg-card); }
+    }
+    /* ── storyboard split layout ── */
+    .storyboard-split { display: flex; gap: 20px; height: 100%; overflow: hidden; }
+    .storyboard-split__left { width: 50%; min-width: 320px; overflow-y: auto; flex-shrink: 0; }
+    .storyboard-split__right { flex: 1; min-width: 0; overflow-y: auto; display: flex; flex-direction: column; }
+    .storyboard-preview { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; position: relative; display: flex; align-items: center; justify-content: center; flex: 1; min-height: 200px; }
+    .storyboard-preview video { max-width: 100%; max-height: 100%; object-fit: contain; }
+    .storyboard-preview__overlay { position: absolute; top: 14px; left: 16px; right: 16px; pointer-events: none; z-index: 1; }
+    .storyboard-preview__overlay-title { font-size: 13px; font-weight: 600; color: var(--text); display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+    .storyboard-preview__overlay-desc { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+    .storyboard-preview__empty { display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--text-dim); font-size: 13px; gap: 8px; }
+    .storyboard-seg-info { border-top: 1px solid var(--border); padding: 12px 14px; background: var(--bg-card); border-radius: 0 0 var(--radius) var(--radius); font-size: 13px; color: var(--text-muted); line-height: 1.7; flex-shrink: 0; }
+    .storyboard-seg-list { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; flex-shrink: 0; }
+    .storyboard-seg-thumb { padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; cursor: pointer; font-size: 12px; transition: .15s; display: flex; align-items: center; gap: 8px; }
+    .storyboard-seg-thumb:hover { border-color: var(--primary); background: rgba(59,130,246,.04); }
+    .storyboard-seg-thumb.active { border-color: var(--primary); background: rgba(59,130,246,.08); }
+    @media (max-width: 860px) {
+      .storyboard-split { flex-direction: column; overflow-y: auto; }
+      .storyboard-split__left { width: 100%; min-width: unset; flex-shrink: 0; }
+      .storyboard-split__right { flex: none; min-height: 280px; }
+      .storyboard-preview { min-height: 200px; }
+    }
   </style>
 </head>
 <body>
@@ -592,8 +628,8 @@ const { pluginApi, onEvent, uploadFile, downloadFile, showToast, showInFolder, p
 //    create/preview/tasks/assets/guide/storyboard/settings/status/toast/err.
 const I18N_DICT = {
   zh: {
-    "app.title": "Seedance 视频生成",
-    "app.subtitle": "AI 视频创作",
+    "app.title": "即梦工作室",
+    "app.subtitle": "Seedance Video Generator · 文生视频 / 图生视频 / 多模态 / 视频编辑 / 长视频拼接",
     "app.api.label": "API Key",
     "app.api.missing": "请先配置 API Key",
     "app.api.tooltip": "点击前往设置页配置 API Key",
@@ -788,6 +824,13 @@ const I18N_DICT = {
     "story.ffmpeg.warn.cta": "前往安装",
     "story.concat.idle": "拼接为长视频 ({mode})",
     "story.concat.busy": "拼接中...",
+    "story.preview.empty": "视频预览区",
+    "story.preview.title": "预览",
+    "story.preview.inputHint": "输入故事并分解后，可在此预览每段分镜内容",
+    "story.preview.editHint": "点击左侧分镜段落，在此查看详情",
+    "story.preview.segTitle": "分镜 #{n} 预览",
+    "story.preview.generating": "视频生成中…",
+    "story.preview.selectResult": "点击左侧片段预览视频",
     "story.concat.modeCut": "硬切",
     "story.concat.modeFade": "交叉淡化",
     "story.totalEstimate": "共 {n} 段，预计总时长 {sec} 秒",
@@ -932,8 +975,8 @@ const I18N_DICT = {
     "err.stackLabel": "错误堆栈详情",
   },
   en: {
-    "app.title": "Seedance Video",
-    "app.subtitle": "AI Video Studio",
+    "app.title": "Seedance Studio",
+    "app.subtitle": "Seedance Video Generator · T2V / I2V / Multimodal / Editing / Long Video",
     "app.api.label": "API Key",
     "app.api.missing": "Configure API Key first",
     "app.api.tooltip": "Click to open Settings and configure your API Key",
@@ -1128,6 +1171,13 @@ const I18N_DICT = {
     "story.ffmpeg.warn.cta": "Open Settings",
     "story.concat.idle": "Concatenate ({mode})",
     "story.concat.busy": "Concatenating…",
+    "story.preview.empty": "Video Preview",
+    "story.preview.title": "Preview",
+    "story.preview.inputHint": "Enter a story and decompose it, then preview each segment here",
+    "story.preview.editHint": "Click a segment on the left to preview details",
+    "story.preview.segTitle": "Segment #{n} Preview",
+    "story.preview.generating": "Generating video…",
+    "story.preview.selectResult": "Click a segment to preview video",
     "story.concat.modeCut": "Hard cut",
     "story.concat.modeFade": "Crossfade",
     "story.totalEstimate": "{n} segments · ~{sec}s total",
@@ -1325,45 +1375,67 @@ function _tr(key, vars, fallback) {
   return key;
 }
 
-// SVG Icon system — replaces all emoji
+// SVG Icon system — all sourced from Iconify (Lucide collection)
+// https://icon-sets.iconify.design/lucide/  ·  ISC License
 const I = {
-  video: <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="18" rx="2"/><path d="M8 10l5 3-5 3z"/></svg>,
-  play: <svg viewBox="0 0 24 24"><polygon points="5,3 19,12 5,21"/></svg>,
-  pause: <svg viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>,
+  // ── App / navigation ──
+  clapperboard: <svg viewBox="0 0 24 24"><path d="m12.3 3.46 3.02 3.96"/><path d="M20.2 6 3 11l-.9-2.4c-.3-1.1.3-2.2 1.3-2.5l13.5-4c1.1-.3 2.2.3 2.5 1.3z"/><path d="M3 11h18v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><path d="m6.18 5.28 3.1 3.9"/></svg>,
+  video: <svg viewBox="0 0 24 24"><path d="m16 13 5.223 3.482a.5.5 0 00.777-.416V7.934a.5.5 0 00-.777-.416L16 11"/><rect x="2" y="6" width="14" height="12" rx="2"/></svg>,
+  play: <svg viewBox="0 0 24 24"><polygon points="6,3 20,12 6,21"/></svg>,
+  pause: <svg viewBox="0 0 24 24"><rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/></svg>,
   skipBack: <svg viewBox="0 0 24 24"><polygon points="11,19 2,12 11,5"/><polygon points="22,19 13,12 22,5"/></svg>,
   skipFwd: <svg viewBox="0 0 24 24"><polygon points="13,19 22,12 13,5"/><polygon points="2,19 11,12 2,5"/></svg>,
-  repeat: <svg viewBox="0 0 24 24"><polyline points="17,1 21,5 17,9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7,23 3,19 7,15"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>,
+  repeat: <svg viewBox="0 0 24 24"><path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 014-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 01-4 4H3"/></svg>,
   download: <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>,
-  refresh: <svg viewBox="0 0 24 24"><polyline points="23,4 23,10 17,10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>,
-  image: <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5" fill="currentColor" stroke="none"/><path d="M21 15l-5-5L5 21"/></svg>,
-  film: <svg viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="20" rx="2.18"/><line x1="7" y1="2" x2="7" y2="22"/><line x1="17" y1="2" x2="17" y2="22"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="2" y1="7" x2="7" y2="7"/><line x1="2" y1="17" x2="7" y2="17"/><line x1="17" y1="7" x2="22" y2="7"/><line x1="17" y1="17" x2="22" y2="17"/></svg>,
+  refresh: <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 019-9 9.75 9.75 0 016.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 01-9 9 9.75 9.75 0 01-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>,
+  // ── Media types ──
+  image: <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 00-2.828 0L6 21"/></svg>,
+  film: <svg viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M3 7.5h4"/><path d="M3 12h18"/><path d="M3 16.5h4"/><path d="M17 3v18"/><path d="M17 7.5h4"/><path d="M17 16.5h4"/></svg>,
   music: <svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>,
-  folder: <svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>,
-  folderOpen: <svg viewBox="0 0 24 24"><path d="M5 19a2 2 0 01-2-2V6a2 2 0 012-2h4l2 2h9a2 2 0 012 2v1M5 19h14a2 2 0 002-2l1-7H7.5"/></svg>,
-  sparkles: <svg viewBox="0 0 24 24"><path d="M12 2l2.09 6.26L20 10.27l-4.74 3.82L16.18 21 12 17.27 7.82 21l.92-6.91L4 10.27l5.91-2.01z" fill="currentColor" stroke="none"/></svg>,
-  lightbulb: <svg viewBox="0 0 24 24"><path d="M9 21h6M12 3a6 6 0 00-3.32 10.98L9 16h6l.32-2.02A6 6 0 0012 3z"/></svg>,
-  warn: <svg viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>,
-  check: <svg viewBox="0 0 24 24"><polyline points="20,6 9,17 4,12"/></svg>,
-  x: <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>,
-  settings: <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>,
-  key: <svg viewBox="0 0 24 24"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 11-7.78 7.78 5.5 5.5 0 017.78-7.78zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>,
-  link: <svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>,
-  book: <svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg>,
-  bot: <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><line x1="12" y1="7" x2="12" y2="11"/><circle cx="8" cy="16" r="1" fill="currentColor" stroke="none"/><circle cx="16" cy="16" r="1" fill="currentColor" stroke="none"/></svg>,
-  rocket: <svg viewBox="0 0 24 24"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 00-2.91-.09z"/><path d="M12 15l-3-3a22 22 0 012-3.95A12.88 12.88 0 0122 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 01-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></svg>,
-  scissors: <svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/></svg>,
-  arrowLeft: <svg viewBox="0 0 24 24"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12,19 5,12 12,5"/></svg>,
-  arrowUp: <svg viewBox="0 0 24 24"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5,12 12,5 19,12"/></svg>,
-  arrowDown: <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19,12 12,19 5,12"/></svg>,
-  plus: <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>,
-  trash: <svg viewBox="0 0 24 24"><polyline points="3,6 5,6 21,6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>,
-  camera: <svg viewBox="0 0 24 24"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg>,
-  palette: <svg viewBox="0 0 24 24"><circle cx="13.5" cy="6.5" r="2" fill="currentColor" stroke="none"/><circle cx="17.5" cy="10.5" r="2" fill="currentColor" stroke="none"/><circle cx="8.5" cy="7.5" r="2" fill="currentColor" stroke="none"/><circle cx="6.5" cy="12" r="2" fill="currentColor" stroke="none"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.93 0 1.5-.77 1.5-1.5 0-.37-.13-.7-.37-.97-.24-.26-.37-.6-.37-.97 0-.83.67-1.5 1.5-1.5H16c3.31 0 6-2.69 6-6 0-5.17-4.36-9.06-10-9.06z"/></svg>,
-  ruler: <svg viewBox="0 0 24 24"><path d="M16 4L4 16l4 4L20 8z"/><path d="M8 16l-2-2"/><path d="M12 12l-2-2"/><path d="M16 8l-2-2"/></svg>,
-  fileText: <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14,2 14,8 20,8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/></svg>,
+  camera: <svg viewBox="0 0 24 24"><path d="M14.5 4h-5L7 7H4a2 2 0 00-2 2v9a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>,
+  // ── Folder / file ──
+  folder: <svg viewBox="0 0 24 24"><path d="M20 20a2 2 0 002-2V8a2 2 0 00-2-2h-7.9a2 2 0 01-1.69-.9L9.6 3.9A2 2 0 007.93 3H4a2 2 0 00-2 2v13a2 2 0 002 2z"/></svg>,
+  folderOpen: <svg viewBox="0 0 24 24"><path d="m6 14 1.5-2.9A2 2 0 019.24 10H20a2 2 0 011.94 2.5l-1.54 6a2 2 0 01-1.95 1.5H4a2 2 0 01-2-2V5a2 2 0 012-2h3.9a2 2 0 011.69.9l.81 1.2a2 2 0 001.67.9H18a2 2 0 012 2v2"/></svg>,
+  fileText: <svg viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V7z"/><path d="M14 2v4a2 2 0 002 2h4"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/></svg>,
+  // ── AI / sparkle ──
+  sparkles: <svg viewBox="0 0 24 24"><path d="M9.937 15.5A2 2 0 008.5 14.063l-6.135-1.582a.5.5 0 010-.962L8.5 9.936A2 2 0 009.937 8.5l1.582-6.135a.5.5 0 01.963 0L14.063 8.5A2 2 0 0015.5 9.937l6.135 1.582a.5.5 0 010 .963L15.5 14.063a2 2 0 00-1.437 1.437l-1.582 6.135a.5.5 0 01-.963 0z"/><path d="M20 3v4"/><path d="M22 5h-4"/></svg>,
+  wandSparkles: <svg viewBox="0 0 24 24"><path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 00-1.72 0L2.36 18.64a1.21 1.21 0 000 1.72l1.28 1.28a1.2 1.2 0 001.72 0L21.64 5.36a1.2 1.2 0 000-1.72"/><path d="m14 7 3 3"/><path d="M5 6v4"/><path d="M19 14v4"/><path d="M10 2v2"/><path d="M7 8H3"/><path d="M21 16h-4"/><path d="M11 3H9"/></svg>,
+  lightbulb: <svg viewBox="0 0 24 24"><path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 006 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"/><path d="M9 18h6"/><path d="M10 22h4"/></svg>,
+  // ── Status / feedback ──
+  warn: <svg viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 00-3.48 0l-8 14A2 2 0 004 21h16a2 2 0 001.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>,
+  check: <svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg>,
+  x: <svg viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>,
   online: <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" fill="currentColor"/></svg>,
   offline: <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/></svg>,
-  package: <svg viewBox="0 0 24 24"><line x1="16.5" y1="9.4" x2="7.5" y2="4.21"/><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><polyline points="3.27,6.96 12,12.01 20.73,6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>,
+  // ── Settings / config ──
+  settings: <svg viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 00-2 2v.18a2 2 0 01-1 1.73l-.43.25a2 2 0 01-2 0l-.15-.08a2 2 0 00-2.73.73l-.22.38a2 2 0 00.73 2.73l.15.1a2 2 0 011 1.72v.51a2 2 0 01-1 1.74l-.15.09a2 2 0 00-.73 2.73l.22.38a2 2 0 002.73.73l.15-.08a2 2 0 012 0l.43.25a2 2 0 011 1.73V20a2 2 0 002 2h.44a2 2 0 002-2v-.18a2 2 0 011-1.73l.43-.25a2 2 0 012 0l.15.08a2 2 0 002.73-.73l.22-.39a2 2 0 00-.73-2.73l-.15-.08a2 2 0 01-1-1.74v-.5a2 2 0 011-1.74l.15-.09a2 2 0 00.73-2.73l-.22-.38a2 2 0 00-2.73-.73l-.15.08a2 2 0 01-2 0l-.43-.25a2 2 0 01-1-1.73V4a2 2 0 00-2-2z"/><circle cx="12" cy="12" r="3"/></svg>,
+  key: <svg viewBox="0 0 24 24"><path d="m15.5 7.5 2.3-2.3a1 1 0 011.4 0l1.1 1.1a1 1 0 010 1.4L18 10"/><path d="m21 2-5.6 5.6"/><circle cx="7.5" cy="16.5" r="4.5"/></svg>,
+  shield: <svg viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 01-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 01.5-.87l7-4a1 1 0 011 0l7 4A1 1 0 0120 6z"/></svg>,
+  // ── Layout / actions ──
+  link: <svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>,
+  book: <svg viewBox="0 0 24 24"><path d="M12 7v14"/><path d="M3 18a1 1 0 01-1-1V4a1 1 0 011-1h5a4 4 0 014 4 4 4 0 014-4h5a1 1 0 011 1v13a1 1 0 01-1 1h-6a3 3 0 00-3 3 3 3 0 00-3-3z"/></svg>,
+  bot: <svg viewBox="0 0 24 24"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>,
+  rocket: <svg viewBox="0 0 24 24"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 00-2.91-.09z"/><path d="M12 15l-3-3a22 22 0 012-3.95A12.88 12.88 0 0122 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 01-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></svg>,
+  scissors: <svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="3"/><path d="M8.12 8.12 12 12"/><path d="M20 4 8.12 15.88"/><circle cx="6" cy="18" r="3"/><path d="M14.8 14.8 20 20"/></svg>,
+  arrowLeft: <svg viewBox="0 0 24 24"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>,
+  arrowUp: <svg viewBox="0 0 24 24"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>,
+  arrowDown: <svg viewBox="0 0 24 24"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg>,
+  plus: <svg viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></svg>,
+  trash: <svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>,
+  copy: <svg viewBox="0 0 24 24"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>,
+  // ── Decorative / thematic ──
+  palette: <svg viewBox="0 0 24 24"><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.93 0 1.5-.77 1.5-1.5 0-.37-.13-.7-.37-.97-.24-.26-.37-.6-.37-.97 0-.83.67-1.5 1.5-1.5H16c3.31 0 6-2.69 6-6 0-5.17-4.36-9.06-10-9.06z"/></svg>,
+  ruler: <svg viewBox="0 0 24 24"><path d="M21.3 15.3a2.4 2.4 0 010 3.4l-2.6 2.6a2.4 2.4 0 01-3.4 0L2.7 8.7a2.41 2.41 0 010-3.4l2.6-2.6a2.41 2.41 0 013.4 0z"/><path d="m14.5 12.5 2-2"/><path d="m11.5 9.5 2-2"/><path d="m8.5 6.5 2-2"/><path d="m17.5 15.5 2-2"/></svg>,
+  home: <svg viewBox="0 0 24 24"><path d="M15 21v-8a1 1 0 00-1-1h-4a1 1 0 00-1 1v8"/><path d="M3 10a2 2 0 01.709-1.528l7-5.999a2 2 0 012.582 0l7 5.999A2 2 0 0121 10v9a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>,
+  package: <svg viewBox="0 0 24 24"><path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>,
+  // ── Tab-specific icons ──
+  squarePlus: <svg viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M8 12h8"/><path d="M12 8v8"/></svg>,
+  listTodo: <svg viewBox="0 0 24 24"><rect x="3" y="5" width="6" height="6" rx="1"/><path d="m3 17 2 2 4-4"/><line x1="13" y1="6" x2="21" y2="6"/><line x1="13" y1="12" x2="21" y2="12"/><line x1="13" y1="18" x2="21" y2="18"/></svg>,
+  images: <svg viewBox="0 0 24 24"><path d="M18 22H4a2 2 0 01-2-2V6"/><rect width="16" height="16" x="6" y="2" rx="2"/><circle cx="14" cy="8" r="2"/><path d="m20 15.5-2.318-2.318a1 1 0 00-1.414.05L12.06 17.5"/></svg>,
+  compass: <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polygon points="16.24,7.76 14.12,14.12 7.76,16.24 9.88,9.88"/></svg>,
+  layoutGrid: <svg viewBox="0 0 24 24"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg>,
+  sliders: <svg viewBox="0 0 24 24"><line x1="4" x2="4" y1="21" y2="14"/><line x1="4" x2="4" y1="10" y2="3"/><line x1="12" x2="12" y1="21" y2="12"/><line x1="12" x2="12" y1="8" y2="3"/><line x1="20" x2="20" y1="21" y2="16"/><line x1="20" x2="20" y1="12" y2="3"/><line x1="2" x2="6" y1="14" y2="14"/><line x1="10" x2="14" y1="8" y2="8"/><line x1="18" x2="22" y1="16" y2="16"/></svg>,
+  eye: <svg viewBox="0 0 24 24"><path d="M2.062 12.348a1 1 0 010-.696 10.75 10.75 0 0119.876 0 1 1 0 010 .696 10.75 10.75 0 01-19.876 0"/><circle cx="12" cy="12" r="3"/></svg>,
 };
 function Ico({ name, style: s }) { return <span className="ico" style={s}>{I[name]}</span>; }
 
@@ -1607,7 +1679,8 @@ function FolderPickerModal({ open, title, initialPath, onCancel, onSelect }) {
 // changes re-render correctly. Order is part of the UI contract — never sort.
 const MODE_IDS = ["t2v", "i2v", "i2v_end", "multimodal", "edit", "extend"];
 const RATIOS = ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"];
-const TAB_IDS = ["create", "tasks", "assets", "guide", "storyboard", "settings"];
+const TAB_IDS = ["create", "storyboard", "tasks", "assets", "guide", "settings"];
+const TAB_ICONS = { create: "squarePlus", tasks: "listTodo", assets: "images", guide: "compass", storyboard: "layoutGrid", settings: "sliders" };
 
 // ── Hooks ──
 function useModels() {
@@ -2435,93 +2508,95 @@ function PromptGuideTab() {
     : null;
 
   return (
-    <div style={{maxWidth:800}}>
-      <input className="input" placeholder={t("guide.search.placeholder")} value={search} onChange={e => setSearch(e.target.value)} style={{marginBottom:16}} />
+    <div className="centered-tab">
+      <div className="centered-tab__inner">
+        <input className="input" placeholder={t("guide.search.placeholder")} value={search} onChange={e => setSearch(e.target.value)} style={{marginBottom:16}} />
 
-      <div className="card" style={{cursor:"pointer"}} onClick={() => toggleSection("templates")}>
-        <div className="oa-section-label oa-section-label--inline" style={{justifyContent:"space-between"}}>
-          <span><Ico name="fileText"/> {t("guide.section.templates")}</span>
-          <span className="text-dim">{expanded.templates ? "▲" : "▼"}</span>
-        </div>
-        {expanded.templates && (
-          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(200px,1fr))",gap:8,marginTop:8}} onClick={e => e.stopPropagation()}>
-            {filteredTemplates.length === 0 && <p className="text-sm text-dim">{t("guide.templates.empty")}</p>}
-            {filteredTemplates.map(tpl => (
-              <div key={tpl.id} className="template-card" onClick={() => setSelectedTemplate(selectedTemplate?.id === tpl.id ? null : tpl)}>
-                <h4>{tpl.name} <span className="text-xs text-dim">{tpl.name_en}</span></h4>
-                <p>{tpl.description}</p>
-                <div className="flex gap-2 flex-wrap" style={{marginTop:4}}>
-                  {tpl.modes?.map(m => <span key={m} className="tag tag-blue">{m}</span>)}
-                </div>
-                {selectedTemplate?.id === tpl.id && tpl.template && (
-                  <div style={{marginTop:8,padding:8,background:"var(--bg)",borderRadius:6,fontSize:12,whiteSpace:"pre-wrap",color:"var(--text-muted)"}}>
-                    {tpl.template}
+        <div className="card" style={{cursor:"pointer"}} onClick={() => toggleSection("templates")}>
+          <div className="oa-section-label oa-section-label--inline" style={{justifyContent:"space-between"}}>
+            <span><Ico name="fileText"/> {t("guide.section.templates")}</span>
+            <span className="text-dim">{expanded.templates ? "▲" : "▼"}</span>
+          </div>
+          {expanded.templates && (
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(200px,1fr))",gap:8,marginTop:8}} onClick={e => e.stopPropagation()}>
+              {filteredTemplates.length === 0 && <p className="text-sm text-dim">{t("guide.templates.empty")}</p>}
+              {filteredTemplates.map(tpl => (
+                <div key={tpl.id} className="template-card" onClick={() => setSelectedTemplate(selectedTemplate?.id === tpl.id ? null : tpl)}>
+                  <h4>{tpl.name} <span className="text-xs text-dim">{tpl.name_en}</span></h4>
+                  <p>{tpl.description}</p>
+                  <div className="flex gap-2 flex-wrap" style={{marginTop:4}}>
+                    {tpl.modes?.map(m => <span key={m} className="tag tag-blue">{m}</span>)}
                   </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      <div className="card" style={{cursor:"pointer"}} onClick={() => toggleSection("cameras")}>
-        <div className="oa-section-label oa-section-label--inline" style={{justifyContent:"space-between"}}>
-          <span><Ico name="camera"/> {t("guide.section.cameras")}</span>
-          <span className="text-dim">{expanded.cameras ? "▲" : "▼"}</span>
-        </div>
-        {expanded.cameras && (
-          <div className="flex gap-2 flex-wrap" style={{marginTop:8}} onClick={e => e.stopPropagation()}>
-            {guide.cameras.map(c => (
-              <span key={c.zh} className="keyword-tag" title={c.desc} style={{cursor:"help"}}>
-                {c.zh} ({c.en})
-                <span className="text-xs text-dim" style={{display:"block",marginTop:2}}>{c.desc}</span>
-              </span>
-            ))}
-          </div>
-        )}
-      </div>
-
-      <div className="card" style={{cursor:"pointer"}} onClick={() => toggleSection("atmosphere")}>
-        <div className="oa-section-label oa-section-label--inline" style={{justifyContent:"space-between"}}>
-          <span><Ico name="palette"/> {t("guide.section.atmosphere")}</span>
-          <span className="text-dim">{expanded.atmosphere ? "▲" : "▼"}</span>
-        </div>
-        {expanded.atmosphere && (
-          <div style={{marginTop:8}} onClick={e => e.stopPropagation()}>
-            {Object.entries(guide.atmosphere).map(([cat, words]) => (
-              <div key={cat} style={{marginBottom:10}}>
-                <span className="label" style={{marginBottom:4,display:"inline-block"}}>{t("guide.atmosphere." + cat) || cat}</span>
-                <div className="flex gap-2 flex-wrap">
-                  {words.map(w => <span key={w} className="keyword-tag">{w}</span>)}
+                  {selectedTemplate?.id === tpl.id && tpl.template && (
+                    <div style={{marginTop:8,padding:8,background:"var(--bg)",borderRadius:6,fontSize:12,whiteSpace:"pre-wrap",color:"var(--text-muted)"}}>
+                      {tpl.template}
+                    </div>
+                  )}
                 </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      <div className="card" style={{cursor:"pointer"}} onClick={() => toggleSection("formulas")}>
-        <div className="oa-section-label oa-section-label--inline" style={{justifyContent:"space-between"}}>
-          <span><Ico name="ruler"/> {t("guide.section.formulas")}</span>
-          <span className="text-dim">{expanded.formulas ? "▲" : "▼"}</span>
+              ))}
+            </div>
+          )}
         </div>
-        {expanded.formulas && (
-          <div style={{marginTop:8}} onClick={e => e.stopPropagation()}>
-            {Object.entries(guide.formulas).map(([mode, formula]) => (
-              <div key={mode} style={{marginBottom:8,padding:8,background:"var(--bg)",borderRadius:6}}>
-                <span className="tag tag-blue" style={{marginRight:8}}>{t("modes." + mode) || mode}</span>
-                <span className="text-sm">{formula}</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
 
-      <div className="card">
-        <div className="oa-section-label"><Ico name="lightbulb"/> {t("guide.section.tips")}</div>
-        {tipsHtml
-          ? <div className="oa-md-content" dangerouslySetInnerHTML={{ __html: tipsHtml }} />
-          : <pre style={{whiteSpace:"pre-wrap",fontSize:13,color:"var(--text-muted)",lineHeight:1.8,fontFamily:"inherit"}}>{t("guide.tips.body")}</pre>}
+        <div className="card" style={{cursor:"pointer"}} onClick={() => toggleSection("cameras")}>
+          <div className="oa-section-label oa-section-label--inline" style={{justifyContent:"space-between"}}>
+            <span><Ico name="camera"/> {t("guide.section.cameras")}</span>
+            <span className="text-dim">{expanded.cameras ? "▲" : "▼"}</span>
+          </div>
+          {expanded.cameras && (
+            <div className="flex gap-2 flex-wrap" style={{marginTop:8}} onClick={e => e.stopPropagation()}>
+              {guide.cameras.map(c => (
+                <span key={c.zh} className="keyword-tag" title={c.desc} style={{cursor:"help"}}>
+                  {c.zh} ({c.en})
+                  <span className="text-xs text-dim" style={{display:"block",marginTop:2}}>{c.desc}</span>
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="card" style={{cursor:"pointer"}} onClick={() => toggleSection("atmosphere")}>
+          <div className="oa-section-label oa-section-label--inline" style={{justifyContent:"space-between"}}>
+            <span><Ico name="palette"/> {t("guide.section.atmosphere")}</span>
+            <span className="text-dim">{expanded.atmosphere ? "▲" : "▼"}</span>
+          </div>
+          {expanded.atmosphere && (
+            <div style={{marginTop:8}} onClick={e => e.stopPropagation()}>
+              {Object.entries(guide.atmosphere).map(([cat, words]) => (
+                <div key={cat} style={{marginBottom:10}}>
+                  <span className="label" style={{marginBottom:4,display:"inline-block"}}>{t("guide.atmosphere." + cat) || cat}</span>
+                  <div className="flex gap-2 flex-wrap">
+                    {words.map(w => <span key={w} className="keyword-tag">{w}</span>)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="card" style={{cursor:"pointer"}} onClick={() => toggleSection("formulas")}>
+          <div className="oa-section-label oa-section-label--inline" style={{justifyContent:"space-between"}}>
+            <span><Ico name="ruler"/> {t("guide.section.formulas")}</span>
+            <span className="text-dim">{expanded.formulas ? "▲" : "▼"}</span>
+          </div>
+          {expanded.formulas && (
+            <div style={{marginTop:8}} onClick={e => e.stopPropagation()}>
+              {Object.entries(guide.formulas).map(([mode, formula]) => (
+                <div key={mode} style={{marginBottom:8,padding:8,background:"var(--bg)",borderRadius:6}}>
+                  <span className="tag tag-blue" style={{marginRight:8}}>{t("modes." + mode) || mode}</span>
+                  <span className="text-sm">{formula}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="centered-tab__footer">
+          <div className="oa-section-label"><Ico name="lightbulb"/> {t("guide.section.tips")}</div>
+          {tipsHtml
+            ? <div className="oa-md-content" dangerouslySetInnerHTML={{ __html: tipsHtml }} />
+            : <pre style={{whiteSpace:"pre-wrap",fontSize:13,color:"var(--text-muted)",lineHeight:1.8,fontFamily:"inherit"}}>{t("guide.tips.body")}</pre>}
+        </div>
       </div>
     </div>
   );
@@ -2548,6 +2623,7 @@ function StoryboardTab({ onGoToSettings }) {
   const [ffmpegOk, setFfmpegOk] = useState(null);
   const [step, setStep] = useState("input");
   const [editIdx, setEditIdx] = useState(-1);
+  const [previewIdx, setPreviewIdx] = useState(-1);
 
   useEffect(() => {
     pluginApi("GET", "/long-video/ffmpeg-check").then(r => {
@@ -2658,204 +2734,257 @@ function StoryboardTab({ onGoToSettings }) {
       ? window.OpenAkitaMD.render(t("story.usage.body") + "\n\n" + t("story.usage.warn"))
       : null;
     return (
-      <div style={{maxWidth:720}}>
-        <div className="card">
-          <div className="oa-section-label"><Ico name="book"/> {t("story.section.input")}</div>
-          <div className="form-row">
-            <label className="label">{t("story.label.story")}</label>
-            <textarea className="input textarea" rows={6} value={story} onChange={e => setStory(e.target.value)}
-              placeholder={t("story.story.placeholder")} />
-          </div>
+      <div className="storyboard-split">
+        <div className="storyboard-split__left">
+          <div className="card">
+            <div className="oa-section-label"><Ico name="book"/> {t("story.section.input")}</div>
+            <div className="form-row">
+              <label className="label">{t("story.label.story")}</label>
+              <textarea className="input textarea" rows={6} value={story} onChange={e => setStory(e.target.value)}
+                placeholder={t("story.story.placeholder")} />
+            </div>
 
-          <div className="grid-2">
-            <div className="form-row">
-              <label className="label">{t("story.label.totalDuration")}</label>
-              <input className="input" type="number" min={10} max={600} value={totalDuration}
-                onChange={e => setTotalDuration(+e.target.value)} />
-            </div>
-            <div className="form-row">
-              <label className="label">{t("story.label.segDuration")}</label>
-              <select className="input select" value={segDuration} onChange={e => setSegDuration(+e.target.value)}>
-                <option value={5}>5</option><option value={8}>8</option>
-                <option value={10}>10</option><option value={15}>15</option>
-              </select>
-            </div>
-            <div className="form-row">
-              <label className="label">{t("story.label.ratio")}</label>
-              <select className="input select" value={ratio} onChange={e => setRatio(e.target.value)}>
-                <option value="16:9">16:9</option><option value="9:16">9:16</option>
-                <option value="1:1">1:1</option><option value="4:3">4:3</option>
-                <option value="3:4">3:4</option><option value="21:9">21:9</option>
-              </select>
-            </div>
-            <div className="form-row">
-              <label className="label">{t("story.label.style")}</label>
-              <input className="input" value={style} onChange={e => setStyle(e.target.value)} />
-            </div>
-          </div>
-
-          <div style={{padding:"10px 12px",background:"var(--bg)",borderRadius:6,marginBottom:14,fontSize:13,color:"var(--text-muted)"}}>
-            {t("story.estimate", { n: segCountEst, seg: segDuration, total: segCountEst * segDuration })}
-          </div>
-
-          <div className="flex gap-2 justify-between items-center">
-            {decomposing && decomposeProgress ? (
-              <div style={{fontSize:13,color:"var(--primary)",display:"flex",alignItems:"center",gap:8}}>
-                <span className="spinner-sm" />
-                {decomposeProgress}
+            <div className="grid-2">
+              <div className="form-row">
+                <label className="label">{t("story.label.totalDuration")}</label>
+                <input className="input" type="number" min={10} max={600} value={totalDuration}
+                  onChange={e => setTotalDuration(+e.target.value)} />
               </div>
-            ) : <div />}
-            <button className="btn btn-primary" disabled={!story.trim() || decomposing} onClick={decompose}>
-              {decomposing
-                ? t("story.decompose.busy")
-                : <><Ico name="film"/> {t("story.decompose.idle")}</>}
-            </button>
+              <div className="form-row">
+                <label className="label">{t("story.label.segDuration")}</label>
+                <select className="input select" value={segDuration} onChange={e => setSegDuration(+e.target.value)}>
+                  <option value={5}>5</option><option value={8}>8</option>
+                  <option value={10}>10</option><option value={15}>15</option>
+                </select>
+              </div>
+              <div className="form-row">
+                <label className="label">{t("story.label.ratio")}</label>
+                <select className="input select" value={ratio} onChange={e => setRatio(e.target.value)}>
+                  <option value="16:9">16:9</option><option value="9:16">9:16</option>
+                  <option value="1:1">1:1</option><option value="4:3">4:3</option>
+                  <option value="3:4">3:4</option><option value="21:9">21:9</option>
+                </select>
+              </div>
+              <div className="form-row">
+                <label className="label">{t("story.label.style")}</label>
+                <input className="input" value={style} onChange={e => setStyle(e.target.value)} />
+              </div>
+            </div>
+
+            <div style={{padding:"10px 12px",background:"var(--bg)",borderRadius:6,marginBottom:14,fontSize:13,color:"var(--text-muted)"}}>
+              {t("story.estimate", { n: segCountEst, seg: segDuration, total: segCountEst * segDuration })}
+            </div>
+
+            <div className="flex gap-2 justify-between items-center">
+              {decomposing && decomposeProgress ? (
+                <div style={{fontSize:13,color:"var(--primary)",display:"flex",alignItems:"center",gap:8}}>
+                  <span className="spinner-sm" />
+                  {decomposeProgress}
+                </div>
+              ) : <div />}
+              <button className="btn btn-primary" disabled={!story.trim() || decomposing} onClick={decompose}>
+                {decomposing
+                  ? t("story.decompose.busy")
+                  : <><Ico name="film"/> {t("story.decompose.idle")}</>}
+              </button>
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="oa-section-label"><Ico name="lightbulb"/> {t("story.section.usage")}</div>
+            {usageHtml
+              ? <div className="oa-md-content" dangerouslySetInnerHTML={{ __html: usageHtml }} />
+              : <pre style={{whiteSpace:"pre-wrap",fontSize:13,color:"var(--text-muted)",lineHeight:1.8,fontFamily:"inherit"}}>{t("story.usage.body") + "\n\n" + t("story.usage.warn")}</pre>}
           </div>
         </div>
-
-        <div className="card">
-          <div className="oa-section-label"><Ico name="lightbulb"/> {t("story.section.usage")}</div>
-          {usageHtml
-            ? <div className="oa-md-content" dangerouslySetInnerHTML={{ __html: usageHtml }} />
-            : <pre style={{whiteSpace:"pre-wrap",fontSize:13,color:"var(--text-muted)",lineHeight:1.8,fontFamily:"inherit"}}>{t("story.usage.body") + "\n\n" + t("story.usage.warn")}</pre>}
+        <div className="storyboard-split__right">
+          <div className="storyboard-preview">
+            <div className="storyboard-preview__overlay">
+              <div className="storyboard-preview__overlay-title"><Ico name="layoutGrid"/> {t("story.preview.title")}</div>
+              <div className="storyboard-preview__overlay-desc">{t("story.preview.inputHint")}</div>
+            </div>
+            <div className="storyboard-preview__empty">
+              <Ico name="film" />
+              <span>{t("story.preview.empty")}</span>
+            </div>
+          </div>
         </div>
       </div>
     );
   }
 
   if (step === "edit") {
+    const previewSeg = previewIdx >= 0 && previewIdx < segments.length ? segments[previewIdx] : null;
     return (
-      <div style={{maxWidth:800}}>
-        <div className="flex justify-between items-center" style={{marginBottom:14}}>
-          <div>
-            <h3 style={{fontSize:16,fontWeight:600}}>{t("story.edit.title", { n: segments.length })}</h3>
-            <p className="text-xs text-dim">{t("story.edit.hint")}</p>
+      <div className="storyboard-split">
+        <div className="storyboard-split__left">
+          <div className="flex justify-between items-center" style={{marginBottom:14}}>
+            <div>
+              <h3 style={{fontSize:16,fontWeight:600}}>{t("story.edit.title", { n: segments.length })}</h3>
+              <p className="text-xs text-dim">{t("story.edit.hint")}</p>
+            </div>
+            <div className="flex gap-2">
+              <button className="btn btn-sm" onClick={() => setStep("input")}><Ico name="arrowLeft"/> {t("story.btn.back")}</button>
+              <button className="btn btn-sm" onClick={addSeg}><Ico name="plus"/> {t("story.btn.addSeg")}</button>
+            </div>
           </div>
-          <div className="flex gap-2">
-            <button className="btn btn-sm" onClick={() => setStep("input")}><Ico name="arrowLeft"/> {t("story.btn.back")}</button>
-            <button className="btn btn-sm" onClick={addSeg}><Ico name="plus"/> {t("story.btn.addSeg")}</button>
-          </div>
-        </div>
 
-        <div className="card" style={{marginBottom:14}}>
-          <div className="oa-section-label"><Ico name="settings"/> {t("story.section.params")}</div>
-          <div className="grid-2">
-            <div className="form-row">
-              <label className="label">{t("story.label.model")}</label>
-              <select className="input select" value={model} onChange={e => setModel(e.target.value)}>
-                <option value="2.0">Seedance 2.0</option>
-                <option value="1.0-pro">Seedance 1.0 Pro</option>
-                <option value="1.0-lite">Seedance 1.0 Lite</option>
-              </select>
-            </div>
-            <div className="form-row">
-              <label className="label">{t("story.label.resolution")}</label>
-              <select className="input select" value={resolution} onChange={e => setResolution(e.target.value)}>
-                <option value="720p">720p</option><option value="1080p">1080p</option>
-              </select>
-            </div>
-            <div className="form-row">
-              <label className="label">{t("story.label.genMode")}</label>
-              <select className="input select" value={genMode} onChange={e => setGenMode(e.target.value)}>
-                <option value="serial">{t("story.btn.startGenSerial")}</option>
-                <option value="parallel">{t("story.btn.startGenParallel")}</option>
-              </select>
-            </div>
-            <div className="form-row">
-              <label className="label">{t("story.label.transition")}</label>
-              <div className="flex gap-2">
-                <select className="input select flex-1" value={transition} onChange={e => setTransition(e.target.value)}>
-                  <option value="none">{t("story.concat.modeCut")}</option>
-                  <option value="crossfade">{t("story.concat.modeFade")}</option>
+          <div className="card" style={{marginBottom:14}}>
+            <div className="oa-section-label"><Ico name="settings"/> {t("story.section.params")}</div>
+            <div className="grid-2">
+              <div className="form-row">
+                <label className="label">{t("story.label.model")}</label>
+                <select className="input select" value={model} onChange={e => setModel(e.target.value)}>
+                  <option value="2.0">Seedance 2.0</option>
+                  <option value="1.0-pro">Seedance 1.0 Pro</option>
+                  <option value="1.0-lite">Seedance 1.0 Lite</option>
                 </select>
-                {transition === "crossfade" && (
-                  <input className="input" type="number" step={0.1} min={0.2} max={2} value={fadeDur}
-                    onChange={e => setFadeDur(+e.target.value)} style={{width:80}} />
-                )}
+              </div>
+              <div className="form-row">
+                <label className="label">{t("story.label.resolution")}</label>
+                <select className="input select" value={resolution} onChange={e => setResolution(e.target.value)}>
+                  <option value="720p">720p</option><option value="1080p">1080p</option>
+                </select>
+              </div>
+              <div className="form-row">
+                <label className="label">{t("story.label.genMode")}</label>
+                <select className="input select" value={genMode} onChange={e => setGenMode(e.target.value)}>
+                  <option value="serial">{t("story.btn.startGenSerial")}</option>
+                  <option value="parallel">{t("story.btn.startGenParallel")}</option>
+                </select>
+              </div>
+              <div className="form-row">
+                <label className="label">{t("story.label.transition")}</label>
+                <div className="flex gap-2">
+                  <select className="input select flex-1" value={transition} onChange={e => setTransition(e.target.value)}>
+                    <option value="none">{t("story.concat.modeCut")}</option>
+                    <option value="crossfade">{t("story.concat.modeFade")}</option>
+                  </select>
+                  {transition === "crossfade" && (
+                    <input className="input" type="number" step={0.1} min={0.2} max={2} value={fadeDur}
+                      onChange={e => setFadeDur(+e.target.value)} style={{width:80}} />
+                  )}
+                </div>
               </div>
             </div>
+          </div>
+
+          {segments.map((seg, idx) => (
+            <div key={idx} className="card" style={{position:"relative",borderLeft: editIdx===idx?"3px solid var(--primary)":"3px solid transparent",cursor:"pointer"}}
+              onClick={() => { setPreviewIdx(idx); if (editIdx !== idx) setEditIdx(idx); }}>
+              <div className="flex justify-between items-center" onClick={e => { e.stopPropagation(); setEditIdx(editIdx === idx ? -1 : idx); setPreviewIdx(idx); }}>
+                <div className="flex gap-2 items-center">
+                  <span className="badge badge-info" style={{minWidth:28,textAlign:"center"}}>{seg.index || idx+1}</span>
+                  <span style={{fontWeight:500,fontSize:14}}>{seg.prompt ? seg.prompt.slice(0, 60) + (seg.prompt.length > 60 ? "..." : "") : t("tasks.noPrompt")}</span>
+                </div>
+                <div className="flex gap-2 items-center">
+                  <span className="text-xs text-dim">{seg.duration || segDuration}s</span>
+                  <span className="text-xs text-dim">{seg.transition_to_next || "cut"}</span>
+                  <span style={{fontSize:11,color:"var(--text-dim)"}}>{editIdx === idx ? "▲" : "▼"}</span>
+                </div>
+              </div>
+
+              {editIdx === idx && (
+                <div style={{marginTop:12,paddingTop:12,borderTop:"1px solid var(--border)"}} onClick={e => e.stopPropagation()}>
+                  <div className="form-row">
+                    <label className="label">{t("create.section.prompt")}</label>
+                    <textarea className="input textarea" rows={3} value={seg.prompt || ""}
+                      onChange={e => updateSeg(idx, "prompt", e.target.value)} />
+                  </div>
+                  <div className="grid-2">
+                    <div className="form-row">
+                      <label className="label">{t("story.label.segDuration")}</label>
+                      <input className="input" type="number" min={4} max={15} value={seg.duration || segDuration}
+                        onChange={e => updateSeg(idx, "duration", +e.target.value)} />
+                    </div>
+                    <div className="form-row">
+                      <label className="label">{t("story.label.transition")}</label>
+                      <select className="input select" value={seg.transition_to_next || "cut"}
+                        onChange={e => updateSeg(idx, "transition_to_next", e.target.value)}>
+                        <option value="cut">{t("story.concat.modeCut")}</option>
+                        <option value="crossfade">{t("story.concat.modeFade")}</option>
+                        <option value="ai_extend">AI</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div className="grid-2">
+                    <div className="form-row">
+                      <label className="label">{t("create.upload.startFrame")}</label>
+                      <input className="input" value={seg.key_frame_description || ""}
+                        onChange={e => updateSeg(idx, "key_frame_description", e.target.value)} />
+                    </div>
+                    <div className="form-row">
+                      <label className="label">{t("create.upload.endFrame")}</label>
+                      <input className="input" value={seg.end_frame_description || ""}
+                        onChange={e => updateSeg(idx, "end_frame_description", e.target.value)} />
+                    </div>
+                  </div>
+                  <div className="grid-2">
+                    <div className="form-row">
+                      <label className="label">{t("guide.section.cameras")}</label>
+                      <input className="input" value={seg.camera_notes || ""}
+                        onChange={e => updateSeg(idx, "camera_notes", e.target.value)} />
+                    </div>
+                    <div className="form-row">
+                      <label className="label">{t("create.toggle.audio")}</label>
+                      <input className="input" value={seg.audio_notes || ""}
+                        onChange={e => updateSeg(idx, "audio_notes", e.target.value)} />
+                    </div>
+                  </div>
+                  <div className="flex gap-2" style={{marginTop:8}}>
+                    <button className="btn btn-sm" disabled={idx===0} onClick={() => moveSeg(idx, -1)}><Ico name="arrowUp"/> {t("story.btn.moveUp")}</button>
+                    <button className="btn btn-sm" disabled={idx===segments.length-1} onClick={() => moveSeg(idx, 1)}><Ico name="arrowDown"/> {t("story.btn.moveDown")}</button>
+                    <div style={{flex:1}} />
+                    <button className="btn btn-sm btn-danger" onClick={() => removeSeg(idx)}>{t("story.btn.delete")}</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+
+          <div className="flex justify-between" style={{marginTop:16}}>
+            <p className="text-sm text-dim">
+              {t("story.totalEstimate", { n: segments.length, sec: segments.reduce((s, seg) => s + (seg.duration || segDuration), 0) })}
+            </p>
+            <button className="btn btn-primary" disabled={segments.length === 0 || generating} onClick={startGeneration}>
+              <Ico name="rocket"/> {t("story.btn.startGen", { mode: genMode === "serial" ? t("story.btn.startGenSerial") : t("story.btn.startGenParallel") })}
+            </button>
           </div>
         </div>
-
-        {segments.map((seg, idx) => (
-          <div key={idx} className="card" style={{position:"relative",borderLeft: editIdx===idx?"3px solid var(--primary)":"3px solid transparent"}}>
-            <div className="flex justify-between items-center" style={{cursor:"pointer"}} onClick={() => setEditIdx(editIdx === idx ? -1 : idx)}>
-              <div className="flex gap-2 items-center">
-                <span className="badge badge-info" style={{minWidth:28,textAlign:"center"}}>{seg.index || idx+1}</span>
-                <span style={{fontWeight:500,fontSize:14}}>{seg.prompt ? seg.prompt.slice(0, 60) + (seg.prompt.length > 60 ? "..." : "") : t("tasks.noPrompt")}</span>
+        <div className="storyboard-split__right">
+          <div className="storyboard-preview">
+            <div className="storyboard-preview__overlay">
+              <div className="storyboard-preview__overlay-title">
+                {previewSeg
+                  ? <><Ico name="eye"/> {t("story.preview.segTitle", { n: previewIdx + 1 })}</>
+                  : <><Ico name="layoutGrid"/> {t("story.preview.title")}</>}
               </div>
-              <div className="flex gap-2 items-center">
-                <span className="text-xs text-dim">{seg.duration || segDuration}s</span>
-                <span className="text-xs text-dim">{seg.transition_to_next || "cut"}</span>
-                <span style={{fontSize:11,color:"var(--text-dim)"}}>{editIdx === idx ? "▲" : "▼"}</span>
-              </div>
+              {!previewSeg && <div className="storyboard-preview__overlay-desc">{t("story.preview.editHint")}</div>}
             </div>
-
-            {editIdx === idx && (
-              <div style={{marginTop:12,paddingTop:12,borderTop:"1px solid var(--border)"}}>
-                <div className="form-row">
-                  <label className="label">{t("create.section.prompt")}</label>
-                  <textarea className="input textarea" rows={3} value={seg.prompt || ""}
-                    onChange={e => updateSeg(idx, "prompt", e.target.value)} />
-                </div>
-                <div className="grid-2">
-                  <div className="form-row">
-                    <label className="label">{t("story.label.segDuration")}</label>
-                    <input className="input" type="number" min={4} max={15} value={seg.duration || segDuration}
-                      onChange={e => updateSeg(idx, "duration", +e.target.value)} />
-                  </div>
-                  <div className="form-row">
-                    <label className="label">{t("story.label.transition")}</label>
-                    <select className="input select" value={seg.transition_to_next || "cut"}
-                      onChange={e => updateSeg(idx, "transition_to_next", e.target.value)}>
-                      <option value="cut">{t("story.concat.modeCut")}</option>
-                      <option value="crossfade">{t("story.concat.modeFade")}</option>
-                      <option value="ai_extend">AI</option>
-                    </select>
-                  </div>
-                </div>
-                <div className="grid-2">
-                  <div className="form-row">
-                    <label className="label">{t("create.upload.startFrame")}</label>
-                    <input className="input" value={seg.key_frame_description || ""}
-                      onChange={e => updateSeg(idx, "key_frame_description", e.target.value)} />
-                  </div>
-                  <div className="form-row">
-                    <label className="label">{t("create.upload.endFrame")}</label>
-                    <input className="input" value={seg.end_frame_description || ""}
-                      onChange={e => updateSeg(idx, "end_frame_description", e.target.value)} />
-                  </div>
-                </div>
-                <div className="grid-2">
-                  <div className="form-row">
-                    <label className="label">{t("guide.section.cameras")}</label>
-                    <input className="input" value={seg.camera_notes || ""}
-                      onChange={e => updateSeg(idx, "camera_notes", e.target.value)} />
-                  </div>
-                  <div className="form-row">
-                    <label className="label">{t("create.toggle.audio")}</label>
-                    <input className="input" value={seg.audio_notes || ""}
-                      onChange={e => updateSeg(idx, "audio_notes", e.target.value)} />
-                  </div>
-                </div>
-                <div className="flex gap-2" style={{marginTop:8}}>
-                  <button className="btn btn-sm" disabled={idx===0} onClick={() => moveSeg(idx, -1)}><Ico name="arrowUp"/> {t("story.btn.moveUp")}</button>
-                  <button className="btn btn-sm" disabled={idx===segments.length-1} onClick={() => moveSeg(idx, 1)}><Ico name="arrowDown"/> {t("story.btn.moveDown")}</button>
-                  <div style={{flex:1}} />
-                  <button className="btn btn-sm btn-danger" onClick={() => removeSeg(idx)}>{t("story.btn.delete")}</button>
-                </div>
-              </div>
-            )}
+            <div className="storyboard-preview__empty">
+              <Ico name="film" />
+              <span>{t("story.preview.empty")}</span>
+            </div>
           </div>
-        ))}
-
-        <div className="flex justify-between" style={{marginTop:16}}>
-          <p className="text-sm text-dim">
-            {t("story.totalEstimate", { n: segments.length, sec: segments.reduce((s, seg) => s + (seg.duration || segDuration), 0) })}
-          </p>
-          <button className="btn btn-primary" disabled={segments.length === 0 || generating} onClick={startGeneration}>
-            <Ico name="rocket"/> {t("story.btn.startGen", { mode: genMode === "serial" ? t("story.btn.startGenSerial") : t("story.btn.startGenParallel") })}
-          </button>
+          {previewSeg && (
+            <div className="storyboard-seg-info">
+              <p><strong>{t("create.section.prompt")}:</strong> {previewSeg.prompt || t("tasks.noPrompt")}</p>
+              {previewSeg.key_frame_description && <p><strong>{t("create.upload.startFrame")}:</strong> {previewSeg.key_frame_description}</p>}
+              {previewSeg.end_frame_description && <p><strong>{t("create.upload.endFrame")}:</strong> {previewSeg.end_frame_description}</p>}
+              {previewSeg.camera_notes && <p><strong>{t("guide.section.cameras")}:</strong> {previewSeg.camera_notes}</p>}
+              <p><strong>{t("story.label.segDuration")}:</strong> {previewSeg.duration || segDuration}s</p>
+            </div>
+          )}
+          <div className="storyboard-seg-list">
+            {segments.map((seg, idx) => (
+              <div key={idx} className={`storyboard-seg-thumb ${previewIdx === idx ? "active" : ""}`}
+                onClick={() => { setPreviewIdx(idx); setEditIdx(idx); }}>
+                <span className="badge badge-info" style={{minWidth:22,textAlign:"center",fontSize:11}}>{idx + 1}</span>
+                <span style={{flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{seg.prompt ? seg.prompt.slice(0, 40) : t("tasks.noPrompt")}</span>
+                <span className="text-xs text-dim">{seg.duration || segDuration}s</span>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     );
@@ -2864,16 +2993,29 @@ function StoryboardTab({ onGoToSettings }) {
   if (step === "generating") {
     const minRange = genMode === "serial" ? (segments.length * 2 + "-" + segments.length * 5) : "2-5";
     return (
-      <div style={{maxWidth:640}}>
-        <div className="card" style={{textAlign:"center",padding:40}}>
-          <div className="spinner" style={{margin:"0 auto 16px"}} />
-          <p style={{fontSize:16,fontWeight:500}}>{t("story.gen.title", { n: segments.length })}</p>
-          <p className="text-sm text-dim" style={{marginTop:8}}>
-            {genMode === "serial" ? t("story.gen.serialDesc") : t("story.gen.parallelDesc")}
-          </p>
-          <p className="text-sm text-dim" style={{marginTop:4}}>
-            {t("story.gen.estimate", { min: minRange })}
-          </p>
+      <div className="storyboard-split">
+        <div className="storyboard-split__left">
+          <div className="card" style={{textAlign:"center",padding:40}}>
+            <div className="spinner" style={{margin:"0 auto 16px"}} />
+            <p style={{fontSize:16,fontWeight:500}}>{t("story.gen.title", { n: segments.length })}</p>
+            <p className="text-sm text-dim" style={{marginTop:8}}>
+              {genMode === "serial" ? t("story.gen.serialDesc") : t("story.gen.parallelDesc")}
+            </p>
+            <p className="text-sm text-dim" style={{marginTop:4}}>
+              {t("story.gen.estimate", { min: minRange })}
+            </p>
+          </div>
+        </div>
+        <div className="storyboard-split__right">
+          <div className="storyboard-preview">
+            <div className="storyboard-preview__overlay">
+              <div className="storyboard-preview__overlay-title"><Ico name="layoutGrid"/> {t("story.preview.title")}</div>
+            </div>
+            <div className="storyboard-preview__empty">
+              <div className="spinner" />
+              <span>{t("story.preview.generating")}</span>
+            </div>
+          </div>
         </div>
       </div>
     );
@@ -2882,89 +3024,113 @@ function StoryboardTab({ onGoToSettings }) {
   if (step === "results" || step === "done") {
     const succCount = genResults.filter(r => r.status === "succeeded").length;
     const failCount = genResults.filter(r => r.status === "failed" || r.error).length;
+    const previewResult = previewIdx >= 0 && previewIdx < genResults.length ? genResults[previewIdx] : null;
 
     return (
-      <div style={{maxWidth:800}}>
-        <div className="flex justify-between items-center" style={{marginBottom:14}}>
-          <h3 style={{fontSize:16,fontWeight:600}}>
-            {step === "done" ? <><Ico name="check"/> {t("story.results.done")}</> : t("story.results.title")}
-          </h3>
-          <div className="flex gap-2">
-            <button className="btn btn-sm" onClick={() => { setStep("input"); setSegments([]); setGenResults([]); setConcatPath(""); }}>
-              {t("story.btn.newProject")}
-            </button>
-            <button className="btn btn-sm" onClick={() => setStep("edit")}>{t("story.btn.backEdit")}</button>
-          </div>
-        </div>
-
-        <div className="card">
-          <div className="flex gap-4" style={{fontSize:13}}>
-            <span>{t("story.statTotal")} <strong>{genResults.length}</strong></span>
-            <span style={{color:"var(--success)"}}>{t("story.statSuccess")} <strong>{succCount}</strong></span>
-            {failCount > 0 && <span style={{color:"var(--danger)"}}>{t("story.statFail")} <strong>{failCount}</strong></span>}
-          </div>
-        </div>
-
-        {genResults.map((r, idx) => (
-          <div key={idx} className="card" style={{borderLeft:`3px solid ${r.status==="succeeded"?"var(--success)":r.error||r.status==="failed"?"var(--danger)":"var(--warning)"}`}}>
-            <div className="flex justify-between items-center">
-              <div className="flex gap-2 items-center">
-                <span className="badge" style={{minWidth:28,textAlign:"center",background:r.status==="succeeded"?"var(--success)":"var(--danger)",color:"#fff"}}>
-                  {idx + 1}
-                </span>
-                <span style={{fontSize:13}}>{r.prompt ? r.prompt.slice(0, 50) + "..." : segments[idx]?.prompt?.slice(0, 50) || ""}</span>
-              </div>
-              <span className={"badge badge-" + (r.status === "succeeded" ? "success" : "error")}>
-                {r.status === "succeeded" ? <><Ico name="check"/> {t("tasks.tag.done")}</> : r.error ? <><Ico name="x"/> {t("tasks.tag.failed")}</> : r.status || ""}
-              </span>
-            </div>
-            {r.error && <p className="text-xs" style={{color:"var(--danger)",marginTop:6}}>{r.error}</p>}
-            {r.video_url && (
-              <div style={{marginTop:8}}>
-                <video src={r.video_url} controls style={{maxWidth:"100%",maxHeight:200,borderRadius:6}} />
-              </div>
-            )}
-          </div>
-        ))}
-
-        {step === "done" && concatPath && (
-          <div className="card" style={{borderLeft:"3px solid var(--success)",background:"rgba(34,197,94,.05)"}}>
-            <div className="oa-section-label"><Ico name="film"/> {t("story.concat.title")}</div>
-            <p style={{fontSize:13,color:"var(--text-muted)",wordBreak:"break-all"}}>{concatPath}</p>
-            <button className="btn btn-sm" style={{marginTop:8}} onClick={() =>
-              showInFolder(concatPath)
-            }><Ico name="folderOpen"/> {t("story.btn.openFolder")}</button>
-          </div>
-        )}
-
-        {step === "results" && succCount >= 2 && (
-          <div style={{marginTop:16}}>
-            {ffmpegOk === false && (
-              <div className="inline-warn">
-                <span style={{flexShrink:0,color:"var(--warning)"}}><Ico name="warn"/></span>
-                <div className="inline-warn__text">
-                  <strong>{t("story.ffmpeg.warn.title")}</strong>
-                  <small>{t("story.ffmpeg.warn.hint")}</small>
-                </div>
-                {onGoToSettings && (
-                  <button className="btn btn-sm btn-primary" onClick={() => onGoToSettings()}>
-                    {t("story.ffmpeg.warn.cta")}
-                  </button>
-                )}
-              </div>
-            )}
-            <div className="flex justify-between items-center">
-              <p className="text-sm text-dim">
-                {ffmpegOk ? <><Ico name="check"/> {t("story.concat.tip", { n: succCount })}</> : ""}
-              </p>
-              <button className="btn btn-primary" disabled={!ffmpegOk || concatenating} onClick={doConcat}>
-                {concatenating
-                  ? t("story.concat.busy")
-                  : <><Ico name="scissors"/> {t("story.concat.idle", { mode: transition === "crossfade" ? t("story.concat.modeFade") : t("story.concat.modeCut") })}</>}
+      <div className="storyboard-split">
+        <div className="storyboard-split__left">
+          <div className="flex justify-between items-center" style={{marginBottom:14}}>
+            <h3 style={{fontSize:16,fontWeight:600}}>
+              {step === "done" ? <><Ico name="check"/> {t("story.results.done")}</> : t("story.results.title")}
+            </h3>
+            <div className="flex gap-2">
+              <button className="btn btn-sm" onClick={() => { setStep("input"); setSegments([]); setGenResults([]); setConcatPath(""); setPreviewIdx(-1); }}>
+                {t("story.btn.newProject")}
               </button>
+              <button className="btn btn-sm" onClick={() => setStep("edit")}>{t("story.btn.backEdit")}</button>
             </div>
           </div>
-        )}
+
+          <div className="card">
+            <div className="flex gap-4" style={{fontSize:13}}>
+              <span>{t("story.statTotal")} <strong>{genResults.length}</strong></span>
+              <span style={{color:"var(--success)"}}>{t("story.statSuccess")} <strong>{succCount}</strong></span>
+              {failCount > 0 && <span style={{color:"var(--danger)"}}>{t("story.statFail")} <strong>{failCount}</strong></span>}
+            </div>
+          </div>
+
+          {genResults.map((r, idx) => (
+            <div key={idx} className="card" style={{borderLeft:`3px solid ${r.status==="succeeded"?"var(--success)":r.error||r.status==="failed"?"var(--danger)":"var(--warning)"}`,cursor:"pointer"}}
+              onClick={() => setPreviewIdx(idx)}>
+              <div className="flex justify-between items-center">
+                <div className="flex gap-2 items-center">
+                  <span className="badge" style={{minWidth:28,textAlign:"center",background:r.status==="succeeded"?"var(--success)":"var(--danger)",color:"#fff"}}>
+                    {idx + 1}
+                  </span>
+                  <span style={{fontSize:13}}>{r.prompt ? r.prompt.slice(0, 50) + "..." : segments[idx]?.prompt?.slice(0, 50) || ""}</span>
+                </div>
+                <span className={"badge badge-" + (r.status === "succeeded" ? "success" : "error")}>
+                  {r.status === "succeeded" ? <><Ico name="check"/> {t("tasks.tag.done")}</> : r.error ? <><Ico name="x"/> {t("tasks.tag.failed")}</> : r.status || ""}
+                </span>
+              </div>
+              {r.error && <p className="text-xs" style={{color:"var(--danger)",marginTop:6}}>{r.error}</p>}
+            </div>
+          ))}
+
+          {step === "done" && concatPath && (
+            <div className="card" style={{borderLeft:"3px solid var(--success)",background:"rgba(34,197,94,.05)"}}>
+              <div className="oa-section-label"><Ico name="film"/> {t("story.concat.title")}</div>
+              <p style={{fontSize:13,color:"var(--text-muted)",wordBreak:"break-all"}}>{concatPath}</p>
+              <button className="btn btn-sm" style={{marginTop:8}} onClick={() =>
+                showInFolder(concatPath)
+              }><Ico name="folderOpen"/> {t("story.btn.openFolder")}</button>
+            </div>
+          )}
+
+          {step === "results" && succCount >= 2 && (
+            <div style={{marginTop:16}}>
+              {ffmpegOk === false && (
+                <div className="inline-warn">
+                  <span style={{flexShrink:0,color:"var(--warning)"}}><Ico name="warn"/></span>
+                  <div className="inline-warn__text">
+                    <strong>{t("story.ffmpeg.warn.title")}</strong>
+                    <small>{t("story.ffmpeg.warn.hint")}</small>
+                  </div>
+                  {onGoToSettings && (
+                    <button className="btn btn-sm btn-primary" onClick={() => onGoToSettings()}>
+                      {t("story.ffmpeg.warn.cta")}
+                    </button>
+                  )}
+                </div>
+              )}
+              <div className="flex justify-between items-center">
+                <p className="text-sm text-dim">
+                  {ffmpegOk ? <><Ico name="check"/> {t("story.concat.tip", { n: succCount })}</> : ""}
+                </p>
+                <button className="btn btn-primary" disabled={!ffmpegOk || concatenating} onClick={doConcat}>
+                  {concatenating
+                    ? t("story.concat.busy")
+                    : <><Ico name="scissors"/> {t("story.concat.idle", { mode: transition === "crossfade" ? t("story.concat.modeFade") : t("story.concat.modeCut") })}</>}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+        <div className="storyboard-split__right">
+          <div className="storyboard-preview">
+            <div className="storyboard-preview__overlay">
+              <div className="storyboard-preview__overlay-title">
+                {previewResult
+                  ? <><Ico name="eye"/> {t("story.preview.segTitle", { n: previewIdx + 1 })}</>
+                  : <><Ico name="layoutGrid"/> {t("story.preview.title")}</>}
+              </div>
+            </div>
+            {previewResult && previewResult.video_url ? (
+              <video src={previewResult.video_url} controls style={{maxWidth:"100%",maxHeight:"100%"}} />
+            ) : (
+              <div className="storyboard-preview__empty">
+                <Ico name="film" />
+                <span>{t("story.preview.selectResult")}</span>
+              </div>
+            )}
+          </div>
+          {previewResult && (
+            <div className="storyboard-seg-info">
+              <p>{previewResult.prompt || segments[previewIdx]?.prompt || ""}</p>
+              {previewResult.error && <p style={{color:"var(--danger)",marginTop:4}}>{previewResult.error}</p>}
+            </div>
+          )}
+        </div>
       </div>
     );
   }
@@ -3026,7 +3192,7 @@ function PermissionsPanel({ status, onChanged }) {
     <div className="sysdep-card">
       <div className="sysdep-card__head">
         <div className="sysdep-card__title">
-          <Ico name="key"/> {t("settings.section.permissions")}
+          <Ico name="shield"/> {t("settings.section.permissions")}
           {allOk
             ? <span className="sysdep-card__badge sysdep-card__badge--ok">
                 <Ico name="check"/> {t("settings.perms.allOk")}
@@ -3500,7 +3666,8 @@ function SettingsTab({ onKeyChange, onFfmpegChanged, permsStatus, onPermsRefresh
   };
 
   return (
-    <div style={{maxWidth:640}}>
+    <div className="centered-tab">
+      <div className="centered-tab__inner">
       <div className="setting-section oa-settings-section">
         <h3 className="oa-settings-section__title"><Ico name="key"/> {t("settings.section.api")}</h3>
         <div className={"form-row" + (config.ark_api_key ? "" : " oa-config-field-callout")}
@@ -3518,7 +3685,7 @@ function SettingsTab({ onKeyChange, onFfmpegChanged, permsStatus, onPermsRefresh
       </div>
 
       <div className="setting-section oa-settings-section">
-        <h3 className="oa-settings-section__title"><Ico name="key"/> {t("settings.section.permissions")}</h3>
+        <h3 className="oa-settings-section__title"><Ico name="shield"/> {t("settings.section.permissions")}</h3>
         <PermissionsPanel status={permsStatus} onChanged={onPermsRefresh} />
       </div>
 
@@ -3631,7 +3798,7 @@ function SettingsTab({ onKeyChange, onFfmpegChanged, permsStatus, onPermsRefresh
         )}
       </div>
 
-      <div className="setting-section oa-settings-section">
+      <div className="centered-tab__footer">
         <h3 className="oa-settings-section__title"><Ico name="link"/> {t("settings.section.webhook")}</h3>
         <div className="form-row">
           <label className="label">{t("settings.label.callback")}</label>
@@ -3640,6 +3807,7 @@ function SettingsTab({ onKeyChange, onFfmpegChanged, permsStatus, onPermsRefresh
             onBlur={e => save({callback_url: e.target.value})} />
           <p className="text-xs text-dim" style={{marginTop:4}}>{t("settings.callback.help")}</p>
         </div>
+      </div>
       </div>
 
       <FolderPickerModal
@@ -3690,11 +3858,11 @@ function App() {
   return (
     <div className="app">
       <div className="header">
-        <h1 className="oa-hero-title">
-          <span className="oa-hero-title__icon"><Ico name="video"/></span>
-          <span className="oa-hero-title__text">
-            {t("app.title")}
-            <span className="oa-hero-title__sub">{t("app.subtitle")}</span>
+        <h1>
+          <span className="header-icon" dangerouslySetInnerHTML={{__html: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><defs><linearGradient id="hib" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#4338CA"/><stop offset="55%" stop-color="#6366F1"/><stop offset="100%" stop-color="#818CF8"/></linearGradient><linearGradient id="hic" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#FFF"/><stop offset="100%" stop-color="#E0E7FF"/></linearGradient><linearGradient id="his" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#FDE68A"/><stop offset="100%" stop-color="#F59E0B"/></linearGradient></defs><rect width="64" height="64" rx="14" fill="url(#hib)"/><path d="M14 18L50 14V24L14 28Z" fill="url(#hic)" opacity=".95"/><g stroke="#6366F1" stroke-width="1.8" stroke-linecap="round" opacity=".5"><line x1="20" y1="17.2" x2="23" y2="25.8"/><line x1="28" y1="16" x2="31" y2="24.6"/><line x1="36" y1="14.8" x2="39" y2="23.4"/><line x1="44" y1="13.6" x2="47" y2="22.2"/></g><rect x="14" y="26" width="36" height="22" rx="3" fill="url(#hic)" opacity=".92"/><rect x="18" y="30" width="28" height="14" rx="2" fill="#312E81" opacity=".7"/><polygon points="28,33 28,41 36,37" fill="rgba(255,255,255,.85)"/><path d="M48 8L50 14L56 16L50 18L48 24L46 18L40 16L46 14Z" fill="url(#his)" opacity=".95"/><path d="M54 26L55 29L58 30L55 31L54 34L53 31L50 30L53 29Z" fill="#FDE68A" opacity=".7"/></svg>'}} />
+          <span className="header-title-wrap">
+            <span className="header-title-main">{t("app.title")}</span>
+            <span className="header-title-sub">{t("app.subtitle")}</span>
           </span>
         </h1>
         <div className="header-right">
@@ -3711,7 +3879,7 @@ function App() {
       </div>
       <div className="tabs">
         {TAB_IDS.map((id, i) => (
-          <div key={id} className={`tab ${activeTab===i?"active":""}`} onClick={() => setActiveTab(i)}>{t("tabs." + id)}</div>
+          <div key={id} className={`tab ${activeTab===i?"active":""}`} onClick={() => setActiveTab(i)}><Ico name={TAB_ICONS[id] || "video"}/> {t("tabs." + id)}</div>
         ))}
       </div>
       {!keyStatus && configLoaded && activeTab !== settingsIdx && (
@@ -3755,11 +3923,11 @@ function App() {
         </div>
       )}
       <div className="content">
-        {activeTab === 0 && <CreateTab models={models} onGoToTasks={() => setActiveTab(1)} />}
-        {activeTab === 1 && <TaskListTab />}
-        {activeTab === 2 && <AssetsTab />}
-        {activeTab === 3 && <PromptGuideTab />}
-        {activeTab === 4 && <StoryboardTab onGoToSettings={() => setActiveTab(settingsIdx)} />}
+        {activeTab === 0 && <CreateTab models={models} onGoToTasks={() => setActiveTab(2)} />}
+        {activeTab === 1 && <StoryboardTab onGoToSettings={() => setActiveTab(settingsIdx)} />}
+        {activeTab === 2 && <TaskListTab />}
+        {activeTab === 3 && <AssetsTab />}
+        {activeTab === 4 && <PromptGuideTab />}
         {activeTab === settingsIdx && (
           <SettingsTab
             onKeyChange={k => setKeyStatus(k)}

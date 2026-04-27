@@ -4,21 +4,33 @@ All notable changes to fin-pulse will be documented here. The format is
 loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and the project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] — hybrid fetch rework
+## [Unreleased]
+
+- No pending changes.
+
+## [1.1.0] — 2026-04-25
+
+Release package: `fin-pulse-1.1.0.zip`.
+
+### Added — release packaging
+
+- `plugin.json` and `plugin.py` now advertise `1.1.0` for the hybrid
+  fetcher + scheduler dispatch release.
+- README metadata calls out the SDK range, Plugin API contract, and bundled
+  UI assets expected in the installable plugin zip.
 
 ### Changed — ingest path
 
 - **Hybrid NewsNow-first fetchers for CN hot lists.** The 4 high-churn
   Chinese sources (`wallstreetcn` / `cls` / `eastmoney` / `xueqiu`) now
-  try the community-run NewsNow aggregator first (TrendRadar pattern)
+  try the community-run NewsNow aggregator first
   and only fall back to their direct scraper when the aggregator is
   unreachable, returns an empty envelope, or the 300-second public
   cooldown is in effect. Each fetcher records `_last_via` so the pipe-
   line and UI can surface the actual transport as
   `NewsNow / 直连 / 冷却 / 无结果`.
 - New `finpulse_fetchers/newsnow_base.py` encapsulates the NewsNow
-  envelope parser so the 4 CN fetchers share one surface (matches
-  `TrendRadar DataFetcher.crawl_websites` expectations — `status` ∈
+  envelope parser so the 4 CN fetchers share one surface (expects `status` ∈
   `{"success", "cache"}`, title/URL strip, title dedupe, `mobileUrl`
   fallback).
 - `POST /ingest` response now exposes `summary.by_source[id].via` and
@@ -134,14 +146,14 @@ First tagged release. Feature-complete against the
 - `finpulse_pipeline.run_daily_brief` — persists the rendered
   digest into the `digests` table and marks the task succeeded.
 - `finpulse_frequency.py` — `+must` / `!exclude` / `@alias`
-  / `[GLOBAL_FILTER]` DSL compiler and matcher (TrendRadar port
-  with the deepcopy + size-bound hardenings in §13.2 of the plan).
+  / `[GLOBAL_FILTER]` DSL compiler and matcher with the deepcopy +
+  size-bound hardenings in §13.2 of the plan.
 - `finpulse_pipeline.evaluate_radar` + `run_hot_radar` — radar
   evaluation over the articles index + per-target broadcast
   through `DispatchService`.
 - `finpulse_notification/splitter.py` — line-boundary splitter
   with `base_header` prepend + oversize-line force split
-  (fix for TrendRadar issue #1065 lost-headline bug).
+  (fix for lost-headline truncation in long pushes).
 - `finpulse_dispatch.py` — thin wrapper over `api.send_message`
   with per-key cooldown, content-hash dedupe, and inter-chunk
   pacing; `broadcast()` fans out to multiple `(channel, chat_id)`
@@ -159,7 +171,7 @@ First tagged release. Feature-complete against the
 
 - `finpulse_services/query.py` — shared query service used by both
   the REST router and the seven agent tools. `_clamp` /
-  `_clamp_float` mirror TrendRadar's guard so misbehaving LLM
+  `_clamp_float` guard against misbehaving LLM
   payloads cannot hand in `limit=99999`.
 - `plugin._handle_tool` — async dispatch through
   `build_tool_dispatch()` so REST and tool surfaces stay lockstep.

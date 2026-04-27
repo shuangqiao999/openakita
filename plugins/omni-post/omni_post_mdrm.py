@@ -155,33 +155,65 @@ class OmniPostMdrmAdapter:
     def caps(self) -> MdrmCaps:
         return self._caps
 
+    def _has_perm(self, perm: str) -> bool:
+        """Side-effect-free permission check.
+
+        IMPORTANT: we intentionally avoid calling the host getters
+        (`get_vector_store` / `get_brain` / `get_memory_manager`) when
+        the corresponding permission is not granted. Those getters
+        mutate the plugin's `_pending_permissions` set via
+        `_check_permission`, which surfaces an "approve"
+        prompt in the Plugin Manager UI. If a permission is not
+        declared in `plugin.json`, any approval would be discarded on
+        the next reload (see `_resolve_permissions` in the host
+        plugin manager), leading to an infinite "approve → reload →
+        re-prompt" loop.
+        """
+        api = self._api
+        if api is None:
+            return False
+        check = getattr(api, "has_permission", None)
+        if check is None:
+            # Older SDKs: fall back to best-effort (assume granted so
+            # the getters still get a chance). Modern SDKs (>=0.7)
+            # always expose has_permission.
+            return True
+        try:
+            return bool(check(perm))
+        except Exception as exc:  # noqa: BLE001
+            log.debug("has_permission(%s) failed: %s", perm, exc)
+            return False
+
     def _detect(self) -> None:
         api = self._api
         if api is None:
             return
-        try:
-            getter = getattr(api, "get_memory_manager", None)
-            self._memory = getter() if getter else None
-        except Exception as exc:  # noqa: BLE001
-            log.debug("get_memory_manager failed: %s", exc)
-            self._memory = None
-        self._caps.has_memory_read = self._memory is not None
-        self._caps.has_memory_write = self._memory is not None
+        if self._has_perm("memory.write") or self._has_perm("memory.read"):
+            try:
+                getter = getattr(api, "get_memory_manager", None)
+                self._memory = getter() if getter else None
+            except Exception as exc:  # noqa: BLE001
+                log.debug("get_memory_manager failed: %s", exc)
+                self._memory = None
+        self._caps.has_memory_read = self._memory is not None and self._has_perm("memory.read")
+        self._caps.has_memory_write = self._memory is not None and self._has_perm("memory.write")
 
-        try:
-            getter = getattr(api, "get_brain", None)
-            self._brain = getter() if getter else None
-        except Exception as exc:  # noqa: BLE001
-            log.debug("get_brain failed: %s", exc)
-            self._brain = None
+        if self._has_perm("brain.access"):
+            try:
+                getter = getattr(api, "get_brain", None)
+                self._brain = getter() if getter else None
+            except Exception as exc:  # noqa: BLE001
+                log.debug("get_brain failed: %s", exc)
+                self._brain = None
         self._caps.has_brain = self._brain is not None
 
-        try:
-            getter = getattr(api, "get_vector_store", None)
-            self._vector = getter() if getter else None
-        except Exception as exc:  # noqa: BLE001
-            log.debug("get_vector_store failed: %s", exc)
-            self._vector = None
+        if self._has_perm("vector.access"):
+            try:
+                getter = getattr(api, "get_vector_store", None)
+                self._vector = getter() if getter else None
+            except Exception as exc:  # noqa: BLE001
+                log.debug("get_vector_store failed: %s", exc)
+                self._vector = None
         self._caps.has_vector = self._vector is not None
 
     # -- writes ----------------------------------------------------------

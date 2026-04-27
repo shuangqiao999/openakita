@@ -42,6 +42,7 @@ interface PluginInfo {
   has_readme?: boolean;
   has_config_schema?: boolean;
   has_icon?: boolean;
+  icon_mtime?: number;
   pending_permissions?: string[];
   granted_permissions?: string[];
   health?: HealthSnapshot;
@@ -203,7 +204,7 @@ function PluginIcon({ plugin, apiBase }: { plugin: PluginInfo; apiBase: string }
   if (plugin.has_icon && !imgErr) {
     return (
       <img
-        src={`${apiBase}/api/plugins/${plugin.id}/_admin/icon`}
+        src={`${apiBase}/api/plugins/${plugin.id}/_admin/icon?v=${plugin.icon_mtime ?? plugin.version}`}
         alt=""
         onError={() => setImgErr(true)}
         style={{ width: 28, height: 28, borderRadius: 6, objectFit: "cover", flexShrink: 0 }}

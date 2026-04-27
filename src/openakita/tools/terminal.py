@@ -47,6 +47,7 @@ class TerminalSession:
     id: int
     cwd: str
     env: dict = field(default_factory=dict)
+    execution_env_spec: Any = None
     last_command: str | None = None
     last_exit_code: int | None = None
     _bg_process: asyncio.subprocess.Process | None = field(default=None, repr=False)
@@ -147,16 +148,28 @@ class TerminalSession:
         cmd_env = os.environ.copy()
         cmd_env.update(self.env)
 
-        try:
-            from ..runtime_env import IS_FROZEN, get_python_executable
+        if self.execution_env_spec is not None:
+            try:
+                from ..runtime_envs import apply_execution_environment, ensure_execution_env
 
-            if IS_FROZEN:
-                _ext_py = get_python_executable()
-                if _ext_py:
-                    _py_dir = str(Path(_ext_py).parent)
-                    cmd_env["PATH"] = _py_dir + os.pathsep + cmd_env.get("PATH", "")
-        except Exception:
-            pass
+                cmd_env = apply_execution_environment(
+                    cmd_env, ensure_execution_env(self.execution_env_spec)
+                )
+            except Exception as exc:
+                logger.warning("Terminal falling back to shared agent Python env: %s", exc)
+                try:
+                    from ..runtime_env import apply_agent_python_environment
+
+                    cmd_env = apply_agent_python_environment(cmd_env)
+                except Exception:
+                    pass
+        else:
+            try:
+                from ..runtime_env import apply_agent_python_environment
+
+                cmd_env = apply_agent_python_environment(cmd_env)
+            except Exception:
+                pass
 
         actual_command = self._prepare_command(command)
         self.last_command = command
@@ -306,9 +319,10 @@ class TerminalSession:
 class TerminalSessionManager:
     """Manages multiple persistent terminal sessions."""
 
-    def __init__(self, default_cwd: str | None = None):
+    def __init__(self, default_cwd: str | None = None, execution_env_spec: Any = None):
         self.sessions: dict[int, TerminalSession] = {}
         self.default_cwd = default_cwd or os.getcwd()
+        self.execution_env_spec = execution_env_spec
         self._next_id = 1
 
     def get_or_create(self, session_id: int = 1) -> TerminalSession:
@@ -316,6 +330,7 @@ class TerminalSessionManager:
             self.sessions[session_id] = TerminalSession(
                 id=session_id,
                 cwd=self.default_cwd,
+                execution_env_spec=self.execution_env_spec,
             )
             if session_id >= self._next_id:
                 self._next_id = session_id + 1

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import html
 import logging
 import time
 from datetime import datetime, timezone
@@ -25,7 +26,12 @@ from finpulse_errors import map_exception
 from finpulse_fetchers import SOURCE_REGISTRY, get_fetcher
 from finpulse_fetchers.base import FetchReport, NormalizedItem
 from finpulse_frequency import FrequencyMatcher, compile_matcher
-from finpulse_models import SESSIONS, SOURCE_DEFS
+from finpulse_models import (
+    SESSIONS,
+    SOURCE_DEFS,
+    get_max_age_hours,
+    get_source_fetcher_id,
+)
 from finpulse_report import build_daily_brief
 
 if TYPE_CHECKING:
@@ -71,31 +77,49 @@ def _newsnow_rate_limit_remaining(cfg: dict[str, str]) -> float:
 async def _resolve_enabled_sources(
     tm: FinpulseTaskManager, *, include: list[str] | None = None
 ) -> list[str]:
-    """Read enabled-source flags from config, intersected with ``include``.
+    """Return source IDs for enabled direct/rss fetchers.
 
-    ``include == None`` → every registered source whose
-    ``config['source.{id}.enabled']`` is ``"true"`` is returned.
-    Passing ``include`` restricts the run to the named subset (still
-    requiring the enabled flag).
+    NewsNow-backed sources (``kind=="newsnow"`` in SOURCE_DEFS) are NOT
+    returned here — they are handled internally by :class:`NewsNowFetcher`.
+    This function only returns sources that have an entry in
+    :data:`SOURCE_REGISTRY` (direct + rss + the unified ``newsnow``
+    aggregator entry).
     """
     cfg = await tm.get_all_config()
     sources: list[str] = []
     universe = include if include else list(SOURCE_REGISTRY.keys())
     for source_id in universe:
-        if source_id not in SOURCE_REGISTRY:
+        if source_id == "newsnow":
+            if _has_any_newsnow_source_enabled(cfg) and source_id not in sources:
+                sources.append(source_id)
             continue
-        if cfg.get(f"source.{source_id}.enabled", "false") != "true":
+        fetcher_id = get_source_fetcher_id(source_id)
+        if fetcher_id not in SOURCE_REGISTRY:
             continue
-        sources.append(source_id)
+        enabled_val = cfg.get(f"source.{source_id}.enabled", "")
+        if enabled_val == "":
+            defn = SOURCE_DEFS.get(source_id, {})
+            if not defn.get("default_enabled"):
+                continue
+        elif enabled_val.lower() != "true":
+            continue
+        if fetcher_id not in sources:
+            sources.append(fetcher_id)
     return sources
 
 
-# CN hot-list sources that tap the NewsNow aggregator first. Enabling
-# any of them auto-lifts ``newsnow.mode`` to ``"public"`` for the run so
-# the hybrid path works out of the box (still honouring the 300s floor).
-_NEWSNOW_BACKED_CN_SOURCES: frozenset[str] = frozenset(
-    {"wallstreetcn", "cls", "eastmoney", "xueqiu"}
-)
+def _has_any_newsnow_source_enabled(cfg: dict[str, str]) -> bool:
+    """Check if at least one ``kind=newsnow`` source is enabled."""
+    for sid, defn in SOURCE_DEFS.items():
+        if defn.get("kind") != "newsnow":
+            continue
+        val = cfg.get(f"source.{sid}.enabled", "")
+        if val == "":
+            if defn.get("default_enabled"):
+                return True
+        elif val.lower() == "true":
+            return True
+    return False
 
 
 async def _fetch_one(
@@ -131,11 +155,19 @@ async def _fetch_one(
         # tab drawer can render a NewsNow / Direct badge per source.
         via_raw = getattr(fetcher, "_last_via", None)
         via = via_raw if isinstance(via_raw, str) and via_raw else "direct"
+        via_reason_raw = getattr(fetcher, "_last_via_reason", None)
+        via_reason = (
+            via_reason_raw
+            if isinstance(via_reason_raw, str) and via_reason_raw
+            else None
+        )
         return FetchReport(
             source_id=source_id,
             items=list(items or []),
             duration_ms=(time.perf_counter() - t0) * 1000.0,
             via=via,
+            via_reason=via_reason,
+            channel_reports=list(getattr(fetcher, "_channel_reports", []) or []),
         )
     except Exception as exc:  # noqa: BLE001 — intentional pipeline boundary
         kind, msg, _hints = map_exception(exc)
@@ -218,13 +250,19 @@ async def ingest(
             )
         return summary_empty
 
-    # CN hot-list sources default to the NewsNow aggregator (TrendRadar
-    # pattern). If any of them is enabled, lift ``newsnow.mode`` in memory
-    # to ``"public"`` for this run so the hybrid fetchers can reach the
-    # aggregator even when the user never opened the Settings wizard.
-    # This DOES NOT persist to config — the wizard remains the single
-    # source of truth for long-term preference.
-    if any(sid in _NEWSNOW_BACKED_CN_SOURCES for sid in enabled):
+    # If any NewsNow-backed source is enabled, ensure the aggregator
+    # mode is active for this run. The NewsNowFetcher reads its channels
+    # from SOURCE_DEFS at runtime, so we only need to guarantee the mode
+    # and URL are set. This does NOT persist to config.
+    explicit_sources = sources is not None
+    explicit_newsnow_sources = [
+        sid for sid in (sources or [])
+        if sid != "newsnow" and SOURCE_DEFS.get(sid, {}).get("kind") == "newsnow"
+    ]
+    if explicit_newsnow_sources:
+        cfg["_newsnow.only_sources"] = ",".join(explicit_newsnow_sources)
+    requested_newsnow = "newsnow" in enabled
+    if requested_newsnow or (not explicit_sources and _has_any_newsnow_source_enabled(cfg)):
         mode = (cfg.get("newsnow.mode") or "off").strip().lower()
         if mode == "off":
             cfg["newsnow.mode"] = "public"
@@ -232,6 +270,8 @@ async def ingest(
             from finpulse_fetchers.newsnow_base import DEFAULT_NEWSNOW_URL
 
             cfg["newsnow.api_url"] = DEFAULT_NEWSNOW_URL
+        if "newsnow" not in enabled:
+            enabled.append("newsnow")
 
     since: datetime | None = None
     if since_hours:
@@ -288,6 +328,40 @@ async def ingest(
     newsnow_public_hit = False
 
     for report in reports:
+        if report.source_id == "newsnow" and report.channel_reports and not report.error:
+            summary["totals"]["sources_total"] += len(report.channel_reports) - 1
+            for channel in report.channel_reports:
+                sid = str(channel.get("source_id") or "")
+                if not sid:
+                    continue
+                channel_items = [item for item in report.items if item.source_id == sid]
+                channel_error = channel.get("error")
+                entry = {
+                    "fetched": len(channel_items),
+                    "duration_ms": round(report.duration_ms, 2),
+                    "via": "newsnow",
+                }
+                if channel_error:
+                    entry["error_kind"] = str(channel_error)
+                    entry["error"] = str(channel_error)
+                    updates[f"source.{sid}.last_error"] = (
+                        f"{_utcnow_iso()}: newsnow: {channel_error}"
+                    )
+                    summary["totals"]["failed_sources"] += 1
+                else:
+                    inserted, updated = await _persist_items(tm, channel_items)
+                    entry["inserted"] = inserted
+                    entry["updated"] = updated
+                    summary["totals"]["inserted"] += inserted
+                    summary["totals"]["updated"] += updated
+                    summary["totals"]["sources_ok"] += 1
+                    updates[f"source.{sid}.last_ok"] = _utcnow_iso()
+                    updates[f"source.{sid}.last_error"] = ""
+                    newsnow_public_hit = True
+                summary["totals"]["fetched"] += entry["fetched"]
+                summary["by_source"][sid] = entry
+            continue
+
         # Hybrid CN fetchers stash their transport on the report so we
         # can surface a NewsNow / Direct / None badge in the UI drawer.
         via = report.via or "direct"
@@ -296,6 +370,8 @@ async def ingest(
             "duration_ms": round(report.duration_ms, 2),
             "via": via,
         }
+        if report.via_reason:
+            entry["via_reason"] = report.via_reason
         if report.error:
             entry["error_kind"] = report.error_kind
             entry["error"] = report.error
@@ -345,6 +421,18 @@ async def ingest(
             "retry_after_s": int(newsnow_skip_remaining),
         }
 
+    stale_cutoffs: dict[str, str] = {}
+    now_ts = datetime.now(timezone.utc)
+    for sid in SOURCE_DEFS:
+        max_h = get_max_age_hours(sid)
+        cutoff = datetime.fromtimestamp(
+            now_ts.timestamp() - max_h * 3600, tz=timezone.utc
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        stale_cutoffs[sid] = cutoff
+    stale_count = await tm.mark_stale_articles(stale_cutoffs)
+    if stale_count:
+        summary["totals"]["marked_stale"] = stale_count
+
     if updates:
         await tm.set_configs(updates)
 
@@ -369,6 +457,7 @@ async def run_daily_brief(
     lang: str = "zh",
     task_id: str | None = None,
     title: str | None = None,
+    source_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build a daily-brief digest and persist it to the ``digests`` table.
 
@@ -383,7 +472,7 @@ async def run_daily_brief(
     window defaults to 12h back — morning/noon/evening cadences each
     look back through the previous session's tail.
     """
-    if session not in SESSIONS:
+    if session not in SESSIONS and not session.startswith("custom"):
         raise ValueError(f"invalid session {session!r}, expected one of {SESSIONS}")
 
     top_k = max(1, min(int(top_k), 60))
@@ -396,9 +485,13 @@ async def run_daily_brief(
     rows, total = await tm.list_articles(
         since=since,
         sort="score",
-        limit=max(top_k * 3, 60),
+        limit=500 if source_ids else max(top_k * 3, 60),
         offset=0,
     )
+    if source_ids:
+        allowed_sources = {str(s) for s in source_ids if str(s).strip()}
+        rows = [row for row in rows if str(row.get("source_id") or "") in allowed_sources]
+        total = len(rows)
     generated_at = _utcnow_iso()
     markdown, html_blob, stats = build_daily_brief(
         rows,
@@ -426,6 +519,7 @@ async def run_daily_brief(
         "generated_at": generated_at,
         "stats": stats.as_dict(),
         "window": {"since_hours": since_hours, "scanned_total": total},
+        "source_ids": source_ids or [],
     }
 
     if task_id is not None:
@@ -447,6 +541,7 @@ async def evaluate_radar(
     since_hours: int = 24,
     limit: int = 100,
     min_score: float | None = None,
+    source_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Compile ``rules_text`` into a :class:`FrequencyMatcher` and run
     it over recent articles. Purely read-only — used by the Radar tab's
@@ -479,21 +574,37 @@ async def evaluate_radar(
         since=since,
         min_score=min_score,
         sort="time",
-        limit=limit,
+        limit=500 if source_ids else limit,
         offset=0,
     )
+    allowed_sources = {str(s) for s in (source_ids or []) if str(s).strip()}
+    if allowed_sources:
+        rows = [row for row in rows if str(row.get("source_id") or "") in allowed_sources]
+        rows = rows[:limit]
 
     hits: list[dict[str, Any]] = []
     for row in rows:
         title = row.get("title") or ""
-        if not matcher.match(title):
+        summary = row.get("summary") or ""
+        src_def = SOURCE_DEFS.get(str(row.get("source_id") or ""), {})
+        source_name = str(
+            src_def.get("display_zh")
+            or src_def.get("display_en")
+            or row.get("source_id")
+            or ""
+        )
+        source_id = str(row.get("source_id") or "")
+        match_text = "\n".join([title, summary, source_name, source_id, _radar_source_terms(source_id)])
+        if not matcher.match(match_text):
             continue
-        terms = matcher.matched_terms(title)
+        terms = matcher.matched_terms(match_text)
         hits.append(
             {
                 "id": row.get("id"),
                 "source_id": row.get("source_id"),
+                "content_type": src_def.get("content_type", "news"),
                 "title": title,
+                "summary": summary,
                 "url": row.get("url"),
                 "fetched_at": row.get("fetched_at"),
                 "published_at": row.get("published_at"),
@@ -512,6 +623,7 @@ async def evaluate_radar(
             "window_hours": since_hours,
             "scanned": len(rows),
             "matched": len(hits),
+            "source_ids": list(allowed_sources),
         },
     }
 
@@ -551,6 +663,58 @@ def _radar_markdown(
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _radar_html(*, header: str | None, hits: list[dict[str, Any]], limit: int = 80) -> str:
+    title = html.escape(header or "fin-pulse 热点雷达")
+    cards: list[str] = []
+    for i, hit in enumerate(hits[:limit], start=1):
+        h_title = html.escape(str(hit.get("title") or ""))
+        url = html.escape(str(hit.get("url") or ""))
+        src = html.escape(str(hit.get("source_id") or ""))
+        terms = " ".join(
+            f"<span>{html.escape(str(t))}</span>"
+            for t in (hit.get("matched_terms") or [])[:6]
+        )
+        link = f'<a href="{url}">{h_title}</a>' if url else h_title
+        cards.append(
+            f"<article><b>{i}.</b> {link}"
+            f"<p>{src} · {html.escape(str(hit.get('published_at') or hit.get('fetched_at') or ''))}</p>"
+            f"<div>{terms}</div></article>"
+        )
+    body = "\n".join(cards) or "<p>暂无命中资讯</p>"
+    return f"""<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title}</title>
+<style>
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0;background:#fff7f7;color:#221316}}
+main{{max-width:880px;margin:0 auto;padding:24px}}
+h1{{font-size:24px;margin:0 0 8px;color:#b91c1c}}
+.meta{{color:#7a4e59;margin-bottom:18px}}
+article{{background:#fff;border:2px solid #f1c8cc;border-radius:14px;padding:14px 16px;margin:10px 0;box-shadow:0 6px 18px rgba(185,28,28,.06)}}
+a{{color:#991b1b;text-decoration:none;font-weight:700}}
+p{{color:#7a4e59;font-size:12px;margin:6px 0}}
+span{{display:inline-block;margin:2px 4px 2px 0;padding:2px 8px;border-radius:999px;background:#fee2e2;color:#991b1b;font-size:12px}}
+</style></head><body><main>
+<h1>{title}</h1><div class="meta">命中 {len(hits)} 条 · Generated by Fin Pulse</div>
+{body}
+</main></body></html>"""
+
+
+def _radar_source_terms(source_id: str) -> str:
+    """Extra source-level terms so broad rules like ``+科技`` can match
+    tech/innovation feeds even when the individual headline omits the
+    category word.
+    """
+
+    sid = source_id.lower()
+    terms: list[str] = []
+    if sid.startswith("36kr") or sid in {"ithome"}:
+        terms.extend(["科技", "互联网", "创投", "数码", "IT"])
+    if sid in {"zhihu-hot", "bilibili", "toutiao-hot", "weibo-hot", "baidu-hot"}:
+        terms.extend(["热榜", "热点", "社交"])
+    return " ".join(dict.fromkeys(terms))
+
+
 async def run_hot_radar(
     tm: FinpulseTaskManager,
     dispatch: DispatchService,
@@ -564,6 +728,7 @@ async def run_hot_radar(
     cooldown_s: float = 600.0,
     task_id: str | None = None,
     dedupe_by_content: bool = True,
+    source_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Evaluate the rules and fan matching titles out to every target
     using :class:`DispatchService`. Cooldown keys include the radar key
@@ -579,6 +744,7 @@ async def run_hot_radar(
         since_hours=since_hours,
         limit=limit,
         min_score=min_score,
+        source_ids=source_ids,
     )
     hits = eval_result.get("hits", [])
 
@@ -586,6 +752,7 @@ async def run_hot_radar(
     if eval_result.get("ok") and hits:
         header = title or "📡 fin-pulse 热点雷达"
         md = _radar_markdown(header=header, hits=hits, limit=20)
+        html_blob = _radar_html(header=header, hits=hits, limit=80)
         # Cooldown key derives from the header + hit set so identical
         # firings dedupe but a fresh batch of hits gets through. The
         # key is suffixed with ``channel:chat_id`` in the loop below so
@@ -612,10 +779,14 @@ async def run_hot_radar(
             outcome = await dispatch.send(
                 channel=channel,
                 chat_id=chat_id,
-                content=md,
+                content=html_blob,
                 cooldown_key=f"{base_key}:{channel}:{chat_id}",
                 cooldown_s=cooldown_s,
                 dedupe_by_content=dedupe_by_content,
+                content_kind="html",
+                file_name="fin-pulse-radar.pdf",
+                fallback_text=md,
+                header=header,
             )
             dispatch_results.append(outcome.as_dict())
 
@@ -672,6 +843,7 @@ class FinpulsePipeline:
         lang: str = "zh",
         task_id: str | None = None,
         title: str | None = None,
+        source_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         return await run_daily_brief(
             self._tm,
@@ -681,6 +853,7 @@ class FinpulsePipeline:
             lang=lang,
             task_id=task_id,
             title=title,
+            source_ids=source_ids,
         )
 
     async def evaluate_radar(
@@ -690,6 +863,7 @@ class FinpulsePipeline:
         since_hours: int = 24,
         limit: int = 100,
         min_score: float | None = None,
+        source_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         return await evaluate_radar(
             self._tm,
@@ -697,6 +871,7 @@ class FinpulsePipeline:
             since_hours=since_hours,
             limit=limit,
             min_score=min_score,
+            source_ids=source_ids,
         )
 
     async def run_hot_radar(
@@ -712,6 +887,7 @@ class FinpulsePipeline:
         cooldown_s: float = 600.0,
         task_id: str | None = None,
         dedupe_by_content: bool = True,
+        source_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         return await run_hot_radar(
             self._tm,
@@ -725,6 +901,7 @@ class FinpulsePipeline:
             cooldown_s=cooldown_s,
             task_id=task_id,
             dedupe_by_content=dedupe_by_content,
+            source_ids=source_ids,
         )
 
 

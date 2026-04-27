@@ -23,6 +23,7 @@
     "collapse": "Collapse sidebar",
     "expand": "Expand sidebar",
     "docs": "Docs",
+    "myFeedback": "Feedback",
     "security": "Security",
     "groupCapabilities": "Capabilities",
     "groupMonitor": "Monitor",
@@ -167,6 +168,14 @@
     "securityMoreOptions": "More Options",
     "emptyTitle": "Start a Conversation",
     "emptyDesc": "Send a message to the AI assistant to begin",
+    "quickStart": {
+      "research": "Help me create a competitive analysis for OpenAkita",
+      "ppt": "Help me draft an outline for a project update deck",
+      "search": "Help me search for the latest OpenAkita updates",
+      "email": "Help me write a business email",
+      "summary": "Help me summarize today's work",
+      "translate": "Help me translate this paragraph into English"
+    },
     "streaming": "AI is responding...",
     "slashHint": "Type / for available commands",
     "errorPrefix": "Error",

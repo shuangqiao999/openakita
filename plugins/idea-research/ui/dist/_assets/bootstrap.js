@@ -26,12 +26,9 @@
     sse: null,
     plugin_id: "idea-research",
   };
+  var pending = {};
 
   function detectTheme() {
-    try {
-      var saved = window.localStorage.getItem("idea_research_theme_v1");
-      if (saved) return saved;
-    } catch (_) {}
     if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
       return "dark";
     }
@@ -39,10 +36,6 @@
   }
 
   function detectLocale() {
-    try {
-      var saved = window.localStorage.getItem("idea_research_locale_v1");
-      if (saved) return saved;
-    } catch (_) {}
     var lang = (navigator.language || "zh").toLowerCase();
     return lang.indexOf("zh") === 0 ? "zh" : "en";
   }
@@ -51,14 +44,15 @@
     if (!theme) return;
     state.theme = theme;
     document.documentElement.setAttribute("data-theme", theme);
-    try { window.localStorage.setItem("idea_research_theme_v1", theme); } catch (_) {}
+    try { window.dispatchEvent(new CustomEvent("idea-research:theme-change", { detail: { theme: theme } })); } catch (_) {}
   }
 
   function applyLocale(locale) {
     if (!locale) return;
-    state.locale = locale;
-    document.documentElement.setAttribute("lang", locale);
-    try { window.localStorage.setItem("idea_research_locale_v1", locale); } catch (_) {}
+    var normalized = String(locale).toLowerCase().indexOf("zh") === 0 ? "zh" : "en";
+    state.locale = normalized;
+    document.documentElement.setAttribute("lang", normalized);
+    try { window.dispatchEvent(new CustomEvent("idea-research:locale-change", { detail: { locale: normalized } })); } catch (_) {}
   }
 
   function postReady() {
@@ -72,6 +66,27 @@
   function onMessage(event) {
     var data = event && event.data;
     if (!data || typeof data !== "object") return;
+    if (data.__akita_bridge === true && (data.type === "bridge:init" || data.type === "bridge:handshake-ack")) {
+      var payload = data.payload || {};
+      if (payload.theme) applyTheme(payload.theme);
+      if (payload.locale) applyLocale(payload.locale);
+      return;
+    }
+    if (data.__akita_bridge === true && data.requestId && pending[data.requestId]) {
+      var slot = pending[data.requestId];
+      delete pending[data.requestId];
+      if (data.error) slot.resolve(null);
+      else slot.resolve(data.payload || data);
+      return;
+    }
+    if (data.__akita_bridge === true && data.type === "bridge:theme-change") {
+      applyTheme(data.payload && data.payload.theme);
+      return;
+    }
+    if (data.__akita_bridge === true && data.type === "bridge:locale-change") {
+      applyLocale(data.payload && data.payload.locale);
+      return;
+    }
     if (data.type === BRIDGE_THEME) applyTheme(data.theme);
     if (data.type === BRIDGE_LOCALE) applyLocale(data.locale);
   }
@@ -138,6 +153,39 @@
     });
   }
 
+  function uid() {
+    return "ir_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2);
+  }
+
+  function pickFolder(title) {
+    return new Promise(function (resolve) {
+      var id = uid();
+      pending[id] = {
+        resolve: function (payload) {
+          resolve(payload && payload.path ? payload.path : null);
+        },
+      };
+      try {
+        window.parent && window.parent.postMessage({
+          __akita_bridge: true,
+          version: 1,
+          type: "bridge:pick-folder",
+          requestId: id,
+          payload: { title: title || "选择文件夹" },
+        }, "*");
+      } catch (_) {
+        delete pending[id];
+        resolve(null);
+      }
+      setTimeout(function () {
+        if (pending[id]) {
+          delete pending[id];
+          resolve(null);
+        }
+      }, 60000);
+    });
+  }
+
   // SSE bus — the host exposes ``GET /api/plugins/_ui-events`` with
   // ``data: { plugin: <id>, type: <event>, data: {...} }`` payloads.
   // When that endpoint is missing (eg. design preview) we silently
@@ -167,6 +215,10 @@
 
   window.addEventListener("message", onMessage, false);
   window.addEventListener("DOMContentLoaded", postReady, { once: true });
+  try {
+    window.parent && window.parent.postMessage({ __akita_bridge: true, version: 1, type: "bridge:ready" }, "*");
+    window.parent && window.parent.postMessage({ __akita_bridge: true, version: 1, type: "bridge:handshake" }, "*");
+  } catch (_) {}
 
   window.OpenAkita = window.OpenAkita || {};
   window.OpenAkita.idea_research = {
@@ -174,6 +226,7 @@
     state: state,
     api: apiFetch,
     subscribe: subscribe,
+    pickFolder: pickFolder,
     setTheme: applyTheme,
     setLocale: applyLocale,
   };

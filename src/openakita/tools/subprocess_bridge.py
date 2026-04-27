@@ -19,7 +19,7 @@ import sys
 import textwrap
 from typing import Any
 
-from openakita.runtime_env import IS_FROZEN, get_python_executable
+from openakita.runtime_env import get_agent_python_executable
 
 logger = logging.getLogger(__name__)
 
@@ -35,14 +35,9 @@ class SubprocessBridge:
         self._python: str | None = None
 
     def _get_python(self) -> str | None:
-        """获取可用的系统 Python 路径（缓存结果）。"""
+        """获取 agent tools venv Python 路径（缓存结果）。"""
         if self._python is None:
-            py = get_python_executable()
-            # 打包环境下 sys.executable 是 openakita-server.exe，不可用
-            if py and (not IS_FROZEN or py != sys.executable):
-                self._python = py
-            else:
-                self._python = ""  # 标记为不可用
+            self._python = get_agent_python_executable() or ""
         return self._python or None
 
     async def check_package(self, package: str) -> bool:

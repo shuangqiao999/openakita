@@ -295,9 +295,16 @@ def _ensure_channel_deps() -> None:
     pkg_list = ", ".join(missing)
     logger.info(f"IM 通道依赖自动安装: {pkg_list} ...")
 
-    from openakita.runtime_env import IS_FROZEN, get_channel_deps_dir, get_python_executable
+    from openakita.runtime_env import (
+        IS_FROZEN,
+        apply_agent_python_environment,
+        get_app_python_executable,
+        get_channel_deps_dir,
+        get_python_executable,
+        resolve_pip_index,
+    )
 
-    py = get_python_executable()
+    py = get_app_python_executable() or get_python_executable()
     if not py or (IS_FROZEN and py == sys.executable):
         logger.warning("未找到项目自带的 Python，无法自动安装依赖")
         console.print(
@@ -309,17 +316,16 @@ def _ensure_channel_deps() -> None:
     target_dir = get_channel_deps_dir()
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    # 国内镜像多源回退（与 Rust 端 pip_install 行为一致）
-    # 尊重用户已配置的 PIP_INDEX_URL 环境变量
-    _user_index = os.environ.get("PIP_INDEX_URL", "").strip()
-    _mirror_sources: list[tuple[str, str]] = []
-    if _user_index:
-        _host = _user_index.split("//")[1].split("/")[0] if "//" in _user_index else ""
-        _mirror_sources.append((_user_index, _host))
+    # 国内镜像多源回退：优先统一 runtime manifest / 设置中心选择。
+    _effective_index = resolve_pip_index()
+    _mirror_sources: list[tuple[str, str]] = [
+        (_effective_index["url"], _effective_index.get("trusted_host", ""))
+    ]
     _mirror_sources.extend(
         [
             ("https://mirrors.aliyun.com/pypi/simple/", "mirrors.aliyun.com"),
             ("https://pypi.tuna.tsinghua.edu.cn/simple/", "pypi.tuna.tsinghua.edu.cn"),
+            ("https://pypi.mirrors.ustc.edu.cn/simple/", "pypi.mirrors.ustc.edu.cn"),
             ("https://pypi.org/simple/", "pypi.org"),
         ]
     )
@@ -329,7 +335,7 @@ def _ensure_channel_deps() -> None:
         extra["creationflags"] = subprocess.CREATE_NO_WINDOW
 
     py_path = Path(py)
-    pip_env = _build_isolated_pip_env(py_path, is_frozen=IS_FROZEN)
+    pip_env = apply_agent_python_environment(_build_isolated_pip_env(py_path, is_frozen=IS_FROZEN))
 
     # _internal/python.exe 在部分用户机器上会因为 PythonHome 未稳定而报
     # "No module named encodings"。先做探测，必要时追加 PYTHONHOME 再重试。
@@ -393,8 +399,6 @@ def _ensure_channel_deps() -> None:
             "--no-index",
             "--find-links",
             str(bundled_wheels),
-            "--target",
-            str(target_dir),
             "--prefer-binary",
             *missing,
         ]
@@ -438,8 +442,6 @@ def _ensure_channel_deps() -> None:
                 "-m",
                 "pip",
                 "install",
-                "--target",
-                str(target_dir),
                 "-i",
                 index_url,
                 "--prefer-binary",

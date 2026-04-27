@@ -1,11 +1,9 @@
-"""NewsNow aggregator adapter.
+"""Unified NewsNow aggregator fetcher.
 
-NewsNow is an optional enhancer — the Settings wizard (§11.7) offers
-``off`` / ``public`` / ``self_host`` modes, each pointing
-``newsnow.api_url`` at the right service. This fetcher fixes the bug
-filed against TrendRadar's DataFetcher where the ``api_url`` was
-hard-coded to the public demo service; here it reads straight from
-config so self-hosted users can point at ``http://127.0.0.1:4444/api/s``.
+Iterates all ``kind=="newsnow"`` sources in :data:`SOURCE_DEFS`, calls
+:func:`fetch_from_newsnow` for each enabled channel, and returns the
+merged item list.  Individual channel failures are captured per-source
+so one broken upstream never blocks the rest.
 """
 
 from __future__ import annotations
@@ -13,77 +11,99 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from finpulse_fetchers._http import fetch_json, jittered_sleep, make_client
-from finpulse_fetchers.base import BaseFetcher, NormalizedItem
+from finpulse_fetchers._http import jittered_sleep
+from finpulse_fetchers.base import BaseFetcher, FetchReport, NormalizedItem
+from finpulse_fetchers.newsnow_base import (
+    NewsNowTransportError,
+    fetch_from_newsnow,
+    newsnow_mode,
+)
+from finpulse_models import SOURCE_DEFS
 
 logger = logging.getLogger(__name__)
 
-
-_ALLOWED_STATUS = {"success", "cache"}
+_MAX_TOTAL_ITEMS = 2000
 
 
 class NewsNowFetcher(BaseFetcher):
+    """Fetch all enabled NewsNow channels in a single pass."""
+
     source_id = "newsnow"
 
     async def fetch(self, **_: Any) -> list[NormalizedItem]:
-        mode = self._config.get("newsnow.mode", "off")
+        mode = newsnow_mode(self._config)
         if mode not in {"public", "self_host"}:
             return []
-        api_url = (self._config.get("newsnow.api_url") or "").strip()
-        if not api_url:
+
+        channels = _resolve_channels(self._config)
+        if not channels:
             return []
-        channels_cfg = self._config.get("newsnow.channels", "wallstreetcn-hot,cls-hot")
-        channels = [c.strip() for c in channels_cfg.split(",") if c.strip()]
+
         out: list[NormalizedItem] = []
-        async with make_client(timeout=self._timeout_sec) as client:
-            for channel in channels:
-                if out.count(channel) > 200:  # defensive
-                    break
-                try:
-                    data = await fetch_json(client, f"{api_url}?id={channel}")
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("newsnow channel %s failed: %s", channel, exc)
-                    continue
-                items = self._parse(channel, data)
+        self._channel_reports: list[dict[str, Any]] = []
+
+        for sid, newsnow_id in channels:
+            if len(out) >= _MAX_TOTAL_ITEMS:
+                break
+            try:
+                items = await fetch_from_newsnow(
+                    platform_id=newsnow_id,
+                    source_id=sid,
+                    config=self._config,
+                    timeout_sec=self._timeout_sec,
+                )
                 out.extend(items)
-                await jittered_sleep(100, 100)
+                self._channel_reports.append(
+                    {"source_id": sid, "count": len(items), "error": None}
+                )
+                logger.info(
+                    "newsnow channel %s (%s): %d items",
+                    sid, newsnow_id, len(items),
+                )
+            except NewsNowTransportError as exc:
+                logger.warning(
+                    "newsnow channel %s (%s) failed: [%s] %s",
+                    sid, newsnow_id, exc.kind, exc,
+                )
+                self._channel_reports.append(
+                    {"source_id": sid, "count": 0, "error": exc.kind}
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "newsnow channel %s (%s) unexpected error: %s",
+                    sid, newsnow_id, exc,
+                )
+                self._channel_reports.append(
+                    {"source_id": sid, "count": 0, "error": str(exc)[:120]}
+                )
+
+            if len(out) < _MAX_TOTAL_ITEMS:
+                await jittered_sleep(80, 120)
+
         return out
 
-    @staticmethod
-    def _parse(channel: str, payload: Any) -> list[NormalizedItem]:
-        if not isinstance(payload, dict):
-            return []
-        status = payload.get("status")
-        if status not in _ALLOWED_STATUS:
-            raise ValueError(f"unexpected newsnow status: {status!r}")
-        rows = payload.get("items") or []
-        out: list[NormalizedItem] = []
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            title = (row.get("title") or "").strip()
-            url = (row.get("url") or row.get("mobileUrl") or "").strip()
-            if not title or not url:
-                continue
-            out.append(
-                NormalizedItem(
-                    source_id=f"newsnow:{channel}",
-                    title=title,
-                    url=url,
-                    summary=row.get("desc") or row.get("summary"),
-                    extra={
-                        "rank": row.get("rank"),
-                        "mobileUrl": row.get("mobileUrl"),
-                        "channel": channel,
-                        "extra_raw": {
-                            k: row[k]
-                            for k in row
-                            if k not in {"title", "url", "mobileUrl", "desc", "summary"}
-                        },
-                    },
-                )
-            )
-        return out
+
+def _resolve_channels(config: dict[str, str]) -> list[tuple[str, str]]:
+    """Return ``[(source_id, newsnow_id), ...]`` for enabled newsnow sources."""
+    only_raw = (config.get("_newsnow.only_sources") or "").strip()
+    only_sources = {s.strip() for s in only_raw.split(",") if s.strip()}
+    channels: list[tuple[str, str]] = []
+    for sid, defn in SOURCE_DEFS.items():
+        if defn.get("kind") != "newsnow":
+            continue
+        if only_sources and sid not in only_sources and str(defn.get("newsnow_id") or "") not in only_sources:
+            continue
+        newsnow_id = defn.get("newsnow_id")
+        if not newsnow_id:
+            continue
+        enabled_key = f"source.{sid}.enabled"
+        enabled = config.get(enabled_key, "")
+        if enabled == "":
+            if defn.get("default_enabled"):
+                channels.append((sid, str(newsnow_id)))
+        elif enabled.lower() == "true":
+            channels.append((sid, str(newsnow_id)))
+    return channels
 
 
 __all__ = ["NewsNowFetcher"]

@@ -553,7 +553,7 @@ class PolicyEngine:
         # F7: Temporary allowlists granted by skill activation.
         self._skill_allowlists: dict[str, set[str]] = {}
         # P3-3: 前端安全模式 (synced to confirmation.mode)
-        self._frontend_mode: str = "smart"
+        self._frontend_mode: str = self._config.confirmation.mode
         # Smart-mode session trust escalation counter
         self._session_allow_count: int = 0
 
@@ -576,10 +576,15 @@ class PolicyEngine:
                 controlled=[],
                 protected=_default_protected_paths(),
                 forbidden=_default_forbidden_paths(),
+                default_zone=Zone.WORKSPACE,
             ),
+            confirmation=ConfirmationConfig(mode="smart", auto_confirm=False),
             command_patterns=CommandPatternConfig(
+                enabled=True,
                 blocked_commands=list(_DEFAULT_BLOCKED_COMMANDS),
             ),
+            self_protection=SelfProtectionConfig(enabled=True),
+            sandbox=SandboxConfig(enabled=False),
             tool_policies=[
                 ToolPolicyRule(
                     tool_name="run_shell",
@@ -648,7 +653,7 @@ class PolicyEngine:
                 zc.protected = z["protected"] or []
             if "forbidden" in z:
                 zc.forbidden = z["forbidden"] or []
-            zc.default_zone = Zone(z.get("default_zone", "protected"))
+            zc.default_zone = Zone(z.get("default_zone", "workspace"))
 
         # confirmation
         c = sec.get("confirmation", {})
@@ -784,6 +789,17 @@ class PolicyEngine:
         if not self._config.enabled:
             return PolicyResult(decision=PolicyDecision.ALLOW, reason="安全策略已禁用")
 
+        if self._is_trust_mode():
+            baseline_result = self._check_baseline_protection(tool_name, params)
+            if baseline_result:
+                return baseline_result
+            self._on_allow(tool_name, params)
+            return PolicyResult(
+                decision=PolicyDecision.ALLOW,
+                reason="信任模式放行",
+                metadata={"trust_mode": True},
+            )
+
         # Bypass CONFIRM if user approved via any allowlist tier
         allowlist_meta = self._check_allowlists(tool_name, params)
         if allowlist_meta is not None:
@@ -858,6 +874,87 @@ class PolicyEngine:
 
         self._on_allow(tool_name, params)
         return PolicyResult(decision=PolicyDecision.ALLOW)
+
+    def _is_trust_mode(self) -> bool:
+        """Whether only baseline hard protection should apply."""
+        return self._config.confirmation.mode == "yolo" or self._config.confirmation.auto_confirm
+
+    def _check_baseline_protection(
+        self,
+        tool_name: str,
+        params: dict[str, Any],
+    ) -> PolicyResult | None:
+        """Default trust-mode guardrail: no prompts, only hard-deny sensitive areas."""
+        file_tools = {
+            "read_file",
+            "write_file",
+            "edit_file",
+            "delete_file",
+            "list_directory",
+            "grep",
+            "glob",
+            "search_replace",
+        }
+        if tool_name in file_tools:
+            path = params.get("path", "") or params.get("file_path", "")
+            if not path:
+                return None
+            zone = self.resolve_zone(path)
+            op_type = _tool_to_optype(tool_name, params)
+            if zone == Zone.FORBIDDEN or (zone == Zone.PROTECTED and op_type != OpType.READ):
+                result = PolicyResult(
+                    decision=PolicyDecision.DENY,
+                    reason=(
+                        "操作被拒绝: 该路径属于系统或密钥保护范围，"
+                        f"信任模式下也不允许执行{_op_label(op_type)}操作 (路径: {path})"
+                    ),
+                    policy_name="BaselineProtection",
+                    metadata={"zone": zone.value, "op_type": op_type.value, "trust_mode": True},
+                )
+                self._audit(tool_name, params, result)
+                return result
+            return None
+
+        if tool_name in ("run_shell", "run_powershell"):
+            command = str(params.get("command", ""))
+            if not command:
+                return None
+            risk = self.classify_shell_risk(command)
+            if risk == RiskLevel.CRITICAL or self._command_touches_sensitive_area(command):
+                result = PolicyResult(
+                    decision=PolicyDecision.DENY,
+                    reason=f"操作被拒绝: 命令触碰系统或密钥保护范围 ({command[:120]})",
+                    policy_name="BaselineProtection",
+                    metadata={"risk_level": risk.value, "trust_mode": True},
+                )
+                self._audit(tool_name, params, result)
+                return result
+            if risk in (RiskLevel.HIGH, RiskLevel.MEDIUM):
+                result = PolicyResult(
+                    decision=PolicyDecision.CONFIRM,
+                    reason=f"信任模式下仍需确认中高风险命令: {command[:120]}",
+                    policy_name="BaselineProtection",
+                    metadata={"risk_level": risk.value, "trust_mode": True},
+                )
+                self._audit(tool_name, params, result)
+                return result
+        return None
+
+    def _command_touches_sensitive_area(self, command: str) -> bool:
+        """Detect shell commands that operate on protected/forbidden paths in trust mode."""
+        command_norm = command.replace("\\", "/").lower()
+        destructive = re.search(
+            r"\b(rm|del|rd|rmdir|remove-item|move|mv|copy|cp|set-content|add-content|new-item)\b",
+            command,
+            re.IGNORECASE,
+        )
+        if not destructive:
+            return False
+        for pattern in [*self._config.zones.forbidden, *self._config.zones.protected]:
+            probe = _normalise(pattern).rstrip("*").rstrip("/").lower()
+            if probe and probe in command_norm:
+                return True
+        return False
 
     # ----- F7: Skill temporary allowlist ------------------------------------
 
@@ -1067,12 +1164,6 @@ class PolicyEngine:
         mode = self._config.confirmation.mode
 
         if risk == RiskLevel.HIGH:
-            if mode == "yolo":
-                self._on_allow(tool_name, params)
-                return PolicyResult(
-                    decision=PolicyDecision.ALLOW,
-                    metadata={"risk_level": risk.value, "needs_sandbox": needs_sandbox},
-                )
             result = PolicyResult(
                 decision=PolicyDecision.CONFIRM,
                 reason=f"高风险命令，执行前需要您的确认: {command[:120]}",
@@ -1083,12 +1174,6 @@ class PolicyEngine:
             return result
 
         if risk == RiskLevel.MEDIUM:
-            if mode == "yolo":
-                self._on_allow(tool_name, params)
-                return PolicyResult(
-                    decision=PolicyDecision.ALLOW,
-                    metadata={"risk_level": risk.value},
-                )
             if mode == "smart":
                 if self._session_allow_count >= self._SMART_ESCALATION_THRESHOLD:
                     self._on_allow(tool_name, params)

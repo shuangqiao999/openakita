@@ -649,6 +649,17 @@ def build_system_prompt(
         except Exception:
             pass
 
+    # 9.6 Working facts 层：当前会话短期事实，优先于长期记忆。
+    if prompt_mode == PromptMode.FULL and session_context:
+        try:
+            from ..core.working_facts import format_working_facts
+
+            working_facts_section = format_working_facts(session_context.get("working_facts"))
+            if working_facts_section:
+                developer_parts.append(working_facts_section)
+        except Exception as e:
+            logger.debug("Failed to build working facts section: %s", e)
+
     # 10. Memory 层（仅 FULL 模式）
     if prompt_mode == PromptMode.FULL:
         if precomputed_memory is not None:
@@ -1020,9 +1031,7 @@ def _build_runtime_section_uncached() -> str:
     from ..config import settings
     from ..runtime_env import (
         IS_FROZEN,
-        can_pip_install,
-        get_configured_venv_path,
-        get_python_executable,
+        get_runtime_environment_report,
         verify_python_executable,
     )
 
@@ -1030,11 +1039,8 @@ def _build_runtime_section_uncached() -> str:
 
     # --- 部署模式与 Python 环境 ---
     deploy_mode = _detect_deploy_mode()
-    ext_python = get_python_executable()
-    pip_ok = can_pip_install()
-    venv_path = get_configured_venv_path()
-
-    python_info = _build_python_info(IS_FROZEN, ext_python, pip_ok, settings, venv_path)
+    runtime_report = get_runtime_environment_report()
+    python_info = _build_python_info(IS_FROZEN, runtime_report, settings)
 
     # --- 版本号 ---
     try:
@@ -1071,8 +1077,8 @@ def _build_runtime_section_uncached() -> str:
     if platform.system() == "Windows":
         shell_hint = (
             "\n- **Shell 注意**: Windows 环境，复杂文本处理（正则匹配、JSON/HTML 解析、批量文件操作）"
-            "请使用 `write_file` 写 Python 脚本 + `run_shell python xxx.py` 执行，避免 PowerShell 转义问题。"
-            "简单系统查询（进程/服务/文件列表）可直接使用 PowerShell cmdlet。"
+            "请使用 `write_file` 写 Python 脚本 + `run_powershell` 执行 `python xxx.py`。"
+            "Windows 下命令执行默认优先使用 `run_powershell`；只有明确需要 bash/Git Bash 语义时才用 `run_shell`。"
         )
 
     # --- 系统环境 ---
@@ -1280,57 +1286,71 @@ def _detect_deploy_mode() -> str:
 
 def _build_python_info(
     is_frozen: bool,
-    ext_python: str | None,
-    pip_ok: bool,
+    runtime_report: dict,
     settings,
-    venv_path: str | None = None,
 ) -> str:
     """根据部署模式构建 Python 环境信息"""
     import sys as _sys
 
+    mode = runtime_report.get("mode") or ("legacy-pyinstaller" if is_frozen else "source")
+    app_python = runtime_report.get("app_python") or _sys.executable
+    app_venv = runtime_report.get("app_venv") or ""
+    agent_python = runtime_report.get("agent_python")
+    agent_venv = runtime_report.get("agent_venv") or ""
+    pip_target = runtime_report.get("pip_install_target") or "agent-venv"
+    pip_index = runtime_report.get("pip_index_url") or "https://mirrors.aliyun.com/pypi/simple/"
+    trusted_host = runtime_report.get("pip_trusted_host") or ""
+    legacy_mode = runtime_report.get("legacy_mode")
+    can_pip_install = bool(runtime_report.get("can_pip_install"))
+
     if not is_frozen:
         in_venv = _sys.prefix != _sys.base_prefix
         env_type = "venv" if in_venv else "system"
-        lines = [
-            f"- **Python**: {_sys.version.split()[0]} ({env_type})",
-            f"- **解释器**: {_sys.executable}",
-        ]
-        if in_venv:
-            lines.append(f"- **虚拟环境**: {_sys.prefix}")
-        lines.append("- **pip**: 可用")
-        lines.append(
-            "- **注意**: 执行 Python 脚本时使用上述解释器路径，pip install 会安装到当前环境中"
-        )
-        return "\n".join(lines)
+        mode = f"{mode} ({env_type})"
 
-    # 打包模式
-    if ext_python:
-        lines = [
-            "- **Python**: 可用（外置环境已自动配置）",
-            f"- **解释器**: {ext_python}",
-        ]
-        if venv_path:
-            lines.append(f"- **虚拟环境**: {venv_path}")
-        lines.append(f"- **pip**: {'可用' if pip_ok else '不可用'}")
-        lines.append(
-            "- **注意**: 执行 Python 脚本时请使用上述解释器路径，pip install 会安装到该虚拟环境中"
-        )
-        return "\n".join(lines)
+    lines = [
+        "### OpenAkita 后端环境",
+        f"- 后端解释器: {app_python}",
+        f"- 后端虚拟环境: {app_venv or '当前 Python 环境'}",
+        "- 用途: 运行 OpenAkita 服务、MCP、内置工具",
+        "- 不要用它安装临时脚本依赖",
+        f"- 当前模式: {mode}",
+        "",
+        "### Agent 脚本环境",
+        f"- 脚本解释器: {agent_python or '不可用'}",
+        f"- pip 安装目标: {pip_target}",
+        f"- agent 虚拟环境: {agent_venv or '不可用'}",
+        f"- 默认 pip 源: {pip_index}",
+    ]
+    if trusted_host:
+        lines.append(f"- pip trusted-host: {trusted_host}")
 
-    # 打包模式 + 无外置 Python
-    fallback_venv = settings.project_root / "data" / "venv"
-    if platform.system() == "Windows":
-        install_cmd = "winget install Python.Python.3.12"
+    if can_pip_install:
+        lines.append(
+            "- 推荐: 写脚本后用 `python script.py` 执行；需要依赖时先判断当前 Agent、skill 或项目环境，不要默认污染共享 agent-venv"
+        )
     else:
-        install_cmd = "sudo apt install python3 或 brew install python3"
-
-    return (
-        f"- **Python**: ⚠️ 未检测到可用的 Python 环境\n"
-        f"  - 推荐操作：通过 `run_shell` 执行 `{install_cmd}` 安装 Python\n"
-        f"  - 安装后创建工作区虚拟环境：`python -m venv {fallback_venv}`\n"
-        f"  - 创建完成后系统将自动检测并使用该环境，无需重启\n"
-        f"  - 此环境为系统专用，与用户个人 Python 环境隔离"
+        fallback_venv = settings.project_root / "data" / "venv"
+        lines.extend(
+            [
+                "- **Agent Python unavailable**: `pip install` 当前不可用，不要假装可安装依赖",
+                f"- 可见 fallback 位置: {fallback_venv}",
+            ]
+        )
+    if legacy_mode:
+        lines.append("- **兼容模式**: 当前使用 legacy PyInstaller fallback，动态 pip install 可能不可靠")
+    lines.extend(
+        [
+            "",
+            "### 环境隔离规则",
+            "- 不同 Agent 可配置独立 agent scoped venv；长期依赖优先进入当前 Agent 环境。",
+            "- skill 预置 Python 脚本若声明依赖，运行前使用 skill scoped venv。",
+            "- 用户项目已有 `.venv`、`pyproject.toml`、`requirements.txt` 或 `uv.lock` 时，优先遵守项目自己的环境。",
+            "- 一次性探索依赖应使用 scratch/临时环境，避免写入共享 agent-venv。",
+        ]
     )
+
+    return "\n".join(lines)
 
 
 _PLATFORM_NAMES = {
@@ -1772,7 +1792,11 @@ def _build_memory_section(
         parts.append(scratchpad_text)
 
     # Layer 1.5: Pinned Rules — 从 SQLite 查询 RULE 类型记忆，独立注入，不受裁剪
-    pinned_rules = _build_pinned_rules_section(memory_manager)
+    pinned_rules = _build_pinned_rules_section(
+        memory_manager,
+        task_description=task_description,
+        memory_keywords=memory_keywords,
+    )
     if pinned_rules:
         parts.append(pinned_rules)
 
@@ -1902,11 +1926,14 @@ _PINNED_RULES_CHARS_PER_TOKEN = 3
 
 def _build_pinned_rules_section(
     memory_manager: Optional["MemoryManager"],
+    task_description: str = "",
+    memory_keywords: list[str] | None = None,
 ) -> str:
-    """从 SQLite 查询所有活跃的 RULE 类型记忆，作为独立段落注入 system prompt。
+    """Query active RULE memories and inject only rules relevant to this turn.
 
-    这些规则不受 memory_budget 裁剪，确保用户设定的行为规则始终可见。
-    设置独立的 token 上限防止异常膨胀。
+    Global rules are treated as candidates instead of unconditional mandates.
+    This keeps stale project-specific numbers or constraints from polluting
+    unrelated tasks while preserving explicit session-scoped rules.
     """
     store = getattr(memory_manager, "store", None)
     if store is None:
@@ -1919,19 +1946,25 @@ def _build_pinned_rules_section(
         from datetime import datetime
 
         now = datetime.now()
-        active_rules = [
-            r for r in rules if not r.superseded_by and (not r.expires_at or r.expires_at > now)
-        ]
+        active_rules = []
+        query_text = f"{task_description} {' '.join(memory_keywords or [])}".lower()
+        query_terms = _rule_terms(query_text)
+        for r in rules:
+            if r.superseded_by or (r.expires_at and r.expires_at <= now):
+                continue
+            include, reason = _should_inject_rule(r, query_terms)
+            if include:
+                active_rules.append((r, reason))
         if not active_rules:
             return ""
 
-        active_rules.sort(key=lambda r: r.importance_score, reverse=True)
+        active_rules.sort(key=lambda item: item[0].importance_score, reverse=True)
 
-        lines = ["## 用户设定的规则（必须遵守）\n"]
+        lines = ["## 当前相关规则\n", "以下规则按来源与相关性注入；跨会话规则仅在相关时参考。"]
         total_chars = 0
         max_chars = _PINNED_RULES_MAX_TOKENS * _PINNED_RULES_CHARS_PER_TOKEN
         seen_prefixes: set[str] = set()
-        for r in active_rules:
+        for r, reason in active_rules:
             content = (r.content or "").strip()
             if not content:
                 continue
@@ -1939,7 +1972,13 @@ def _build_pinned_rules_section(
             if prefix in seen_prefixes:
                 continue
             seen_prefixes.add(prefix)
-            line = f"- {content}"
+            source = getattr(r, "source", "") or getattr(r, "source_episode_id", "") or "memory"
+            scope = getattr(r, "scope", "global") or "global"
+            confidence = getattr(r, "confidence", 0.0)
+            line = (
+                f"- [{scope}; reason={reason}; confidence={confidence:.2f}; source={source}] "
+                f"{content}"
+            )
             if total_chars + len(line) > max_chars:
                 break
             lines.append(line)
@@ -1951,6 +1990,44 @@ def _build_pinned_rules_section(
     except Exception as e:
         logger.debug(f"Failed to build pinned rules section: {e}")
         return ""
+
+
+def _rule_terms(text: str) -> set[str]:
+    import re
+
+    return {t.lower() for t in re.findall(r"[A-Za-z0-9_\-\u4e00-\u9fff]{2,}", text or "")}
+
+
+def _should_inject_rule(rule: object, query_terms: set[str]) -> tuple[bool, str]:
+    """Return whether a rule should be injected and the visible reason."""
+    content = (getattr(rule, "content", "") or "").lower()
+    scope = (getattr(rule, "scope", "") or "global").lower()
+    tags = [str(t).lower() for t in (getattr(rule, "tags", []) or [])]
+    subject = str(getattr(rule, "subject", "") or "").lower()
+
+    if scope == "session":
+        return True, "current-session"
+
+    terms = _rule_terms(" ".join([content, subject, " ".join(tags)]))
+    if query_terms and terms.intersection(query_terms):
+        return True, "entity-match"
+
+    general_rule_markers = (
+        "回复",
+        "语言",
+        "称呼",
+        "不要",
+        "必须",
+        "始终",
+        "always",
+        "never",
+        "format",
+        "style",
+    )
+    if any(marker in content for marker in general_rule_markers):
+        return True, "general-behavior"
+
+    return False, "unrelated"
 
 
 def _get_core_memory(memory_manager: Optional["MemoryManager"], max_chars: int = 600) -> str:

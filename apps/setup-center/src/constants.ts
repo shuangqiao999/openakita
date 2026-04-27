@@ -18,9 +18,10 @@ export const STT_RECOMMENDED_MODELS: Record<string, { id: string; note: string }
   "siliconflow-intl":[{ id: "FunAudioLLM/SenseVoiceSmall", note: "推荐" }, { id: "TeleAI/TeleSpeechASR", note: "" }],
 };
 
-export const PIP_INDEX_PRESETS: { id: "official" | "tuna" | "aliyun" | "custom"; label: string; url: string }[] = [
+export const PIP_INDEX_PRESETS: { id: "official" | "tuna" | "ustc" | "aliyun" | "custom"; label: string; url: string }[] = [
   { id: "aliyun", label: "阿里云（默认）", url: "https://mirrors.aliyun.com/pypi/simple/" },
   { id: "tuna", label: "清华 TUNA", url: "https://pypi.tuna.tsinghua.edu.cn/simple" },
+  { id: "ustc", label: "中科大 USTC", url: "https://pypi.mirrors.ustc.edu.cn/simple/" },
   { id: "official", label: "官方 PyPI", url: "https://pypi.org/simple/" },
   { id: "custom", label: "自定义…", url: "" },
 ];

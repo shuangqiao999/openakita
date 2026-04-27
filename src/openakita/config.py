@@ -889,19 +889,21 @@ class RuntimeState:
     def save(self) -> None:
         """把当前 settings 中的可持久化字段写入 JSON 文件（原子写入 + 备份）。"""
         from .utils.atomic_io import safe_json_write
+        from .utils.redaction import redact_value
 
         data: dict = {}
         for key in _PERSISTABLE_KEYS:
             data[key] = getattr(settings, key)
         try:
             safe_json_write(self.state_file, data)
-            logger.info(f"[RuntimeState] Saved: {data}")
+            logger.info(f"[RuntimeState] Saved: {redact_value(data)}")
         except Exception as e:
             logger.error(f"[RuntimeState] Failed to save: {e}")
 
     def load(self) -> None:
         """从 JSON 文件恢复设置到 settings 单例，仅覆盖可持久化字段（支持 .bak 回退）。"""
         from .utils.atomic_io import read_json_safe
+        from .utils.redaction import redact_value
 
         data = read_json_safe(self.state_file)
         if data is None:
@@ -915,7 +917,9 @@ class RuntimeState:
                     new_val = data[key]
                     if old_val != new_val:
                         setattr(settings, key, new_val)
-                        applied.append(f"{key}: {old_val} -> {new_val}")
+                        applied.append(
+                            f"{key}: {redact_value(old_val)} -> {redact_value(new_val)}"
+                        )
             if applied:
                 logger.info(f"[RuntimeState] Restored: {'; '.join(applied)}")
             else:

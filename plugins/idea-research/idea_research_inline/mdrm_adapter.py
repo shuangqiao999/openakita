@@ -76,32 +76,47 @@ class MdrmAdapter:
 
     def _detect_caps(self) -> MdrmCapabilities:
         caps = MdrmCapabilities()
+        has_perm = getattr(self._api, "has_permission", None)
+
+        def granted(name: str) -> bool:
+            if callable(has_perm):
+                try:
+                    return bool(has_perm(name))
+                except Exception:
+                    return False
+            return False
+
         try:
             self._brain = self._api.get_brain()
-            caps.has_brain = self._brain is not None
+            caps.has_brain = granted("brain.access") or self._brain is not None
         except Exception:
             self._brain = None
+            caps.has_brain = granted("brain.access")
 
         try:
             self._memory = self._api.get_memory_manager()
-            caps.has_memory_read = self._memory is not None
-            caps.has_memory_write = self._memory is not None
+            caps.has_memory_read = granted("memory.read") or self._memory is not None
+            caps.has_memory_write = granted("memory.write") or self._memory is not None
         except Exception:
             self._memory = None
+            caps.has_memory_read = granted("memory.read")
+            caps.has_memory_write = granted("memory.write")
 
         try:
             self._vector = self._api.get_vector_store()
-            caps.has_vector = self._vector is not None
-            caps.vector_ready = False
+            caps.has_vector = granted("vector.access") or self._vector is not None
+            caps.vector_ready = self._vector is not None
         except Exception:
             self._vector = None
+            caps.has_vector = granted("vector.access")
+            caps.vector_ready = False
         return caps
 
     async def write_hook(self, hook: HookRecord) -> dict[str, str]:
         """Phase 3 will perform the real dual-track write."""
 
         return {
-            "vector": "skipped" if not self._caps.has_vector else "ok",
+            "vector": "skipped" if self._vector is None else "ok",
             "memory": "skipped" if not self._caps.has_memory_write else "ok",
         }
 

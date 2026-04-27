@@ -2,6 +2,7 @@
   "id": "footage-gate",
   "name": "Footage Gate",
   "version": "1.0.0",
+  "icon": "icon.svg",
   "description": "Final-cut quality gate — source review, silence cut, auto color grade, and cut-boundary QC with optional auto-remux.",
   "display_name_zh": "成片质量门",
   "display_name_en": "Footage Gate",
@@ -40,6 +41,7 @@
   },
   "ui": {
     "entry": "ui/dist/index.html",
+    "icon": "footage-gate-brand.svg",
     "title": "成片质量门",
     "title_i18n": {
       "zh": "成片质量门",
