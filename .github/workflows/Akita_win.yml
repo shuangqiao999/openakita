@@ -19,7 +19,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  # ── 任务 0: 获取版本信息（合并原版逻辑）──
+  # ── 任务 0: 获取版本信息 ──
   get_version:
     runs-on: ubuntu-latest
     outputs:
@@ -79,7 +79,7 @@ jobs:
           echo "🏷️ 标签: ${TAG}"
           echo "🔖 提交: ${REF}"
 
-  # ── 任务 1: 确保草稿发布存在（合并原版改进）──
+  # ── 任务 1: 确保草稿发布存在 ──
   create_release:
     needs: get_version
     runs-on: ubuntu-latest
@@ -116,7 +116,7 @@ jobs:
           draft: true
           generate_release_notes: true
 
-  # ── 任务 2: Windows 安装包构建（AVX2/BMI2 双重极致优化 + 原版新功能）──
+  # ── 任务 2: Windows 安装包构建（AVX2/BMI2 双重极致优化）──
   windows_release:
     needs: [create_release, get_version]
     permissions:
@@ -140,7 +140,7 @@ jobs:
           ref: ${{ needs.get_version.outputs.ref }}
           fetch-depth: 0
 
-      # ========== 清理所有缓存（保留原版结构）==========
+      # ========== 清理所有缓存 ==========
       - name: 🧹 清理所有构建缓存
         shell: bash
         run: |
@@ -175,7 +175,6 @@ jobs:
           echo "✅ 所有缓存清理完成"
           echo "=========================================="
 
-      # 原版新功能：创建 docs-site 目录避免构建错误
       - name: 创建 docs-site 目录（修复构建错误）
         shell: bash
         run: |
@@ -184,10 +183,10 @@ jobs:
           echo "Placeholder for docs-site" > docs-site/.vitepress/dist/index.html
 
       - name: 设置 Python（启用性能优化）
-        uses: actions/setup-python@v6  # 升级到 v6（原版）
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
-          cache: pip  # 原版新增：pip 缓存
+          cache: pip
 
       - name: 安装 UPX 二进制压缩工具
         shell: bash
@@ -200,16 +199,15 @@ jobs:
           upx --version
 
       - name: 设置 Node.js
-        uses: actions/setup-node@v6  # 升级到 v6（原版）
+        uses: actions/setup-node@v6
         with:
           node-version: "20"
-          cache: npm  # 原版新增：npm 缓存
+          cache: npm
           cache-dependency-path: apps/setup-center/package-lock.json
 
       - name: 安装 Rust 工具链
         uses: dtolnay/rust-toolchain@stable
 
-      # 原版新功能：保留 Rust 缓存以加速构建
       - name: Rust 缓存
         uses: swatinem/rust-cache@v2
         with:
@@ -221,10 +219,9 @@ jobs:
         working-directory: apps/setup-center
         run: |
           echo "📦 安装前端依赖..."
-          npm ci  # 原版使用 npm ci 替代 npm install（更快更可靠）
+          npm ci
           npm run build:web
 
-      # 原版新功能：构建用户文档（可选，允许失败）
       - name: 构建用户文档（VitePress）
         working-directory: docs-site
         run: |
@@ -232,7 +229,7 @@ jobs:
           npx vitepress build
         continue-on-error: true
 
-      - name: 安装 Python 项目（AVX2 + BMI2 优化）- 修复版
+      - name: 安装 Python 项目（AVX2 + BMI2 优化）
         shell: bash
         env:
           CFLAGS: "-O3 -march=core-avx2 -mtune=core-avx2 -mavx2 -mbmi2 -mfma -mfpmath=sse -pipe -funroll-loops -ftree-vectorize -ffast-math"
@@ -253,7 +250,7 @@ jobs:
           
           pip install hatchling --no-cache-dir
           
-          # ========== 关键修复：先本地安装 SDK ==========
+          # 关键修复：先本地安装 SDK
           echo "📦 本地安装 openakita-plugin-sdk..."
           pip install ./openakita-plugin-sdk --no-cache-dir
           
@@ -262,6 +259,7 @@ jobs:
           pip install -e ".[all]" --no-cache-dir
           
           pip install "pyinstaller>=6.18.0" --no-cache-dir
+          pip install build --no-cache-dir
           
           echo "✅ Python 依赖安装完成"
 
@@ -273,7 +271,6 @@ jobs:
           rm -rf build/pyinstaller_work
           rm -rf build/modules
 
-      # 原版新功能：准备 bootstrap wheel 资源
       - name: 准备 bootstrap wheel 资源
         shell: bash
         run: |
@@ -344,7 +341,6 @@ jobs:
           echo "资源已复制:"
           du -sh "$RESOURCE_DIR"/*
 
-      # 原版新功能：验证 bootstrap wheel
       - name: 验证 bootstrap wheel 资源
         run: |
           if [ ! -f "apps/setup-center/src-tauri/resources/bootstrap/manifest.json" ]; then
@@ -370,9 +366,9 @@ jobs:
         working-directory: apps/setup-center
         run: |
           echo "📦 安装前端依赖..."
-          npm ci  # 原版使用 npm ci
+          npm ci
 
-      - name: 预检 Rust 依赖（原版改进：支持重试）
+      - name: 预检 Rust 依赖
         working-directory: apps/setup-center/src-tauri
         shell: bash
         env:
@@ -418,7 +414,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           NO_STRIP: true
-          APPIMAGE_EXTRACT_AND_RUN: 1  # 原版新增（虽然是 Linux 相关，但保留无害）
+          APPIMAGE_EXTRACT_AND_RUN: 1
 
           RUSTFLAGS: "-C target-cpu=core-avx2 -C opt-level=3 -C debuginfo=0 -C embed-bitcode=yes -C target-feature=+avx2,+bmi2,+fma,+bmi1,+popcnt,+lzcnt,+aes,+sse3,+ssse3,+sse4.1,+sse4.2,+pclmulqdq,+movbe"
 
@@ -522,7 +518,7 @@ jobs:
             ls -lh "${BUNDLE_DIR}"/nsis/*.exe
           fi
 
-      - name: 收集 Windows 安装包（原版改进：保留 .sig 签名文件）
+      - name: 收集 Windows 安装包
         shell: bash
         run: |
           set -euo pipefail
@@ -541,14 +537,14 @@ jobs:
                   continue
                 fi
                 base_name="$(basename "$f" .exe)"
-                # 原版：重命名包含 AVX2/BMI2 标识
+                # 重命名包含 AVX2/BMI2 标识
                 cp -f "$f" "${OUT_DIR}/${base_name}_windows-x64-avx2-bmi2.exe"
                 found=$((found+1))
                 ;;
             esac
           done < <(find "${BUNDLE_DIR}" -type f -name "*.exe" -print0)
 
-          # 原版改进：收集签名文件
+          # 收集签名文件
           sig_count=0
           while IFS= read -r -d '' sigf; do
             cp -f "$sigf" "${OUT_DIR}/"
