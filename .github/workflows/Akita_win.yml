@@ -342,6 +342,7 @@ jobs:
           du -sh "$RESOURCE_DIR"/*
 
       - name: 验证 bootstrap wheel 资源
+        shell: bash
         run: |
           if [ ! -f "apps/setup-center/src-tauri/resources/bootstrap/manifest.json" ]; then
             echo "警告: bootstrap manifest.json 不存在"
