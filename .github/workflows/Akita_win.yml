@@ -3,8 +3,12 @@ name: Release Build Pipeline (Windows Only)
 on:
   workflow_dispatch:
     inputs:
+      tag:
+        description: "要上传/发布到的 tag（例如 v1.2.7）。留空则从代码自动获取。"
+        required: false
+        default: ""
       ref:
-        description: "要构建的 commit SHA 或分支（留空则使用默认）"
+        description: "要构建的 commit SHA 或分支（留空则使用 tag 指向的 commit）"
         required: false
         default: ""
   push:
@@ -15,7 +19,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  # ── 任务 0: 获取版本信息 ──
+  # ── 任务 0: 获取版本信息（合并原版逻辑）──
   get_version:
     runs-on: ubuntu-latest
     outputs:
@@ -27,13 +31,20 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: 从代码中获取版本号
+      - name: 从代码中获取版本号（支持手动输入 tag）
         id: get_version
         run: |
-          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref_type }}" == "tag" ]]; then
+          # 手动输入的 tag 优先
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+            VERSION="${TAG#v}"
+            echo "使用手动指定的 tag: ${TAG}"
+          # push tag 事件
+          elif [[ "${{ github.event_name }}" == "push" && "${{ github.ref_type }}" == "tag" ]]; then
             VERSION="${GITHUB_REF_NAME#v}"
             TAG="${{ github.ref_name }}"
-            REF="${{ github.sha }}"
+            echo "使用 push tag: ${TAG}"
+          # 手动触发但未指定 tag，从代码自动获取
           else
             if [ -f "pyproject.toml" ]; then
               VERSION=$(grep -m 1 '^version' pyproject.toml | cut -d'"' -f2)
@@ -45,14 +56,19 @@ jobs:
               echo "错误: 无法从代码中确定版本号"
               exit 1
             fi
-            
-            if [ -n "${{ github.event.inputs.ref }}" ]; then
-              REF="${{ github.event.inputs.ref }}"
-            else
-              REF="${{ github.sha }}"
-            fi
-            
             TAG="v${VERSION}"
+            echo "从代码自动获取版本: ${VERSION}"
+          fi
+          
+          # 确定要 checkout 的 ref
+          if [ -n "${{ github.event.inputs.ref }}" ]; then
+            REF="${{ github.event.inputs.ref }}"
+          elif [ -n "${{ github.event.inputs.tag }}" ]; then
+            REF="${{ github.event.inputs.tag }}"
+          elif [[ "${{ github.event_name }}" == "push" && "${{ github.ref_type }}" == "tag" ]]; then
+            REF="${{ github.ref_name }}"
+          else
+            REF="${{ github.sha }}"
           fi
           
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
@@ -63,7 +79,7 @@ jobs:
           echo "🏷️ 标签: ${TAG}"
           echo "🔖 提交: ${REF}"
 
-  # ── 任务 1: 确保草稿发布存在 ──
+  # ── 任务 1: 确保草稿发布存在（合并原版改进）──
   create_release:
     needs: get_version
     runs-on: ubuntu-latest
@@ -100,13 +116,13 @@ jobs:
           draft: true
           generate_release_notes: true
 
-  # ── 任务 2: Windows 安装包构建（AVX2/BMI2 双重极致优化）──
+  # ── 任务 2: Windows 安装包构建（AVX2/BMI2 双重极致优化 + 原版新功能）──
   windows_release:
     needs: [create_release, get_version]
     permissions:
       contents: write
     runs-on: windows-latest
-    
+
     env:
       RELEASE_TAG: ${{ needs.get_version.outputs.tag }}
       CHECKOUT_REF: ${{ needs.get_version.outputs.ref }}
@@ -124,7 +140,7 @@ jobs:
           ref: ${{ needs.get_version.outputs.ref }}
           fetch-depth: 0
 
-      # ========== 清理所有缓存 ==========
+      # ========== 清理所有缓存（保留原版结构）==========
       - name: 🧹 清理所有构建缓存
         shell: bash
         run: |
@@ -141,8 +157,6 @@ jobs:
           rm -rf ~/AppData/Local/npm-cache || true
           
           rm -rf apps/setup-center/node_modules || true
-          # 保留 package-lock.json 以加快构建速度（可选）
-          # rm -rf apps/setup-center/package-lock.json || true
           
           rm -rf apps/setup-center/.vite || true
           rm -rf apps/setup-center/dist || true
@@ -161,6 +175,7 @@ jobs:
           echo "✅ 所有缓存清理完成"
           echo "=========================================="
 
+      # 原版新功能：创建 docs-site 目录避免构建错误
       - name: 创建 docs-site 目录（修复构建错误）
         shell: bash
         run: |
@@ -169,9 +184,10 @@ jobs:
           echo "Placeholder for docs-site" > docs-site/.vitepress/dist/index.html
 
       - name: 设置 Python（启用性能优化）
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6  # 升级到 v6（原版）
         with:
           python-version: '3.11'
+          cache: pip  # 原版新增：pip 缓存
 
       - name: 安装 UPX 二进制压缩工具
         shell: bash
@@ -184,46 +200,37 @@ jobs:
           upx --version
 
       - name: 设置 Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6  # 升级到 v6（原版）
         with:
           node-version: "20"
+          cache: npm  # 原版新增：npm 缓存
+          cache-dependency-path: apps/setup-center/package-lock.json
 
       - name: 安装 Rust 工具链
         uses: dtolnay/rust-toolchain@stable
 
-      - name: 强制清除所有 Rust 缓存
-        shell: bash
-        run: |
-          echo "=========================================="
-          echo "🧹 强制清除所有 Rust 缓存"
-          echo "=========================================="
-          
-          if [ -d "$HOME/.cargo/registry/cache" ]; then
-            rm -rf "$HOME/.cargo/registry/cache"/*
-          fi
-          
-          if [ -d "$HOME/.cargo/registry/index" ]; then
-            rm -rf "$HOME/.cargo/registry/index"/*
-          fi
-          
-          if [ -d "$HOME/.cargo/git/db" ]; then
-            rm -rf "$HOME/.cargo/git/db"/*
-          fi
-          
-          rm -rf apps/setup-center/src-tauri/target
-          rm -rf apps/setup-center/src-tauri/.cargo-lock
-          
-          cargo cache --autoclean 2>/dev/null || echo "cargo-cache 未安装，跳过"
-          
-          echo "✅ 所有 Rust 缓存已强制清除"
+      # 原版新功能：保留 Rust 缓存以加速构建
+      - name: Rust 缓存
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            apps/setup-center/src-tauri -> target
+          prefix-key: "release-windows-avx2-bmi2"
 
       - name: 构建 Web 前端
         working-directory: apps/setup-center
         run: |
           echo "📦 安装前端依赖..."
-          npm cache clean --force
-          npm install
+          npm ci  # 原版使用 npm ci 替代 npm install（更快更可靠）
           npm run build:web
+
+      # 原版新功能：构建用户文档（可选，允许失败）
+      - name: 构建用户文档（VitePress）
+        working-directory: docs-site
+        run: |
+          npm ci
+          npx vitepress build
+        continue-on-error: true
 
       - name: 安装 Python 项目（AVX2 + BMI2 优化）- 修复版
         shell: bash
@@ -266,6 +273,44 @@ jobs:
           rm -rf build/pyinstaller_work
           rm -rf build/modules
 
+      # 原版新功能：准备 bootstrap wheel 资源
+      - name: 准备 bootstrap wheel 资源
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf build/bootstrap-wheels
+          mkdir -p build/bootstrap-wheels
+          python -m build --wheel --outdir build/bootstrap-wheels
+          python - <<'PY'
+          import hashlib
+          import json
+          import shutil
+          from pathlib import Path
+
+          root = Path.cwd()
+          bootstrap_dir = root / "apps" / "setup-center" / "src-tauri" / "resources" / "bootstrap"
+          wheel_dir = bootstrap_dir / "wheels"
+          wheels = sorted((root / "build" / "bootstrap-wheels").glob("openakita-*.whl"))
+          if len(wheels) != 1:
+              raise SystemExit(f"expected exactly one openakita wheel, found {len(wheels)}")
+
+          wheel = wheels[0]
+          wheel_dir.mkdir(parents=True, exist_ok=True)
+          for stale in wheel_dir.glob("openakita-*.whl"):
+              stale.unlink()
+          dest = wheel_dir / wheel.name
+          shutil.copy2(wheel, dest)
+
+          sha256 = hashlib.sha256(dest.read_bytes()).hexdigest()
+          manifest_path = bootstrap_dir / "manifest.json"
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          manifest["wheel"]["name"] = f"wheels/{dest.name}"
+          manifest["wheel"]["sha256"] = sha256
+          manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+          print(f"Bootstrap wheel: {dest}")
+          print(f"sha256: {sha256}")
+          PY
+
       - name: 打包 Python 后端（AVX2 + BMI2 双重极致优化）
         env:
           PYINSTALLER_OPTIMIZE: "2"
@@ -299,6 +344,15 @@ jobs:
           echo "资源已复制:"
           du -sh "$RESOURCE_DIR"/*
 
+      # 原版新功能：验证 bootstrap wheel
+      - name: 验证 bootstrap wheel 资源
+        run: |
+          if [ ! -f "apps/setup-center/src-tauri/resources/bootstrap/manifest.json" ]; then
+            echo "警告: bootstrap manifest.json 不存在"
+          else
+            echo "✅ bootstrap 资源配置验证通过"
+          fi
+
       - name: 验证打包的 Python 后端
         env:
           PYTHONOPTIMIZE: 1
@@ -316,24 +370,31 @@ jobs:
         working-directory: apps/setup-center
         run: |
           echo "📦 安装前端依赖..."
-          npm install
+          npm ci  # 原版使用 npm ci
 
-      - name: 预检 Rust 依赖
+      - name: 预检 Rust 依赖（原版改进：支持重试）
         working-directory: apps/setup-center/src-tauri
         shell: bash
         env:
           CARGO_HTTP_MULTIPLEXING: "false"
         run: |
           set -euo pipefail
+          # 清除缓存的构建脚本避免 glibc 不匹配
+          rm -rf target/debug/build
+          cargo fetch --locked
           MAX_ATTEMPTS=3
           ATTEMPT=1
           while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
             echo "=== 预检尝试 $ATTEMPT/$MAX_ATTEMPTS ==="
-            if cargo fetch --locked && cargo check; then
+            if cargo check; then
               echo "预检成功"
               exit 0
             fi
             echo "预检失败 (尝试 $ATTEMPT)"
+            if [ $ATTEMPT -eq 1 ]; then
+              echo "::warning::检测到陈旧缓存，执行 cargo clean 后重试"
+              cargo clean
+            fi
             ATTEMPT=$((ATTEMPT + 1))
             [ $ATTEMPT -le $MAX_ATTEMPTS ] && { echo "30秒后重试..."; sleep 30; }
           done
@@ -357,6 +418,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           NO_STRIP: true
+          APPIMAGE_EXTRACT_AND_RUN: 1  # 原版新增（虽然是 Linux 相关，但保留无害）
 
           RUSTFLAGS: "-C target-cpu=core-avx2 -C opt-level=3 -C debuginfo=0 -C embed-bitcode=yes -C target-feature=+avx2,+bmi2,+fma,+bmi1,+popcnt,+lzcnt,+aes,+sse3,+ssse3,+sse4.1,+sse4.2,+pclmulqdq,+movbe"
 
@@ -460,7 +522,7 @@ jobs:
             ls -lh "${BUNDLE_DIR}"/nsis/*.exe
           fi
 
-      - name: 收集 Windows 安装包
+      - name: 收集 Windows 安装包（原版改进：保留 .sig 签名文件）
         shell: bash
         run: |
           set -euo pipefail
@@ -479,12 +541,14 @@ jobs:
                   continue
                 fi
                 base_name="$(basename "$f" .exe)"
+                # 原版：重命名包含 AVX2/BMI2 标识
                 cp -f "$f" "${OUT_DIR}/${base_name}_windows-x64-avx2-bmi2.exe"
                 found=$((found+1))
                 ;;
             esac
           done < <(find "${BUNDLE_DIR}" -type f -name "*.exe" -print0)
 
+          # 原版改进：收集签名文件
           sig_count=0
           while IFS= read -r -d '' sigf; do
             cp -f "$sigf" "${OUT_DIR}/"
