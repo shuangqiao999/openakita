@@ -15,7 +15,24 @@
       const { useEffect, useMemo, useState } = React;
 
       const PLUGIN_ID_DEFAULT = "excel-maker";
-      const tabs = ["Create", "Projects", "Datasets", "Templates", "Settings"];
+      const iconPaths = {
+        plus: ["M5 12h14", "M12 5v14"],
+        projects: ["M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"],
+        database: ["M4 6c0 1.7 3.6 3 8 3s8-1.3 8-3s-3.6-3-8-3s-8 1.3-8 3Z", "M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6", "M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"],
+        template: ["M4 5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z", "M4 9h16", "M9 21V9"],
+        settings: ["M12 15.5a3.5 3.5 0 1 0 0-7a3.5 3.5 0 0 0 0 7Z", "M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6V20a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-.6a1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1H4a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 .6-1a1.7 1.7 0 0 0-.34-1.88l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6V4a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 .6a1.7 1.7 0 0 0 1.88-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c.24.37.44.69.6 1H20a2 2 0 1 1 0 4h-.09c-.16.31-.36.63-.51 1Z"],
+        monitor: ["M3 4h18v12H3Z", "M8 20h8", "M12 16v4"],
+        folder: ["M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"],
+        palette: ["M12 22a10 10 0 1 1 10-10c0 3-2 4-4 4h-1.5a1.5 1.5 0 0 0 0 3H17a5 5 0 0 1-5 3Z", "M7.5 10.5h.01", "M10.5 7.5h.01", "M14.5 7.5h.01", "M16.5 10.5h.01"],
+      };
+      const symbolIconMap = { "✦": "plus", "▦": "projects", "▤": "database", "◇": "template", "⚙": "settings", "◎": "monitor", "⌁": "settings", "▧": "template", "!": "monitor", "①": "plus", "②": "database", "③": "template", "✓": "monitor", "?": "monitor", "▥": "database" };
+      const tabs = [
+        { id: "Create", label: "创建", icon: "plus" },
+        { id: "Projects", label: "项目", icon: "projects" },
+        { id: "Datasets", label: "数据集", icon: "database" },
+        { id: "Templates", label: "模板库", icon: "template" },
+        { id: "Settings", label: "设置", icon: "settings" },
+      ];
 
       let _ctx = null;
       let _bridgeConnected = false;
@@ -117,6 +134,34 @@
         window.open(url, "_blank");
       }
 
+      function Icon({ name, className = "ui-icon" }) {
+        const paths = iconPaths[name] || iconPaths.settings;
+        return (
+          <svg viewBox="0 0 24 24" aria-hidden="true" className={className}>
+            <g fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8">
+              {paths.map((path) => <path key={path} d={path} />)}
+            </g>
+          </svg>
+        );
+      }
+
+      function Ico({ children }) {
+        const iconName = typeof children === "string" ? symbolIconMap[children] : null;
+        return <span className="ico">{iconName ? <Icon name={iconName} /> : children}</span>;
+      }
+
+      function ExcelLogoIcon() {
+        return (
+          <svg viewBox="0 0 24 24" aria-hidden="true" className="excel-logo-icon">
+            <g fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5">
+              <path d="M15.12 12h8.13m-8.13-5h8.13M4 9l5 6m0-6l-5 6M15.13 2.25V17h8.12" />
+              <path d="M7 18v3a1 1 0 0 0 1 1h14.25a1 1 0 0 0 1-1V3a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v3" />
+              <path d="M1.75 6h10s1 0 1 1v10s0 1-1 1h-10s-1 0-1-1V7s0-1 1-1" />
+            </g>
+          </svg>
+        );
+      }
+
       function StatusBadge({ value }) {
         return <span className="status">{value || "unknown"}</span>;
       }
@@ -145,6 +190,75 @@
           <div className="upload">
             <p>上传 .xlsx / .csv / .tsv，源文件不会被覆盖。</p>
             <input type="file" accept=".xlsx,.csv,.tsv" disabled={busy} onChange={(e) => upload(e.target.files[0])} />
+          </div>
+        );
+      }
+
+      function PreviewEmpty({ title, desc, icon = "▤" }) {
+        const iconName = symbolIconMap[icon] || "database";
+        return (
+          <div className="preview-empty">
+            <div className="preview-empty-icon"><Icon name={iconName} /></div>
+            <strong>{title}</strong>
+            <div>{desc}</div>
+          </div>
+        );
+      }
+
+      function WorkbookPreview({ project, workbook, profile, questions, plan, artifact }) {
+        if (!project && !workbook && !profile && !plan && !artifact) {
+          return <PreviewEmpty title="暂无报表任务" desc="在左侧填写目标、上传表格后开始生成 Excel 报表" icon="▥" />;
+        }
+        const sheets = (profile && profile.sheets) || [];
+        const firstSheet = sheets[0] || null;
+        return (
+          <div>
+            <div className="preview-title"><Ico>▥</Ico> 报表预览</div>
+            <div className="metric-grid">
+              <div className="metric">
+                <div className="metric-value">{sheets.length || 0}</div>
+                <div className="metric-label">已识别 Sheet</div>
+              </div>
+              <div className="metric">
+                <div className="metric-value">{firstSheet ? firstSheet.column_count || 0 : 0}</div>
+                <div className="metric-label">首个 Sheet 列数</div>
+              </div>
+              <div className="metric">
+                <div className="metric-value">{artifact ? "1" : "0"}</div>
+                <div className="metric-label">导出文件</div>
+              </div>
+            </div>
+            <div className="preview-section">
+              <div className="card-title"><Ico>◎</Ico> 当前状态</div>
+              <div className="steps">
+                <div className="step"><span className="step-num">1</span><div><b>项目</b><br /><span className="muted">{project ? project.title : "未创建"}</span></div></div>
+                <div className="step"><span className="step-num">2</span><div><b>输入工作簿</b><br /><span className="muted">{workbook ? workbook.filename : "未上传"}</span></div></div>
+                <div className="step"><span className="step-num">3</span><div><b>输出</b><br />{artifact ? <button className="btn primary" onClick={() => downloadArtifact(artifact)}>下载 {artifact.filename || "report.xlsx"}</button> : <span className="muted">等待生成 .xlsx</span>}</div></div>
+              </div>
+            </div>
+            {questions.length > 0 && (
+              <div className="preview-section">
+                <div className="card-title"><Ico>?</Ico> AI 追问</div>
+                <ul>{questions.map((q) => <li key={q}>{q}</li>)}</ul>
+              </div>
+            )}
+            {firstSheet && (
+              <div className="preview-section">
+                <div className="card-title"><Ico>▤</Ico> 数据结构</div>
+                <div className="pill-list">
+                  <span className="pill">{firstSheet.name}</span>
+                  <span className="pill">{firstSheet.row_count || 0} 行</span>
+                  <span className="pill">{firstSheet.column_count || 0} 列</span>
+                  <span className="pill">{firstSheet.formula_count || 0} 个公式</span>
+                </div>
+              </div>
+            )}
+            {plan && (
+              <div className="preview-section">
+                <div className="card-title"><Ico>JSON</Ico> WorkbookPlan</div>
+                <pre className="json-preview">{JSON.stringify(plan, null, 2)}</pre>
+              </div>
+            )}
           </div>
         );
       }
@@ -212,54 +326,98 @@
         }
 
         return (
-          <div>
-            <ErrorPanel error={error} onClose={() => setError("")} />
-            <div className="grid">
-              <div className="card">
-                <h2>1. 新建报表项目</h2>
-                <div className="field"><label>标题</label><input value={title} onChange={(e) => setTitle(e.target.value)} /></div>
-                <div className="field"><label>目标</label><textarea rows="3" value={goal} onChange={(e) => setGoal(e.target.value)} /></div>
-                <button className="btn primary" onClick={() => createProject().catch((e) => setError(e.message))}>创建项目</button>
-                {project && <p>当前项目：<b>{project.title}</b> <StatusBadge value={project.status} /></p>}
+          <div className="workspace">
+            <div className="left-pane">
+              <ErrorPanel error={error} onClose={() => setError("")} />
+              <div className="banner">
+                <Ico>!</Ico>
+                <div>
+                  <b>Excel-first 工作流</b>
+                  <div>左侧整理输入与口径，右侧实时预览报表结构和导出结果。</div>
+                </div>
               </div>
               <div className="card">
-                <h2>2. 上传并分析</h2>
+                <div className="card-title"><Ico>①</Ico> 报表目标</div>
+                <div className="field"><label>报表标题</label><input value={title} onChange={(e) => setTitle(e.target.value)} /></div>
+                <div className="field"><label>生成目标 / 业务口径</label><textarea rows="4" value={goal} onChange={(e) => setGoal(e.target.value)} /></div>
+                <div className="row">
+                  <button className="btn primary" onClick={() => createProject().catch((e) => setError(e.message))}>创建项目</button>
+                  {project && <StatusBadge value={project.status} />}
+                </div>
+              </div>
+              <div className="card">
+                <div className="card-title"><Ico>②</Ico> 上传表格并剖析</div>
                 <FileUploadZone projectId={project && project.id} onUploaded={(wb) => importAndProfile(wb).catch((e) => setError(e.message))} />
-                {workbook && <p>工作簿：{workbook.filename} <StatusBadge value={workbook.status} /></p>}
+                {workbook && <p className="muted">当前工作簿：<b>{workbook.filename}</b> <StatusBadge value={workbook.status} /></p>}
+              </div>
+              <div className="card soft">
+                <div className="card-title"><Ico>③</Ico> 方案与导出</div>
+                <div className="steps">
+                  <div className="step"><span className="step-num">A</span><div>先让 AI 根据 profile 追问缺失口径。</div></div>
+                  <div className="step"><span className="step-num">B</span><div>生成受控 WorkbookPlan，确认 Sheet、公式和审计项。</div></div>
+                  <div className="step"><span className="step-num">C</span><div>后端确定性生成 `.xlsx`，并写入审计结果。</div></div>
+                </div>
+                <div className="row" style={{ marginTop: 12 }}>
+                  <button className="btn" disabled={!profile} onClick={() => clarify().catch((e) => setError(e.message))}>生成追问</button>
+                  <button className="btn" disabled={!profile} onClick={() => makePlan().catch((e) => setError(e.message))}>生成方案</button>
+                  <button className="btn primary" disabled={!project || !plan} onClick={() => build().catch((e) => setError(e.message))}>生成 XLSX</button>
+                </div>
               </div>
             </div>
-            <div className="card">
-              <h2>3. 需求澄清与方案</h2>
-              <div className="row">
-                <button className="btn" disabled={!profile} onClick={() => clarify().catch((e) => setError(e.message))}>生成追问</button>
-                <button className="btn" disabled={!profile} onClick={() => makePlan().catch((e) => setError(e.message))}>生成 WorkbookPlan</button>
-                <button className="btn primary" disabled={!project || !plan} onClick={() => build().catch((e) => setError(e.message))}>生成 XLSX 报表</button>
-              </div>
-              {questions.length > 0 && <ul>{questions.map((q) => <li key={q}>{q}</li>)}</ul>}
-              {plan && <pre>{JSON.stringify(plan, null, 2)}</pre>}
-              {artifact && <p>已生成：<button className="btn" onClick={() => downloadArtifact(artifact)}>{artifact.filename || artifact.id}</button></p>}
+            <div className="right-pane">
+              <WorkbookPreview project={project} workbook={workbook} profile={profile} questions={questions} plan={plan} artifact={artifact} />
             </div>
           </div>
         );
       }
 
       function ProjectsTab({ projects, refresh }) {
+        const [activeProject, setActiveProject] = useState(null);
         return (
-          <div className="card">
-            <h2>Projects</h2>
-            <table>
-              <thead><tr><th>标题</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead>
-              <tbody>
-                {projects.map((p) => (
-                  <tr key={p.id}>
-                    <td>{p.title}<br /><small>{p.goal}</small></td>
-                    <td><StatusBadge value={p.status} /></td>
-                    <td>{new Date(p.created_at * 1000).toLocaleString()}</td>
-                    <td><button className="btn" onClick={() => refresh()}>刷新</button></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="workspace">
+            <div className="left-pane">
+              <div className="card">
+                <div className="card-title"><Ico>▦</Ico> 报表项目</div>
+                <p className="card-desc">查看已创建的 Excel 报表项目，右侧显示当前项目详情与下载入口。</p>
+                <button className="btn" onClick={() => refresh()}>刷新列表</button>
+              </div>
+              <div className="card">
+                <table>
+                  <thead><tr><th>标题</th><th>状态</th><th>创建时间</th></tr></thead>
+                  <tbody>
+                    {projects.map((p) => (
+                      <tr key={p.id} onClick={() => setActiveProject(p)} style={{ cursor: "pointer" }}>
+                        <td>{p.title}<br /><small className="muted">{p.goal}</small></td>
+                        <td><StatusBadge value={p.status} /></td>
+                        <td>{new Date(p.created_at * 1000).toLocaleString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div className="right-pane">
+              {activeProject ? (
+                <div>
+                  <div className="preview-title"><Ico>▦</Ico> 项目详情</div>
+                  <div className="preview-section">
+                    <div className="card-title">{activeProject.title}</div>
+                    <p className="muted">{activeProject.goal || "未填写目标"}</p>
+                    <div className="pill-list">
+                      <span className="pill">{activeProject.id}</span>
+                      <span className="pill">{activeProject.status}</span>
+                      <span className="pill">{new Date(activeProject.updated_at * 1000).toLocaleString()}</span>
+                    </div>
+                  </div>
+                  <div className="preview-section">
+                    <div className="card-title"><Ico>→</Ico> 下一步</div>
+                    <p className="muted">如需查看产物和审计详情，可在 Create 流程生成后通过下载按钮验收工作簿。</p>
+                  </div>
+                </div>
+              ) : (
+                <PreviewEmpty title="未选择项目" desc="点击左侧项目行查看详情" icon="▦" />
+              )}
+            </div>
           </div>
         );
       }
@@ -269,14 +427,29 @@
         const [preview, setPreview] = useState(null);
         const [error, setError] = useState("");
         return (
-          <div className="card">
-            <h2>Datasets</h2>
-            <ErrorPanel error={error} onClose={() => setError("")} />
-            <div className="row">
-              <input placeholder="workbook_id" value={id} onChange={(e) => setId(e.target.value)} />
-              <button className="btn" onClick={() => pluginFetch(`/workbooks/${id}/preview`).then((d) => setPreview(d.preview)).catch((e) => setError(e.message))}>查看预览</button>
+          <div className="workspace">
+            <div className="left-pane">
+              <ErrorPanel error={error} onClose={() => setError("")} />
+              <div className="card">
+                <div className="card-title"><Ico>▤</Ico> 数据集预览</div>
+                <p className="card-desc">输入工作簿 ID，查看后端采样后的 Sheet 预览。这里不会展示服务端绝对路径。</p>
+                <div className="field">
+                  <label>Workbook ID</label>
+                  <input value={id} onChange={(e) => setId(e.target.value)} placeholder="wb_xxxxxxxxxxxx" />
+                </div>
+                <button className="btn primary" onClick={() => pluginFetch(`/workbooks/${id}/preview`).then((d) => setPreview(d.preview)).catch((e) => setError(e.message))}>查看预览</button>
+              </div>
             </div>
-            {preview && <pre>{JSON.stringify(preview, null, 2)}</pre>}
+            <div className="right-pane">
+              {preview ? (
+                <div>
+                  <div className="preview-title"><Ico>▤</Ico> Sheet 采样</div>
+                  <pre className="json-preview">{JSON.stringify(preview, null, 2)}</pre>
+                </div>
+              ) : (
+                <PreviewEmpty title="暂无数据预览" desc="在左侧输入 workbook_id 后查看采样内容" icon="▤" />
+              )}
+            </div>
           </div>
         );
       }
@@ -291,46 +464,376 @@
         }
         useEffect(() => { load().catch((e) => setError(e.message)); }, []);
         return (
-          <div className="card">
-            <h2>Templates</h2>
-            <ErrorPanel error={error} onClose={() => setError("")} />
-            <div className="row">
-              <input placeholder="服务端模板路径 .xlsx" value={path} onChange={(e) => setPath(e.target.value)} />
-              <button className="btn" onClick={() => pluginFetch("/templates", { method: "POST", body: JSON.stringify({ path }) }).then(load).catch((e) => setError(e.message))}>登记模板</button>
+          <div className="workspace">
+            <div className="left-pane">
+              <ErrorPanel error={error} onClose={() => setError("")} />
+              <div className="card">
+                <div className="card-title"><Ico>◇</Ico> 模板登记</div>
+                <p className="card-desc">登记已有 `.xlsx` 模板，后端会诊断 Sheet、冻结窗格、公式、合并区域和命名区域。</p>
+                <div className="field">
+                  <label>服务端模板路径</label>
+                  <input placeholder="D:\OpenAkita\test-materials\excel-maker\report_template.xlsx" value={path} onChange={(e) => setPath(e.target.value)} />
+                </div>
+                <button className="btn primary" onClick={() => pluginFetch("/templates", { method: "POST", body: JSON.stringify({ path }) }).then(load).catch((e) => setError(e.message))}>登记模板</button>
+              </div>
+              <div className="card">
+                <div className="card-title"><Ico>▧</Ico> 模板库</div>
+                <table><tbody>{templates.map((t) => <tr key={t.id}><td>{t.name}<br /><small className="muted">{t.filename}</small></td><td><StatusBadge value={t.status} /></td><td><button className="btn" onClick={() => pluginFetch(`/templates/${t.id}/diagnose`, { method: "POST", body: "{}" }).then(load).catch((e) => setError(e.message))}>诊断</button></td></tr>)}</tbody></table>
+              </div>
             </div>
-            <table><tbody>{templates.map((t) => <tr key={t.id}><td>{t.name}</td><td><StatusBadge value={t.status} /></td><td><button className="btn" onClick={() => pluginFetch(`/templates/${t.id}/diagnose`, { method: "POST", body: "{}" }).then(load).catch((e) => setError(e.message))}>诊断</button></td></tr>)}</tbody></table>
+            <div className="right-pane">
+              {templates.length ? (
+                <div>
+                  <div className="preview-title"><Ico>◇</Ico> 模板诊断预览</div>
+                  <div className="metric-grid">
+                    <div className="metric"><div className="metric-value">{templates.length}</div><div className="metric-label">模板数量</div></div>
+                    <div className="metric"><div className="metric-value">{templates.filter((t) => t.has_diagnostic).length}</div><div className="metric-label">已诊断</div></div>
+                    <div className="metric"><div className="metric-value">XLSX</div><div className="metric-label">模板类型</div></div>
+                  </div>
+                  <div className="preview-section">
+                    <div className="card-title"><Ico>✓</Ico> 验收重点</div>
+                    <p className="muted">诊断模板时应能识别 Sheet 名、冻结窗格、合并区域、公式和命名区域；原始模板文件不应被覆盖。</p>
+                  </div>
+                </div>
+              ) : (
+                <PreviewEmpty title="暂无模板" desc="在左侧登记 xlsx 模板后进行诊断" icon="◇" />
+              )}
+            </div>
           </div>
         );
       }
+
+      function formatBytes(bytes) {
+        const value = Number(bytes || 0);
+        if (value < 1024) return value + " B";
+        if (value < 1024 * 1024) return (value / 1024).toFixed(1) + " KB";
+        return (value / 1024 / 1024).toFixed(2) + " MB";
+      }
+
+      function storageLabel(key) {
+        return ({
+          uploads: "上传文件",
+          workbooks: "工作簿分析",
+          projects: "项目记录",
+          exports: "导出报表",
+          templates: "模板库",
+          cache: "缓存",
+        })[key] || key;
+      }
+
+      const directoryFields = [
+        { key: "uploads_dir", storageKey: "uploads", label: "上传资料目录", placeholder: "默认：插件数据目录/uploads", desc: "上传 CSV、XLSX 和后续素材时的落盘位置。" },
+        { key: "workbooks_dir", storageKey: "workbooks", label: "工作簿分析目录", placeholder: "默认：插件数据目录/workbooks", desc: "保存导入副本、profile 和采样预览。" },
+        { key: "templates_dir", storageKey: "templates", label: "模板诊断目录", placeholder: "默认：插件数据目录/templates", desc: "保存 Excel 模板副本和诊断结果。" },
+        { key: "projects_dir", storageKey: "projects", label: "项目工作区目录", placeholder: "默认：插件数据目录/projects", desc: "保存每个报表项目的中间文件。" },
+        { key: "export_dir", storageKey: "exports", label: "导出文件目录", placeholder: "默认：插件数据目录/exports", desc: "保存最终生成的 XLSX 报表。" },
+        { key: "cache_dir", storageKey: "cache", label: "缓存目录", placeholder: "默认：插件数据目录/cache", desc: "保存临时缓存，可在下方清理。" },
+      ];
+
+      const styleOptions = [
+        { value: "business", label: "商务报表" },
+        { value: "finance", label: "财务分析" },
+        { value: "operations", label: "运营看板" },
+        { value: "minimal", label: "简洁交付" },
+      ];
+      const fontOptions = ["Microsoft YaHei", "DengXian", "SimSun", "Arial", "Calibri"];
+      const numberFormatOptions = [
+        { value: "#,##0.00", label: "千分位，两位小数（#,##0.00）" },
+        { value: "#,##0", label: "千分位，整数（#,##0）" },
+        { value: "0.00%", label: "百分比，两位小数（0.00%）" },
+        { value: "¥#,##0.00", label: "人民币金额（¥#,##0.00）" },
+      ];
 
       function SettingsTab() {
         const [settings, setSettings] = useState(null);
         const [deps, setDeps] = useState([]);
         const [stats, setStats] = useState(null);
+        const [health, setHealth] = useState(null);
         const [error, setError] = useState("");
+        const [healthNotice, setHealthNotice] = useState("");
+        const [fieldNotice, setFieldNotice] = useState("");
+        const [busyDep, setBusyDep] = useState("");
+        const [checking, setChecking] = useState(false);
+        const [detecting, setDetecting] = useState(false);
+        const [directoryPicker, setDirectoryPicker] = useState(null);
+        const [styleInputMode, setStyleInputMode] = useState("");
+        const [fontInputMode, setFontInputMode] = useState("");
+        const [numberInputMode, setNumberInputMode] = useState("");
         async function load() {
-          const [s, d, st] = await Promise.all([pluginFetch("/settings"), pluginFetch("/system/python-deps"), pluginFetch("/storage/stats")]);
-          setSettings(s.settings); setDeps(d.groups || []); setStats(st.stats);
+          const [s, d, st, h] = await Promise.all([pluginFetch("/settings"), pluginFetch("/system/python-deps"), pluginFetch("/storage/stats"), pluginFetch("/healthz")]);
+          setSettings(s.settings); setDeps(d.groups || []); setStats(st.stats); setHealth(h);
+        }
+        function depStatusLabel(dep) {
+          if (dep.busy || dep.status === "running") return "处理中";
+          if (dep.installed) return "已安装";
+          if (dep.status === "failed") return "失败";
+          return "缺失";
+        }
+        function depStatusClass(dep) {
+          if (dep.busy || dep.status === "running") return "busy";
+          if (dep.installed) return "ok";
+          if (dep.status === "failed") return "failed";
+          return "missing";
+        }
+        function validateSettingValue(key, value) {
+          if (!String(value || "").trim()) {
+            const labels = { default_style: "默认样式", font_family: "字体", number_format: "数字格式" };
+            return `${labels[key] || "配置项"}不能为空；请选择预设值或输入自定义值。`;
+          }
+          if (key === "number_format" && !/[0#?]/.test(String(value))) {
+            return "数字格式看起来不像 Excel 格式代码，建议包含 0、# 或 ?，例如 #,##0.00。";
+          }
+          return "";
+        }
+        async function checkHealth() {
+          setChecking(true);
+          try {
+            const data = await pluginFetch("/healthz");
+            setHealth(data);
+            setHealthNotice("健康检查完成：插件 API 可用。");
+          } finally {
+            setChecking(false);
+          }
+        }
+        async function detectDeps() {
+          setDetecting(true);
+          try {
+            const data = await pluginFetch("/system/python-deps");
+            setDeps(data.groups || []);
+            setHealthNotice("可选依赖状态已重新检测。");
+          } finally {
+            setDetecting(false);
+          }
+        }
+        async function saveSetting(key, value) {
+          const data = await pluginFetch("/settings", { method: "PUT", body: JSON.stringify({ [key]: value }) });
+          setSettings(data.settings);
+          setFieldNotice("");
+        }
+        function updateSettingDraft(key, value) {
+          setSettings({ ...(settings || {}), [key]: value });
+        }
+        function chooseDirectory(field) {
+          const fallback = field.storageKey && stats?.groups ? stats.groups[field.storageKey]?.path : "";
+          setDirectoryPicker({ ...field, value: (settings && settings[field.key]) || fallback || "" });
+        }
+        async function applyDirectoryPicker() {
+          if (!directoryPicker) return;
+          updateSettingDraft(directoryPicker.key, directoryPicker.value);
+          await saveSetting(directoryPicker.key, directoryPicker.value);
+          setDirectoryPicker(null);
+        }
+        async function openDirectory(field) {
+          const value = (settings && settings[field.key]) || (stats?.groups && stats.groups[field.storageKey]?.path) || "";
+          await pluginFetch("/storage/open-folder", { method: "POST", body: JSON.stringify({ path: value }) });
+        }
+        async function saveValidatedSetting(key, value) {
+          const message = validateSettingValue(key, value);
+          setFieldNotice(message);
+          if (message) return;
+          updateSettingDraft(key, value);
+          await saveSetting(key, value);
+        }
+        function optionMode(options, value, mode) {
+          if (mode) return mode;
+          return options.some((item) => item.value === value || item === value) ? value : "custom";
+        }
+        async function handlePresetChange(key, value, setMode) {
+          if (value === "custom") {
+            setMode("custom");
+            setFieldNotice("已切换为自定义，请在下方输入具体值。");
+            return;
+          }
+          setMode("");
+          await saveValidatedSetting(key, value);
+        }
+        async function runDep(depId, op) {
+          setBusyDep(depId);
+          setHealthNotice(op === "install" ? "依赖安装已开始，稍后自动刷新状态。" : "依赖卸载已开始，稍后自动刷新状态。");
+          try {
+            const data = await pluginFetch(`/system/python-deps/${depId}/${op}`, { method: "POST", body: "{}" });
+            setDeps((prev) => prev.map((item) => item.id === depId ? data.dependency : item));
+          } finally {
+            setBusyDep("");
+          }
+        }
+        async function cleanupCache() {
+          const data = await pluginFetch("/cleanup", { method: "POST", body: "{}" });
+          setHealthNotice(`缓存清理完成，移除 ${data.removed || 0} 项。`);
+          const refreshed = await pluginFetch("/storage/stats");
+          setStats(refreshed.stats);
         }
         useEffect(() => { load().catch((e) => setError(e.message)); }, []);
+        useEffect(() => {
+          const hasBusy = deps.some((dep) => dep.busy);
+          if (!hasBusy) return undefined;
+          const timer = setInterval(() => {
+            pluginFetch("/system/python-deps").then((data) => setDeps(data.groups || [])).catch(() => {});
+          }, 2500);
+          return () => clearInterval(timer);
+        }, [deps]);
+        const storageGroups = stats && stats.groups ? Object.entries(stats.groups) : [];
         return (
-          <div className="grid">
-            <div className="card">
-              <h2>Settings</h2>
+          <div className="settings-page">
+            <div className="settings-inner">
               <ErrorPanel error={error} onClose={() => setError("")} />
-              {settings && <pre>{JSON.stringify(settings, null, 2)}</pre>}
-              <button className="btn" onClick={() => pluginFetch("/storage/open-folder", { method: "POST", body: JSON.stringify({}) }).catch((e) => setError(e.message))}>打开数据目录</button>
-            </div>
-            <div className="card">
-              <h2>Dependencies</h2>
-              {deps.map((dep) => (
-                <div key={dep.id} className="row" style={{ marginBottom: 8 }}>
-                  <b>{dep.id}</b><StatusBadge value={dep.status} />
-                  <button className="btn" disabled={dep.detect_only || dep.installed} onClick={() => pluginFetch(`/system/python-deps/${dep.id}/install`, { method: "POST", body: "{}" }).then(load).catch((e) => setError(e.message))}>安装</button>
+              <div className="settings-section">
+                <div className="card-title"><Ico>⌁</Ico> 系统组件与依赖下载</div>
+                <div className="deps-help">
+                  <strong>可选依赖只服务于对应能力，不会影响基础报表生成。</strong>
+                  <div>Excel 表格读取、旧格式支持、图表渲染和模板增强按需安装。这里使用白名单依赖组，禁止输入任意 pip 包名；安装会调用当前 OpenAkita 使用的 Python 环境执行 pip。</div>
                 </div>
-              ))}
-              <h3>Storage</h3>
-              {stats && <pre>{JSON.stringify(stats, null, 2)}</pre>}
+                <div className="settings-actions">
+                  <button className="btn primary" onClick={() => checkHealth().catch((e) => setError(e.message))} disabled={checking}>{checking ? "检查中..." : "健康检查"}</button>
+                  <button className="btn" onClick={() => detectDeps().catch((e) => setError(e.message))} disabled={detecting}>{detecting ? "检测中..." : "检测可选依赖"}</button>
+                </div>
+                {healthNotice && <div className="notice notice-inline">{healthNotice}</div>}
+                {deps.map((dep) => (
+                  <div key={dep.id} className="dep-card">
+                    <div className="dep-card-main">
+                      <span className={"dep-state " + depStatusClass(dep)}>{dep.busy ? "…" : dep.installed ? "✓" : "!"}</span>
+                      <div>
+                        <div className="dep-title"><b>{dep.id}</b> <StatusBadge value={depStatusLabel(dep)} /></div>
+                        <div className="muted">{dep.description}</div>
+                        <div className="dep-packages">{(dep.packages || []).join(" · ") || "仅检测，不自动安装"}</div>
+                      </div>
+                    </div>
+                    <div className="dep-actions">
+                      <button className="btn" disabled={dep.detect_only || dep.installed || dep.busy || busyDep === dep.id} onClick={() => runDep(dep.id, "install").catch((e) => setError(e.message))}>安装</button>
+                      <button className="btn danger" disabled={dep.detect_only || !dep.installed || dep.busy || busyDep === dep.id} onClick={() => runDep(dep.id, "uninstall").catch((e) => setError(e.message))}>卸载</button>
+                    </div>
+                    {dep.log_tail && dep.log_tail.length > 0 && <pre className="dep-log">{dep.log_tail.slice(-6).join("\n")}</pre>}
+                  </div>
+                ))}
+              </div>
+
+              <div className="settings-section">
+                <div className="card-title"><Icon name="folder" /> 文件夹、归集与命名</div>
+                <div className="deps-help warn">
+                  <strong>每类目录都可以自定义，适合大量客户资料、表格和模板分开管理。</strong>
+                  <div>留空时使用插件数据目录；点击“选择”可输入本机文件夹并自动创建目录。上传、分析、模板诊断和导出文件会写入对应目录。</div>
+                </div>
+                <div className="directory-list">
+                  <div className="field directory-row">
+                    <label>插件数据根目录</label>
+                    <div className="folder-row">
+                      <input value={settings?.data_dir || ""} onChange={(e) => updateSettingDraft("data_dir", e.target.value)} onBlur={(e) => saveSetting("data_dir", e.target.value).catch((err) => setError(err.message))} placeholder="默认使用插件数据目录" />
+                      <button className="btn" onClick={() => chooseDirectory({ key: "data_dir", label: "插件数据根目录" })}>选择</button>
+                      <button className="btn" onClick={() => pluginFetch("/storage/open-folder", { method: "POST", body: JSON.stringify({}) }).catch((e) => setError(e.message))}>打开</button>
+                    </div>
+                    {directoryPicker?.key === "data_dir" && (
+                      <div className="directory-picker">
+                        <input value={directoryPicker.value} onChange={(e) => setDirectoryPicker({ ...directoryPicker, value: e.target.value })} placeholder="输入本机文件夹路径，例如 D:\OpenAkita\data\excel-maker" />
+                        <button className="btn primary" onClick={() => applyDirectoryPicker().catch((e) => setError(e.message))}>应用目录</button>
+                        <button className="btn" onClick={() => setDirectoryPicker(null)}>取消</button>
+                      </div>
+                    )}
+                    <small>根目录用于派生默认 uploads、workbooks、templates、projects、exports、cache 子目录。</small>
+                  </div>
+                  {directoryFields.map((field) => (
+                    <div className="field directory-row" key={field.key}>
+                      <label>{field.label}</label>
+                      <div className="folder-row">
+                        <input value={settings?.[field.key] || ""} onChange={(e) => updateSettingDraft(field.key, e.target.value)} onBlur={(e) => saveSetting(field.key, e.target.value).catch((err) => setError(err.message))} placeholder={field.placeholder} />
+                        <button className="btn" onClick={() => chooseDirectory(field)}>选择</button>
+                        <button className="btn" onClick={() => openDirectory(field).catch((e) => setError(e.message))}>打开</button>
+                      </div>
+                      {directoryPicker?.key === field.key && (
+                        <div className="directory-picker">
+                          <input value={directoryPicker.value} onChange={(e) => setDirectoryPicker({ ...directoryPicker, value: e.target.value })} placeholder={`输入${field.label}路径`} />
+                          <button className="btn primary" onClick={() => applyDirectoryPicker().catch((e) => setError(e.message))}>应用目录</button>
+                          <button className="btn" onClick={() => setDirectoryPicker(null)}>取消</button>
+                        </div>
+                      )}
+                      <small>{field.desc}</small>
+                    </div>
+                  ))}
+                </div>
+                <div className="storage-tools">
+                  <div className="settings-section-head compact">
+                    <div>
+                      <div className="storage-subhead"><Ico>◎</Ico> 当前状态与空间占用</div>
+                      <p className="card-desc">目录设置和空间占用统一在这里看。</p>
+                    </div>
+                    <button className="btn" onClick={() => pluginFetch("/storage/stats").then((data) => setStats(data.stats)).catch((e) => setError(e.message))}>刷新空间</button>
+                  </div>
+                  <div className="health-summary settings-inline-grid">
+                    <div><span>插件</span><strong>{health?.plugin || "excel-maker"}</strong></div>
+                    <div><span>阶段</span><strong>{health?.phase || "-"}</strong></div>
+                    <div><span>数据库</span><code>{health?.db_path || "加载中..."}</code></div>
+                  </div>
+                  <div className="row" style={{ marginTop: 12 }}>
+                    <button className="btn primary" onClick={() => pluginFetch("/storage/open-folder", { method: "POST", body: JSON.stringify({}) }).catch((e) => setError(e.message))}>打开数据目录</button>
+                    <button className="btn" onClick={() => cleanupCache().catch((e) => setError(e.message))}>清理缓存</button>
+                  </div>
+                  <div className="storage-total">
+                    <strong>{formatBytes(stats?.total_bytes)}</strong>
+                    <span>{stats?.total_files || 0} 个文件</span>
+                  </div>
+                  <div className="storage-card-grid">
+                    {storageGroups.map(([key, item]) => (
+                      <div className="storage-card" key={key}>
+                        <div className="storage-card-head">
+                          <strong>{storageLabel(key)}</strong>
+                          <span>{item.files || 0} 个文件</span>
+                        </div>
+                        <div className="storage-size">{formatBytes(item.bytes)}</div>
+                        <code>{item.path}</code>
+                        <button className="btn" onClick={() => pluginFetch("/storage/open-folder", { method: "POST", body: JSON.stringify({ path: item.path }) }).catch((e) => setError(e.message))}>打开</button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="settings-section">
+                <div className="card-title"><Icon name="palette" /> 报表样式与格式</div>
+                <p className="card-desc">这些默认值会影响新建 WorkbookPlan 的视觉风格、字体和数字展示方式；单个项目仍可在生成方案时覆盖。</p>
+                {fieldNotice && <div className="field-warning">{fieldNotice}</div>}
+                <div className="settings-grid">
+                  <div className="field">
+                    <label>默认样式</label>
+                    <select value={optionMode(styleOptions, settings?.default_style, styleInputMode)} onChange={(e) => handlePresetChange("default_style", e.target.value, setStyleInputMode).catch((err) => setError(err.message))}>
+                      {styleOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                      <option value="custom">自定义...</option>
+                    </select>
+                    {optionMode(styleOptions, settings?.default_style, styleInputMode) === "custom" && (
+                      <input className="custom-value-input" value={settings?.default_style || ""} onChange={(e) => updateSettingDraft("default_style", e.target.value)} onBlur={(e) => saveValidatedSetting("default_style", e.target.value).catch((err) => setError(err.message))} placeholder="输入自定义样式名，例如 board_report" />
+                    )}
+                    <small>建议商务报表用于经营分析，财务分析用于预算、利润、现金流类报表。</small>
+                  </div>
+                  <div className="field">
+                    <label>品牌色</label>
+                    <div className="color-row">
+                      <input type="color" value={settings?.brand_color || "#2563eb"} onChange={(e) => { updateSettingDraft("brand_color", e.target.value); saveSetting("brand_color", e.target.value).catch((err) => setError(err.message)); }} />
+                      <input value={settings?.brand_color || ""} onChange={(e) => updateSettingDraft("brand_color", e.target.value)} onBlur={(e) => saveSetting("brand_color", e.target.value).catch((err) => setError(err.message))} />
+                    </div>
+                    <small>用于标题、强调色和关键指标高亮，推荐使用企业 VI 主色。</small>
+                  </div>
+                  <div className="field">
+                    <label>字体</label>
+                    <select value={optionMode(fontOptions, settings?.font_family, fontInputMode)} onChange={(e) => handlePresetChange("font_family", e.target.value, setFontInputMode).catch((err) => setError(err.message))}>
+                      {fontOptions.map((item) => <option key={item} value={item}>{item}</option>)}
+                      <option value="custom">自定义...</option>
+                    </select>
+                    {optionMode(fontOptions, settings?.font_family, fontInputMode) === "custom" && (
+                      <input className="custom-value-input" value={settings?.font_family || ""} onChange={(e) => updateSettingDraft("font_family", e.target.value)} onBlur={(e) => saveValidatedSetting("font_family", e.target.value).catch((err) => setError(err.message))} placeholder="输入本机字体名，例如 Microsoft YaHei" />
+                    )}
+                    <small>Excel 打开时会使用本机已安装字体；若未安装，Excel 会自动替换。</small>
+                  </div>
+                  <div className="field">
+                    <label>数字格式</label>
+                    <select value={optionMode(numberFormatOptions, settings?.number_format, numberInputMode)} onChange={(e) => handlePresetChange("number_format", e.target.value, setNumberInputMode).catch((err) => setError(err.message))}>
+                      {numberFormatOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                      <option value="custom">自定义...</option>
+                    </select>
+                    {optionMode(numberFormatOptions, settings?.number_format, numberInputMode) === "custom" && (
+                      <input className="custom-value-input" value={settings?.number_format || ""} onChange={(e) => updateSettingDraft("number_format", e.target.value)} onBlur={(e) => saveValidatedSetting("number_format", e.target.value).catch((err) => setError(err.message))} placeholder="输入 Excel 数字格式代码，例如 #,##0.00" />
+                    )}
+                    <small>使用 Excel 数字格式代码，例如 #,##0.00、0.00%、¥#,##0.00。</small>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         );
@@ -352,17 +855,24 @@
         }, []);
         return (
           <main className="app">
-            <section className="hero">
-              <h1>Excel 报表助手</h1>
-              <p>上传表格、梳理口径、生成可编辑 XLSX，并附带公式解释和质量审计。</p>
-            </section>
+            <header className="header">
+              <div className="brand">
+                <div className="brand-icon"><ExcelLogoIcon /></div>
+                <div>
+                  <div className="brand-title">Excel 报表工作台</div>
+                  <div className="brand-subtitle">报表生成 · 数据剖析 · 公式说明 · XLSX 导出</div>
+                </div>
+              </div>
+            </header>
             <ErrorPanel error={error} onClose={() => setError("")} />
-            <nav className="tabs">{tabs.map((tab) => <button key={tab} className={"tab " + (active === tab ? "active" : "")} onClick={() => setActive(tab)}>{tab}</button>)}</nav>
-            {active === "Create" && <CreateTab refresh={refresh} />}
-            {active === "Projects" && <ProjectsTab projects={projects} refresh={refresh} />}
-            {active === "Datasets" && <DatasetsTab />}
-            {active === "Templates" && <TemplatesTab />}
-            {active === "Settings" && <SettingsTab />}
+            <nav className="tabs">{tabs.map((tab) => <button key={tab.id} className={"tab " + (active === tab.id ? "active" : "")} onClick={() => setActive(tab.id)}><Icon name={tab.icon} />{tab.label}</button>)}</nav>
+            <section className="content">
+              {active === "Create" && <CreateTab refresh={refresh} />}
+              {active === "Projects" && <ProjectsTab projects={projects} refresh={refresh} />}
+              {active === "Datasets" && <DatasetsTab />}
+              {active === "Templates" && <TemplatesTab />}
+              {active === "Settings" && <SettingsTab />}
+            </section>
           </main>
         );
       }

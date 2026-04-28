@@ -36,12 +36,12 @@ def test_detect_only_group_cannot_install(tmp_path) -> None:
 async def test_start_install_reports_busy(monkeypatch, tmp_path) -> None:
     manager = PythonDepsManager(tmp_path)
 
-    async def fake_run(dep_id, packages, job):
+    async def fake_run(dep_id, command, job):
         await asyncio.sleep(0.05)
         job.status = "succeeded"
         job.exit_code = 0
 
-    monkeypatch.setattr(manager, "_run_install", fake_run)
+    monkeypatch.setattr(manager, "_run_command", fake_run)
     first = await manager.start_install("table_processing")
     second = await manager.start_install("table_processing")
 
@@ -49,4 +49,23 @@ async def test_start_install_reports_busy(monkeypatch, tmp_path) -> None:
     assert second["busy"] is True
     await asyncio.sleep(0.08)
     assert manager.status("table_processing")["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_start_uninstall_uses_whitelisted_packages(monkeypatch, tmp_path) -> None:
+    manager = PythonDepsManager(tmp_path)
+    captured: list[str] = []
+
+    async def fake_run(dep_id, command, job):
+        captured.extend(command)
+        job.status = "succeeded"
+        job.exit_code = 0
+
+    monkeypatch.setattr(manager, "_run_command", fake_run)
+    started = await manager.start_uninstall("advanced_export")
+
+    assert started["busy"] is True
+    await asyncio.sleep(0)
+    assert captured[-2:] == ["-y", "python-pptx"]
+    assert manager.status("advanced_export")["op_kind"] == "uninstall"
 

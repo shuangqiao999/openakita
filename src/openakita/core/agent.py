@@ -24,6 +24,7 @@ import re
 import sys
 import time
 import uuid
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -214,7 +215,9 @@ SMALL_CTX_CORE_TOOLS = {
     "list_directory",
     "grep",
     "ask_user",
+    "tool_search",
     "get_tool_info",
+    "get_session_context",
 }
 # 中等上下文窗口模型额外包含的工具
 MEDIUM_CTX_EXTRA_TOOLS = {
@@ -232,6 +235,29 @@ MEDIUM_CTX_EXTRA_TOOLS = {
     "glob",
     "delete_file",
 }
+
+MINIMAL_PROMPT_TOOLS = {
+    "ask_user",
+    "tool_search",
+    "get_session_context",
+    "read_file",
+    "list_directory",
+    "grep",
+    "glob",
+    "semantic_search",
+    "web_search",
+    "web_fetch",
+}
+
+
+@dataclass(frozen=True)
+class PromptStrategy:
+    profile: Any
+    prompt_mode: Any
+    skip_catalogs: bool = False
+    memory_scope: Any = None
+    catalog_scope: list[str] = field(default_factory=list)
+    include_project_guidelines: bool = False
 
 def _classify_risk_intent(intent: Any, message: str) -> RiskIntentResult:
     """Single source of truth for the pre-ReAct risk gate."""
@@ -824,6 +850,19 @@ class Agent:
 
         intent = getattr(self, "_current_intent", None)
         intent_hints = set(intent.tool_hints) if intent and intent.tool_hints else set()
+        if intent:
+            from .intent_analyzer import IntentType, PromptDepth
+
+            prompt_depth = getattr(intent, "prompt_depth", None)
+            requires_tools = bool(getattr(intent, "requires_tools", False))
+            minimal_prompt = (
+                intent.intent in (IntentType.CHAT, IntentType.QUERY)
+                and not requires_tools
+                and prompt_depth in (PromptDepth.FAST, PromptDepth.MINIMAL)
+            )
+            if minimal_prompt:
+                tools = [t for t in tools if t.get("name") in MINIMAL_PROMPT_TOOLS]
+            self._last_minimal_toolset = minimal_prompt
 
         session_type = getattr(self, "_current_session_type", "cli")
         if session_type == "im":
@@ -845,14 +884,23 @@ class Agent:
             cat = tool.get("category", "")
 
             tool.pop("_deferred", None)
+            tool.pop("_always_available", None)
+            tool.pop("_promoted", None)
 
             if name in discovered:
+                tool["_promoted"] = True
                 continue
             if name in user_always_tools:
+                tool["_promoted"] = True
                 continue
             if cat and cat in user_always_cats:
+                tool["_promoted"] = True
                 continue
             if intent_hints and hasattr(self, "tool_catalog") and name in hint_names:
+                tool["_promoted"] = True
+                continue
+            if name in MINIMAL_PROMPT_TOOLS:
+                tool["_always_available"] = True
                 continue
 
             if _should_defer(name, cat) or tool.get("should_defer", False):
@@ -969,7 +1017,7 @@ class Agent:
 
         async def _run_one(tc: dict, idx: int) -> tuple[int, dict, str | None, list | None]:
             tool_name = tc.get("name", "")
-            tool_input = tc.get("input") or {}
+            tool_input = tc.get("input", tc.get("arguments", {})) or {}
             tool_use_id = tc.get("id", "")
 
             if self._task_cancelled:
@@ -2295,26 +2343,21 @@ class Agent:
 
         _effective_mode = mode or getattr(self.tool_executor, "_current_mode", "agent")
         _model_id = getattr(self.brain, "model", "")
-        _skip_catalogs = False
-        if intent:
-            from .intent_analyzer import IntentType
-
-            if intent.intent == IntentType.CHAT:
-                # 带图片附件时禁止降级为 ask，否则 vision 工具会被砍 + Ask 模式
-                # 提示词会让 LLM 拒绝执行视觉理解，用户体验断裂。
-                _has_image_atts = getattr(self, "_has_pending_image_attachments", False)
-                if not _has_image_atts and _effective_mode == "agent":
-                    _effective_mode = "ask"
-                    _skip_catalogs = True
-            elif intent.intent == IntentType.QUERY:
-                _skip_catalogs = True
+        _has_image_atts = getattr(self, "_has_pending_image_attachments", False)
 
         from ..prompt.budget import estimate_tokens
-        from ..prompt.builder import PromptProfile, PromptTier, resolve_tier
+        from ..prompt.builder import PromptTier, resolve_tier
 
         _user_input_tokens = estimate_tokens(task_description) if task_description else 0
-        _prompt_profile = self._resolve_prompt_profile(intent, session_type)
         _prompt_tier = resolve_tier(ctx_window)
+        _strategy = self._resolve_prompt_strategy(
+            intent,
+            session_type=session_type,
+            mode=_effective_mode,
+            has_image_attachments=_has_image_atts,
+        )
+        _prompt_profile = _strategy.profile
+        _skip_catalogs = _strategy.skip_catalogs
 
         # Session-level system prompt cache: reuse when the structural
         # parameters (mode, catalogs, profile) haven't changed.  Memory
@@ -2335,6 +2378,10 @@ class Agent:
             _skip_catalogs,
             _prompt_profile,
             _prompt_tier,
+            _strategy.prompt_mode,
+            _strategy.memory_scope,
+            tuple(sorted(_strategy.catalog_scope)),
+            _strategy.include_project_guidelines,
             tuple(sorted(_mem_keywords)) if _mem_keywords else (),
             _working_facts_cache_key,
         )
@@ -2361,6 +2408,10 @@ class Agent:
                 user_input_tokens=_user_input_tokens,
                 prompt_profile=_prompt_profile,
                 prompt_tier=_prompt_tier,
+                prompt_mode=_strategy.prompt_mode,
+                memory_scope=_strategy.memory_scope,
+                catalog_scope=_strategy.catalog_scope,
+                include_project_guidelines=_strategy.include_project_guidelines,
             )
             self._system_prompt_cache[_cache_key] = prompt
             self._system_prompt_cache_dirty = False
@@ -2395,6 +2446,58 @@ class Agent:
             if intent.intent in (IntentType.CHAT, IntentType.QUERY):
                 return PromptProfile.CONSUMER_CHAT
         return PromptProfile.LOCAL_AGENT
+
+    def _resolve_prompt_strategy(
+        self,
+        intent: Any,
+        *,
+        session_type: str,
+        mode: str,
+        has_image_attachments: bool = False,
+    ) -> PromptStrategy:
+        """Resolve prompt assembly strategy from the structured intent contract."""
+        from ..prompt.builder import PromptMode, PromptProfile
+        from .intent_analyzer import IntentType, MemoryScope, PromptDepth
+
+        profile = self._resolve_prompt_profile(intent, session_type)
+        prompt_mode = PromptMode.FULL
+        skip_catalogs = False
+        memory_scope = getattr(intent, "memory_scope", MemoryScope.RELEVANT) if intent else MemoryScope.RELEVANT
+        catalog_scope = list(getattr(intent, "catalog_scope", []) or [])
+        include_project_guidelines = bool(getattr(intent, "requires_project_context", False))
+
+        prompt_depth = getattr(intent, "prompt_depth", PromptDepth.STANDARD) if intent else PromptDepth.STANDARD
+        requires_tools = bool(getattr(intent, "requires_tools", False))
+
+        if intent and intent.intent in (IntentType.CHAT, IntentType.QUERY):
+            profile = PromptProfile.CONSUMER_CHAT
+            prompt_mode = PromptMode.MINIMAL
+            memory_scope = MemoryScope.PINNED_ONLY
+            if not requires_tools:
+                skip_catalogs = False
+                catalog_scope = ["index"]
+            if intent.intent == IntentType.CHAT and not has_image_attachments and mode == "agent":
+                mode = "ask"
+
+        if prompt_depth in (PromptDepth.FAST, PromptDepth.MINIMAL):
+            prompt_mode = PromptMode.MINIMAL
+            if memory_scope == MemoryScope.FULL:
+                memory_scope = MemoryScope.RELEVANT
+
+        if mode in ("ask", "plan") and not requires_tools:
+            catalog_scope = ["index"]
+
+        if session_type == "im":
+            profile = PromptProfile.IM_ASSISTANT
+
+        return PromptStrategy(
+            profile=profile,
+            prompt_mode=prompt_mode,
+            skip_catalogs=skip_catalogs,
+            memory_scope=memory_scope,
+            catalog_scope=catalog_scope,
+            include_project_guidelines=include_project_guidelines,
+        )
 
     def _build_multi_agent_prompt_section(self) -> str:
         """Generate a system prompt section describing the multi-agent system.
@@ -3744,6 +3847,7 @@ class Agent:
                 # 从 metadata 还原 tool_summary（跨轮工具上下文恢复）
                 _tool_summary = msg.get("tool_summary")
                 if _tool_summary and isinstance(_tool_summary, str) and content:
+                    _tool_summary = self._sanitize_replayed_tool_summary(_tool_summary)
                     content = content.rstrip() + "\n\n" + _tool_summary
             if role in ("user", "assistant") and content:
                 if isinstance(content, str) and not _RE_TIME_PREFIX.match(content):
@@ -5224,7 +5328,7 @@ class Agent:
                     continue
                 if name in self._DELEGATION_TOOLS:
                     has_delegation = True
-                tc_input = tc.get("input", {})
+                tc_input = tc.get("input", tc.get("arguments", {}))
                 param_hint = ""
                 if isinstance(tc_input, dict):
                     items = list(tc_input.items())[:6]
@@ -5244,6 +5348,9 @@ class Agent:
                     if tr.get("tool_use_id") == tc.get("id", ""):
                         raw = str(tr.get("result_content", tr.get("result_preview", "")))
                         is_error = tr.get("is_error", False)
+                        if self._is_internal_tool_control_message(raw):
+                            result_hint = ""
+                            break
                         max_len = 800 if name in self._DELEGATION_TOOLS else per_tool_budget
                         if len(raw) > max_len:
                             result_hint = raw[:max_len].replace("\n", " ") + "..."
@@ -5279,6 +5386,39 @@ class Agent:
         parts.append("\n\n[执行摘要]\n" + "\n".join(lines))
 
         return "".join(parts)
+
+    @staticmethod
+    def _is_internal_tool_control_message(text: str) -> bool:
+        """Runtime control hints are for the current loop only, not history replay."""
+        stripped = text.strip()
+        if stripped.startswith("[系统提示]") or stripped.startswith("[context_note:"):
+            return True
+        if stripped.startswith("[系统缓存:") or stripped.startswith("[系统缓存]"):
+            return True
+        if stripped.startswith("[系统] 工具 ") and (
+            "已达上限" in stripped
+            or "已从本轮可用工具中临时移除" in stripped
+            or "请整合操作或继续下一步" in stripped
+        ):
+            return True
+        return False
+
+    @classmethod
+    def _sanitize_replayed_tool_summary(cls, summary: str) -> str:
+        """Remove internal runtime controls from stored summaries before LLM replay."""
+        kept: list[str] = []
+        for line in str(summary or "").splitlines():
+            stripped = line.strip()
+            if not stripped:
+                kept.append(line)
+                continue
+            result_part = stripped.split(" → ", 1)[1] if " → " in stripped else stripped
+            if cls._is_internal_tool_control_message(result_part):
+                if " → " in line:
+                    kept.append(line.split(" → ", 1)[0])
+                continue
+            kept.append(line)
+        return "\n".join(kept).strip()
 
     def _build_work_summary_section(self) -> str:
         """Build [子Agent工作总结] section from sub_agent_records.

@@ -13,8 +13,8 @@ from .file_utils import assert_within_root
 def register_upload_preview_routes(router: APIRouter, root: str | Path, *, prefix: str = "/files") -> None:
     root_path = Path(root)
 
-    @router.get(f"{prefix}/{{relative_path:path}}")
-    async def preview_file(relative_path: str) -> FileResponse:
+    @router.get(f"{prefix}/{{relative_path:path}}", response_class=FileResponse)
+    async def preview_file(relative_path: str):
         try:
             target = assert_within_root(root_path, root_path / relative_path)
         except ValueError as exc:

@@ -11,6 +11,7 @@
     "zh": "通过需求澄清、表格剖析、受控方案、公式说明和质量审计生成可编辑 XLSX 报表。",
     "en": "Generate editable XLSX reports through guided requirements, profiling, controlled plans, formula explanations, and audits."
   },
+  "icon": "icon.svg",
   "author": "OpenAkita",
   "category": "productivity",
   "tags": ["excel", "xlsx", "csv", "report", "workbook", "formula", "office"],
@@ -51,7 +52,7 @@
   },
   "ui": {
     "entry": "ui/dist/index.html",
-    "icon": "",
+    "icon": "icon.svg",
     "title": "Excel 报表助手",
     "title_i18n": {
       "zh": "Excel 报表助手",

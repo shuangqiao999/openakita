@@ -17,8 +17,8 @@ def register_upload_preview_routes(
     root = Path(uploads_root).resolve()
     root.mkdir(parents=True, exist_ok=True)
 
-    @router.get(f"{prefix}/{{rel_path:path}}")
-    async def preview_upload(rel_path: str) -> FileResponse:
+    @router.get(f"{prefix}/{{rel_path:path}}", response_class=FileResponse)
+    async def preview_upload(rel_path: str):
         target = (root / rel_path).resolve()
         if root != target and root not in target.parents:
             raise HTTPException(status_code=400, detail="Invalid upload path")

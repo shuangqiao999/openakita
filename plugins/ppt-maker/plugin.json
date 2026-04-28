@@ -11,6 +11,7 @@
     "zh": "通过需求梳理、大纲确认、表格洞察、模板适配和质量检查生成可编辑 PPTX。",
     "en": "Generate editable PPTX decks through guided requirements, outlines, table insights, template adaptation, and audit checks."
   },
+  "icon": "icon.svg",
   "author": "OpenAkita",
   "category": "productivity",
   "tags": ["ppt", "powerpoint", "presentation", "office", "table", "template"],
@@ -55,7 +56,7 @@
   },
   "ui": {
     "entry": "ui/dist/index.html",
-    "icon": "",
+    "icon": "icon.svg",
     "title": "PPT 制作助手",
     "title_i18n": {
       "zh": "PPT 制作助手",

@@ -3112,6 +3112,29 @@ fn stop_backend_for_restart(pid: u32, port: u16) -> VersionCheckResult {
     VersionCheckResult::Upgraded
 }
 
+fn healthy_backend_pid(port: u16) -> Option<u32> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .no_proxy()
+        .build()
+        .ok()?;
+    let resp = client
+        .get(format!("http://127.0.0.1:{}/api/health", port))
+        .send()
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let json: serde_json::Value = resp.json().ok()?;
+    if json.get("service").and_then(|v| v.as_str()) != Some("openakita") {
+        return None;
+    }
+    json.get("pid")
+        .and_then(|v| v.as_u64())
+        .and_then(|pid| u32::try_from(pid).ok())
+        .filter(|pid| is_pid_running(*pid))
+}
+
 /// DMG 覆盖安装后版本对账：检查运行中后端的版本，必要时替换。
 ///
 /// macOS 上通过 DMG 拖拽覆盖安装后，旧的 openakita-server 进程可能仍在端口上
@@ -3548,6 +3571,22 @@ fn main() {
                         AUTO_START_IN_PROGRESS.store(false, Ordering::SeqCst);
                         AUTO_START_STARTED_AT_MS.store(0, Ordering::SeqCst);
                     });
+                } else if let Some(pid) = healthy_backend_pid(port) {
+                    let should_adopt = read_pid_file(ws_id)
+                        .map(|data| !is_pid_file_valid(&data) || data.pid != pid)
+                        .unwrap_or(true);
+                    if should_adopt {
+                        match write_pid_file(ws_id, pid, "external") {
+                            Ok(()) => log_to_file(&format!(
+                                "[auto-start] adopted healthy backend pid={} for ws={}",
+                                pid, ws_id
+                            )),
+                            Err(e) => log_to_file(&format!(
+                                "[auto-start] failed to adopt healthy backend pid={}: {}",
+                                pid, e
+                            )),
+                        }
+                    }
                 }
             } else {
                 log_to_file("[auto-start] skipped: no current_workspace_id in state");

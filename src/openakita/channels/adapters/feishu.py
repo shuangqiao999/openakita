@@ -623,9 +623,10 @@ class FeishuAdapter(ChannelAdapter):
                 "POST",
                 "/open-apis/cardkit/v1/cards",
                 body={"type": "card_json", "data": "{}", "settings": {}},
+                validate=False,
             )
             code = result.get("code", -1)
-            if code == 0 or "card_id" in result.get("data", {}):
+            if code == 0 and "card_id" in result.get("data", {}):
                 self._cardkit_available = True
                 self._capabilities.append("CardKit 流式卡片")
             elif self._is_permission_error(result.get("msg", "")):
@@ -635,8 +636,8 @@ class FeishuAdapter(ChannelAdapter):
                     "建议在飞书开放平台开通 cardkit:card:write 权限。"
                 )
             else:
-                self._cardkit_available = True
-                self._capabilities.append("CardKit 流式卡片")
+                self._cardkit_available = False
+                logger.info(f"Feishu: CardKit 探测失败，回退 PatchMessage: {result}")
         except Exception:
             self._cardkit_available = False
 
@@ -1279,7 +1280,14 @@ class FeishuAdapter(ChannelAdapter):
             self._tenant_token_expires = time.time() + data.get("expire", 7200) - 300
             return self._tenant_token
 
-    async def _cardkit_api(self, method: str, path: str, body: dict | None = None) -> dict:
+    async def _cardkit_api(
+        self,
+        method: str,
+        path: str,
+        body: dict | None = None,
+        *,
+        validate: bool = True,
+    ) -> dict:
         """调用飞书 CardKit REST API。"""
         token = await self._get_tenant_access_token()
         import httpx
@@ -1295,7 +1303,11 @@ class FeishuAdapter(ChannelAdapter):
                 resp = await client.patch(url, json=body, headers=headers)
             else:
                 resp = await client.get(url, headers=headers)
-        return resp.json()
+        resp.raise_for_status()
+        result = resp.json()
+        if validate and result.get("code", 0) != 0:
+            raise RuntimeError(f"CardKit API failed: {result}")
+        return result
 
     async def _create_cardkit_card(self, content: str) -> tuple[str, str]:
         """创建 CardKit 流式卡片，返回 (card_id, element_id)。"""

@@ -179,6 +179,12 @@ _DATASET_WRITABLE = frozenset(
         "metadata_json",
     }
 )
+_SOURCE_WRITABLE = frozenset(
+    {
+        "status",
+        "metadata_json",
+    }
+)
 _TEMPLATE_WRITABLE = frozenset(
     {
         "profile_path",
@@ -209,6 +215,16 @@ def _loads(value: str | None, fallback: Any) -> Any:
         return json.loads(value)
     except (TypeError, ValueError):
         return fallback
+
+
+def _stored_slide_id(project_id: str, slide_id: str) -> str:
+    prefix = f"{project_id}_"
+    return slide_id if slide_id.startswith(prefix) else f"{prefix}{slide_id}"
+
+
+def _public_slide_id(stored_id: str, project_id: str) -> str:
+    prefix = f"{project_id}_"
+    return stored_id[len(prefix) :] if stored_id.startswith(prefix) else stored_id
 
 
 def _row_dict(row: aiosqlite.Row | None) -> dict[str, Any] | None:
@@ -461,6 +477,57 @@ class PptTaskManager:
             raise RuntimeError("Source insert failed")
         return self._source_record(row)
 
+    async def list_sources(
+        self,
+        *,
+        project_id: str | None = None,
+        limit: int = 50,
+    ) -> list[SourceRecord]:
+        if project_id:
+            async with self._conn.execute(
+                "SELECT * FROM sources WHERE project_id = ? ORDER BY created_at DESC LIMIT ?",
+                (project_id, limit),
+            ) as cur:
+                rows = [_row_dict(row) for row in await cur.fetchall()]
+        else:
+            async with self._conn.execute(
+                "SELECT * FROM sources ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ) as cur:
+                rows = [_row_dict(row) for row in await cur.fetchall()]
+        return [self._source_record(row) for row in rows if row is not None]
+
+    async def get_source(self, source_id: str) -> SourceRecord | None:
+        async with self._conn.execute("SELECT * FROM sources WHERE id = ?", (source_id,)) as cur:
+            row = _row_dict(await cur.fetchone())
+        return self._source_record(row) if row is not None else None
+
+    async def delete_source(self, source_id: str) -> bool:
+        cur = await self._conn.execute("DELETE FROM sources WHERE id = ?", (source_id,))
+        await self._conn.commit()
+        return cur.rowcount > 0
+
+    async def update_source_safe(self, source_id: str, **updates: Any) -> SourceRecord | None:
+        if not updates:
+            return await self.get_source(source_id)
+        if "metadata" in updates:
+            updates["metadata_json"] = _json(updates.pop("metadata"))
+        bad = set(updates) - _SOURCE_WRITABLE
+        if bad:
+            raise ValueError(f"Unsupported source update columns: {sorted(bad)}")
+        if "metadata_json" in updates and not isinstance(updates["metadata_json"], str):
+            updates["metadata_json"] = _json(updates["metadata_json"])
+        if "status" in updates and not isinstance(updates["status"], str):
+            updates["status"] = updates["status"].value
+        updates["updated_at"] = _now()
+        sets = ", ".join(f"{key} = ?" for key in updates)
+        await self._conn.execute(
+            f"UPDATE sources SET {sets} WHERE id = ?",
+            [*updates.values(), source_id],
+        )
+        await self._conn.commit()
+        return await self.get_source(source_id)
+
     async def create_dataset(
         self,
         *,
@@ -516,6 +583,11 @@ class PptTaskManager:
         )
         await self._conn.commit()
         return await self.get_dataset(dataset_id)
+
+    async def delete_dataset(self, dataset_id: str) -> bool:
+        cur = await self._conn.execute("DELETE FROM datasets WHERE id = ?", (dataset_id,))
+        await self._conn.commit()
+        return cur.rowcount > 0
 
     async def create_template(
         self,
@@ -676,23 +748,25 @@ class PptTaskManager:
         await self._conn.execute("DELETE FROM slides WHERE project_id = ?", (project_id,))
         records = []
         for index, slide in enumerate(slides, start=1):
-            slide_id = slide.get("id") or _new_id("slide")
+            source_slide_id = str(slide.get("id") or f"slide_{index:02d}")
+            slide_id = f"{project_id}_{source_slide_id}"
             slide_type = slide.get("slide_type", "content")
+            stored_slide = {**slide, "id": source_slide_id}
             await self._conn.execute(
                 """
                 INSERT INTO slides (
                     id, project_id, slide_index, slide_type, slide_json, created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (slide_id, project_id, index, slide_type, _json(slide), now, now),
+                (slide_id, project_id, index, slide_type, _json(stored_slide), now, now),
             )
             records.append(
                 {
-                    "id": slide_id,
+                    "id": source_slide_id,
                     "project_id": project_id,
                     "slide_index": index,
                     "slide_type": slide_type,
-                    "slide": slide,
+                    "slide": stored_slide,
                     "created_at": now,
                     "updated_at": now,
                 }
@@ -708,7 +782,7 @@ class PptTaskManager:
             rows = [_row_dict(row) for row in await cur.fetchall()]
         return [
             {
-                "id": row["id"],
+                "id": _public_slide_id(row["id"], row["project_id"]),
                 "project_id": row["project_id"],
                 "slide_index": row["slide_index"],
                 "slide_type": row["slide_type"],
@@ -733,7 +807,13 @@ class PptTaskManager:
                SET slide_type = ?, slide_json = ?, updated_at = ?
              WHERE project_id = ? AND id = ?
             """,
-            (slide.get("slide_type", "content"), _json(slide), now, project_id, slide_id),
+            (
+                slide.get("slide_type", "content"),
+                _json({**slide, "id": slide_id}),
+                now,
+                project_id,
+                _stored_slide_id(project_id, slide_id),
+            ),
         )
         await self._conn.commit()
         if cur.rowcount <= 0:
@@ -781,6 +861,11 @@ class PptTaskManager:
             "metadata": _loads(row.get("metadata_json"), {}),
             "created_at": row["created_at"],
         }
+
+    async def delete_export(self, export_id: str) -> bool:
+        cur = await self._conn.execute("DELETE FROM exports WHERE id = ?", (export_id,))
+        await self._conn.commit()
+        return cur.rowcount > 0
 
     async def list_exports(self, project_id: str) -> list[dict[str, Any]]:
         async with self._conn.execute(

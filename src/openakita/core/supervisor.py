@@ -147,21 +147,6 @@ POLL_FRIENDLY_TOOLS = frozenset(
 )
 POLL_REPEAT_MULTIPLIER = 2  # raise repeat thresholds by this factor
 
-# These tools often make legitimate progress through a sequence of different
-# arguments. Exact signature repeats are still handled below; do not nudge only
-# because the same tool name appears several times with different params.
-VARYING_ARG_REPEAT_NUDGE_EXEMPT_TOOLS = frozenset(
-    {
-        "run_shell",
-        "run_powershell",
-        "write_file",
-        "edit_file",
-        "read_file",
-        "grep",
-        "glob",
-        "run_skill_script",
-    }
-)
 NETWORK_READ_TOOLS = frozenset({"web_fetch", "web_search", "news_search"})
 
 
@@ -452,7 +437,7 @@ class RuntimeSupervisor:
         * ``tail_same_count >= TERMINATE``：同一精确签名连续 N 次 → TERMINATE
         * ``tail_same_count >= STRATEGY_SWITCH``：同一精确签名连续 N 次 → 回滚并注入提示
         * 1-2 种签名 ping-pong 高频交替 → 仅 NUDGE 软事件，不回滚、不注入
-        * ``top_count >= WARN`` 或 ``tail_same_count >= WARN``：仅 NUDGE 软事件
+        * ``tail_same_count >= WARN``：仅 NUDGE 软事件
           （记录到日志/trace，不写入 LLM 上下文，避免干扰模型正常推进）
 
         组织协调者轮询白名单（``POLL_FRIENDLY_TOOLS``）：对
@@ -560,19 +545,6 @@ class RuntimeSupervisor:
                     f"Poll-friendly tool '{top_name}' called {top_count} times — "
                     "suggest org_wait_for_deliverable"
                 ),
-                should_inject_prompt=False,
-                prompt_injection="",
-            )
-
-        if (
-            top_count >= self._signature_repeat_warn
-            and not top_is_poll
-            and top_name not in VARYING_ARG_REPEAT_NUDGE_EXEMPT_TOOLS
-        ):
-            return Intervention(
-                level=InterventionLevel.NUDGE,
-                pattern=PatternType.SIGNATURE_REPEAT,
-                message=f"Tool '{top_name}' called {top_count} times with varying args",
                 should_inject_prompt=False,
                 prompt_injection="",
             )

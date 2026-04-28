@@ -270,7 +270,7 @@ class ToolExecutor:
         for i, tc in enumerate(tool_calls):
             tc_with_idx = {**tc, "_idx": i}
             name = tc.get("name", "")
-            inp = tc.get("input", {})
+            inp = tc.get("input", tc.get("arguments", {}))
 
             if self._is_concurrency_safe(name, inp):
                 current_safe.append(tc_with_idx)
@@ -687,7 +687,7 @@ class ToolExecutor:
 
         async def _run_one(tc: dict, idx: int) -> tuple[int, dict, str | None, list | None]:
             tool_name = self._canonicalize_tool_name(tc.get("name", ""))
-            tool_input = tc.get("input") or {}
+            tool_input = tc.get("input", tc.get("arguments", {})) or {}
             tool_use_id = tc.get("id", "")
 
             if isinstance(tool_input, dict):

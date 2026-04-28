@@ -44,9 +44,11 @@ OPTIONAL_DEP_GROUPS: dict[str, dict[str, Any]] = {
 class DepJob:
     dep_id: str
     status: str = "idle"
+    op_kind: str = ""
     started_at: float | None = None
     completed_at: float | None = None
     exit_code: int | None = None
+    error: str = ""
     log_tail: list[str] = field(default_factory=list)
 
 
@@ -73,8 +75,11 @@ class PythonDepsManager:
             "detect_only": bool(group.get("detect_only")),
             "installed": installed,
             "status": job.status,
+            "op_kind": job.op_kind,
             "busy": job.status == "running",
             "exit_code": job.exit_code,
+            "error": job.error,
+            "elapsed_sec": self._elapsed(job),
             "log_tail": job.log_tail[-40:],
         }
 
@@ -88,18 +93,36 @@ class PythonDepsManager:
         group = self._group(dep_id)
         if group.get("detect_only"):
             raise ValueError(f"{dep_id} is detect-only and cannot be installed automatically")
+        return await self._start(dep_id, "install", [self._python, "-m", "pip", "install", *group["packages"]])
+
+    async def start_uninstall(self, dep_id: str) -> dict[str, Any]:
+        group = self._group(dep_id)
+        if group.get("detect_only"):
+            raise ValueError(f"{dep_id} is detect-only and cannot be uninstalled automatically")
+        return await self._start(
+            dep_id,
+            "uninstall",
+            [self._python, "-m", "pip", "uninstall", "-y", *group["packages"]],
+        )
+
+    async def _start(self, dep_id: str, op_kind: str, command: list[str]) -> dict[str, Any]:
         job = self._jobs.get(dep_id)
         if job and job.status == "running":
             return self.status(dep_id)
-        job = DepJob(dep_id=dep_id, status="running", started_at=time.time())
+        job = DepJob(dep_id=dep_id, status="running", op_kind=op_kind, started_at=time.time())
         self._jobs[dep_id] = job
-        asyncio.create_task(self._run_install(dep_id, list(group["packages"]), job))
+        asyncio.create_task(
+            self._run_command(dep_id, command, job),
+            name=f"ppt-maker:pydep:{dep_id}:{op_kind}",
+        )
         return self.status(dep_id)
 
     async def _run_install(self, dep_id: str, packages: list[str], job: DepJob) -> None:
+        await self._run_command(dep_id, [self._python, "-m", "pip", "install", *packages], job)
+
+    async def _run_command(self, dep_id: str, command: list[str], job: DepJob) -> None:
         log_path = self._log_path(dep_id)
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        command = [self._python, "-m", "pip", "install", *packages]
         job.log_tail.append("$ " + " ".join(command))
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -116,13 +139,23 @@ class PythonDepsManager:
                 job.log_tail = job.log_tail[-80:]
             job.exit_code = await proc.wait()
             job.status = "succeeded" if job.exit_code == 0 else "failed"
+            if job.exit_code:
+                job.error = f"pip exited with code {job.exit_code}"
             log_path.write_text("\n".join(lines), encoding="utf-8")
         except Exception as exc:  # noqa: BLE001
             job.status = "failed"
             job.exit_code = -1
-            job.log_tail.append(str(exc))
+            job.error = str(exc)
+            job.log_tail.append(job.error)
         finally:
             job.completed_at = time.time()
+
+    @staticmethod
+    def _elapsed(job: DepJob) -> float:
+        if job.started_at is None:
+            return 0.0
+        end = job.completed_at or time.time()
+        return round(max(0.0, end - job.started_at), 1)
 
     def _group(self, dep_id: str) -> dict[str, Any]:
         if dep_id not in OPTIONAL_DEP_GROUPS:

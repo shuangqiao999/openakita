@@ -518,8 +518,8 @@ class OmniPostPlugin(PluginBase):
             assert self._tm is not None
             return {"ok": await self._tm.delete_template(template_id)}
 
-        @router.get("/thumbs/{filename:path}")
-        async def serve_thumb(filename: str) -> FileResponse:
+        @router.get("/thumbs/{filename:path}", response_class=FileResponse)
+        async def serve_thumb(filename: str):
             assert self._data_dir is not None
             p = (self._data_dir / "thumbs" / filename).resolve()
             base = (self._data_dir / "thumbs").resolve()

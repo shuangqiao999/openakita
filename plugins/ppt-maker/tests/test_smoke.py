@@ -11,6 +11,12 @@ def test_manifest_has_self_contained_ui_assets() -> None:
 
     assert manifest["id"] == "ppt-maker"
     assert manifest["ui"]["entry"] == "ui/dist/index.html"
+    assert manifest["icon"] == "icon.svg"
+    assert manifest["ui"]["icon"] == "icon.svg"
+    assert (ROOT / "icon.svg").exists()
+    assert (ROOT / "ui" / "dist" / "icon.svg").exists()
+    assert "m2.859 2.878l12.57-1.796" in (ROOT / "icon.svg").read_text(encoding="utf-8")
+    assert "m2.859 2.878l12.57-1.796" in (ROOT / "ui" / "dist" / "icon.svg").read_text(encoding="utf-8")
     for name in ["bootstrap.js", "styles.css", "icons.js", "i18n.js", "markdown-mini.js"]:
         assert (ROOT / "ui" / "dist" / "_assets" / name).exists()
 

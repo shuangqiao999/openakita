@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 
 import pytest
-from ppt_models import DeckMode, ProjectCreate, ProjectStatus, TaskCreate, TaskStatus
+from ppt_models import DeckMode, ProjectCreate, ProjectStatus, SourceStatus, TaskCreate, TaskStatus
 from ppt_task_manager import PptTaskManager
 
 
@@ -88,14 +88,45 @@ async def test_sources_datasets_templates_and_wal(tmp_path) -> None:
             category="business",
             original_path="templates/original.pptx",
         )
+        sources = await manager.list_sources()
+        project_sources = await manager.list_sources(project_id=project.id)
+        assert await manager.get_source(source.id) is not None
+        assert await manager.delete_source(source.id) is True
+        assert await manager.delete_dataset(dataset.id) is True
+        assert await manager.get_dataset(dataset.id) is None
+        assert await manager.delete_source(source.id) is False
 
     with sqlite3.connect(db_path) as conn:
         journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
 
     assert source.metadata == {"chars": 120}
+    assert [item.id for item in sources] == [source.id]
+    assert [item.id for item in project_sources] == [source.id]
     assert dataset.status == "created"
     assert template.category is not None
     assert journal_mode.lower() == "wal"
+
+
+@pytest.mark.asyncio
+async def test_update_source_safe_persists_status_and_metadata(tmp_path) -> None:
+    async with PptTaskManager(tmp_path / "ppt_maker.db") as manager:
+        source = await manager.create_source(
+            kind="markdown",
+            filename="brief.md",
+            path="uploads/brief.md",
+            metadata={"collection": "Q2"},
+        )
+        updated = await manager.update_source_safe(
+            source.id,
+            status=SourceStatus.PARSED,
+            metadata={"collection": "Q2", "parsed": {"text_length": 1234}},
+        )
+        with pytest.raises(ValueError):
+            await manager.update_source_safe(source.id, kind="bad")
+
+    assert updated is not None
+    assert updated.status == SourceStatus.PARSED
+    assert updated.metadata.get("parsed") == {"text_length": 1234}
 
 
 @pytest.mark.asyncio
@@ -200,6 +231,29 @@ async def test_replace_list_and_update_slides(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_replace_slides_allows_same_slide_ids_across_projects(tmp_path) -> None:
+    async with PptTaskManager(tmp_path / "ppt_maker.db") as manager:
+        first = await manager.create_project(ProjectCreate(mode=DeckMode.TOPIC_TO_DECK, title="A"))
+        second = await manager.create_project(ProjectCreate(mode=DeckMode.TOPIC_TO_DECK, title="B"))
+
+        first_records = await manager.replace_slides(
+            first.id,
+            [{"id": "slide_01", "slide_type": "cover", "title": "A"}],
+        )
+        second_records = await manager.replace_slides(
+            second.id,
+            [{"id": "slide_01", "slide_type": "cover", "title": "B"}],
+        )
+        first_listed = await manager.list_slides(first.id)
+        second_listed = await manager.list_slides(second.id)
+
+    assert [record["id"] for record in first_records] == ["slide_01"]
+    assert [record["id"] for record in second_records] == ["slide_01"]
+    assert [record["id"] for record in first_listed] == ["slide_01"]
+    assert [record["id"] for record in second_listed] == ["slide_01"]
+
+
+@pytest.mark.asyncio
 async def test_create_and_get_export(tmp_path) -> None:
     async with PptTaskManager(tmp_path / "ppt_maker.db") as manager:
         project = await manager.create_project(
@@ -216,4 +270,21 @@ async def test_create_and_get_export(tmp_path) -> None:
     assert fetched is not None
     assert fetched["metadata"] == {"audit_ok": True}
     assert [item["id"] for item in exports] == [export["id"]]
+
+
+@pytest.mark.asyncio
+async def test_delete_export_removes_record(tmp_path) -> None:
+    async with PptTaskManager(tmp_path / "ppt_maker.db") as manager:
+        project = await manager.create_project(ProjectCreate(mode=DeckMode.TOPIC_TO_DECK, title="Roadmap"))
+        export = await manager.create_export(
+            project_id=project.id,
+            path="exports/roadmap.pptx",
+        )
+        deleted = await manager.delete_export(export["id"])
+        fetched = await manager.get_export(export["id"])
+        exports = await manager.list_exports(project.id)
+
+    assert deleted is True
+    assert fetched is None
+    assert exports == []
 
