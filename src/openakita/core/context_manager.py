@@ -295,7 +295,18 @@ class ContextManager:
 
         resolved_max = max_tokens or self.get_max_context_tokens(conversation_id=conversation_id)
         system_tokens = self.estimate_tokens(system_prompt)
-        tools_tokens = self.estimate_tools_tokens(tools)
+        # Brain.convert_tools_to_llm omits ``_deferred`` tools' input_schema from
+        # the API request body, so they should not inflate context pressure here.
+        # Otherwise long-running tasks with many side tools see a large fixed
+        # tools_tokens overhead and trip token-anomaly compaction prematurely.
+        if tools:
+            effective_tools = [
+                t for t in tools
+                if not (isinstance(t, dict) and t.get("_deferred"))
+            ]
+        else:
+            effective_tools = tools
+        tools_tokens = self.estimate_tools_tokens(effective_tools)
         messages_tokens = self.estimate_messages_tokens(messages)
         hard_limit = resolved_max - system_tokens - tools_tokens - 500
         min_hard_limit = max(min(1024, int(resolved_max * 0.3)), 256)

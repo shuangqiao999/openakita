@@ -398,6 +398,21 @@ async def write_env(body: EnvUpdateRequest):
     count = len([v for v in safe_entries.values() if v]) + len(body.delete_keys)
     logger.info(f"[Config API] Updated .env with {count} entries")
 
+    # Push changes into the in-process Settings singleton so consumers that
+    # read ``getattr(settings, ...)`` on each task (e.g. LoopBudgetGuard,
+    # ContextManager.calculate_context_pressure, ReasoningEngine ratio
+    # injection) see the new values without a process restart.
+    try:
+        from openakita.config import settings as _settings
+
+        _settings_changed = _settings.reload()
+        if _settings_changed:
+            logger.info(
+                "[Config API] Settings hot-reloaded fields: %s", _settings_changed
+            )
+    except Exception as exc:
+        logger.warning("[Config API] Settings.reload() failed: %s", exc)
+
     # Determine if any changed keys require a service restart
     _RESTART_REQUIRED_PREFIXES = (
         "TELEGRAM_",
@@ -421,6 +436,32 @@ async def write_env(body: EnvUpdateRequest):
         "MAX_TOKENS",
         "OPENAKITA_THEME",
         "LANGUAGE",
+        # Context / long-task / task-budget knobs — read fresh on each task
+        # so they hot-reload as soon as Settings.reload() above runs.
+        "CONTEXT_",
+        "TASK_BUDGET_",
+        "API_TOOLS_",
+        "SAME_TOOL_",
+        "READONLY_STAGNATION_",
+        "MAX_ITERATIONS",
+        "THINKING_MODE",
+        "PROGRESS_TIMEOUT_",
+        "HARD_TIMEOUT_",
+        "TOOL_MAX_PARALLEL",
+        "FORCE_TOOL_CALL_",
+        "CONFIRMATION_TEXT_",
+        "ALLOW_PARALLEL_TOOLS",
+        "MEMORY_",
+        "PERSONA_",
+        "AGENT_NAME",
+        "PROACTIVE_",
+        "STICKER_",
+        "SCHEDULER_",
+        "SELFCHECK_",
+        "DESKTOP_NOTIFY_",
+        "SESSION_TIMEOUT_",
+        "SESSION_MAX_HISTORY",
+        "BACKUP_",
     )
     changed_keys = {k for k, v in safe_entries.items() if v} | set(body.delete_keys)
     restart_required = any(

@@ -65,7 +65,13 @@ _EXECUTE_RE = re.compile(
     r"(执行|运行|kill|rm\s+-rf|remove-item|del\s+/s|rmdir|force\s+push|push\s+--force)",
     re.IGNORECASE,
 )
-_INDEX_RE = re.compile(r"(?:第\s*)?(\d+)\s*(?:条|项|个|index)?", re.IGNORECASE)
+# 只在显式上下文里抓 index：必须出现「第N条/项/个」或「index N」。
+# 旧实现末尾 `?` 让上下文全可选，结果连日期年份 `2026` 都被当成 index=2026。
+# 数字部分限制 1-3 位，进一步避免误抓四位年份/版本号。
+_INDEX_RE = re.compile(
+    r"(?:第\s*(\d{1,3})\s*(?:条|项|个))|(?:\bindex\s*[:=]?\s*(\d{1,3})\b)",
+    re.IGNORECASE,
+)
 _ARITHMETIC_OR_COUNT_RE = re.compile(
     r"(\d+\s*[+\-*/×÷]\s*\d+|calculate|calculation|count|revised count|sum|times|"
     r"算一下|计算|合计|数量|总数|等于多少)",
@@ -76,6 +82,55 @@ _NON_ACTION_DISCUSSION_RE = re.compile(
     r"假设|如果我说|只是讨论|不需要执行|不要执行|如何处理|应该怎么)",
     re.IGNORECASE,
 )
+
+# 系统/组织合成消息前缀集合：用于在 classify() 入口短路豁免，避免把
+# 「下属交付物正文里出现的「执行/运行」等普通中文动词」或「日期年份 2026」
+# 误判为高风险 shell execute。
+#
+# 这些消息不是用户主动发起的指令，而是 OrgRuntime / reasoning_engine 内部
+# 合成后塞进 root 节点 mailbox 的——如果继续走 risk gate 分类，root 节点会
+# 在收到「[收到任务交付] 来自 xxx」时秒退（duration=0s）并回复「请确认风险」，
+# 把组织协作链路打断（详见 2026-04-28 12:57:57 / 12:58:01 拦截日志）。
+#
+# 来源：
+#   - openakita/orgs/runtime.py::_format_incoming_message  (13 种 [收到xxx])
+#   - openakita/orgs/runtime.py::_push_summary_command_to_root ([用户指令最终汇总])
+#   - openakita/core/reasoning_engine.py 多处自注入  ([系统] / [系统提示])
+#   - openakita/core/agent.py::_prepare_session_context  ([以上是之前的对话历史)
+ORG_SYNTH_PREFIXES: tuple[str, ...] = (
+    # reasoning_engine / agent 自注入
+    "[系统]",
+    "[系统提示]",
+    "[组织]",
+    "[用户指令最终汇总]",
+    "[以上是之前的对话历史",
+    # OrgRuntime._format_incoming_message 13 种 type_label
+    "[收到任务]",
+    "[收到任务结果]",
+    "[收到任务交付]",
+    "[任务已通过验收]",
+    "[任务被打回]",
+    "[收到汇报]",
+    "[收到提问]",
+    "[收到回答]",
+    "[收到上报]",
+    "[收到组织公告]",
+    "[收到部门公告]",
+    "[收到反馈]",
+    "[收到握手请求]",
+    "[收到消息]",
+)
+
+
+def _is_org_synthesized_message(text: str) -> bool:
+    """判断消息是否为系统/组织内部合成（命中即跳过 risk gate）。
+
+    使用 ``startswith(tuple)`` 做前缀匹配，仅看正文开头，避免误伤
+    「正文中恰好提到 [收到xxx]」等真实用户输入。
+    """
+    if not text:
+        return False
+    return text.lstrip().startswith(ORG_SYNTH_PREFIXES)
 
 
 @dataclass(frozen=True)
@@ -103,6 +158,22 @@ class RiskIntentClassifier:
 
     def classify(self, message: str, intent: Any | None = None) -> RiskIntentResult:
         text = (message or "").strip()
+
+        # 短路：系统/组织合成消息一律视为非危险输入，不再做关键词分类。
+        # 否则下属交付物正文里的「执行/运行/重置」等动词会被 _EXECUTE_RE /
+        # _WRITE_RE 误判为高风险，阻断 root 节点的验收与汇总流程。
+        if _is_org_synthesized_message(text):
+            return RiskIntentResult(
+                risk_level=RiskLevel.NONE,
+                operation_kind=OperationKind.NONE,
+                target_kind=TargetKind.UNKNOWN,
+                access_mode=AccessMode.READ_ONLY,
+                requires_confirmation=False,
+                reason="org_synthesized_message",
+                action=None,
+                parameters={},
+            )
+
         lowered = text.lower()
         target = self._target_kind(lowered)
         operation = self._operation_kind(text)
@@ -299,7 +370,11 @@ class RiskIntentClassifier:
         params: dict[str, Any] = {}
         match = _INDEX_RE.search(text)
         if match:
-            params["index"] = int(match.group(1))
+            # _INDEX_RE 现有两个捕获组：第N条/项/个 vs index N，
+            # 任何一个非空都视为 index 命中（数字已限定 1-3 位）。
+            raw = match.group(1) or match.group(2)
+            if raw:
+                params["index"] = int(raw)
         if target == TargetKind.SECURITY_USER_ALLOWLIST:
             if re.search(r"(tool|工具)", text, re.IGNORECASE):
                 params["entry_type"] = "tool"

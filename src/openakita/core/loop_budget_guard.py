@@ -34,6 +34,11 @@ class LoopBudgetGuard:
     readonly_stagnation_limit: int = 3
     readonly_stagnation_hard_limit: int = 6
     token_anomaly_threshold: int = 40_000
+    # Default 0.98 → only force termination when prompt is essentially at the
+    # model context window. Set lower for stricter safety, higher (up to 0.99)
+    # for "let long tasks finish at all costs". Overridable per-call via
+    # ``check_token_growth(near_context_ratio=...)``.
+    near_context_ratio: float = 0.98
     total_tool_calls_seen: int = 0
     token_anomaly_recoveries: int = 0
     readonly_seen_fingerprints: set[str] = field(default_factory=set)
@@ -89,19 +94,55 @@ class LoopBudgetGuard:
         *,
         recovered: bool = False,
         max_recoveries: int = 1,
+        context_safe: bool | None = None,
+        max_context_tokens: int | None = None,
+        near_context_ratio: float | None = None,
     ) -> LoopBudgetDecision:
+        total_tokens = input_tokens + output_tokens
+        # Resolve effective ratio: per-call override > dataclass default.
+        # Clamp to a sensible range so a misconfigured value cannot produce
+        # nonsense (e.g. negative or >1).
+        eff_ratio = (
+            near_context_ratio
+            if near_context_ratio is not None
+            else self.near_context_ratio
+        )
+        try:
+            eff_ratio = float(eff_ratio)
+        except (TypeError, ValueError):
+            eff_ratio = 0.98
+        eff_ratio = min(max(eff_ratio, 0.5), 0.99)
+
+        near_context_limit = (
+            bool(max_context_tokens)
+            and total_tokens >= int(max_context_tokens * eff_ratio)
+        )
+
+        # A large prompt is not necessarily context bloat. Long-running tasks can
+        # have high fixed overhead from system prompt and tool schemas while the
+        # message history is still safely below its budget.
+        if context_safe is True and not near_context_limit:
+            return LoopBudgetDecision(False)
+
         if recovered:
             self.token_anomaly_recoveries += 1
             return LoopBudgetDecision(False)
         if (
-            input_tokens + output_tokens > self.token_anomaly_threshold
+            total_tokens > self.token_anomaly_threshold
             and self.total_tool_calls_seen >= max(5, self.max_total_tool_calls // 2)
         ):
+            diag = (
+                f" [input={input_tokens}, output={output_tokens}, "
+                f"ctx_max={max_context_tokens or '?'}, "
+                f"hard_terminate_ratio={eff_ratio:.2f}, "
+                f"anomaly_threshold={self.token_anomaly_threshold}, "
+                f"tool_calls={self.total_tool_calls_seen}/{self.max_total_tool_calls}]"
+            )
             if self.token_anomaly_recoveries < max_recoveries:
                 return LoopBudgetDecision(
                     False,
                     "token_growth_recoverable",
-                    "⚠️ 检测到上下文 token 异常膨胀，将先执行强制压缩并在下一轮继续。",
+                    "⚠️ 检测到上下文 token 异常膨胀，将先执行强制压缩并在下一轮继续。" + diag,
                     should_warn=True,
                 )
             return LoopBudgetDecision(
@@ -109,7 +150,7 @@ class LoopBudgetGuard:
                 "token_growth_terminated",
                 "⚠️ 检测到上下文 token 异常膨胀且工具调用已接近预算，"
                 "已尝试压缩但仍未恢复到安全区，已自动终止以避免继续扩大上下文。"
-                "请基于已有信息总结结论。",
+                "请基于已有信息总结结论。" + diag,
             )
         return LoopBudgetDecision(False)
 

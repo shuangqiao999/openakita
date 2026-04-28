@@ -1138,6 +1138,9 @@ class ReasoningEngine:
                 getattr(settings, "context_token_anomaly_threshold", TOKEN_ANOMALY_THRESHOLD)
                 or TOKEN_ANOMALY_THRESHOLD
             ),
+            near_context_ratio=float(
+                getattr(settings, "context_hard_terminate_ratio", 0.98) or 0.98
+            ),
         )
         _last_real_input_tokens: int | None = None
 
@@ -2294,12 +2297,34 @@ class ReasoningEngine:
                         react_trace,
                         _in_tokens + _out_tokens,
                     )
+                    _pressure = self._context_manager.calculate_context_pressure(
+                        working_messages,
+                        system_prompt=_build_effective_system_prompt(),
+                        tools=tools,
+                        conversation_id=conversation_id,
+                        last_real_input_tokens=_last_real_input_tokens,
+                    )
+                    _context_safe = _pressure.trigger_tokens <= _pressure.soft_limit
+                    _iter_trace["context_pressure"] = {
+                        "messages_tokens": _pressure.messages_tokens,
+                        "system_tokens": _pressure.system_tokens,
+                        "tools_tokens": _pressure.tools_tokens,
+                        "soft_limit": _pressure.soft_limit,
+                        "hard_limit": _pressure.hard_limit,
+                        "trigger_tokens": _pressure.trigger_tokens,
+                        "max_tokens": _pressure.max_tokens,
+                        "context_safe": _context_safe,
+                        "input_tokens": _in_tokens,
+                        "output_tokens": _out_tokens,
+                    }
                     _budget_decision = _loop_budget_guard.check_token_growth(
                         _in_tokens,
                         _out_tokens,
                         max_recoveries=int(
                             getattr(settings, "context_token_anomaly_max_recoveries", 1) or 1
                         ),
+                        context_safe=_context_safe,
+                        max_context_tokens=_pressure.max_tokens,
                     )
                     if _budget_decision.should_warn:
                         before = self._context_manager.estimate_messages_tokens(working_messages)
@@ -2314,20 +2339,45 @@ class ReasoningEngine:
                             )
                             working_messages = compacted
                             after = self._context_manager.estimate_messages_tokens(working_messages)
+                            _recovered_pressure = self._context_manager.calculate_context_pressure(
+                                working_messages,
+                                system_prompt=_build_effective_system_prompt(),
+                                tools=tools,
+                                conversation_id=conversation_id,
+                                last_real_input_tokens=_last_real_input_tokens,
+                            )
                             _loop_budget_guard.check_token_growth(
                                 _in_tokens,
                                 _out_tokens,
                                 recovered=True,
+                                context_safe=(
+                                    _recovered_pressure.trigger_tokens
+                                    <= _recovered_pressure.soft_limit
+                                ),
+                                max_context_tokens=_recovered_pressure.max_tokens,
                             )
                             _iter_trace["token_anomaly_recovered"] = {
                                 "before_tokens": before,
                                 "after_tokens": after,
+                                "after_trigger_tokens": _recovered_pressure.trigger_tokens,
+                                "after_soft_limit": _recovered_pressure.soft_limit,
                             }
                             continue
                         except Exception as exc:
                             logger.warning("[ReAct] Token anomaly recovery compact failed: %s", exc)
                     if _budget_decision.should_stop:
                         msg = _budget_decision.message
+                        _iter_trace["token_anomaly_terminated"] = {
+                            "exit_reason": _budget_decision.exit_reason,
+                            "input_tokens": _in_tokens,
+                            "output_tokens": _out_tokens,
+                            "max_tokens": _pressure.max_tokens,
+                            "hard_terminate_ratio": float(
+                                getattr(settings, "context_hard_terminate_ratio", 0.98) or 0.98
+                            ),
+                            "anomaly_threshold": _loop_budget_guard.token_anomaly_threshold,
+                            "tool_calls_seen": _loop_budget_guard.total_tool_calls_seen,
+                        }
                         self._save_react_trace(
                             react_trace,
                             conversation_id,
@@ -2773,6 +2823,9 @@ class ReasoningEngine:
                 token_anomaly_threshold=int(
                     getattr(settings, "context_token_anomaly_threshold", TOKEN_ANOMALY_THRESHOLD)
                     or TOKEN_ANOMALY_THRESHOLD
+                ),
+                near_context_ratio=float(
+                    getattr(settings, "context_hard_terminate_ratio", 0.98) or 0.98
                 ),
             )
 
@@ -4472,12 +4525,34 @@ class ReasoningEngine:
                             react_trace,
                             _in_tokens + _out_tokens,
                         )
+                        _pressure = self._context_manager.calculate_context_pressure(
+                            working_messages,
+                            system_prompt=effective_prompt,
+                            tools=tools,
+                            conversation_id=conversation_id,
+                            last_real_input_tokens=_last_real_input_tokens,
+                        )
+                        _context_safe = _pressure.trigger_tokens <= _pressure.soft_limit
+                        _iter_trace["context_pressure"] = {
+                            "messages_tokens": _pressure.messages_tokens,
+                            "system_tokens": _pressure.system_tokens,
+                            "tools_tokens": _pressure.tools_tokens,
+                            "soft_limit": _pressure.soft_limit,
+                            "hard_limit": _pressure.hard_limit,
+                            "trigger_tokens": _pressure.trigger_tokens,
+                            "max_tokens": _pressure.max_tokens,
+                            "context_safe": _context_safe,
+                            "input_tokens": _in_tokens,
+                            "output_tokens": _out_tokens,
+                        }
                         _budget_decision = _loop_budget_guard.check_token_growth(
                             _in_tokens,
                             _out_tokens,
                             max_recoveries=int(
                                 getattr(settings, "context_token_anomaly_max_recoveries", 1) or 1
                             ),
+                            context_safe=_context_safe,
+                            max_context_tokens=_pressure.max_tokens,
                         )
                         if _budget_decision.should_warn:
                             before = self._context_manager.estimate_messages_tokens(working_messages)
@@ -4492,14 +4567,28 @@ class ReasoningEngine:
                                 )
                                 working_messages = compacted
                                 after = self._context_manager.estimate_messages_tokens(working_messages)
+                                _recovered_pressure = self._context_manager.calculate_context_pressure(
+                                    working_messages,
+                                    system_prompt=effective_prompt,
+                                    tools=tools,
+                                    conversation_id=conversation_id,
+                                    last_real_input_tokens=_last_real_input_tokens,
+                                )
                                 _loop_budget_guard.check_token_growth(
                                     _in_tokens,
                                     _out_tokens,
                                     recovered=True,
+                                    context_safe=(
+                                        _recovered_pressure.trigger_tokens
+                                        <= _recovered_pressure.soft_limit
+                                    ),
+                                    max_context_tokens=_recovered_pressure.max_tokens,
                                 )
                                 _iter_trace["token_anomaly_recovered"] = {
                                     "before_tokens": before,
                                     "after_tokens": after,
+                                    "after_trigger_tokens": _recovered_pressure.trigger_tokens,
+                                    "after_soft_limit": _recovered_pressure.soft_limit,
                                 }
                                 continue
                             except Exception as exc:
@@ -4509,6 +4598,17 @@ class ReasoningEngine:
                                 )
                         if _budget_decision.should_stop:
                             msg = _budget_decision.message
+                            _iter_trace["token_anomaly_terminated"] = {
+                                "exit_reason": _budget_decision.exit_reason,
+                                "input_tokens": _in_tokens,
+                                "output_tokens": _out_tokens,
+                                "max_tokens": _pressure.max_tokens,
+                                "hard_terminate_ratio": float(
+                                    getattr(settings, "context_hard_terminate_ratio", 0.98) or 0.98
+                                ),
+                                "anomaly_threshold": _loop_budget_guard.token_anomaly_threshold,
+                                "tool_calls_seen": _loop_budget_guard.total_tool_calls_seen,
+                            }
                             self._save_react_trace(
                                 react_trace,
                                 conversation_id,

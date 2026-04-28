@@ -529,13 +529,23 @@ class Settings(BaseSettings):
         description="用上一轮真实 input_tokens 反向校准上下文压力时的衰减系数",
     )
     context_token_anomaly_threshold: int = Field(
-        default=40000,
-        description="单轮 LLM usage 触发强制压缩/降载的阈值（不是直接终止阈值）",
+        default=80000,
+        description="单轮 LLM usage 触发强制压缩/降载的阈值（不是直接终止阈值）。值越大越宽松，长任务建议 ≥80000",
     )
     context_token_anomaly_max_recoveries: int = Field(
-        default=1,
+        default=3,
         ge=0,
-        description="单任务内 token 异常触发后允许强制压缩恢复的次数，超过后才允许硬终止",
+        description="单任务内 token 异常触发后允许强制压缩恢复的次数，超过后才允许硬终止；长任务建议 3~5",
+    )
+    context_hard_terminate_ratio: float = Field(
+        default=0.98,
+        ge=0.5,
+        le=0.99,
+        description=(
+            "硬终止比例：单轮 input+output tokens 占模型上下文窗口的此比例时，"
+            "LoopBudgetGuard 才允许真正终止任务（0.5~0.99，越大越宽松）。"
+            "如果当前压力安全且未到此比例，即使触发了 token 异常阈值也只压缩不终止"
+        ),
     )
     context_cached_summary_chars: int = Field(
         default=2400,
@@ -550,9 +560,9 @@ class Settings(BaseSettings):
         description="发送给 LLM API 的 tools schema 估算 token 预算，超出后动态 defer 非核心工具",
     )
     same_tool_call_limit: int = Field(
-        default=5,
+        default=8,
         ge=1,
-        description="同一工具同参数在单任务内允许执行的最大次数",
+        description="同一工具同参数在单任务内允许执行的最大次数；长任务建议 8~12",
     )
     readonly_stagnation_limit: int = Field(
         default=3,
@@ -560,9 +570,9 @@ class Settings(BaseSettings):
         description="只读探索连续无新信息的软提醒轮数",
     )
     readonly_stagnation_hard_limit: int = Field(
-        default=6,
+        default=10,
         ge=1,
-        description="只读探索连续无新信息的硬终止轮数",
+        description="只读探索连续无新信息的硬终止轮数；长任务建议 10~15",
     )
 
     # === Harness 配置 ===
@@ -578,7 +588,8 @@ class Settings(BaseSettings):
         default=100, description="单次任务最大迭代次数 (0=不限制，默认 100；与 max_iterations 对齐)"
     )
     task_budget_tool_calls: int = Field(
-        default=30, description="单次任务最大工具调用次数 (0=不限制，默认 30)"
+        default=100,
+        description="单次任务最大工具调用次数 (0=不限制，默认 100；长任务/复杂工作流可设 0 或 200+)",
     )
 
     # === 追踪配置 ===
