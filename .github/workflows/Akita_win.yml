@@ -140,6 +140,19 @@ jobs:
           ref: ${{ needs.get_version.outputs.ref }}
           fetch-depth: 0
 
+      # ========== 添加 concurrency 控制 ==========
+      - name: 显示构建信息
+        shell: bash
+        run: |
+          echo "=========================================="
+          echo "🔨 Windows AVX2/BMI2 优化构建"
+          echo "=========================================="
+          echo "版本标签: ${{ env.RELEASE_TAG }}"
+          echo "提交引用: ${{ env.CHECKOUT_REF }}"
+          echo "触发事件: ${{ github.event_name }}"
+          echo "运行 ID: ${{ github.run_id }}"
+          echo "=========================================="
+
       # ========== 清理所有缓存 ==========
       - name: 🧹 清理所有构建缓存
         shell: bash
@@ -174,6 +187,20 @@ jobs:
           echo "=========================================="
           echo "✅ 所有缓存清理完成"
           echo "=========================================="
+
+      - name: 验证版本与标签一致性
+        if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags') }}
+        shell: bash
+        run: |
+          if [ -f "pyproject.toml" ]; then
+            PYPI_VERSION=$(grep -m 1 '^version' pyproject.toml | cut -d'"' -f2)
+            TAG_VERSION="${{ needs.get_version.version }}"
+            if [ "$TAG_VERSION" != "$PYPI_VERSION" ]; then
+              echo "❌ 标签版本 $TAG_VERSION 与 pyproject.toml 版本 $PYPI_VERSION 不匹配"
+              exit 1
+            fi
+            echo "✅ 版本一致性验证通过: $TAG_VERSION"
+          fi
 
       - name: 创建 docs-site 目录（修复构建错误）
         shell: bash
@@ -271,22 +298,33 @@ jobs:
           rm -rf build/pyinstaller_work
           rm -rf build/modules
 
-      - name: 准备 bootstrap wheel 资源
+      - name: 准备 bootstrap wheel 资源（含 uv 二进制）
         shell: bash
         run: |
           set -euo pipefail
           rm -rf build/bootstrap-wheels
+          rm -rf build/bootstrap-uv
           mkdir -p build/bootstrap-wheels
+          mkdir -p build/bootstrap-uv
+          
           python -m build --wheel --outdir build/bootstrap-wheels
+          
+          # 安装 uv 二进制用于 bootstrap
+          python -m pip install --target build/bootstrap-uv --prefer-binary uv
+          
           python - <<'PY'
           import hashlib
           import json
           import shutil
+          import stat
           from pathlib import Path
 
           root = Path.cwd()
           bootstrap_dir = root / "apps" / "setup-center" / "src-tauri" / "resources" / "bootstrap"
           wheel_dir = bootstrap_dir / "wheels"
+          bin_dir = bootstrap_dir / "bin"
+          
+          # 复制 wheel
           wheels = sorted((root / "build" / "bootstrap-wheels").glob("openakita-*.whl"))
           if len(wheels) != 1:
               raise SystemExit(f"expected exactly one openakita wheel, found {len(wheels)}")
@@ -298,14 +336,43 @@ jobs:
           dest = wheel_dir / wheel.name
           shutil.copy2(wheel, dest)
 
+          # 复制 uv 二进制
+          uv_bin_name = "uv.exe"
+          uv_candidates = [
+              root / "build" / "bootstrap-uv" / "bin" / uv_bin_name,
+              root / "build" / "bootstrap-uv" / "Scripts" / uv_bin_name,
+          ]
+          uv_src = next((p for p in uv_candidates if p.exists()), None)
+          if uv_src is None:
+              raise SystemExit(f"uv binary not found in bootstrap-uv target: {uv_candidates}")
+          bin_dir.mkdir(parents=True, exist_ok=True)
+          uv_dest = bin_dir / uv_bin_name
+          shutil.copy2(uv_src, uv_dest)
+
+          # 更新 manifest
           sha256 = hashlib.sha256(dest.read_bytes()).hexdigest()
+          uv_sha256 = hashlib.sha256(uv_dest.read_bytes()).hexdigest()
+          
           manifest_path = bootstrap_dir / "manifest.json"
-          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-          manifest["wheel"]["name"] = f"wheels/{dest.name}"
-          manifest["wheel"]["sha256"] = sha256
+          if manifest_path.exists():
+              manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          else:
+              manifest = {}
+          
+          manifest["wheel"] = {
+              "name": f"wheels/{dest.name}",
+              "sha256": sha256
+          }
+          manifest["uv"] = {
+              "path": "bin/uv.exe",
+              "sha256": uv_sha256
+          }
           manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+          
           print(f"Bootstrap wheel: {dest}")
-          print(f"sha256: {sha256}")
+          print(f"wheel sha256: {sha256}")
+          print(f"Bootstrap uv: {uv_dest}")
+          print(f"uv sha256: {uv_sha256}")
           PY
 
       - name: 打包 Python 后端（AVX2 + BMI2 双重极致优化）
@@ -341,13 +408,14 @@ jobs:
           echo "资源已复制:"
           du -sh "$RESOURCE_DIR"/*
 
-      - name: 验证 bootstrap wheel 资源
+      - name: 验证 bootstrap 资源配置
         shell: bash
         run: |
           if [ ! -f "apps/setup-center/src-tauri/resources/bootstrap/manifest.json" ]; then
-            echo "警告: bootstrap manifest.json 不存在"
+            echo "⚠️ 警告: bootstrap manifest.json 不存在"
           else
             echo "✅ bootstrap 资源配置验证通过"
+            cat apps/setup-center/src-tauri/resources/bootstrap/manifest.json
           fi
 
       - name: 验证打包的 Python 后端
