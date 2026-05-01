@@ -11,6 +11,16 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Checkbox } from "../components/ui/checkbox";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "../components/ui/alert-dialog";
 import { cn } from "../lib/utils";
 
 // Mirrors PluginErrorTracker.health_snapshot() in src/openakita/plugins/sandbox.py.
@@ -229,6 +239,7 @@ export default function PluginManagerView({ visible, httpApiBase }: Props) {
   const [notAvailable, setNotAvailable] = useState(false);
   const [installUrl, setInstallUrl] = useState("");
   const [installing, setInstalling] = useState(false);
+  const [installConfirmOpen, setInstallConfirmOpen] = useState(false);
 
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [readmeCache, setReadmeCache] = useState<Record<string, string>>({});
@@ -532,16 +543,22 @@ export default function PluginManagerView({ visible, httpApiBase }: Props) {
     }
   };
 
-  const handleInstall = async () => {
+  const requestInstall = () => {
     if (!installUrl.trim()) return;
-    if (!confirm(t("plugins.trustWarning"))) return;
+    setInstallConfirmOpen(true);
+  };
+
+  const handleInstall = async () => {
+    const source = installUrl.trim();
+    if (!source) return;
+    setInstallConfirmOpen(false);
     setInstalling(true);
     setError("");
     try {
       await safeFetch(`${apiBaseRef.current()}/api/plugins/install`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ source: installUrl.trim() }),
+        body: JSON.stringify({ source }),
         signal: longOpSignal(),
       });
       setInstallUrl("");
@@ -788,12 +805,12 @@ export default function PluginManagerView({ visible, httpApiBase }: Props) {
               placeholder={t("plugins.installPlaceholder")}
               value={installUrl}
               onChange={(e) => setInstallUrl(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && !installBtnDisabled && handleInstall()}
+              onKeyDown={(e) => e.key === "Enter" && !installBtnDisabled && requestInstall()}
               disabled={notAvailable}
               className="flex-1"
             />
             <div className="flex flex-wrap gap-2">
-              <Button onClick={handleInstall} disabled={installBtnDisabled}>
+              <Button onClick={requestInstall} disabled={installBtnDisabled}>
                 {installing ? t("plugins.installing") : t("plugins.install")}
               </Button>
               <Button variant="outline" onClick={() => fetchPlugins(false)}>
@@ -1510,6 +1527,23 @@ export default function PluginManagerView({ visible, httpApiBase }: Props) {
           {toast.msg}
         </div>
       )}
+
+      <AlertDialog open={installConfirmOpen} onOpenChange={setInstallConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("plugins.install")}</AlertDialogTitle>
+            <AlertDialogDescription className="whitespace-pre-line">
+              {t("plugins.trustWarning")}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={installing}>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction onClick={handleInstall} disabled={installing}>
+              {installing ? t("plugins.installing") : t("plugins.install")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

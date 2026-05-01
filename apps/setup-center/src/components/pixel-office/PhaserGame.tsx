@@ -75,6 +75,10 @@ export const PhaserGame = forwardRef<GameRef, PhaserGameProps>(function PhaserGa
         antialias: false,
         backgroundColor: '#1e1e2e',
         scene: [OfficeScene],
+        fps: {
+          target: 120,
+          min: 30,
+        },
         scale: {
           mode: Phaser.Scale.RESIZE,
           autoCenter: Phaser.Scale.CENTER_BOTH,

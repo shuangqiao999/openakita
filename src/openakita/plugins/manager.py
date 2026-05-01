@@ -309,13 +309,12 @@ class PluginManager:
                     timeout=manifest.load_timeout,
                 )
                 logger.info("Plugin '%s' v%s loaded", manifest.id, manifest.version)
-            except (asyncio.TimeoutError, TimeoutError):
+            except TimeoutError:
                 msg = f"load timeout ({manifest.load_timeout}s)"
                 logger.error("Plugin '%s' %s, skipped", manifest.id, msg)
                 self._failed[manifest.id] = msg
                 self._state.record_error(manifest.id, msg)
             except Exception as e:
-                msg = f"{type(e).__name__}: {e}"
                 if (
                     isinstance(e, ModuleNotFoundError)
                     and getattr(e, "name", "") == "openakita_plugin_sdk"
@@ -329,7 +328,16 @@ class PluginManager:
                     logger.error(
                         "Plugin '%s' failed to load: %s", manifest.id, msg
                     )
+                elif isinstance(e, ModuleNotFoundError):
+                    msg = self._format_missing_module_error(manifest, plugin_dir, e)
+                    logger.error(
+                        "Plugin '%s' failed to load: %s",
+                        manifest.id,
+                        msg,
+                        exc_info=True,
+                    )
                 else:
+                    msg = f"{type(e).__name__}: {e}"
                     logger.error(
                         "Plugin '%s' failed to load: %s",
                         manifest.id,
@@ -342,6 +350,39 @@ class PluginManager:
         self._refresh_skill_catalog()
         self._reload_llm_registries()
         self._save_state()
+
+    @staticmethod
+    def _format_missing_module_error(
+        manifest: PluginManifest,
+        plugin_dir: Path,
+        exc: ModuleNotFoundError,
+    ) -> str:
+        """Explain plugin import failures in terms users can act on.
+
+        Raw ``ModuleNotFoundError`` is especially confusing in packaged
+        builds because source-mode venvs often have the dependency already.
+        This keeps the host diagnosis focused on the existing install paths
+        instead of inventing another dependency manager.
+        """
+        missing = getattr(exc, "name", "") or str(exc)
+        deps_dir = plugin_dir / "deps"
+        module_dir = Path.home() / ".openakita" / "modules" / manifest.id / "site-packages"
+        pip_specs: list[str] = []
+        try:
+            from .installer import _parse_pip_specs
+
+            pip_specs = _parse_pip_specs(manifest.requires)
+        except Exception:
+            pip_specs = []
+
+        declared = f" declared requires.pip={pip_specs!r};" if pip_specs else ""
+        return (
+            f"ModuleNotFoundError: missing module {missing!r} while loading plugin "
+            f"{manifest.id!r}.{declared} checked plugin deps={deps_dir}; "
+            f"optional module path={module_dir}. Reinstall the plugin to run host "
+            "requires.pip, or use the plugin's dependency/settings panel if it "
+            "ships an in-plugin bootstrap."
+        )
 
     def _reload_llm_registries(self) -> None:
         """Notify LLM registries to pick up plugin-provided providers."""
@@ -390,7 +431,30 @@ class PluginManager:
         plugin_instance: PluginBase | None = None
         module_name = ""
         sys_path_entry = ""
+        deps_path_entry = ""
         imported_modules: set[str] = set()
+
+        # Surface missing pip deps loudly during plugin load instead of letting
+        # the user discover them via an opaque ``ModuleNotFoundError`` 30 seconds
+        # into a task. We only WARN — a plugin may still register routes / UI
+        # without its pip deps, with feature-level errors guiding the user.
+        if manifest.plugin_type == "python":
+            try:
+                from .installer import _parse_pip_specs, deps_appear_installed
+
+                pip_specs = _parse_pip_specs(manifest.requires)
+                if pip_specs and not deps_appear_installed(plugin_dir, manifest.requires):
+                    logger.warning(
+                        "Plugin '%s' declares pip deps %s but %s is empty. "
+                        "Run reinstall to trigger install_pip_deps, or place "
+                        "the wheels under ~/.openakita/modules/%s/site-packages/.",
+                        manifest.id,
+                        pip_specs,
+                        plugin_dir / "deps",
+                        manifest.id,
+                    )
+            except Exception:
+                pass
 
         try:
             if manifest.plugin_type == "python":
@@ -398,6 +462,7 @@ class PluginManager:
                     plugin_instance,
                     module_name,
                     sys_path_entry,
+                    deps_path_entry,
                     imported_modules,
                 ) = self._load_python_plugin(manifest, plugin_dir)
                 plugin_instance.on_load(api)
@@ -417,6 +482,7 @@ class PluginManager:
             plugin_dir=plugin_dir,
             module_name=module_name,
             sys_path_entry=sys_path_entry,
+            deps_path_entry=deps_path_entry,
             imported_modules=imported_modules,
         )
 
@@ -490,13 +556,23 @@ class PluginManager:
 
     def _load_python_plugin(
         self, manifest: PluginManifest, plugin_dir: Path
-    ) -> tuple[PluginBase, str, str, set[str]]:
+    ) -> tuple[PluginBase, str, str, str, set[str]]:
         """Load a Python plugin module.
 
-        Returns ``(instance, module_name, sys_path_entry, imported_modules)``.
+        Returns ``(instance, module_name, sys_path_entry, deps_path_entry,
+        imported_modules)``.
+
         ``imported_modules`` lists submodules newly registered in
         ``sys.modules`` whose source file lives under ``plugin_dir`` — so the
         unloader can purge them and avoid stale-module reuse on reinstall.
+
+        ``deps_path_entry`` is ``<plugin_dir>/deps/`` when that directory
+        exists (created by ``installer.install_pip_deps`` from
+        ``requires.pip``). It is appended (not inserted) to ``sys.path`` so
+        plugin-private third-party packages become importable, while
+        PyInstaller's bundled stdlib / pydantic on the front of the path
+        keeps winning over any plugin-local copy — the same precaution
+        ``runtime_env.inject_module_paths`` takes for ``~/.openakita/modules``.
         """
         entry_path = plugin_dir / manifest.entry
         if not entry_path.exists():
@@ -515,6 +591,13 @@ class PluginManager:
         if plugin_dir_str not in sys.path:
             sys.path.insert(0, plugin_dir_str)
             added_to_path = True
+
+        deps_dir = plugin_dir / "deps"
+        deps_dir_str = str(deps_dir)
+        deps_added_to_path = False
+        if deps_dir.is_dir() and deps_dir_str not in sys.path:
+            sys.path.append(deps_dir_str)
+            deps_added_to_path = True
 
         try:
             plugin_dir_resolved = plugin_dir.resolve()
@@ -585,6 +668,11 @@ class PluginManager:
                     sys.path.remove(plugin_dir_str)
                 except ValueError:
                     pass
+            if deps_added_to_path:
+                try:
+                    sys.path.remove(deps_dir_str)
+                except ValueError:
+                    pass
             raise
 
         # Collect plugin-local submodules pulled into sys.modules during exec.
@@ -612,6 +700,11 @@ class PluginManager:
                     sys.path.remove(plugin_dir_str)
                 except ValueError:
                     pass
+            if deps_added_to_path:
+                try:
+                    sys.path.remove(deps_dir_str)
+                except ValueError:
+                    pass
             raise AttributeError(f"Plugin module {entry_path} must export a 'Plugin' class")
 
         if not (isinstance(plugin_class, type) and issubclass(plugin_class, PluginBase)):
@@ -623,6 +716,11 @@ class PluginManager:
                     sys.path.remove(plugin_dir_str)
                 except ValueError:
                     pass
+            if deps_added_to_path:
+                try:
+                    sys.path.remove(deps_dir_str)
+                except ValueError:
+                    pass
             raise TypeError(
                 f"Plugin.Plugin must be a subclass of PluginBase, got {type(plugin_class)}"
             )
@@ -631,6 +729,7 @@ class PluginManager:
             plugin_class(),
             module_name,
             plugin_dir_str if added_to_path else "",
+            deps_dir_str if deps_added_to_path else "",
             imported_modules,
         )
 
@@ -978,6 +1077,11 @@ class PluginManager:
                 sys.path.remove(loaded.sys_path_entry)
             except ValueError:
                 pass
+        if loaded.deps_path_entry:
+            try:
+                sys.path.remove(loaded.deps_path_entry)
+            except ValueError:
+                pass
 
         # 4. Force GC — some C-extensions (sqlite3, ssl) only release OS
         #    handles when their Python wrapper is collected. We do TWO passes
@@ -1312,6 +1416,7 @@ class _LoadedPlugin:
         "plugin_dir",
         "module_name",
         "sys_path_entry",
+        "deps_path_entry",
         "imported_modules",
     )
 
@@ -1323,6 +1428,7 @@ class _LoadedPlugin:
         plugin_dir: Path,
         module_name: str = "",
         sys_path_entry: str = "",
+        deps_path_entry: str = "",
         imported_modules: set[str] | None = None,
     ) -> None:
         self.manifest = manifest
@@ -1331,6 +1437,10 @@ class _LoadedPlugin:
         self.plugin_dir = plugin_dir
         self.module_name = module_name
         self.sys_path_entry = sys_path_entry
+        # Plugin-private third-party deps dir (``<plugin_dir>/deps``) appended
+        # to ``sys.path`` at load. Empty string when the plugin declares no
+        # ``requires.pip`` (or the install hasn't happened yet).
+        self.deps_path_entry = deps_path_entry
         # Submodules imported by the plugin from its own directory; cleared on unload
         # so reinstall picks up fresh code instead of cached stale modules.
         self.imported_modules: set[str] = imported_modules or set()

@@ -1910,6 +1910,36 @@ def _reset_globals():
     _session_manager = None
 
 
+def _install_windows_asyncio_pipe_filter() -> None:
+    """Suppress known Windows Proactor pipe-close noise without hiding real errors."""
+    if sys.platform != "win32":
+        return
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+
+    previous_handler = loop.get_exception_handler()
+
+    def _handler(loop: asyncio.AbstractEventLoop, context: dict) -> None:
+        message = str(context.get("message") or "")
+        handle = repr(context.get("handle") or "")
+        if (
+            "_ProactorBasePipeTransport._call_connection_lost" in message
+            or "_ProactorBasePipeTransport._call_connection_lost" in handle
+        ):
+            exc = context.get("exception")
+            logger.debug("Ignored Windows asyncio pipe close callback noise: %r", exc)
+            return
+        if previous_handler is not None:
+            previous_handler(loop, context)
+        else:
+            loop.default_exception_handler(context)
+
+    loop.set_exception_handler(_handler)
+
+
 @app.command()
 def serve(
     dev: bool = typer.Option(
@@ -2015,6 +2045,7 @@ def serve(
     async def _serve():
         nonlocal shutdown_event, agent_or_master, shutdown_triggered
         nonlocal _heartbeat_phase, _heartbeat_http_ready
+        _install_windows_asyncio_pipe_filter()
         shutdown_event = asyncio.Event()
         shutdown_triggered = False
         _heartbeat_phase = "initializing"
@@ -2023,6 +2054,12 @@ def serve(
 
         _version_str = get_version_string()
         logger.info(f"OpenAkita {_version_str} starting...")
+        try:
+            from .runtime_env import log_runtime_environment_report
+
+            log_runtime_environment_report()
+        except Exception:
+            logger.debug("Failed to log runtime environment report", exc_info=True)
 
         console.print(
             Panel(
@@ -2165,7 +2202,7 @@ def serve(
                         stop_im_channels(graceful=True, drain_timeout=30.0),
                         timeout=35.0,
                     )
-                except (asyncio.TimeoutError, TimeoutError):
+                except TimeoutError:
                     logger.warning("Shutdown timeout, forcing exit")
                 except Exception as e:
                     # 忽略停止过程中的异常（常见于 Windows asyncio）

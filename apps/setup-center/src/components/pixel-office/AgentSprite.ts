@@ -3,7 +3,7 @@ import { CharacterComposer } from '../pixel-avatar/CharacterComposer';
 import { TILE_SIZE } from './TilesetManager';
 
 const SPRITE_KEY_PREFIX = 'agent_';
-const MOVE_SPEED = 100;
+const MOVE_SPEED = 320;
 const LABEL_OFFSET_Y = 36;
 const BUBBLE_OFFSET_Y = -40;
 const EMOTE_OFFSET_Y = -38;
@@ -164,7 +164,7 @@ export class AgentSprite {
       targets: this.sprite,
       x: targetX,
       y: targetY,
-      duration: Math.max(duration, 200),
+      duration: Math.max(duration, 80),
       ease: 'Quad.easeInOut',
       onUpdate: () => {
         this.nameLabel.setPosition(this.sprite.x, this.sprite.y + LABEL_OFFSET_Y);

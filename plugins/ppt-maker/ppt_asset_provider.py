@@ -18,9 +18,29 @@ import asyncio
 import logging
 import re
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
-from pptx.enum.shapes import MSO_SHAPE  # type: ignore[import-not-found]
+try:
+    from pptx.enum.shapes import MSO_SHAPE  # type: ignore[import-not-found]
+except ModuleNotFoundError as exc:
+    if exc.name != "pptx":
+        raise
+    MSO_SHAPE = SimpleNamespace(
+        CLOUD_CALLOUT=108,
+        DOWN_ARROW=36,
+        GEAR_6=172,
+        ISOSCELES_TRIANGLE=7,
+        LIGHTNING_BOLT=22,
+        OVAL=9,
+        PARALLELOGRAM=2,
+        PENTAGON=56,
+        RECTANGLE=1,
+        RIGHT_ARROW=33,
+        ROUNDED_RECTANGLE=5,
+        STAR_5_POINT=92,
+        UP_ARROW=35,
+    )
 
 logger = logging.getLogger(__name__)
 

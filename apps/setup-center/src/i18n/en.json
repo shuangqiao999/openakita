@@ -391,6 +391,8 @@
       "disableAll": "Disable all",
       "disableAllTitle": "Disable all skills in this category",
       "disabledAll": "Disabled all skills in category \"{{name}}\"",
+      "noSkillsInCategory": "No actionable skills found in category \"{{name}}\"",
+      "allSystemSkills": "All {{count}} skills in \"{{name}}\" are system skills and cannot be toggled",
       "uncategorized": "Uncategorized",
       "installToTitle": "Choose a category to install into (leave empty for top-level)",
       "installToTop": "Top-level (no category)",

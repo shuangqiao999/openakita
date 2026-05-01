@@ -10,30 +10,69 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable
 
-from pptx import Presentation  # type: ignore[import-not-found]
-from pptx.chart.data import CategoryChartData  # type: ignore[import-not-found]
-from pptx.dml.color import RGBColor  # type: ignore[import-not-found]
-from pptx.enum.chart import XL_CHART_TYPE  # type: ignore[import-not-found]
-from pptx.enum.shapes import MSO_SHAPE  # type: ignore[import-not-found]
-from pptx.enum.text import PP_ALIGN  # type: ignore[import-not-found]
-from pptx.util import Emu, Inches, Pt  # type: ignore[import-not-found]
+Presentation: Any = None
+CategoryChartData: Any = None
+RGBColor: Any = None
+XL_CHART_TYPE: Any = None
+MSO_SHAPE: Any = None
+PP_ALIGN: Any = SimpleNamespace(LEFT=None, CENTER=None)
+Emu: Any = None
+Inches: Any = None
+Pt: Any = None
 
 logger = logging.getLogger(__name__)
 
-SLIDE_W = Inches(13.333)
-SLIDE_H = Inches(7.5)
+SLIDE_W: Any = None
+SLIDE_H: Any = None
 
 
 class PptxExportError(RuntimeError):
     """Raised when PPTX export fails."""
 
 
+def _load_pptx() -> None:
+    """Import python-pptx only when editable export is actually requested."""
+    global CategoryChartData, Emu, Inches, MSO_SHAPE, PP_ALIGN, Presentation, Pt
+    global RGBColor, SLIDE_H, SLIDE_W, XL_CHART_TYPE
+    if Presentation is not None:
+        return
+    try:
+        from pptx import Presentation as _Presentation  # type: ignore[import-not-found]
+        from pptx.chart.data import CategoryChartData as _CategoryChartData  # type: ignore[import-not-found]
+        from pptx.dml.color import RGBColor as _RGBColor  # type: ignore[import-not-found]
+        from pptx.enum.chart import XL_CHART_TYPE as _XL_CHART_TYPE  # type: ignore[import-not-found]
+        from pptx.enum.shapes import MSO_SHAPE as _MSO_SHAPE  # type: ignore[import-not-found]
+        from pptx.enum.text import PP_ALIGN as _PP_ALIGN  # type: ignore[import-not-found]
+        from pptx.util import Emu as _Emu, Inches as _Inches, Pt as _Pt  # type: ignore[import-not-found]
+    except ModuleNotFoundError as exc:
+        if exc.name == "pptx":
+            raise PptxExportError(
+                "Missing optional dependency 'python-pptx'. "
+                "Install the ppt-maker advanced_export dependency before exporting PPTX."
+            ) from exc
+        raise
+
+    Presentation = _Presentation
+    CategoryChartData = _CategoryChartData
+    RGBColor = _RGBColor
+    XL_CHART_TYPE = _XL_CHART_TYPE
+    MSO_SHAPE = _MSO_SHAPE
+    PP_ALIGN = _PP_ALIGN
+    Emu = _Emu
+    Inches = _Inches
+    Pt = _Pt
+    SLIDE_W = Inches(13.333)
+    SLIDE_H = Inches(7.5)
+
+
 class PptxExporter:
     """Render slide IR into editable PowerPoint shapes."""
 
     def export(self, slides_ir: dict[str, Any], output_path: str | Path) -> Path:
+        _load_pptx()
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         prs = Presentation()
@@ -389,8 +428,9 @@ class PptxExporter:
         size: int = 16,
         bold: bool = False,
         color: str | None = None,
-        align: Any = PP_ALIGN.LEFT,
+        align: Any = None,
     ) -> None:
+        align = PP_ALIGN.LEFT if align is None else align
         l = left if not isinstance(left, (int, float)) else Inches(left)
         t = top if not isinstance(top, (int, float)) else Inches(top)
         w = width if not isinstance(width, (int, float)) else Inches(width)

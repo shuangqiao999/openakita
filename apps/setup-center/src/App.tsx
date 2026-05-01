@@ -2938,7 +2938,12 @@ function MainApp() {
   function renderRuntimeBootstrapPanel() {
     const stage = installProgress?.stage || (serviceStatus?.running ? "运行环境已就绪" : "等待启动后端");
     const percent = installProgress?.percent ?? (serviceStatus?.running ? 100 : 0);
-    const runtimeLogHint = "~/.openakita/runtime/logs/bootstrap.log";
+    const runtimeRoot = info?.openakitaRootDir
+      ? joinPath(info.openakitaRootDir, "runtime")
+      : "~/.openakita/runtime";
+    const appVenvHint = joinPath(runtimeRoot, "app-venv");
+    const agentVenvHint = joinPath(runtimeRoot, "agent-venv");
+    const runtimeLogHint = joinPath(joinPath(runtimeRoot, "logs"), "bootstrap.log");
     return (
       <div className="mx-auto w-full max-w-6xl px-6 pt-5">
         <div className="card border border-blue-200/70 bg-blue-50/50 dark:border-blue-500/30 dark:bg-blue-950/20">
@@ -2967,8 +2972,8 @@ function MainApp() {
           <div className="mt-3 grid gap-2 text-sm text-muted-foreground md:grid-cols-2">
             <div>当前阶段：<span className="font-medium text-foreground">{stage}</span></div>
             <div>默认镜像：<span className="font-mono text-xs">{indexUrl || "https://mirrors.aliyun.com/pypi/simple/"}</span></div>
-            <div>App venv：<span className="font-mono text-xs">~/.openakita/runtime/app-venv</span></div>
-            <div>Agent venv：<span className="font-mono text-xs">~/.openakita/runtime/agent-venv</span></div>
+            <div>App venv：<span className="font-mono text-xs">{appVenvHint}</span></div>
+            <div>Agent venv：<span className="font-mono text-xs">{agentVenvHint}</span></div>
             <div>日志路径：<span className="font-mono text-xs">{runtimeLogHint}</span></div>
             <div>状态：<span className="font-medium">{venvStatus || (serviceStatus?.running ? "后端运行中" : "尚未启动")}</span></div>
           </div>

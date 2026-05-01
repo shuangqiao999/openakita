@@ -1929,12 +1929,18 @@
         const busy = !!dep.busy;
         const opKind = dep.op_kind || "install";
         const logLines = dep.log_tail || [];
+        const checks = dep.checks || [];
+        const missingChecks = checks.filter((item) => !item.found);
+        const firstPath = checks.find((item) => item.path)?.path || "";
         return (
           <div className="pydep-row">
             <div className="pydep-row__main">
               <strong>{dep.id}</strong>
               <span>{dep.description}</span>
               <code>{dep.packages?.length ? dep.packages.join(" · ") : "仅检测"}</code>
+              {dep.id === "advanced_export" && !dep.installed && (
+                <small className="text-muted">缺少 python-pptx 时只影响 PPTX 导出，不影响插件加载和设置页。</small>
+              )}
             </div>
             <div className="pydep-row__status">
               {busy ? (
@@ -1958,10 +1964,34 @@
               {busy && <button className="btn btn-sm" disabled>{opKind === "uninstall" ? "卸载中..." : "安装中..."}</button>}
             </div>
             <div className="pydep-row__detail">
+              <div className="deps-help" style={{marginTop: 8, marginBottom: 8}}>
+                <div>检测环境：当前 OpenAkita 运行进程可见的 Python 路径，不等同于源码开发 venv。</div>
+                {dep.python_executable && <div>Python：<code>{dep.python_executable}</code></div>}
+                {dep.target_dir && <div>安装目标：<code>{dep.target_dir}</code></div>}
+                {firstPath && <div>当前导入位置：<code>{firstPath}</code></div>}
+                {missingChecks.length > 0 && (
+                  <div>缺失导入：{missingChecks.map((item) => item.import).join(" / ")}</div>
+                )}
+              </div>
+              {checks.length > 0 && (
+                <div className="experimental-list" style={{marginBottom: 8}}>
+                  {checks.map((item) => (
+                    <div className="experimental-row" key={item.import}>
+                      <div>
+                        <strong>{item.import}</strong>
+                        <span>{item.package}{item.version ? ` · v${item.version}` : ""}</span>
+                        {item.path && <code>{item.path}</code>}
+                        {!item.found && item.error && <span>{item.error}</span>}
+                      </div>
+                      <span>{item.found ? "可导入" : "缺失"}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
               {!busy && dep.installed && confirmingUninstall && (
                 <div className="sysdep-card__sudo-hint" style={{borderColor:"var(--danger)", background:"rgba(239,68,68,.08)"}}>
-                  <div>确认卸载这个依赖组吗？这些包安装在当前 Python 环境中，卸载后对应能力会不可用。</div>
-                  <div className="sysdep-card__sudo-cmd"><code>pip uninstall -y {dep.packages?.join(" ")}</code></div>
+                  <div>确认移除这个依赖组吗？系统只会清理本插件私有依赖目录中的文件，移除后对应能力会不可用。</div>
+                  <div className="sysdep-card__sudo-cmd"><code>{dep.target_dir || "plugin python_deps"}</code></div>
                   <div className="flex gap-2" style={{justifyContent:"flex-end", marginTop: 10}}>
                     <button className="btn btn-sm" onClick={() => setConfirmingUninstall(false)}>取消</button>
                     <button className="btn btn-sm btn-danger" onClick={() => { setConfirmingUninstall(false); onUninstall(dep.id); }}>确认卸载</button>
@@ -2127,7 +2157,7 @@
                 <h3 className="setting-title">系统组件与依赖下载</h3>
                 <div className="deps-help deps-help--system">
                   <strong>可选依赖只服务于对应能力，不会影响基础主题生成。</strong>
-                  <div>文档解析、表格处理、图表渲染、高级导出和 Marp 桥接都按需安装。这里使用白名单依赖组，禁止输入任意 pip 包名。安装会调用当前 OpenAkita 使用的 Python 环境执行 pip，完成后自动刷新状态。</div>
+                  <div>文档解析、表格处理、图表渲染、高级导出和 Marp 桥接都按需安装。这里检测的是当前 OpenAkita 运行环境，不是源码运行时的 venv。安装会调用打包环境可用的真实 Python，并写入本插件私有依赖目录，完成后自动刷新状态。</div>
                 </div>
                 <div className="flex gap-2 flex-wrap" style={{marginBottom: 12}}>
                   <button className="btn btn-primary" onClick={checkHealth} disabled={checkingHealth}>

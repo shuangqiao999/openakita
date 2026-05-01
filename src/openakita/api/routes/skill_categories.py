@@ -248,17 +248,53 @@ async def patch_category(name: str, request: Request):
 # ── POST /api/skill-categories/{name:path}/enable ──────────────────────
 
 
-def _collect_external_skill_ids_in_category(
-    skill_registry, category: str
-) -> set[str]:
-    """收集指定分类下所有 *外部* 技能 ID（system 不参与 allowlist）。"""
+async def _scan_external_ids_in_category(
+    category: str,
+) -> tuple[set[str], int]:
+    """从磁盘全量扫描，收集指定分类下所有 *外部* 技能 ID。
+
+    不依赖 agent.skill_registry（可能被 prune_external_by_allowlist 裁剪过，
+    导致已禁用的技能从 registry 消失，后续 enable 找不到它们）。
+    每次都通过临时 SkillLoader 从磁盘扫描，确保总能看到全部技能。
+
+    Returns:
+        (external_ids, system_count): 外部技能 ID 集合，以及该分类中系统技能的数量。
+    """
+    from openakita.skills.loader import SkillLoader
+
+    try:
+        from openakita.config import settings
+        base_path = Path(settings.project_root)
+    except Exception:
+        base_path = Path.cwd()
+
+    loader = SkillLoader()
+    await asyncio.to_thread(loader.load_all, base_path)
+
     ids: set[str] = set()
-    for s in skill_registry.list_all():
-        if getattr(s, "system", False):
+    system_count = 0
+    for s in loader.registry.list_all():
+        if (s.category or "Uncategorized") != category:
             continue
-        if (s.category or "Uncategorized") == category:
-            ids.add(s.skill_id)
-    return ids
+        if getattr(s, "system", False):
+            system_count += 1
+            continue
+        ids.add(s.skill_id)
+    return ids, system_count
+
+
+def _ensure_skills_cache_invalidated() -> None:
+    """显式失效 GET /api/skills 的模块级缓存（安全网）。
+
+    propagate_skill_change 内部也会通过事件回调触发，但该回调在子线程中
+    运行时 WS 广播可能静默失败。这里做一次额外的显式失效，确保下次
+    GET /api/skills 一定重新扫描磁盘。
+    """
+    try:
+        from openakita.api.routes.skills import _invalidate_skills_cache
+        _invalidate_skills_cache()
+    except Exception:
+        pass
 
 
 @router.post("/api/skill-categories/{name:path}/enable")
@@ -274,23 +310,27 @@ async def enable_category(name: str, request: Request):
         upsert_skill_ids,
     )
 
-    agent = _resolve_agent(request)
-    if agent is None:
-        raise HTTPException(status_code=503, detail="Agent 尚未就绪")
-    skill_registry = getattr(agent, "skill_registry", None)
-    if skill_registry is None:
-        raise HTTPException(status_code=503, detail="SkillRegistry 未初始化")
-
-    target_ids = _collect_external_skill_ids_in_category(skill_registry, name)
+    target_ids, system_count = await _scan_external_ids_in_category(name)
+    logger.info(
+        "[category/enable] category=%r  external=%d  system=%d  ids=%s",
+        name, len(target_ids), system_count, sorted(target_ids)[:5],
+    )
     if not target_ids:
-        return {"status": "ok", "name": name, "added": 0}
+        return {
+            "status": "ok", "name": name, "added": 0,
+            "system_count": system_count,
+        }
 
     _, declared = read_allowlist()
     if declared is None:
-        # 未声明：先 materialize（compute_effective_allowlist 会扣除 default disabled）
-        loader = getattr(agent, "skill_loader", None)
-        if loader is None:
-            raise HTTPException(status_code=503, detail="SkillLoader 未初始化")
+        from openakita.skills.loader import SkillLoader
+        try:
+            from openakita.config import settings
+            base_path = Path(settings.project_root)
+        except Exception:
+            base_path = Path.cwd()
+        loader = SkillLoader()
+        await asyncio.to_thread(loader.load_all, base_path)
         try:
             effective = loader.compute_effective_allowlist(None) or set()
         except Exception:
@@ -300,7 +340,9 @@ async def enable_category(name: str, request: Request):
     else:
         upsert_skill_ids(target_ids)
 
+    _ensure_skills_cache_invalidated()
     await _propagate(request, "category_enable", rescan=False)
+    _ensure_skills_cache_invalidated()
     return {"status": "ok", "name": name, "added": len(target_ids)}
 
 
@@ -320,22 +362,27 @@ async def disable_category(name: str, request: Request):
         remove_skill_ids,
     )
 
-    agent = _resolve_agent(request)
-    if agent is None:
-        raise HTTPException(status_code=503, detail="Agent 尚未就绪")
-    skill_registry = getattr(agent, "skill_registry", None)
-    if skill_registry is None:
-        raise HTTPException(status_code=503, detail="SkillRegistry 未初始化")
-
-    target_ids = _collect_external_skill_ids_in_category(skill_registry, name)
+    target_ids, system_count = await _scan_external_ids_in_category(name)
+    logger.info(
+        "[category/disable] category=%r  external=%d  system=%d  ids=%s",
+        name, len(target_ids), system_count, sorted(target_ids)[:5],
+    )
     if not target_ids:
-        return {"status": "ok", "name": name, "removed": 0}
+        return {
+            "status": "ok", "name": name, "removed": 0,
+            "system_count": system_count,
+        }
 
     _, declared = read_allowlist()
     if declared is None:
-        loader = getattr(agent, "skill_loader", None)
-        if loader is None:
-            raise HTTPException(status_code=503, detail="SkillLoader 未初始化")
+        from openakita.skills.loader import SkillLoader
+        try:
+            from openakita.config import settings
+            base_path = Path(settings.project_root)
+        except Exception:
+            base_path = Path.cwd()
+        loader = SkillLoader()
+        await asyncio.to_thread(loader.load_all, base_path)
         try:
             effective = loader.compute_effective_allowlist(None) or set()
         except Exception:
@@ -345,7 +392,9 @@ async def disable_category(name: str, request: Request):
     else:
         remove_skill_ids(target_ids)
 
+    _ensure_skills_cache_invalidated()
     await _propagate(request, "category_disable", rescan=False)
+    _ensure_skills_cache_invalidated()
     return {"status": "ok", "name": name, "removed": len(target_ids)}
 
 

@@ -7,7 +7,7 @@ import { useTranslation } from "react-i18next";
 import type { SkillInfo, SkillConfigField, MarketplaceSkill, EnvMap } from "../types";
 import { envGet, envSet } from "../utils";
 import { IconGear, IconZap, IconPackage, IconStar, IconCheck, IconX, IconDownload, IconSearch, IconConfig, IconFolderOpen, IconEdit, IconTrash, IconEye } from "../icons";
-import { Loader2 } from "lucide-react";
+import { Loader2, ChevronDown, ChevronRight } from "lucide-react";
 import { safeFetch } from "../providers";
 import { toast } from "sonner";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
@@ -287,13 +287,15 @@ function SkillCard({
                 {uninstalling ? <Loader2 className="animate-spin" size={14} /> : <IconTrash size={14} />}
               </Button>
             )}
-            <Label className="flex items-center gap-1.5 cursor-pointer text-xs font-normal ml-2 mr-2">
-              <Checkbox
-                checked={skill.enabled !== false}
-                onCheckedChange={() => onToggleEnabled()}
-              />
-              {t("skills.enabled")}
-            </Label>
+            {!skill.system && (
+              <Label className="flex items-center gap-1.5 cursor-pointer text-xs font-normal ml-2 mr-2">
+                <Checkbox
+                  checked={skill.enabled !== false}
+                  onCheckedChange={() => onToggleEnabled()}
+                />
+                {t("skills.enabled")}
+              </Label>
+            )}
             {hasConfig && (
               <Button
                 variant={expanded ? "secondary" : "outline"}
@@ -650,6 +652,7 @@ export function SkillManager({
   const [categories, setCategories] = useState<CategoryInfo[]>([]);
   const [groupView, setGroupView] = useState(true);
   const [categoryBusy, setCategoryBusy] = useState<string | null>(null);
+  const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
   // 安装时选择落入的分类（""=不指定，安装到顶层）
   const [installCategory, setInstallCategory] = useState<string>("");
   const [detailSkill, setDetailSkill] = useState<SkillInfo | null>(null);
@@ -678,7 +681,7 @@ export function SkillManager({
       // 优先从运行中的服务 HTTP API 获取（远程模式或本地服务运行时）
       if (serviceRunning && apiBaseUrl != null) {
         try {
-          const res = await safeFetch(`${apiBaseUrl}/api/skills`, { signal: AbortSignal.timeout(15_000) });
+          const res = await safeFetch(`${apiBaseUrl}/api/skills`, { signal: AbortSignal.timeout(15_000), cache: "no-store" });
           data = await res.json();
         } catch (e) {
           httpError = String(e);
@@ -804,42 +807,78 @@ export function SkillManager({
     return () => window.removeEventListener("openakita:skills-changed", onChange);
   }, [loadSkills, loadCategories, t]);
 
+  // ── 分类操作统一刷新入口 ──
+  // 所有分类写操作成功后必须经过此函数刷新 UI。
+  // 后端 propagate_skill_change 也会通过 WebSocket 广播触发 openakita:skills-changed
+  // 事件，但 WS 到达有延迟，这里显式刷新保证操作后立即看到结果。
+  // WS 事件到达时 enabledDirtyRef 仍为 false（因为批量操作不走 draft），
+  // 所以即使 WS 稍后再到一次也只是静默重复，不会冲突。
+  const refreshAfterCategoryMutation = useCallback(async () => {
+    await Promise.all([loadSkills(), loadCategories()]);
+  }, [loadSkills, loadCategories]);
+
+  // 分类名本地化显示：后端 canonical name 是 "Uncategorized"，UI 显示用 i18n
+  const displayCategoryName = useCallback(
+    (name: string) => name === "Uncategorized" ? t("skills.category.uncategorized") : name,
+    [t],
+  );
+
   // ── 大类启用/禁用 / 创建 / 删除（mass action over allowlist） ──
   const handleCategoryEnableAll = useCallback(async (name: string) => {
     if (!apiBaseUrl) return;
     setCategoryBusy(name);
     try {
-      await safeFetch(`${apiBaseUrl}/api/skill-categories/${encodeURIComponent(name)}/enable`, {
+      const res = await safeFetch(`${apiBaseUrl}/api/skill-categories/${encodeURIComponent(name)}/enable`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: "{}",
         signal: AbortSignal.timeout(15_000),
       });
-      toast.success(t("skills.category.enabledAll", { name }));
+      const data = await res.json().catch(() => ({}));
+      const count = data?.added ?? -1;
+      const sysCount = data?.system_count ?? 0;
+      if (count === 0 && sysCount > 0) {
+        toast.info(t("skills.category.allSystemSkills", { name: displayCategoryName(name), count: sysCount }));
+      } else if (count === 0) {
+        toast.warning(t("skills.category.noSkillsInCategory", { name: displayCategoryName(name) }));
+      } else {
+        toast.success(t("skills.category.enabledAll", { name: displayCategoryName(name) }));
+      }
+      await refreshAfterCategoryMutation();
     } catch (e) {
       toast.error(friendlyError(e, t, "save"));
     } finally {
       setCategoryBusy(null);
     }
-  }, [apiBaseUrl, t]);
+  }, [apiBaseUrl, t, displayCategoryName, refreshAfterCategoryMutation]);
 
   const handleCategoryDisableAll = useCallback(async (name: string) => {
     if (!apiBaseUrl) return;
     setCategoryBusy(name);
     try {
-      await safeFetch(`${apiBaseUrl}/api/skill-categories/${encodeURIComponent(name)}/disable`, {
+      const res = await safeFetch(`${apiBaseUrl}/api/skill-categories/${encodeURIComponent(name)}/disable`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: "{}",
         signal: AbortSignal.timeout(15_000),
       });
-      toast.success(t("skills.category.disabledAll", { name }));
+      const data = await res.json().catch(() => ({}));
+      const count = data?.removed ?? -1;
+      const sysCount = data?.system_count ?? 0;
+      if (count === 0 && sysCount > 0) {
+        toast.info(t("skills.category.allSystemSkills", { name: displayCategoryName(name), count: sysCount }));
+      } else if (count === 0) {
+        toast.warning(t("skills.category.noSkillsInCategory", { name: displayCategoryName(name) }));
+      } else {
+        toast.success(t("skills.category.disabledAll", { name: displayCategoryName(name) }));
+      }
+      await refreshAfterCategoryMutation();
     } catch (e) {
       toast.error(friendlyError(e, t, "save"));
     } finally {
       setCategoryBusy(null);
     }
-  }, [apiBaseUrl, t]);
+  }, [apiBaseUrl, t, displayCategoryName, refreshAfterCategoryMutation]);
 
   const handleCategoryCreate = useCallback(async () => {
     if (!apiBaseUrl) return;
@@ -858,10 +897,11 @@ export function SkillManager({
         throw new Error(String(data.error || data.detail));
       }
       toast.success(t("skills.category.created", { name: name.trim() }));
+      await refreshAfterCategoryMutation();
     } catch (e) {
       toast.error(friendlyError(e, t, "save"));
     }
-  }, [apiBaseUrl, t]);
+  }, [apiBaseUrl, t, refreshAfterCategoryMutation]);
 
   const handleCategoryRename = useCallback(async (name: string) => {
     if (!apiBaseUrl) return;
@@ -876,11 +916,12 @@ export function SkillManager({
       });
       const data = await res.json();
       if (data?.error || data?.detail) throw new Error(String(data.error || data.detail));
-      toast.success(t("skills.category.renamed", { from: name, to: next.trim() }));
+      toast.success(t("skills.category.renamed", { from: displayCategoryName(name), to: next.trim() }));
+      await refreshAfterCategoryMutation();
     } catch (e) {
       toast.error(friendlyError(e, t, "save"));
     }
-  }, [apiBaseUrl, t]);
+  }, [apiBaseUrl, t, displayCategoryName, refreshAfterCategoryMutation]);
 
   const handleCategoryEditDesc = useCallback(async (name: string, current: string | null) => {
     if (!apiBaseUrl) return;
@@ -896,10 +937,11 @@ export function SkillManager({
       const data = await res.json();
       if (data?.error || data?.detail) throw new Error(String(data.error || data.detail));
       toast.success(t("skills.category.descUpdated"));
+      await refreshAfterCategoryMutation();
     } catch (e) {
       toast.error(friendlyError(e, t, "save"));
     }
-  }, [apiBaseUrl, t]);
+  }, [apiBaseUrl, t, refreshAfterCategoryMutation]);
 
   const handleMoveSkill = useCallback(async (skillId: string) => {
     if (!apiBaseUrl) return;
@@ -916,10 +958,11 @@ export function SkillManager({
       const data = await res.json();
       if (data?.error || data?.detail) throw new Error(String(data.error || data.detail));
       toast.success(t("skills.category.moved"));
+      await refreshAfterCategoryMutation();
     } catch (e) {
       toast.error(friendlyError(e, t, "save"));
     }
-  }, [apiBaseUrl, categories, t]);
+  }, [apiBaseUrl, categories, t, refreshAfterCategoryMutation]);
 
   // ── 检查配置是否完整（纯函数，不依赖于状态） ──
   function checkConfigComplete(config: SkillConfigField[] | null | undefined, env: EnvMap): boolean {
@@ -1753,7 +1796,7 @@ export function SkillManager({
           {groupView && (() => {
             const grouped: Record<string, typeof filteredSkills> = {};
             for (const s of filteredSkills) {
-              const k = s.category || t("skills.category.uncategorized");
+              const k = s.category || "Uncategorized";
               (grouped[k] ||= [] as typeof filteredSkills).push(s);
             }
             const sortedNames = Object.keys(grouped).sort((a, b) => a.localeCompare(b));
@@ -1767,11 +1810,26 @@ export function SkillManager({
                   const total = items.length;
                   const enabled = items.filter(s => s.enabled).length;
                   const busy = categoryBusy === catName;
+                  const collapsed = !expandedCategories.has(catName);
+                  const toggleCollapse = () => setExpandedCategories(prev => {
+                    const next = new Set(prev);
+                    if (next.has(catName)) next.delete(catName); else next.add(catName);
+                    return next;
+                  });
                   return (
-                    <div key={catName} className="flex flex-col gap-2 rounded-md border border-border/60 bg-card/40 p-3">
-                      <div className="flex flex-wrap items-center gap-2">
+                    <div key={catName} className="flex flex-col rounded-md border border-border/60 bg-card/40 p-3">
+                      <div
+                        className="flex flex-wrap items-center gap-2 cursor-pointer select-none"
+                        onClick={toggleCollapse}
+                        role="button"
+                        tabIndex={0}
+                        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleCollapse(); } }}
+                      >
+                        {collapsed
+                          ? <ChevronRight size={16} className="text-muted-foreground shrink-0" />
+                          : <ChevronDown size={16} className="text-muted-foreground shrink-0" />}
                         <div className="font-semibold text-sm text-foreground">
-                          {catName}
+                          {displayCategoryName(catName)}
                         </div>
                         <Badge variant="secondary" className="text-[11px] px-1.5 py-0">
                           {enabled}/{total}
@@ -1783,7 +1841,7 @@ export function SkillManager({
                         )}
                         <div className="flex-1" />
                         {!readonly && (
-                          <>
+                          <div className="flex flex-wrap items-center gap-1" onClick={(e) => e.stopPropagation()}>
                             <Button
                               variant="ghost"
                               size="sm"
@@ -1822,28 +1880,30 @@ export function SkillManager({
                             >
                               {t("skills.category.rename")}
                             </Button>
-                          </>
+                          </div>
                         )}
                       </div>
-                      <div className="flex flex-col gap-2">
-                        {items.map((skill) => (
-                          <SkillCard
-                            key={skill.skillId}
-                            skill={skill}
-                            expanded={expandedSkill === skill.skillId}
-                            onToggleExpand={() => setExpandedSkill(expandedSkill === skill.skillId ? null : skill.skillId)}
-                            onToggleEnabled={() => handleToggleEnabled(skill)}
-                            onViewDetail={() => handleViewDetail(skill)}
-                            onUninstall={!skill.system ? () => requestUninstall(skill) : undefined}
-                            uninstalling={uninstallingSet.has(skill.skillId)}
-                            envDraft={envDraft}
-                            onEnvChange={onEnvChange}
-                            onSaveConfig={() => handleSaveConfig(skill)}
-                            saving={saving}
-                            onMoveCategory={!skill.system && !readonly ? () => handleMoveSkill(skill.skillId) : undefined}
-                          />
-                        ))}
-                      </div>
+                      {!collapsed && (
+                        <div className="flex flex-col gap-2 mt-2">
+                          {items.map((skill) => (
+                            <SkillCard
+                              key={skill.skillId}
+                              skill={skill}
+                              expanded={expandedSkill === skill.skillId}
+                              onToggleExpand={() => setExpandedSkill(expandedSkill === skill.skillId ? null : skill.skillId)}
+                              onToggleEnabled={() => handleToggleEnabled(skill)}
+                              onViewDetail={() => handleViewDetail(skill)}
+                              onUninstall={!skill.system ? () => requestUninstall(skill) : undefined}
+                              uninstalling={uninstallingSet.has(skill.skillId)}
+                              envDraft={envDraft}
+                              onEnvChange={onEnvChange}
+                              onSaveConfig={() => handleSaveConfig(skill)}
+                              saving={saving}
+                              onMoveCategory={!skill.system && !readonly ? () => handleMoveSkill(skill.skillId) : undefined}
+                            />
+                          ))}
+                        </div>
+                      )}
                     </div>
                   );
                 })}

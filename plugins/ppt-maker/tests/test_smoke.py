@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import builtins
+import importlib.util
 import json
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -41,4 +45,42 @@ def test_inline_helpers_import() -> None:
     assert safe_name("a/b c.pptx") == "b_c.pptx"
     assert parse_llm_json_object("```json\n{\"ok\": true}\n```") == {"ok": True}
     assert "table_processing" in list_optional_groups()
+
+
+def test_exporter_imports_without_python_pptx(monkeypatch, tmp_path) -> None:
+    _block_python_pptx(monkeypatch)
+    module = _load_module("ppt_exporter_without_pptx", ROOT / "ppt_exporter.py")
+
+    with pytest.raises(module.PptxExportError, match="python-pptx"):
+        module.PptxExporter().export({"slides": [{"title": "Demo"}]}, tmp_path / "demo.pptx")
+
+
+def test_asset_provider_imports_without_python_pptx(monkeypatch, tmp_path) -> None:
+    _block_python_pptx(monkeypatch)
+    module = _load_module("ppt_asset_provider_without_pptx", ROOT / "ppt_asset_provider.py")
+
+    icon = module.PptAssetProvider(settings={}, data_root=tmp_path).resolve_icon("growth")
+
+    assert icon is not None
+    assert icon["keyword"] == "growth"
+    assert int(icon["shape"]) > 0
+
+
+def _load_module(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _block_python_pptx(monkeypatch) -> None:
+    real_import = builtins.__import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "pptx" or name.startswith("pptx."):
+            raise ModuleNotFoundError("No module named 'pptx'", name="pptx")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
 

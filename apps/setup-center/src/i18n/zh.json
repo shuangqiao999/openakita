@@ -391,6 +391,8 @@
       "disableAll": "全部禁用",
       "disableAllTitle": "禁用该分类下的所有技能",
       "disabledAll": "已禁用「{{name}}」分类下的全部技能",
+      "noSkillsInCategory": "「{{name}}」分类下未找到可操作的技能",
+      "allSystemSkills": "「{{name}}」分类下的 {{count}} 个技能均为系统技能，无法被启用/禁用",
       "uncategorized": "未分类",
       "installToTitle": "选择要安装到的分类（留空则安装到顶层）",
       "installToTop": "顶层（不指定分类）",
