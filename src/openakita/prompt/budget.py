@@ -22,6 +22,58 @@ from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Fix-4 helper：根据 IntentResult.tool_hints 推算 SkillCatalog 的优先分类
+# ---------------------------------------------------------------------------
+#
+# IntentAnalyzer 给出的 tool_hints 是抽象类别名（如 "File System",
+# "Web Search", "Code Generation"），SkillCatalog 的 category 是技能 SKILL.md
+# 中声明的 `category:` 字段（如 "file-tools", "web", "coding"）。两者命名空
+# 间不一致，需要一个简单的关键词映射。本表是软映射 — 命中即提升优先级，
+# 没命中也不会丢工具（priority_categories=None 时全量展开，行为不变）。
+_TOOL_HINT_TO_SKILL_CATEGORY: dict[str, tuple[str, ...]] = {
+    "file system": ("file-tools", "filesystem", "file"),
+    "web search": ("web", "search", "web-tools"),
+    "code generation": ("coding", "code", "code-tools"),
+    "code review": ("coding", "code", "code-tools"),
+    "browser": ("browser", "web"),
+    "shell": ("shell", "system"),
+    "shell command": ("shell", "system"),
+    "scheduling": ("schedule", "automation"),
+    "memory": ("memory",),
+    "documents": ("doc", "documents", "office"),
+    "data analysis": ("data", "analytics"),
+    "image": ("image", "vision"),
+    "audio": ("audio", "voice"),
+}
+
+
+def intent_to_priority_categories(
+    tool_hints: list[str] | None,
+) -> tuple[str, ...]:
+    """Map ``IntentResult.tool_hints`` → SkillCatalog ``priority_categories``.
+
+    Returns an **empty tuple** when no mapping is available; callers should
+    pass ``priority_categories=None`` (full expansion, legacy behaviour) in
+    that case to avoid over-aggressive pruning.
+
+    The mapping is intentionally lossy and additive — when intent is
+    uncertain, prefer to fall back to the full grouped catalog rather than
+    risk hiding a relevant skill behind the (index) collapse.
+    """
+    if not tool_hints:
+        return ()
+    seen: list[str] = []
+    for hint in tool_hints:
+        key = (hint or "").strip().lower()
+        if not key:
+            continue
+        for cat in _TOOL_HINT_TO_SKILL_CATEGORY.get(key, ()):
+            if cat not in seen:
+                seen.append(cat)
+    return tuple(seen)
+
 # Token 估算常量
 CHARS_PER_TOKEN = 4  # 保守估计，中文约 1.5-2，英文约 4
 

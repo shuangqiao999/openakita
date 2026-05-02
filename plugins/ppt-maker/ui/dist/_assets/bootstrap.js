@@ -24,7 +24,9 @@
     options = options || {};
     var url = path;
     if (meta.apiBase && !/^https?:\/\//.test(path)) {
-      url = meta.apiBase.replace(/\/$/, "") + "/" + path.replace(/^\//, "");
+      var cleanPath = path.replace(/^\//, "");
+      var prefix = cleanPath.indexOf("api/") === 0 ? "" : "api/plugins/" + encodeURIComponent(meta.pluginId || "ppt-maker") + "/";
+      url = meta.apiBase.replace(/\/$/, "") + "/" + prefix + cleanPath;
     }
     return fetch(url, {
       method: options.method || "GET",

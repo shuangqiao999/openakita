@@ -88,6 +88,7 @@ class PluginUIConfig(BaseModel):
     width: int = 0
     height: int = 0
     permissions: list[str] = Field(default_factory=list)
+    sandbox: str = "allow-scripts allow-forms allow-same-origin allow-popups"
 
 
 class PluginManifest(BaseModel):

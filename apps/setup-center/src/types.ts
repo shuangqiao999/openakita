@@ -102,6 +102,7 @@ export type PluginUIApp = {
   title_i18n?: Record<string, string>;
   icon_url?: string;
   sidebar_group: string;
+  sandbox?: string;
   enabled: boolean;
   status?: string;
 };

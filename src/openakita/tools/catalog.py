@@ -437,6 +437,19 @@ but with full schema you'll fill arguments more reliably.
         """
         tool = self._tools.get(tool_name)
         if not tool:
+            # Fix-10：fuzzy 重定向 — 处理 LLM 把工具名写成
+            # ``schedule-task``/``ScheduleTask``/``schedule task`` 等常见
+            # 拼写偏差的情况，避免无谓的 not-found 往返。
+            redirected = self._resolve_tool_alias(tool_name)
+            if redirected and redirected != tool_name:
+                tool = self._tools.get(redirected)
+                if tool:
+                    return {
+                        "name": tool["name"],
+                        "description": tool.get("description", ""),
+                        "input_schema": tool.get("input_schema", {}),
+                        "_resolved_from": tool_name,
+                    }
             return None
 
         return {
@@ -444,6 +457,46 @@ but with full schema you'll fill arguments more reliably.
             "description": tool.get("description", ""),
             "input_schema": tool.get("input_schema", {}),
         }
+
+    def _resolve_tool_alias(self, tool_name: str) -> str | None:
+        """Try common spelling variants of ``tool_name`` against ``_tools``.
+
+        Variants tried (in order):
+          1. lowercased
+          2. hyphen → underscore  (``schedule-task`` → ``schedule_task``)
+          3. underscore → hyphen
+          4. snake_case from camelCase / PascalCase
+          5. spaces → underscore  (``schedule task`` → ``schedule_task``)
+
+        Returns the first variant present in ``_tools``, or ``None``.
+        """
+        if not tool_name:
+            return None
+        candidates: list[str] = []
+
+        def _push(value: str | None) -> None:
+            if value and value not in candidates and value != tool_name:
+                candidates.append(value)
+
+        lower = tool_name.lower()
+        _push(lower)
+        _push(lower.replace("-", "_"))
+        _push(lower.replace("_", "-"))
+        _push(lower.replace(" ", "_"))
+        _push(lower.replace(" ", "-"))
+
+        # camelCase / PascalCase → snake_case
+        snake_chars: list[str] = []
+        for i, ch in enumerate(tool_name):
+            if ch.isupper() and i > 0:
+                snake_chars.append("_")
+            snake_chars.append(ch.lower())
+        _push("".join(snake_chars))
+
+        for cand in candidates:
+            if cand in self._tools:
+                return cand
+        return None
 
     def get_tool_info_formatted(self, tool_name: str) -> str:
         """
@@ -458,6 +511,14 @@ but with full schema you'll fill arguments more reliably.
             格式化的工具信息字符串
         """
         tool = self._tools.get(tool_name)
+        resolved_from: str | None = None
+        if not tool:
+            redirected = self._resolve_tool_alias(tool_name)
+            if redirected:
+                tool = self._tools.get(redirected)
+                if tool:
+                    resolved_from = tool_name
+                    tool_name = redirected
         if not tool:
             return self._format_tool_not_found(tool_name)
 
@@ -465,6 +526,12 @@ but with full schema you'll fill arguments more reliably.
         is_deferred = tool_name in deferred
 
         output = f"# Tool: {tool['name']}\n\n"
+
+        if resolved_from:
+            output += (
+                f"_⚠️ 你查询的是 `{resolved_from}`，已自动重定向到正式名 "
+                f"`{tool['name']}`。后续调用请使用下划线小写形式。_\n\n"
+            )
 
         if is_deferred:
             output += (

@@ -1343,6 +1343,7 @@ class PluginManager:
                 "title_i18n": dict(ui.title_i18n) if ui.title_i18n else {},
                 "icon_url": icon_url,
                 "sidebar_group": ui.sidebar_group,
+                "sandbox": ui.sandbox,
                 "enabled": True,
                 "status": "loaded",
             })

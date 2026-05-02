@@ -836,6 +836,18 @@ class RetrievalEngine:
         if not candidates:
             return ""
 
+        # Fix-9：先剔除"自动复盘 / 元监控"类经验噪声（这些条目对 LLM
+        # 当前任务推理没价值，但会占用 memory_budget）。
+        candidates = self._strip_experience_noise(candidates)
+
+        # Fix-8：注入前对 ``fact`` 类型按 ``(subject, predicate)`` 去重，
+        # 同主题谓词只保留第一条（candidates 已经按综合得分降序，因此
+        # 第一条就是 score 最高且最新被访问/更新的版本）。这是一个**纯
+        # 注入层**的过滤——不删除底层任何 fact，只是不让两条互斥的同主
+        # 题事实同时出现在 system prompt 里（避免 LLM 看到"张三 35 岁 +
+        # 张三 32 岁"这种自相矛盾历史而做不必要的歧义判断）。
+        candidates = self._dedupe_facts_by_subject_predicate(candidates)
+
         lines: list[str] = []
         token_est = 0
         chars_per_token = 2.5
@@ -849,3 +861,89 @@ class RetrievalEngine:
             token_est += line_tokens
 
         return "\n".join(lines)
+
+    # Fix-9：被识别为"元监控/自动复盘"的 source 标签集合。
+    # 这些条目通常是 daily_consolidator/auto_postmortem 等后台任务自己写
+    # 入的状态文本（路径、耗时、统计数字等），对 LLM 解决用户当前任务
+    # 几乎无信息增益，反而稀释了真正有用的 fact/preference。
+    _NOISY_EXPERIENCE_SOURCES = frozenset(
+        {
+            "auto_postmortem",
+            "auto-postmortem",
+            "system:auto_postmortem",
+            "system:daily_memory",
+            "system:memory_nudge",
+            "consolidator",
+            "daily_consolidator",
+            "self_metric",
+        }
+    )
+
+    # Fix-9：低置信度阈值。confidence < 0.6 且 memory_type ∈ {fact, experience}
+    # 的条目不进 prompt（仍可在 MemoryView 中被用户检索/合并）。
+    _MIN_INJECT_CONFIDENCE = 0.6
+
+    @classmethod
+    def _strip_experience_noise(
+        cls,
+        candidates: list[RetrievalCandidate],
+    ) -> list[RetrievalCandidate]:
+        """Drop low-signal experience/fact entries before prompt injection.
+
+        Two filters layered (no removal of underlying memory rows):
+
+        - ``source`` 命中 ``_NOISY_EXPERIENCE_SOURCES`` → 直接丢弃。
+        - ``memory_type`` ∈ {fact, experience} 且 ``confidence`` 小于
+          ``_MIN_INJECT_CONFIDENCE`` → 丢弃。其他 type（episode、attachment、
+          recent、plugin source 等）一律保留，避免误删低置信度但仍可能
+          相关的检索结果。
+        """
+        out: list[RetrievalCandidate] = []
+        for c in candidates:
+            raw = c.raw_data or {}
+            src = (raw.get("source") or "").strip().lower()
+            if src in cls._NOISY_EXPERIENCE_SOURCES:
+                continue
+            mt = (c.memory_type or "").lower()
+            if mt in ("fact", "experience"):
+                # confidence 字段可能从 raw_data 里读到（SemanticMemory.to_dict）
+                conf_raw = raw.get("confidence")
+                try:
+                    conf = float(conf_raw) if conf_raw is not None else None
+                except (TypeError, ValueError):
+                    conf = None
+                if conf is not None and conf < cls._MIN_INJECT_CONFIDENCE:
+                    continue
+            out.append(c)
+        return out
+
+    @staticmethod
+    def _dedupe_facts_by_subject_predicate(
+        candidates: list[RetrievalCandidate],
+    ) -> list[RetrievalCandidate]:
+        """Keep first occurrence per ``(subject, predicate)`` for fact memories.
+
+        Non-fact candidates (episodes, attachments, recent turns, plugin
+        sources) are passed through unchanged. ``subject``/``predicate`` come
+        from ``raw_data`` (populated by ``_search_semantic``); when missing,
+        the candidate is also passed through.
+        """
+        seen: set[tuple[str, str]] = set()
+        out: list[RetrievalCandidate] = []
+        for c in candidates:
+            if (c.memory_type or "").lower() != "fact":
+                out.append(c)
+                continue
+            raw = c.raw_data or {}
+            subj = (raw.get("subject") or "").strip().lower()
+            pred = (raw.get("predicate") or "").strip().lower()
+            if not subj:
+                # 无 subject 元数据 — 不能安全去重，放行
+                out.append(c)
+                continue
+            key = (subj, pred)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(c)
+        return out

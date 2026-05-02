@@ -268,6 +268,52 @@ async def by_agent(
     return {"start": start_str, "end": end_str, "by_agent": by_agent_data}
 
 
+@router.get("/pricing")
+async def pricing_overview(request: Request):
+    """Return pricing-source overview for all currently configured endpoints.
+
+    Useful for the LLMView UI to show which endpoints have user-configured
+    prices, which fall back to the built-in table, and which still resolve
+    to "-" (unknown). Fix-5.
+    """
+    try:
+        from openakita.api.routes.config import _get_endpoint_manager
+        from openakita.llm.pricing import list_builtin_prices
+    except Exception as e:
+        return {"error": f"endpoint_manager unavailable: {e}"}
+
+    manager = _get_endpoint_manager()
+    endpoints_info: list[dict] = []
+    if manager:
+        try:
+            for ep in manager.get_endpoints() or []:
+                tier = None
+                source = "unknown"
+                try:
+                    tier = ep.get_effective_pricing()
+                except Exception:
+                    tier = None
+                if tier:
+                    source = tier.get("source") or ("user" if ep.pricing_tiers else "builtin")
+                endpoints_info.append(
+                    {
+                        "name": getattr(ep, "name", ""),
+                        "provider": getattr(ep, "provider", ""),
+                        "model": getattr(ep, "model", ""),
+                        "currency": getattr(ep, "price_currency", "CNY"),
+                        "source": source,
+                        "tier": tier,
+                    }
+                )
+        except Exception as e:
+            logger.warning(f"[TokenStats] pricing overview enumerate failed: {e}")
+
+    return {
+        "endpoints": endpoints_info,
+        "builtin_table": list_builtin_prices(),
+    }
+
+
 @router.get("/context")
 async def context(request: Request):
     """Return the current session's context token usage and limit."""

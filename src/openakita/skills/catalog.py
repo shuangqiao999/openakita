@@ -217,7 +217,11 @@ Do not infer filesystem paths from the workspace map; `get_skill_info` is author
             return result
 
     def get_grouped_compact_catalog(
-        self, *, exposure_filter: str | None = None, max_tokens: int = 0
+        self,
+        *,
+        exposure_filter: str | None = None,
+        max_tokens: int = 0,
+        priority_categories: tuple[str, ...] | None = None,
     ) -> str:
         """生成 **按分类分组的紧凑技能清单**，用于系统提示注入。
 
@@ -231,10 +235,20 @@ Do not infer filesystem paths from the workspace map; `get_skill_info` is author
         - Level B-short: 描述缩短至 80 字符（技能数 > 80 时自动触发）
         - Level C (index): 分类 + 逗号分隔名字，无描述
 
-        缓存：按 ``(exposure_filter, max_tokens)`` 维度缓存。
+        当 ``priority_categories`` 非空时启用**分类优先级裁剪**（Fix-4）：
+        - 列入优先级集合的分类按 Level B/B-short 输出（保留描述）
+        - 其余分类一律降级为 Level C（仅名字），由 LLM 通过
+          ``get_skill_info`` 按需展开。这种"主线详细 + 长尾索引"
+          的混合模式可在保留全量发现能力的同时显著节省 token。
+
+        缓存：按 ``(exposure_filter, max_tokens, priority_categories)`` 维度缓存。
         """
         with self._lock:
-            cache_key = (exposure_filter, max_tokens)
+            cache_key = (
+                exposure_filter,
+                max_tokens,
+                tuple(sorted(priority_categories or ())),
+            )
             cached = self._cached_grouped.get(cache_key)
             if cached is not None:
                 return cached
@@ -338,12 +352,60 @@ Do not infer filesystem paths from the workspace map; `get_skill_info` is author
             def _est_tokens(text: str) -> int:
                 return max(len(text) // 4, len(text.encode("utf-8")) // 3)
 
+            def _render_mixed(when_max: int) -> str:
+                """混合模式：priority 分类用 Level B；其余用 Level C。"""
+                priority_set = {c.lower() for c in (priority_categories or ())}
+                lines: list[str] = [
+                    "## Available Skills",
+                    "",
+                    "Use `get_skill_info(skill_name)` to load full instructions when needed.",
+                    "",
+                ]
+                for cat in sorted_cats:
+                    desc = cat_descriptions.get(cat)
+                    is_priority = cat.lower() in priority_set
+                    if is_priority:
+                        # Level B 详细
+                        lines.append(f"### {cat} — {desc}" if desc else f"### {cat}")
+                        for s in grouped[cat]:
+                            when = (getattr(s, "when_to_use", "") or "").strip()
+                            if not when:
+                                when = (s.description or "").split("\n")[0].strip()
+                            when = when[:when_max]
+                            lines.append(self._safe_format(
+                                "- **{name}**: {when}",
+                                name=s.name,
+                                when=when,
+                            ))
+                        lines.append("")
+                    else:
+                        # Level C 仅名字 — 用 (index) 后缀提示
+                        names = [s.name for s in grouped[cat]]
+                        title = f"### {cat} (index) — {desc}" if desc else f"### {cat} (index)"
+                        lines.append(title)
+                        lines.append(", ".join(names))
+                        lines.append("")
+                if hidden_count > 0:
+                    lines.append(
+                        f"_({hidden_count} more skill(s) hidden by profile — "
+                        "use `list_skills` to enumerate)_"
+                    )
+                return "\n".join(lines).rstrip() + "\n"
+
             if max_tokens <= 0:
-                result = _render(160)
+                if priority_categories:
+                    result = _render_mixed(160)
+                else:
+                    result = _render(160)
             else:
-                result = _render(160)
-                if _est_tokens(result) > max_tokens:
-                    result = _render(80)
+                if priority_categories:
+                    result = _render_mixed(160)
+                    if _est_tokens(result) > max_tokens:
+                        result = _render_mixed(80)
+                else:
+                    result = _render(160)
+                    if _est_tokens(result) > max_tokens:
+                        result = _render(80)
                 if _est_tokens(result) > max_tokens:
                     result = _render_index()
 

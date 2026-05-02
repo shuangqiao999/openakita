@@ -77,6 +77,10 @@ class ColoredConsoleHandler(logging.StreamHandler):
 
     def _check_color_support(self) -> bool:
         """检测终端是否支持颜色"""
+        if os.environ.get("NO_COLOR"):
+            return False
+        if not (hasattr(self.stream, "isatty") and self.stream.isatty()):
+            return False
         # 如果是 Windows，尝试启用 ANSI 支持
         if sys.platform == "win32":
             try:

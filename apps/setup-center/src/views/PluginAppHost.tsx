@@ -56,7 +56,7 @@ export default function PluginAppHost({ pluginId, apiBase, onViewChange }: Plugi
   const [loading, setLoading] = useState(true);
   const [slow, setSlow] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [meta, setMeta] = useState<{ title?: string; iconUrl?: string }>({});
+  const [meta, setMeta] = useState<{ title?: string; iconUrl?: string; sandbox?: string }>({});
 
   const handleNotification = useCallback((opts: { title: string; body: string; type?: string }) => {
     if (opts.type === "error") toast.error(opts.body);
@@ -82,6 +82,7 @@ export default function PluginAppHost({ pluginId, apiBase, onViewChange }: Plugi
           setMeta({
             title: found.title,
             iconUrl: found.icon_url ? `${apiBase}${found.icon_url}` : undefined,
+            sandbox: found.sandbox,
           });
         } else {
           setMeta({});
@@ -361,7 +362,7 @@ export default function PluginAppHost({ pluginId, apiBase, onViewChange }: Plugi
       <iframe
         ref={iframeRef}
         src={pluginUiUrl}
-        sandbox="allow-scripts allow-forms allow-same-origin allow-popups"
+        sandbox={meta.sandbox || "allow-scripts allow-forms allow-same-origin allow-popups"}
         onLoad={handleIframeLoad}
         onError={handleIframeError}
         style={{

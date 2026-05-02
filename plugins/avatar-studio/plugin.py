@@ -1644,6 +1644,12 @@ class Plugin(PluginBase):
                     raise
                 logger.info("avatar-studio: /voices served before DB init")
                 custom_rows = []
+            except Exception as exc:  # noqa: BLE001 - never hide bundled system voices
+                # Custom voices live in SQLite, but the bundled cosyvoice-v2
+                # catalog is code-only. A locked/corrupt DB should not make
+                # the 音色库 look empty when the user only needs system voices.
+                logger.warning("avatar-studio: custom voices unavailable: %s", exc)
+                custom_rows = []
             return {"ok": True, "voices": sys_rows + custom_rows}
 
         @router.post("/voices")

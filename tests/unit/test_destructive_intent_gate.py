@@ -292,3 +292,99 @@ def test_index_regex_rejects_4_digit_numbers():
         intent, "删除 security user_allowlist 第 1234 条"
     )
     assert "index" not in result.parameters
+
+
+# ===========================================================================
+# P0-3：「执行/运行」中文动词不再无条件升级 EXECUTE
+# ===========================================================================
+#
+# 背景：旧版 _EXECUTE_RE 包含中文「执行|运行」，导致以下普通推进语句
+# 全部被误判为 high-risk shell：
+#   - 「请你立刻重新真实地执行：用 edit_file...」
+#   - 「方案 OK，确认开始执行」
+#   - 「请按这个方案创建两个文件」（含"执行"字眼时）
+# 修复：通用动词必须配合 _SHELL_CONTEXT_RE（shell/命令/bash/cmd/script
+# 等）才升 EXECUTE；高敏感的 kill/rm -rf/sudo 等仍直接命中。
+
+
+def test_chinese_execute_verb_alone_does_not_escalate():
+    """「请你执行 edit_file」不应被判为 high-risk shell。"""
+    intent = SimpleNamespace(complexity=SimpleNamespace(destructive_potential=False))
+
+    result = _classify_risk_intent(intent, "请你立刻重新真实地执行：用 edit_file 改一行")
+
+    assert result.operation_kind != OperationKind.EXECUTE
+    assert result.target_kind != TargetKind.SHELL_COMMAND
+
+
+def test_chinese_run_verb_alone_does_not_escalate():
+    """「方案 OK，确认开始执行」不应被判为 high-risk。"""
+    intent = SimpleNamespace(complexity=SimpleNamespace(destructive_potential=False))
+
+    result = _classify_risk_intent(intent, "方案 OK，请按这个方案推进，开始执行第一步")
+
+    assert result.operation_kind != OperationKind.EXECUTE
+
+
+def test_chinese_execute_with_shell_context_still_escalates():
+    """显式 shell 上下文（命令/bash/powershell/脚本）仍升 EXECUTE。"""
+    intent = SimpleNamespace(complexity=SimpleNamespace(destructive_potential=False))
+
+    samples = [
+        "执行这条 shell 命令：ls /tmp",
+        "运行下面的 bash 脚本",
+        "在 powershell 里执行 Get-Process",
+        "请用 run_shell 执行这条命令",
+    ]
+    for sample in samples:
+        result = _classify_risk_intent(intent, sample)
+        assert result.operation_kind == OperationKind.EXECUTE, sample
+        assert result.requires_confirmation, sample
+
+
+def test_high_sensitivity_shell_verb_still_blocked():
+    """rm -rf / kill / sudo 等不依赖中文上下文，必须仍被拦截。"""
+    intent = SimpleNamespace(complexity=SimpleNamespace(destructive_potential=False))
+
+    for sample in ["rm -rf /tmp", "sudo apt remove", "format c:", "kill 1234"]:
+        result = _classify_risk_intent(intent, sample)
+        assert result.operation_kind == OperationKind.EXECUTE, sample
+        assert result.requires_confirmation, sample
+
+
+# ===========================================================================
+# P0-4：用户对上一轮 ask_user/risk-confirm 的肯定回复必须短路豁免
+# ===========================================================================
+#
+# 背景：用户回 "确认继续 / 开始执行 / 方案 OK / 同意" 时本身不是新动作，
+# 应该让 _handle_pending_risk_answer 处理；不能再被分类器升 EXECUTE。
+
+
+def test_affirmative_reply_confirm_continue_is_exempted():
+    intent = SimpleNamespace(complexity=SimpleNamespace(destructive_potential=False))
+
+    result = _classify_risk_intent(intent, "确认继续")
+
+    assert not result.requires_confirmation
+    assert result.reason == "affirmative_reply_to_prior_turn"
+
+
+def test_affirmative_reply_variants_all_exempted():
+    intent = SimpleNamespace(complexity=SimpleNamespace(destructive_potential=False))
+
+    for reply in ["继续", "继续吧", "开始执行", "方案 OK", "方案ok", "已确认", "同意", "可以", "ok", "OK", "yes"]:
+        result = _classify_risk_intent(intent, reply)
+        assert not result.requires_confirmation, reply
+        assert result.reason == "affirmative_reply_to_prior_turn", reply
+
+
+def test_affirmative_reply_with_extra_text_is_NOT_exempted():
+    """如果"确认继续"后面跟了实质性新动作，不应豁免。"""
+    intent = SimpleNamespace(complexity=SimpleNamespace(destructive_potential=False))
+
+    # 这个 reply 不是纯肯定回复，包含新指令
+    result = _classify_risk_intent(intent, "确认继续，并且 rm -rf /tmp")
+
+    # 这里 _AFFIRMATIVE_REPLY_RE 不会匹配（因为不是纯肯定句结构），
+    # 后续会走 _EXECUTE_RE 命中 rm -rf
+    assert result.operation_kind == OperationKind.EXECUTE

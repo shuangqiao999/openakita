@@ -65,6 +65,14 @@ class ChatAnswerRequest(BaseModel):
 
     conversation_id: str | None = None
     answer: str = ""
+    # Fix-11: 当用户在 ask_user 弹窗里勾选了"本次会话内同类操作不再询问"，
+    # 前端把该字段置为 True；后端会把这条授权写进 session metadata，
+    # 以便后续相同 operation_kind 的请求短路 risk gate。
+    remember_for_session: bool = Field(
+        False,
+        description="If true, persist the user's confirmation as an in-session trust grant "
+        "for the same operation kind (Fix-11).",
+    )
 
 
 class ChatControlRequest(BaseModel):

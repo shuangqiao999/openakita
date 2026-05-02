@@ -46,38 +46,11 @@ def _get_scheduler(request: Request):
     return None
 
 
-_TASK_NAME_FORBIDDEN = (
-    "..",
-    "/",
-    "\\",
-    "\x00",
-    "<",
-    ">",
-    "|",
-    ":",
-    "*",
-    "?",
-    "\"",
+# Fix-15：单一权威 — API 层校验复用 scheduler._naming，避免规则双写漂移。
+from openakita.scheduler._naming import (
+    FORBIDDEN_TOKENS as _TASK_NAME_FORBIDDEN,  # noqa: F401  (保持向后兼容导入)
 )
-
-
-def _validate_task_name(name: str | None) -> tuple[bool, str]:
-    """禁止路径穿越/控制字符/Windows 非法文件名字符。
-
-    name 会被用作日志/文件命名（部分实现），过滤后能挡住注入。
-    """
-    if name is None:
-        return True, ""
-    if not isinstance(name, str):
-        return False, "name 必须是字符串"
-    n = name.strip()
-    if not n:
-        return False, "name 不能为空"
-    if len(n) > 200:
-        return False, "name 长度不能超过 200"
-    if any(token in n for token in _TASK_NAME_FORBIDDEN):
-        return False, "name 包含非法字符（路径穿越/控制字符/Windows 保留字符）"
-    return True, ""
+from openakita.scheduler._naming import validate_task_name as _validate_task_name  # noqa: E402
 
 
 class TaskCreateRequest(BaseModel):

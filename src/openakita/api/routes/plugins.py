@@ -362,6 +362,19 @@ async def list_ui_plugins(request: Request) -> list[dict]:
         return []
 
 
+@router.get("/_ui-events")
+async def plugin_ui_events(plugin: str = "") -> StreamingResponse:
+    """Compatibility SSE endpoint for plugin UIs that subscribe to host events."""
+
+    async def event_stream():
+        yield f"event: ready\ndata: {json.dumps({'plugin': plugin}, ensure_ascii=False)}\n\n"
+        while True:
+            await asyncio.sleep(30)
+            yield ": keepalive\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
 class InstallBody(BaseModel):
     source: str = Field(..., min_length=1)
     background: bool = Field(

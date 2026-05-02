@@ -1,6 +1,8 @@
 from openakita.core.reasoning_engine import (
+    _extract_unbacked_verbs,
     _get_action_claim_re,
     _guard_unbacked_action_claim,
+    _successful_tool_names,
 )
 
 
@@ -20,3 +22,68 @@ def test_backed_action_claim_is_kept():
     text = "已帮你创建文件。"
 
     assert _guard_unbacked_action_claim(text, ["write_file"]) == text
+
+
+def test_unbacked_delete_claim_with_unrelated_tool_is_warned():
+    """LLM 谎称已删除文件，但只调用了 get_tool_info — 必须追加警告。"""
+    text = "已删除 token_cost_calc.py。"
+
+    guarded = _guard_unbacked_action_claim(text, ["get_tool_info"])
+
+    assert text in guarded  # 原文保留
+    assert "一致性提示" in guarded
+    assert "删除" in guarded
+
+
+def test_failed_delete_call_does_not_back_claim():
+    """delete_file 调用失败 → 'is_error': True，不应被算作成功凭证。"""
+    text = "已删除 README.md。"
+    tool_results = [{"tool_name": "delete_file", "is_error": True}]
+
+    guarded = _guard_unbacked_action_claim(text, ["delete_file"], tool_results)
+
+    assert "一致性提示" in guarded
+
+
+def test_successful_delete_call_backs_claim():
+    """delete_file 成功 → 不追加警告。"""
+    text = "已删除 README.md。"
+    tool_results = [{"tool_name": "delete_file", "is_error": False}]
+
+    assert _guard_unbacked_action_claim(text, ["delete_file"], tool_results) == text
+
+
+def test_unbacked_send_claim_with_unrelated_tools_is_warned():
+    """LLM 说已发送但本轮没有任何 deliver_artifacts/send_* 工具调用。"""
+    text = "已发送结果到群里。"
+
+    guarded = _guard_unbacked_action_claim(text, ["read_file", "search_memory"])
+
+    assert "一致性提示" in guarded
+    assert "发送" in guarded
+
+
+def test_action_claim_without_action_verb_is_passed_through():
+    """文本里没有任何 V→T 映射动词 → 即使有 prefix 也不报警（避免误拦）。"""
+    text = "已帮你分析完毕，结论如上。"
+
+    assert _guard_unbacked_action_claim(text, ["read_file"]) == text
+
+
+def test_successful_tool_names_filter_failures():
+    succeeded = _successful_tool_names(
+        ["delete_file", "edit_file", "read_file"],
+        [
+            {"tool_name": "delete_file", "is_error": True},
+            {"tool_name": "edit_file", "is_error": False},
+        ],
+    )
+    assert "edit_file" in succeeded
+    assert "read_file" in succeeded  # no result entry → assumed ok
+    assert "delete_file" not in succeeded
+
+
+def test_extract_unbacked_verbs_only_after_prefix():
+    """『需要修改』不算 claim，『已修改』才算。"""
+    assert _extract_unbacked_verbs("我会修改这个文件", set()) == []
+    assert _extract_unbacked_verbs("已修改这个文件", set()) == ["修改"]

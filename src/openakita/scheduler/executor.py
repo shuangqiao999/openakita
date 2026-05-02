@@ -782,11 +782,43 @@ class TaskExecutor:
             raw = response.content.strip()
 
             import json
+            import re as _re
 
             if raw.startswith("```"):
                 raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
 
-            memories = json.loads(raw)
+            # Fix-7：best-effort JSON 解析。
+            # 旧实现 json.loads(raw) 一遇到 LLM 返回的非法 JSON（哪怕只是
+            # 多了一行 prose/单条尾随逗号）就抛 JSONDecodeError，导致整个
+            # nudge 任务失败 → fail_count + missed_count 持续累积。
+            #
+            # 新策略（仍然保守）：
+            #   1. 直接 loads 成功 → 用结果；
+            #   2. 失败 → 抓出第一个 [ ... ] JSON 数组重新尝试；
+            #   3. 仍失败 → 不视为任务失败，记 warning 并返回成功 +
+            #      "skipped" 信息，让 scheduler 不再累积失败计数。
+            memories: list | None = None
+            try:
+                memories = json.loads(raw)
+            except json.JSONDecodeError as e:
+                logger.warning(
+                    "[memory_nudge] LLM returned non-JSON, attempting array "
+                    "extraction (err=%s, raw_preview=%r)",
+                    str(e)[:120],
+                    raw[:200],
+                )
+                m = _re.search(r"\[\s*(?:\{.*?\}\s*,?\s*)*\]", raw, _re.DOTALL)
+                if m:
+                    try:
+                        memories = json.loads(m.group(0))
+                    except json.JSONDecodeError:
+                        memories = None
+                if memories is None:
+                    return (
+                        True,
+                        "LLM returned malformed JSON; skipping this round "
+                        "(no failure count, will retry next interval).",
+                    )
             if not isinstance(memories, list):
                 return True, "LLM returned non-list response, skipping"
 

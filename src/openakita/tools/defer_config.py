@@ -37,6 +37,21 @@ ALWAYS_LOAD_TOOLS: frozenset[str] = frozenset(
         "update_todo_step",
         "get_todo_status",
         "complete_todo",
+        # Fix-10：高频调度 / 记忆 / 网络工具提到首轮。
+        # 这些工具在专业用户日常会话中调用频率极高（"提醒我..." /
+        # "记住..." / "搜一下..."），把它们留在 deferred 会强制 LLM 多走
+        # 一轮 get_tool_info → 在 19 轮探索测试里这种额外 round-trip
+        # 单独贡献了 ≥6 万 token 的浪费。promote 后约多 800 token system
+        # prompt，但消除了反复的 schema 拉取。
+        "schedule_task",
+        "list_scheduled_tasks",
+        "cancel_scheduled_task",
+        "search_memory",
+        "add_memory",
+        "web_search",
+        "web_fetch",
+        # 用户档案（"我叫 X" / "我是 Y" 的高频更新路径）
+        "update_user_profile",
     }
 )
 

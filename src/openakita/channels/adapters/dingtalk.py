@@ -26,6 +26,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from .._circuit_breaker import CircuitBreaker
 from ..base import ChannelAdapter
 from ..types import (
     MediaFile,
@@ -254,6 +255,21 @@ class DingTalkAdapter(ChannelAdapter):
             footer_status
             if footer_status is not None
             else (os.environ.get("DINGTALK_FOOTER_STATUS", "true").lower() in ("true", "1", "yes"))
+        )
+
+        # Fix-12: 同 chat_id 连续发送失败 3 次熔断 1 小时；
+        # 防止过期 webhook / 被禁用群导致整个调度链路被反复重试拖死。
+        try:
+            _cb_threshold = int(os.environ.get("DINGTALK_CB_THRESHOLD", "3"))
+        except ValueError:
+            _cb_threshold = 3
+        try:
+            _cb_cooldown = float(os.environ.get("DINGTALK_CB_COOLDOWN_SECONDS", "3600"))
+        except ValueError:
+            _cb_cooldown = 3600.0
+        self._send_circuit_breaker = CircuitBreaker(
+            threshold=max(1, _cb_threshold),
+            cooldown_seconds=max(1.0, _cb_cooldown),
         )
 
     @staticmethod
@@ -1348,6 +1364,47 @@ class DingTalkAdapter(ChannelAdapter):
     # ==================== 消息发送 ====================
 
     async def send_message(self, message: OutgoingMessage) -> str:
+        """Outer wrapper: enforce per-chat circuit breaker (Fix-12).
+
+        Goals:
+        - When the circuit for ``chat_id`` is open (3 consecutive failures
+          within the cooldown window), return a sentinel result without
+          touching the network — prevents log floods and back-pressures the
+          caller's retry loop.
+        - On clean send, reset the failure counter.
+        - On exception, record the failure and re-raise so callers still see
+          the error; warn once when the circuit transitions to open.
+        """
+        chat_id = message.chat_id or ""
+        if chat_id and self._send_circuit_breaker.is_open(chat_id):
+            remaining = self._send_circuit_breaker.remaining_cooldown(chat_id)
+            logger.warning(
+                "[DingTalk] Skipped send: circuit breaker OPEN for chat_id=%s "
+                "(remaining cooldown=%.0fs)",
+                chat_id,
+                remaining,
+            )
+            return f"circuit_open_{int(time.time())}"
+
+        try:
+            result = await self._send_message_impl(message)
+        except Exception:
+            if chat_id:
+                tripped = self._send_circuit_breaker.record_failure(chat_id)
+                if tripped:
+                    logger.error(
+                        "[DingTalk] Circuit breaker OPENED for chat_id=%s — "
+                        "subsequent sends to this user will be skipped for "
+                        "the next %.0fs",
+                        chat_id,
+                        self._send_circuit_breaker._cooldown,
+                    )
+            raise
+        if chat_id:
+            self._send_circuit_breaker.record_success(chat_id)
+        return result
+
+    async def _send_message_impl(self, message: OutgoingMessage) -> str:
         """
         发送消息 - 智能路由
 

@@ -2675,11 +2675,20 @@ export function ChatView({
               case "done":
                 gracefulDone = true;
                 if (event.usage) {
-                  if (typeof event.usage.context_tokens === "number") setContextTokens(event.usage.context_tokens);
-                  if (typeof event.usage.context_limit === "number") setContextLimit(event.usage.context_limit);
-                  const { input_tokens, output_tokens, total_tokens } = event.usage;
-                  if (typeof input_tokens === "number" && typeof output_tokens === "number") {
-                    assistantMsg.usage = { input_tokens, output_tokens, total_tokens: total_tokens ?? input_tokens + output_tokens };
+                  // Fix-13：后端同时下发新旧字段，优先读取语义更清晰的新名字。
+                  const ctxTokens = event.usage.history_context_tokens ?? event.usage.context_tokens;
+                  const ctxLimit = event.usage.history_context_limit ?? event.usage.context_limit;
+                  if (typeof ctxTokens === "number") setContextTokens(ctxTokens);
+                  if (typeof ctxLimit === "number") setContextLimit(ctxLimit);
+                  const inTokens = event.usage.billable_input_tokens ?? event.usage.input_tokens;
+                  const outTokens = event.usage.billable_output_tokens ?? event.usage.output_tokens;
+                  const totalTokens = event.usage.billable_total_tokens ?? event.usage.total_tokens;
+                  if (typeof inTokens === "number" && typeof outTokens === "number") {
+                    assistantMsg.usage = {
+                      input_tokens: inTokens,
+                      output_tokens: outTokens,
+                      total_tokens: totalTokens ?? inTokens + outTokens,
+                    };
                   }
                 }
                 if (currentPlan && currentPlan.status === "in_progress") {

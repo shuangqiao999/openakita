@@ -141,7 +141,13 @@ async def get_session_history(
     if not session:
         return {"messages": []}
 
-    _STRIP_MARKERS = ["\n\n[子Agent工作总结]", "\n\n[执行摘要]"]
+    # 同时兼容新 marker (<<TOOL_TRACE>> / <<DELEGATION_TRACE>>) 与旧 marker
+    _STRIP_MARKERS = [
+        "\n\n<<DELEGATION_TRACE>>",
+        "\n\n<<TOOL_TRACE>>",
+        "\n\n[子Agent工作总结]",
+        "\n\n[执行摘要]",
+    ]
     # 向后兼容：过滤旧版 _truncate_history 插入的 system 摘要（新版已不再产生）
     truncation_prefixes = ("[用户规则（必须遵守）]", "[历史背景，非当前任务]")
 
@@ -157,7 +163,12 @@ async def get_session_history(
             for marker in _STRIP_MARKERS:
                 if marker in content:
                     content = content[: content.index(marker)]
-            if content.startswith("[执行摘要]") or content.startswith("[子Agent工作总结]"):
+            if (
+                content.startswith("<<TOOL_TRACE>>")
+                or content.startswith("<<DELEGATION_TRACE>>")
+                or content.startswith("[执行摘要]")
+                or content.startswith("[子Agent工作总结]")
+            ):
                 content = ""
         ts = msg.get("timestamp", "")
         epoch_ms = 0

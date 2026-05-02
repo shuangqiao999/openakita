@@ -389,22 +389,121 @@ def _get_action_claim_re() -> "re.Pattern[str]":
     return pat
 
 
-def _guard_unbacked_action_claim(text: str, executed_tool_names: list[str]) -> str:
-    """Downgrade visible action claims when no successful tool receipt exists."""
+# 动词 → 候选工具名片段（小写子串匹配）。
+# 当 LLM 文本里说"已删除/已发送..."时，必须有匹配片段的工具在本轮"成功"
+# 执行过；否则按幻觉降级处理。映射只覆盖最常被滥用的高风险动词，避免
+# 误拦低风险描述（如"已分析/已生成"等）。
+_VERB_TO_TOOL_FRAGMENTS: dict[str, tuple[str, ...]] = {
+    "删除": ("delete_file", "delete_memory", "remove", "cancel_scheduled_task"),
+    "删掉": ("delete_file", "delete_memory", "remove"),
+    "编辑": ("edit_file",),
+    "修改": ("edit_file", "update_user_profile", "update_scheduled_task"),
+    "覆盖": ("write_file", "edit_file"),
+    "写入": ("write_file", "edit_file"),
+    "保存": ("write_file", "edit_file", "add_memory", "update_user_profile"),
+    "保存到记忆": ("add_memory", "update_user_profile"),
+    "记住": ("add_memory", "update_user_profile"),
+    "记录": ("add_memory", "create_todo"),
+    "存入": ("add_memory", "update_user_profile", "write_file"),
+    "创建": ("write_file", "create_todo", "schedule_task", "create_agent"),
+    "添加": ("add_memory", "create_todo", "schedule_task", "edit_file"),
+    "发送": ("deliver_artifacts", "send_to_chat", "smtp_email_sender", "send_message"),
+    "调度": ("schedule_task",),
+    "提醒": ("schedule_task",),
+    "安装": ("install_skill",),
+    "卸载": ("uninstall_skill",),
+}
+
+
+def _successful_tool_names(
+    executed_tool_names: list[str],
+    tool_results: list[dict] | None,
+) -> set[str]:
+    """Filter executed tool names down to those whose latest result is not an error."""
+    if not executed_tool_names:
+        return set()
+    if not tool_results:
+        return set(executed_tool_names)
+    failed: set[str] = set()
+    for tr in tool_results:
+        if not isinstance(tr, dict):
+            continue
+        if tr.get("is_error"):
+            tn = tr.get("tool_name") or tr.get("name") or ""
+            if tn:
+                failed.add(tn)
+    # Note: same tool may have multiple calls; if any succeeded, treat as success.
+    succeeded = set(executed_tool_names) - failed
+    return succeeded
+
+
+def _extract_unbacked_verbs(
+    text: str,
+    successful_tools: set[str],
+) -> list[str]:
+    """Return action verbs whose claim is not backed by any successful tool call."""
+    import re as _re
+
+    prefix_pat = _re.compile(r"(?:已[经]?|成功|顺利|我已经|我已)(?:帮你?|为你|给你)?")
+    unbacked: list[str] = []
+    for verb, fragments in _VERB_TO_TOOL_FRAGMENTS.items():
+        # Must appear right after an action-claim prefix to count as a real claim
+        # (avoids matching plain narrative like "我会创建..." or "需要修改...").
+        verb_pat = _re.compile(rf"{prefix_pat.pattern}{_re.escape(verb)}")
+        if not verb_pat.search(text):
+            continue
+        if any(any(frag in t for frag in fragments) for t in successful_tools):
+            continue
+        unbacked.append(verb)
+    return unbacked
+
+
+def _guard_unbacked_action_claim(
+    text: str,
+    executed_tool_names: list[str],
+    tool_results: list[dict] | None = None,
+) -> str:
+    """Downgrade visible action claims when no successful tool receipt exists.
+
+    Two layers of defence:
+    1. If the message contains an action-claim phrase but **no** tool ran at all,
+       fall back to a non-deceptive notice (legacy behaviour).
+    2. If tools did run but their names don't match the claimed verbs (e.g. text
+       says "已删除 X" but only ``get_tool_info`` was called), append a warning
+       and refuse to corroborate the claim. This catches the most common
+       hallucination class without blocking genuine multi-tool replies.
+    """
     if not text or not _get_action_claim_re().search(text):
         return text
-    if executed_tool_names:
-        return text
-    memory_markers = ("记住", "记忆")
-    if any(marker in text for marker in memory_markers) and "add_memory" not in executed_tool_names:
+
+    successful_tools = _successful_tool_names(executed_tool_names, tool_results)
+
+    if not executed_tool_names:
+        memory_markers = ("记住", "记忆")
+        if any(marker in text for marker in memory_markers):
+            return (
+                "我会在本轮对话中按这个信息处理，但当前没有检测到长期记忆写入凭证，"
+                "所以不会声称已经保存到记忆。"
+            )
         return (
-            "我会在本轮对话中按这个信息处理，但当前没有检测到长期记忆写入凭证，"
-            "所以不会声称已经保存到记忆。"
+            "当前没有检测到实际工具执行凭证，因此我不能声称外部动作已经完成。"
+            "我可以继续按你的要求执行，或先给出可执行方案。"
         )
-    return (
-        "当前没有检测到实际工具执行凭证，因此我不能声称外部动作已经完成。"
-        "我可以继续按你的要求执行，或先给出可执行方案。"
+
+    unbacked = _extract_unbacked_verbs(text, successful_tools)
+    if not unbacked:
+        return text
+
+    # 有具体动词宣称但找不到匹配的成功工具调用 → 在原文末尾追加幻觉告警，
+    # 不直接覆盖原文（保留 LLM 可能正确的其他部分），但让用户看到不一致。
+    verbs_str = "/".join(unbacked[:3])
+    succeeded_str = ", ".join(sorted(successful_tools)[:5]) or "无"
+    warning = (
+        f"\n\n⚠️ 一致性提示：上文宣称已『{verbs_str}』，但本轮成功执行的工具是 "
+        f"[{succeeded_str}]，未检测到对应工具的成功凭证。请勿据此认定操作已完成，"
+        "如需重试请明确告知。"
     )
+    return text.rstrip() + warning
 
 
 class ReasoningEngine:
@@ -5898,7 +5997,9 @@ class ReasoningEngine:
             cleaned_text = strip_thinking_tags(decision.text_content)
             _, cleaned_text = parse_intent_tag(cleaned_text)
             if cleaned_text and len(cleaned_text.strip()) > 0:
-                cleaned_text = _guard_unbacked_action_claim(cleaned_text, executed_tool_names)
+                cleaned_text = _guard_unbacked_action_claim(
+                    cleaned_text, executed_tool_names, all_tool_results
+                )
                 last_user_request = ResponseHandler.get_last_user_request(original_messages)
                 # 汇总轮（root post-summary 注入的 [用户指令最终汇总] 提示）下，
                 # 本次 ReAct 的目的就是输出汇总文本而非再产出文件，verify 全程绕过。
@@ -6092,7 +6193,9 @@ class ReasoningEngine:
 
         # 未执行过"实质性"工具 — 解析意图声明标记
         intent, stripped_text = parse_intent_tag(decision.text_content or "")
-        stripped_text = _guard_unbacked_action_claim(stripped_text or "", executed_tool_names)
+        stripped_text = _guard_unbacked_action_claim(
+            stripped_text or "", executed_tool_names, all_tool_results
+        )
         logger.info(
             f"[IntentTag] intent={intent or 'NONE'}, "
             f"has_tool_calls=False, tools_executed_in_task=False, "

@@ -579,10 +579,20 @@ class EndpointConfig:
         pricing_tiers 格式: [{"max_input": N, "input_price": P, "output_price": P}, ...]
         price 为每百万 token 的价格。max_input=-1 表示无上限。
         按 max_input 升序匹配，取第一个 input_tokens <= max_input 的档位。
+
+        Fix-5：当 endpoint 自身没有配置 ``pricing_tiers`` 时，回退到内置
+        价格表（按 provider+model 模糊匹配）。**仍然找不到** 时返回 ``0.0``，
+        但调用方应优先使用 ``calculate_cost_or_none`` 拿到 ``None``，UI 上
+        渲染为 "-" 而不是误导性的 "0"。
         """
         tiers = self.pricing_tiers
         if not tiers:
-            return 0.0
+            from .pricing import lookup_builtin_price
+
+            fallback = lookup_builtin_price(self.provider, self.model)
+            if fallback is None:
+                return 0.0
+            tiers = [fallback]
         sorted_tiers = sorted(
             tiers,
             key=lambda t: (
@@ -602,6 +612,40 @@ class EndpointConfig:
         crp = matched.get("cache_read_price", ip * 0.1) if cache_read_tokens else 0
         cost = (input_tokens * ip + output_tokens * op + cache_read_tokens * crp) / 1_000_000
         return round(cost, 8)
+
+    def calculate_cost_or_none(
+        self,
+        input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int = 0,
+    ) -> float | None:
+        """Like ``calculate_cost`` but returns ``None`` (instead of 0.0) when
+        no pricing source — neither user-configured nor built-in — is
+        available for this endpoint. UIs should render ``None`` as "-" so
+        users aren't misled into thinking the model is free.
+        """
+        if self.pricing_tiers:
+            return self.calculate_cost(input_tokens, output_tokens, cache_read_tokens)
+        from .pricing import lookup_builtin_price
+
+        if lookup_builtin_price(self.provider, self.model) is None:
+            return None
+        return self.calculate_cost(input_tokens, output_tokens, cache_read_tokens)
+
+    def get_effective_pricing(self) -> dict | None:
+        """Return the price tier currently used for this endpoint (Fix-5).
+
+        Resolution order: user ``pricing_tiers[0]`` → built-in table →
+        ``None`` (unknown). Used by ``GET /api/llm/pricing/effective``.
+        """
+        if self.pricing_tiers:
+            tier = dict(self.pricing_tiers[0])
+            tier.setdefault("source", "user")
+            tier.setdefault("currency", self.price_currency)
+            return tier
+        from .pricing import lookup_builtin_price
+
+        return lookup_builtin_price(self.provider, self.model)
 
     @classmethod
     def from_dict(cls, data: dict) -> "EndpointConfig":

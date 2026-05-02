@@ -50,6 +50,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Fix-12: in-app channels — gateway 不需要为它们注册 IM adapter，
+# 主线靠 SSE / CLI 直接交付，所以此处遇到这些 channel 时跳过 ERROR 日志。
+_NOOP_CHANNELS: frozenset[str] = frozenset({"desktop", "api", "cli", "sse", "in-app"})
+
 # Agent 处理函数类型
 AgentHandler = Callable[[Session, str], Awaitable[str]]
 
@@ -3886,7 +3890,16 @@ class MessageGateway:
 
         adapter = self._adapters.get(original.channel)
         if not adapter:
-            logger.error(f"No adapter for channel: {original.channel}")
+            # Fix-12: ``desktop`` / ``api`` / ``cli`` 等 in-app channel 没有 IM
+            # adapter，主线靠 SSE 直接推到前端 / CLI；此处重复 ERROR 日志容易
+            # 让 dashboard 误以为 IM 故障。降级为 DEBUG，仅未知 channel 才 ERROR。
+            if (original.channel or "").lower() in _NOOP_CHANNELS:
+                logger.debug(
+                    "[Gateway] No adapter for in-app channel '%s' — relying on SSE/CLI delivery",
+                    original.channel,
+                )
+            else:
+                logger.error(f"No adapter for channel: {original.channel}")
             return
 
         # 解析文本中的媒体引用
@@ -4225,7 +4238,14 @@ class MessageGateway:
         """
         adapter = self._adapters.get(channel)
         if not adapter:
-            logger.error(f"No adapter for channel: {channel}")
+            if (channel or "").lower() in _NOOP_CHANNELS:
+                logger.debug(
+                    "[Gateway] send() target '%s' is an in-app channel without IM adapter — "
+                    "no-op (frontend listens via SSE)",
+                    channel,
+                )
+            else:
+                logger.error(f"No adapter for channel: {channel}")
             return None
 
         try:

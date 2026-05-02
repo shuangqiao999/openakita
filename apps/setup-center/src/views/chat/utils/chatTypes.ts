@@ -87,7 +87,18 @@ export type StreamEvent =
   | { type: "ui_preference"; theme?: string; language?: string }
   | { type: "endpoint_notice"; reason_code?: string; notice_type?: string; endpoint?: string }
   | { type: "error"; message: string }
-  | { type: "done"; reason?: string; usage?: { input_tokens: number; output_tokens: number; total_tokens?: number; context_tokens?: number; context_limit?: number } };
+  | { type: "done"; reason?: string; usage?: {
+      input_tokens: number;
+      output_tokens: number;
+      total_tokens?: number;
+      context_tokens?: number;
+      context_limit?: number;
+      history_context_tokens?: number;
+      history_context_limit?: number;
+      billable_input_tokens?: number;
+      billable_output_tokens?: number;
+      billable_total_tokens?: number;
+    } };
 
 /** Sub-agent delegation entry for handoff display */
 export type SubAgentEntry = {

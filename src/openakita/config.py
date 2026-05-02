@@ -158,6 +158,9 @@ class Settings(BaseSettings):
     )
     log_to_console: bool = Field(default=True, description="是否输出到控制台")
     log_to_file: bool = Field(default=True, description="是否输出到文件")
+    llm_debug_enabled: bool = Field(default=True, description="是否保存 LLM 请求/响应调试快照")
+    llm_debug_retention_days: int = Field(default=3, description="LLM 调试快照保留天数")
+    llm_debug_max_size_mb: int = Field(default=512, description="LLM 调试快照目录最大体积（MB）")
 
     # === 全局代理配置 ===
     # 用于 LLM API 请求的代理（如果透明代理不生效）

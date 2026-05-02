@@ -119,7 +119,7 @@ export function AgentStoreView({ apiBaseUrl, visible }: AgentStoreViewProps) {
 
       {error && (
         <div className="card" style={{ textAlign: "center", padding: "24px 16px" }}>
-          <p style={{ color: "var(--error, #dc2626)", marginBottom: 8 }}>{t("agentStore.connectFail")}</p>
+          <p style={{ color: "var(--error, #dc2626)", marginBottom: 8 }}>{error || t("agentStore.connectFail")}</p>
           <p style={{ fontSize: 13, color: "var(--muted)", lineHeight: 1.6 }}>
             {t("agentStore.offlineHint")}
           </p>

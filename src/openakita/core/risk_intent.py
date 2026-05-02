@@ -61,8 +61,31 @@ _WRITE_RE = re.compile(
     r"delete|remove|clear|reset|overwrite|write|modify|add|disable|destroy|drop|truncate)",
     re.IGNORECASE,
 )
+# 高敏感的 shell/系统执行动词（无条件升级 EXECUTE）。
+# 中文「执行/运行」**不再**直接进入这个集合 — 它们是日常用语，
+# 命中过宽会把"请你执行 edit_file""方案 OK，确认开始执行"等
+# 普通推进语句误判为 high-risk shell。
 _EXECUTE_RE = re.compile(
-    r"(执行|运行|kill|rm\s+-rf|remove-item|del\s+/s|rmdir|force\s+push|push\s+--force)",
+    r"(kill\s|rm\s+-rf|remove-item|del\s+/s|rmdir|force\s+push|push\s+--force|"
+    r"sudo\s|chmod\s+777|format\s+[a-z]:)",
+    re.IGNORECASE,
+)
+
+# 通用"执行/运行"动词；仅当与 _SHELL_CONTEXT_RE 同时出现时才升级 EXECUTE。
+_GENERIC_DO_RE = re.compile(r"(执行|运行|跑一下|跑下|run\b|execute\b)", re.IGNORECASE)
+
+# Shell/命令上下文词；用于判定通用执行动词是否真的指向 shell 命令。
+_SHELL_CONTEXT_RE = re.compile(
+    r"(shell|bash|powershell|pwsh|cmd|命令行|脚本|script|"
+    r"命令\s|这条命令|这段命令|这个命令|run_shell|run_powershell)",
+    re.IGNORECASE,
+)
+
+# 对上一轮 ask_user/risk-confirm 的肯定回复。短路豁免，避免被
+# 当成新的高风险请求重新走 risk gate（导致 confirm → confirm 死循环）。
+_AFFIRMATIVE_REPLY_RE = re.compile(
+    r"^\s*(确认继续|继续吧?|开始执行|方案\s*ok|方案\s*可以|"
+    r"已确认|同意|可以|ok|yes|继续|go|approved)\s*[。.！!\s]*$",
     re.IGNORECASE,
 )
 # 只在显式上下文里抓 index：必须出现「第N条/项/个」或「index N」。
@@ -170,6 +193,21 @@ class RiskIntentClassifier:
                 access_mode=AccessMode.READ_ONLY,
                 requires_confirmation=False,
                 reason="org_synthesized_message",
+                action=None,
+                parameters={},
+            )
+
+        # 短路：用户对上一轮 ask_user / risk-confirm 的简短肯定回复
+        # （"确认继续 / 开始执行 / 方案 OK / 同意"等）一律视为非新动作，
+        # 让上层 _handle_pending_risk_answer 处理；避免被本分类器再次升级。
+        if _AFFIRMATIVE_REPLY_RE.match(text):
+            return RiskIntentResult(
+                risk_level=RiskLevel.NONE,
+                operation_kind=OperationKind.NONE,
+                target_kind=TargetKind.UNKNOWN,
+                access_mode=AccessMode.READ_ONLY,
+                requires_confirmation=False,
+                reason="affirmative_reply_to_prior_turn",
                 action=None,
                 parameters={},
             )
@@ -297,13 +335,23 @@ class RiskIntentClassifier:
     @staticmethod
     def _operation_kind(text: str) -> OperationKind:
         lowered = text.lower()
-        if _READ_ONLY_RE.search(text) and not _WRITE_RE.search(text) and not _EXECUTE_RE.search(text):
+        # READ-only 路径：READ 关键词 + 没有任何写/执行词
+        if (
+            _READ_ONLY_RE.search(text)
+            and not _WRITE_RE.search(text)
+            and not _EXECUTE_RE.search(text)
+            and not _GENERIC_DO_RE.search(text)
+        ):
             if re.search(r"(解释|说明|介绍|区别|explain|describe|compare)", text, re.IGNORECASE):
                 return OperationKind.EXPLAIN
             if re.search(r"(建议|如何|怎么|suggest)", text, re.IGNORECASE):
                 return OperationKind.SUGGEST
             return OperationKind.INSPECT
+        # 高敏感 shell 动词无条件 EXECUTE
         if _EXECUTE_RE.search(text):
+            return OperationKind.EXECUTE
+        # 通用「执行/运行」**仅当**伴随明确 shell 上下文时才升 EXECUTE
+        if _GENERIC_DO_RE.search(text) and _SHELL_CONTEXT_RE.search(text):
             return OperationKind.EXECUTE
         if re.search(r"(删除|删掉|移除|delete|remove|drop|truncate)", lowered, re.IGNORECASE):
             return OperationKind.DELETE

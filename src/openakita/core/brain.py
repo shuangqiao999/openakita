@@ -1267,6 +1267,8 @@ class Brain:
             request_id: 请求 ID，用于关联对应的 response 文件
         """
         try:
+            if not getattr(settings, "llm_debug_enabled", True):
+                return uuid.uuid4().hex[:8]
             debug_dir = settings.project_root / "data" / "llm_debug"
             debug_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1363,8 +1365,11 @@ class Brain:
                     f"[LLM DEBUG] Request saved: {total_estimated_tokens} tokens ({token_detail})"
                 )
 
-            # 清理超过 3 天的旧调试文件
-            self._cleanup_old_debug_files(debug_dir, max_age_days=3)
+            self._cleanup_old_debug_files(
+                debug_dir,
+                max_age_days=getattr(settings, "llm_debug_retention_days", 3),
+                max_size_mb=getattr(settings, "llm_debug_max_size_mb", 512),
+            )
 
             return request_id
 
@@ -1382,6 +1387,8 @@ class Brain:
             request_id: 对应的请求 ID（用于关联 request 文件）
         """
         try:
+            if not getattr(settings, "llm_debug_enabled", True):
+                return
             debug_dir = settings.project_root / "data" / "llm_debug"
             debug_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1517,29 +1524,51 @@ class Brain:
 
         return blocks
 
-    def _cleanup_old_debug_files(self, debug_dir: Path, max_age_days: int = 7) -> None:
-        """清理超过指定天数的旧调试文件（request + response）。"""
+    def _cleanup_old_debug_files(
+        self,
+        debug_dir: Path,
+        max_age_days: int = 7,
+        max_size_mb: int = 512,
+    ) -> None:
+        """清理超过指定天数或目录体积上限的调试文件（request + response）。"""
         try:
             import os
             from datetime import timedelta
 
             cutoff_time = datetime.now() - timedelta(days=max_age_days)
             deleted_count = 0
+            remaining: list[tuple[float, int, Path]] = []
 
             for pattern in ("llm_request_*.json", "llm_response_*.json"):
                 for file in debug_dir.glob(pattern):
                     try:
-                        mtime = datetime.fromtimestamp(os.path.getmtime(file))
+                        stat = file.stat()
+                        mtime = datetime.fromtimestamp(stat.st_mtime)
                         if mtime < cutoff_time:
                             file.unlink()
                             deleted_count += 1
+                        else:
+                            remaining.append((stat.st_mtime, stat.st_size, file))
+                    except Exception:
+                        pass
+
+            if max_size_mb > 0:
+                max_bytes = max_size_mb * 1024 * 1024
+                total_bytes = sum(size for _, size, _ in remaining)
+                for _, size, file in sorted(remaining, key=lambda item: item[0]):
+                    if total_bytes <= max_bytes:
+                        break
+                    try:
+                        file.unlink()
+                        total_bytes -= size
+                        deleted_count += 1
                     except Exception:
                         pass
 
             if deleted_count > 0:
                 logger.debug(
                     f"[LLM DEBUG] Cleaned up {deleted_count} old debug files "
-                    f"(older than {max_age_days} days)"
+                    f"(retention={max_age_days} days, max_size={max_size_mb} MB)"
                 )
 
         except Exception as e:

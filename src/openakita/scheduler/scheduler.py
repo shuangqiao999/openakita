@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from ..utils.atomic_io import safe_json_write, safe_write
+from ._naming import quarantine_invalid_task_name, validate_task_name
 from .task import ScheduledTask, TaskDurability, TaskExecution, TaskStatus, TriggerType
 from .triggers import Trigger
 
@@ -200,8 +201,14 @@ class TaskScheduler:
             任务 ID
 
         Raises:
-            ValueError: 任务 ID 重复或达到上限
+            ValueError: 任务 ID 重复、达到上限或 name 不合规
         """
+        # Fix-15：内核侧统一校验 name —— 防 MCP/programmatic/系统种子任务绕开
+        # API 层的 _validate_task_name 把路径穿越/控制字符塞进 storage。
+        ok, reason = validate_task_name(task.name)
+        if not ok:
+            raise ValueError(f"Invalid task name: {reason}")
+
         async with self._lock:
             if task.id in self._tasks:
                 raise ValueError(f"Task with id {task.id!r} already exists")
@@ -627,7 +634,23 @@ class TaskScheduler:
         # 对于间隔任务和 cron 任务，记录 missed 并推进到下一次
         task.metadata["last_missed_at"] = missed_at.isoformat() if missed_at else now.isoformat()
         missed_count = task.metadata.get("missed_count", 0)
-        task.metadata["missed_count"] = missed_count + 1
+        new_missed_count = missed_count + 1
+
+        # Fix-7：missed_count 上限保护（默认 100）。无限累积只会让 UI
+        # SchedulerView 出现"missed=27"这种"不健康"的数字，但实际上调度器
+        # 已经按 trigger.get_next_run_time(now) 跳过历史，再多统计也无意义。
+        # 超过上限时强制清零并写一条审计字段，避免历史包袱误导用户。
+        _MISSED_COUNT_HARD_CAP = 100
+        if new_missed_count >= _MISSED_COUNT_HARD_CAP:
+            task.metadata["missed_count_reset_at"] = now.isoformat()
+            task.metadata["missed_count_last_overflow"] = new_missed_count
+            new_missed_count = 0
+            logger.warning(
+                f"Task {task.id} missed_count reached cap "
+                f"({_MISSED_COUNT_HARD_CAP}); resetting to 0 and stamping "
+                f"metadata.missed_count_last_overflow"
+            )
+        task.metadata["missed_count"] = new_missed_count
 
         next_run = trigger.get_next_run_time(now)
 
@@ -638,7 +661,7 @@ class TaskScheduler:
         task.next_run = next_run
         logger.info(
             f"Recalculated next_run for task {task.id}: {next_run} "
-            f"(missed at {missed_at}, total missed: {missed_count + 1})"
+            f"(missed at {missed_at}, total missed: {new_missed_count})"
         )
 
     # ==================== 持久化 ====================
@@ -691,16 +714,26 @@ class TaskScheduler:
                 return
 
             skipped_session = 0
+            quarantined_names: list[tuple[str, str]] = []
             for item in data:
                 try:
                     if not isinstance(item, dict):
                         logger.warning(f"Skipping non-dict task entry: {type(item).__name__}")
                         continue
                     task = ScheduledTask.from_dict(item)
-                    # T1: SESSION tasks should not survive restart
                     if task.durability == TaskDurability.SESSION:
                         skipped_session += 1
                         continue
+
+                    # Fix-15：历史 task 可能在 storage 里残留路径穿越/控制字符
+                    # 形态的 name —— 启动时一次性 quarantine 重命名，
+                    # 既保留审计痕迹（可在 UI 看到 `__quarantine__/` 前缀），
+                    # 又把这些非法字符隔离出后续日志/文件命名链路。
+                    new_name = quarantine_invalid_task_name(task.name)
+                    if new_name is not None:
+                        quarantined_names.append((task.name, new_name))
+                        task.name = new_name
+
                     self._tasks[task.id] = task
 
                     trigger = Trigger.from_config(task.trigger_type.value, task.trigger_config)
@@ -711,6 +744,16 @@ class TaskScheduler:
                     logger.warning(f"Failed to load task {task_id}: {e}")
             if skipped_session:
                 logger.info(f"Skipped {skipped_session} SESSION-durability task(s) on load")
+
+            if quarantined_names:
+                for orig, new in quarantined_names:
+                    logger.warning(
+                        "[Scheduler] Quarantined invalid task name on load: %r → %r",
+                        orig,
+                        new,
+                    )
+                with contextlib.suppress(Exception):
+                    self._save_tasks()
 
             logger.info(f"Loaded {len(self._tasks)} tasks from storage")
 

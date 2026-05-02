@@ -280,10 +280,10 @@ class SkillParser:
 
     @staticmethod
     def _derive_name_from_path(path: Path) -> str:
-        """从 SKILL.md 所在目录派生 snake_case 名称作为降级值。"""
-        raw = path.parent.name or "unnamed_skill"
-        normalized = re.sub(r"[^A-Za-z0-9]+", "_", raw).strip("_").lower()
-        return normalized or "unnamed_skill"
+        """从 SKILL.md 所在目录派生符合规范的 kebab-case 名称作为降级值。"""
+        raw = path.parent.name or "unnamed-skill"
+        normalized = re.sub(r"[^A-Za-z0-9]+", "-", raw).strip("-").lower()
+        return normalized or "unnamed-skill"
 
     def _build_metadata(self, data: dict, path: Path, body: str = "") -> SkillMetadata:
         """从 YAML 数据构建元数据（缺字段时降级派生，不再硬失败）"""

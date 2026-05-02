@@ -659,45 +659,53 @@ except ImportError:
 # Playwright Chromium browser binary (bundled to avoid user needing 'playwright install chromium')
 # 构建时需预先运行: playwright install chromium
 # Chromium 默认位于 PLAYWRIGHT_BROWSERS_PATH 或 playwright 包内的 .local-browsers
+#
+# macOS is intentionally excluded here. Chromium is distributed as a nested
+# ``Google Chrome for Testing.app`` bundle; when PyInstaller sees the Mach-O
+# executable inside datas during COLLECT, it tries to ad-hoc codesign the
+# nested app and fails with "bundle format unrecognized" before Tauri's own
+# app signing/notarization step can run. macOS users can still install the
+# browser runtime through the in-app dependency panel.
 try:
     _pw_browsers_bundled = False
-    # 优先检查 playwright 包内的浏览器（playwright install --with-deps 后的位置）
-    _pw_local_browsers = _pw_pkg_dir / ".local-browsers"
-    if _pw_local_browsers.exists():
-        datas.append((str(_pw_local_browsers), "playwright/.local-browsers"))
-        _pw_browsers_bundled = True
-        print(f"[spec] Bundling Playwright local browsers: {_pw_local_browsers}")
+    if sys.platform == "darwin":
+        print("[spec] Skipping Playwright Chromium bundle on macOS (nested .app codesign)")
     else:
-        # 检查默认浏览器安装路径
-        import subprocess as _sp2
-        try:
-            _pw_browser_path = _sp2.check_output(
-                [sys.executable, "-c",
-                 "from playwright._impl._driver import compute_driver_executable; "
-                 "import os; print(os.environ.get('PLAYWRIGHT_BROWSERS_PATH', ''))"],
-                text=True, stderr=_sp2.DEVNULL
-            ).strip()
-        except Exception:
-            _pw_browser_path = ""
+        # 优先检查 playwright 包内的浏览器（playwright install --with-deps 后的位置）
+        _pw_local_browsers = _pw_pkg_dir / ".local-browsers"
+        if _pw_local_browsers.exists():
+            datas.append((str(_pw_local_browsers), "playwright/.local-browsers"))
+            _pw_browsers_bundled = True
+            print(f"[spec] Bundling Playwright local browsers: {_pw_local_browsers}")
+        else:
+            # 检查默认浏览器安装路径
+            import subprocess as _sp2
+            try:
+                _pw_browser_path = _sp2.check_output(
+                    [sys.executable, "-c",
+                     "from playwright._impl._driver import compute_driver_executable; "
+                     "import os; print(os.environ.get('PLAYWRIGHT_BROWSERS_PATH', ''))"],
+                    text=True, stderr=_sp2.DEVNULL
+                ).strip()
+            except Exception:
+                _pw_browser_path = ""
 
-        if not _pw_browser_path:
-            # 使用 playwright 默认路径
-            if sys.platform == "win32":
-                _pw_browser_path = str(Path.home() / "AppData" / "Local" / "ms-playwright")
-            elif sys.platform == "darwin":
-                _pw_browser_path = str(Path.home() / "Library" / "Caches" / "ms-playwright")
-            else:
-                _pw_browser_path = str(Path.home() / ".cache" / "ms-playwright")
+            if not _pw_browser_path:
+                # 使用 playwright 默认路径
+                if sys.platform == "win32":
+                    _pw_browser_path = str(Path.home() / "AppData" / "Local" / "ms-playwright")
+                else:
+                    _pw_browser_path = str(Path.home() / ".cache" / "ms-playwright")
 
-        _pw_browser_dir = Path(_pw_browser_path)
-        if _pw_browser_dir.exists():
-            # 只打包 chromium 目录（不打包其他浏览器）
-            for _chromium_dir in _pw_browser_dir.iterdir():
-                if _chromium_dir.is_dir() and "chromium" in _chromium_dir.name.lower():
-                    datas.append((str(_chromium_dir), f"playwright-browsers/{_chromium_dir.name}"))
-                    _pw_browsers_bundled = True
-                    print(f"[spec] Bundling Playwright Chromium: {_chromium_dir}")
-                    break
+            _pw_browser_dir = Path(_pw_browser_path)
+            if _pw_browser_dir.exists():
+                # 只打包 chromium 目录（不打包其他浏览器）
+                for _chromium_dir in _pw_browser_dir.iterdir():
+                    if _chromium_dir.is_dir() and "chromium" in _chromium_dir.name.lower():
+                        datas.append((str(_chromium_dir), f"playwright-browsers/{_chromium_dir.name}"))
+                        _pw_browsers_bundled = True
+                        print(f"[spec] Bundling Playwright Chromium: {_chromium_dir}")
+                        break
 
     if not _pw_browsers_bundled:
         print("[spec] WARNING: Playwright Chromium not found. Run 'playwright install chromium' before building.")

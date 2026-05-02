@@ -259,6 +259,7 @@ _EXTENDED_RULES = """\
 ## 信息纠正
 - 当用户纠正之前的信息时，**立即以纠正后的信息为准**
 - 回复中**不要再提及或引用旧值**，直接使用新值
+- 当预算、时间、版本、数量等基础事实被纠正后，后续所有相关派生结果必须按新事实重新计算，不能直接复用历史派生值
 - 如已将旧信息存入记忆，应调用 update_user_profile / add_memory 更新
 - 当用户声称的信息与对话历史**明显矛盾**时，先引用历史记录核实，再决定是否更新。不要先认同后否定
 - 纠正确认后，**必须调用** update_user_profile 或 add_memory 持久化更新，不能只口头确认
@@ -458,6 +459,7 @@ def build_system_prompt(
     memory_scope: Any | None = None,
     catalog_scope: list[str] | None = None,
     include_project_guidelines: bool | None = None,
+    intent_tool_hints: list[str] | None = None,
 ) -> str:
     """
     组装系统提示词
@@ -1211,6 +1213,11 @@ def _build_runtime_section_uncached() -> str:
 如果工具不可用，允许纯文本回复并说明限制。"""
 
 
+def _arch_section_includes_model() -> bool:
+    """Constant — `_build_arch_section` always renders model when given."""
+    return True
+
+
 def _build_session_metadata_section(
     session_context: dict | None = None,
     model_display_name: str = "",
@@ -1224,7 +1231,11 @@ def _build_session_metadata_section(
 
     lines = ["## 当前会话"]
 
-    if model_display_name:
+    # 注意：当前模型不再在此处单列。`_build_arch_section` 已经以
+    # "powered by **{model}**" 的形式标注了模型；两处同时输出会让
+    # system prompt 多出一行重复信息，且会把 model 字符串复制成两份，
+    # 影响 cache 命中。仅在 arch_section 不输出（极端兜底）时才回退。
+    if model_display_name and not _arch_section_includes_model():
         lines.append(f"- **当前模型**: {model_display_name}")
 
     if session_context:
@@ -1487,6 +1498,7 @@ def _build_conversation_context_rules() -> str:
 - messages 数组中的对话历史按时间顺序排列，历史消息带有 [HH:MM] 时间前缀
 - **最后一条 user 消息**是用户的最新请求（以 [最新消息] 标记）
 - 对话历史是最权威的上下文来源，可直接引用其中的信息、结论和结果
+- 当历史中的基础事实被后续消息纠正（如预算、时间、版本、数量）时，相关派生数据必须按最新事实重新计算，不直接复用旧计算结果
 - 历史中已完成的操作（工具调用、搜索、调研、文件创建等）不要重复执行，直接引用结果即可
 - 如果用户追问历史中的内容，基于对话历史回答，不需要重新搜索或执行
 - **不要**在回复开头添加时间戳（如 [19:30]），系统会自动为历史消息标注时间
@@ -1669,6 +1681,13 @@ def _build_catalogs_section(
             elif _profile == PromptProfile.IM_ASSISTANT:
                 _exp_filter = "core+recommended"
 
+            # Fix-4：当 IntentAnalyzer 给出 tool_hints 时，把对应分类提为
+            # priority — 该分类详细展开 (Level B)，其余分类降级为 (index)
+            # 仅名字。LLM 仍能通过 get_skill_info 拉详情，但首轮 prompt
+            # 显著瘦身。priority_categories=() 时退化为旧行为。
+            from .budget import intent_to_priority_categories
+            _priority_cats = intent_to_priority_categories(intent_tool_hints)
+
             # 零丢失 + 自适应压缩：所有技能名字始终保留，
             # 描述文本根据 catalogs_budget 的 55% 分配自动分级压缩。
             # 技能数少于 50 时完整展示，超出预算时先缩短描述再降为仅名字。
@@ -1676,6 +1695,7 @@ def _build_catalogs_section(
             skills_grouped = skill_catalog.get_grouped_compact_catalog(
                 exposure_filter=_exp_filter,
                 max_tokens=_skills_budget,
+                priority_categories=_priority_cats or None,
             )
 
             skills_rule = (

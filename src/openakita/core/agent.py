@@ -34,7 +34,8 @@ if TYPE_CHECKING:
 
 from ..config import settings
 from .confirmation_state import get_confirmation_store
-from .risk_intent import RiskIntentResult, classify_risk_intent
+from .risk_intent import RiskIntentResult, RiskLevel, classify_risk_intent
+from .trusted_paths import consume_session_trust, is_trusted_workspace_path
 
 # 记忆系统
 from ..memory import MemoryManager
@@ -262,6 +263,86 @@ class PromptStrategy:
 def _classify_risk_intent(intent: Any, message: str) -> RiskIntentResult:
     """Single source of truth for the pre-ReAct risk gate."""
     return classify_risk_intent(message, intent)
+
+
+def _consume_risk_authorization(session: Any, message: str) -> bool:
+    """Check + consume session-level risk authorization.
+
+    When the user previously confirmed a high-risk request that had no
+    controlled execution entry (see ``chat.py::_RiskAuthorizedReplay``),
+    the chat handler stamps the session metadata with::
+
+        risk_authorized_replay = {
+            "expires_at": <epoch_seconds>,
+            "confirmation_id": ...,
+            "original_message": ...,
+        }
+
+    If the current ``message`` matches and the stamp is still fresh, return
+    ``True`` and **consume** the marker (single-use). Otherwise return
+    ``False``.
+
+    Single-use + short TTL (30s) avoids granting blanket future authority.
+    """
+    if session is None or not message:
+        return False
+    try:
+        stamp = session.get_metadata("risk_authorized_replay")
+    except Exception:
+        return False
+    if not isinstance(stamp, dict):
+        return False
+    try:
+        if float(stamp.get("expires_at", 0)) < time.time():
+            session.set_metadata("risk_authorized_replay", None)
+            return False
+    except (TypeError, ValueError):
+        return False
+    if (stamp.get("original_message") or "").strip() != (message or "").strip():
+        return False
+    try:
+        session.set_metadata("risk_authorized_replay", None)
+    except Exception:
+        pass
+    return True
+
+
+def _check_trusted_path_skip(
+    session: Any,
+    message: str,
+    risk_intent: RiskIntentResult | None,
+) -> str | None:
+    """Decide whether the current request can skip the risk gate due to a
+    trusted-path or session-level grant (Fix-11).
+
+    Returns a human-readable reason string when skipped, or ``None`` when the
+    normal risk gate must run. **Never** returns a skip reason for
+    ``RiskLevel.HIGH`` — that bar (sensitive targets / shell hard verbs)
+    requires explicit confirmation regardless of trust state.
+    """
+    if risk_intent is None or not message:
+        return None
+    if risk_intent.risk_level == RiskLevel.HIGH:
+        return None
+
+    try:
+        if is_trusted_workspace_path(message):
+            return "trusted_workspace_path"
+    except Exception:
+        pass
+
+    try:
+        op_value = (
+            risk_intent.operation_kind.value
+            if hasattr(risk_intent.operation_kind, "value")
+            else str(risk_intent.operation_kind)
+        )
+        if consume_session_trust(session, message=message, operation=op_value):
+            return "session_grant"
+    except Exception:
+        pass
+
+    return None
 
 
 def _build_destructive_intent_question(message: str, classification: RiskIntentResult | None = None) -> str:
@@ -855,10 +936,39 @@ class Agent:
 
             prompt_depth = getattr(intent, "prompt_depth", None)
             requires_tools = bool(getattr(intent, "requires_tools", False))
+            force_tool = bool(getattr(intent, "force_tool", False))
+            task_type = str(getattr(intent, "task_type", "") or "").lower()
+            user_message = str(getattr(self, "_current_user_message", "") or "").lower()
+            explicit_no_tools = any(
+                marker in user_message
+                for marker in (
+                    "不要调用工具",
+                    "不要用工具",
+                    "不调用工具",
+                    "无需调用工具",
+                    "no tools",
+                    "without tools",
+                )
+            )
+            if explicit_no_tools and not requires_tools and not force_tool:
+                self._last_minimal_toolset = True
+                if hasattr(self, "tool_catalog"):
+                    self.tool_catalog.set_deferred_tools(set())
+                logger.info("[Agent] no-tool intent: user explicitly requested no tool calls")
+                return []
             minimal_prompt = (
-                intent.intent in (IntentType.CHAT, IntentType.QUERY)
+                intent.intent in (IntentType.CHAT, IntentType.QUERY, IntentType.FOLLOW_UP)
                 and not requires_tools
+                and not force_tool
+                and not intent_hints
                 and prompt_depth in (PromptDepth.FAST, PromptDepth.MINIMAL)
+                or (
+                    intent.intent == IntentType.FOLLOW_UP
+                    and task_type in ("analysis", "question", "other")
+                    and not requires_tools
+                    and not force_tool
+                    and not intent_hints
+                )
             )
             if minimal_prompt:
                 tools = [t for t in tools if t.get("name") in MINIMAL_PROMPT_TOOLS]
@@ -2589,7 +2699,8 @@ class Agent:
 - message 必须包含充分上下文，让目标 Agent 独立完成
 - 结果返回后整合并用你自己的语气回复用户
 - 委派深度上限 5 层，每会话最多 5 个动态 Agent
-- 对话历史中的 [子Agent工作总结] 和 [执行摘要] 是已完成的事实，不要重复执行"""
+- 对话历史中的 <<DELEGATION_TRACE>> 和 <<TOOL_TRACE>>（旧版 [子Agent工作总结] / [执行摘要]）是已完成的事实，不要重复执行
+- **重要**：这两个 marker 是系统注入的、由真实工具凭证支撑的回放摘要；不要在你自己的回复中模仿这种格式编造执行结果"""
 
     def _generate_tools_text(self) -> str:
         """
@@ -3653,6 +3764,7 @@ class Agent:
                 intent_result = _make_default(message)
 
         self._current_intent = intent_result
+        self._current_user_message = message
         # BUG-EFF-4 守卫：本轮是否带图片附件。CHAT 意图通常被强制降级为 ask
         # （省 token 设计），但带附件时降级会砍掉 vision 工具，导致用户看到
         # "图片在哪？"之类的回复。这里记录一个轻量标志供 _build_system_prompt_compiled
@@ -3822,7 +3934,14 @@ class Agent:
                 )
             history_messages = deduped
 
-        _STRIP_MARKERS = ["\n\n[子Agent工作总结]", "\n\n[执行摘要]"]
+        # 同时识别新 marker (<<TOOL_TRACE>> / <<DELEGATION_TRACE>>) 与旧 marker
+        # ([执行摘要] / [子Agent工作总结])，向后兼容已存档的会话历史。
+        _STRIP_MARKERS = [
+            "\n\n<<DELEGATION_TRACE>>",
+            "\n\n<<TOOL_TRACE>>",
+            "\n\n[子Agent工作总结]",
+            "\n\n[执行摘要]",
+        ]
         _RE_TIME_PREFIX = re.compile(r"^\[\d{1,2}:\d{2}\]\s")
 
         messages: list[dict] = []
@@ -3837,12 +3956,17 @@ class Agent:
                         before = content[:idx]
                         after = content[idx + len(_marker) :]
                         next_section = -1
-                        for sep in ("\n\n[", "\n\n##", "\n\n---"):
+                        for sep in ("\n\n[", "\n\n<<", "\n\n##", "\n\n---"):
                             pos = after.find(sep)
                             if pos != -1 and (next_section == -1 or pos < next_section):
                                 next_section = pos
                         content = before + after[next_section:] if next_section != -1 else before
-                if content.startswith("[执行摘要]") or content.startswith("[子Agent工作总结]"):
+                if (
+                    content.startswith("<<TOOL_TRACE>>")
+                    or content.startswith("<<DELEGATION_TRACE>>")
+                    or content.startswith("[执行摘要]")
+                    or content.startswith("[子Agent工作总结]")
+                ):
                     content = ""
                 # 从 metadata 还原 tool_summary（跨轮工具上下文恢复）
                 _tool_summary = msg.get("tool_summary")
@@ -4360,6 +4484,7 @@ class Agent:
         """
         self._current_task_definition = ""
         self._current_task_query = ""
+        self._current_user_message = ""
         self._current_session_type = "cli"
         if im_tokens is not None:
             with contextlib.suppress(Exception):
@@ -4578,12 +4703,32 @@ class Agent:
             _fast_handled = False
 
             _risk_intent = _classify_risk_intent(_intent, message) if _intent else None
+            _risk_pre_authorized = _consume_risk_authorization(session, message)
+            if _risk_pre_authorized:
+                logger.info(
+                    "[RiskIntentGate] sync path skipped — user pre-authorized "
+                    "(session=%s, message=%r)",
+                    session_id,
+                    message[:200],
+                )
+            else:
+                _trusted_skip_reason = _check_trusted_path_skip(session, message, _risk_intent)
+                if _trusted_skip_reason:
+                    _risk_pre_authorized = True
+                    logger.info(
+                        "[RiskIntentGate] sync path skipped — trusted (reason=%s, "
+                        "session=%s, message=%r)",
+                        _trusted_skip_reason,
+                        session_id,
+                        message[:200],
+                    )
             if (
                 mode == "agent"
                 and _intent
                 and not getattr(self, "_is_sub_agent_call", False)
                 and _risk_intent
                 and _risk_intent.requires_confirmation
+                and not _risk_pre_authorized
             ):
                 response_text = _build_destructive_intent_question(message, _risk_intent)
                 pending = get_confirmation_store().create(
@@ -4593,14 +4738,14 @@ class Agent:
                     request_id=f"{session_id}:sync",
                 )
                 self.reasoning_engine._last_exit_reason = "ask_user"
-                logger.warning(
-                    "[RiskIntentGate] blocked free-form execution before ReAct "
-                    "(session=%s, confirmation=%s, risk=%s, message=%r)",
-                    session_id,
-                    pending.confirmation_id,
-                    _risk_intent.to_dict(),
-                    message[:200],
-                )
+                # Fix-14：风险早退路径未发起 LLM 调用，必须显式清空上一轮的
+                # ReAct trace，否则 _finalize_session → _extract_usage_summary
+                # 会读到上轮残留 trace，把上轮 token 用量当成这次的并下发，
+                # 让前端误以为"询问确认这一步也烧了 14 万 token"。
+                try:
+                    self.reasoning_engine._last_react_trace = []
+                except Exception:
+                    pass
                 _fast_handled = True
 
             if _intent and _intent.intent == _IT.CHAT and getattr(_intent, "fast_reply", False):
@@ -4708,10 +4853,15 @@ class Agent:
             # fast_reply 不经过 ReasoningEngine，trace 为空导致 _last_usage_summary = {}。
             # 从 Response.usage 补充。
             if _fast_handled and not self._last_usage_summary and isinstance(_fast_usage, dict):
+                _fast_in = _fast_usage.get("input_tokens", 0)
+                _fast_out = _fast_usage.get("output_tokens", 0)
                 self._last_usage_summary = {
-                    "input_tokens": _fast_usage.get("input_tokens", 0),
-                    "output_tokens": _fast_usage.get("output_tokens", 0),
-                    "total_tokens": _fast_usage.get("input_tokens", 0) + _fast_usage.get("output_tokens", 0),
+                    "input_tokens": _fast_in,
+                    "output_tokens": _fast_out,
+                    "total_tokens": _fast_in + _fast_out,
+                    "billable_input_tokens": _fast_in,
+                    "billable_output_tokens": _fast_out,
+                    "billable_total_tokens": _fast_in + _fast_out,
                 }
 
             return response_text
@@ -4912,12 +5062,34 @@ class Agent:
             _intent = getattr(self, "_current_intent", None)
 
             _risk_intent = _classify_risk_intent(_intent, message) if _intent else None
+            _risk_pre_authorized = _consume_risk_authorization(session, message)
+            if _risk_pre_authorized:
+                logger.info(
+                    "[RiskIntentGate] stream path skipped — user pre-authorized "
+                    "(session=%s, conversation=%s, message=%r)",
+                    session_id,
+                    conversation_id,
+                    message[:200],
+                )
+            else:
+                _trusted_skip_reason = _check_trusted_path_skip(session, message, _risk_intent)
+                if _trusted_skip_reason:
+                    _risk_pre_authorized = True
+                    logger.info(
+                        "[RiskIntentGate] stream path skipped — trusted "
+                        "(reason=%s, session=%s, conversation=%s, message=%r)",
+                        _trusted_skip_reason,
+                        session_id,
+                        conversation_id,
+                        message[:200],
+                    )
             if (
                 mode == "agent"
                 and _intent
                 and not getattr(self, "_is_sub_agent_call", False)
                 and _risk_intent
                 and _risk_intent.requires_confirmation
+                and not _risk_pre_authorized
             ):
                 pending = get_confirmation_store().create(
                     conversation_id=conversation_id,
@@ -4928,6 +5100,12 @@ class Agent:
                 question_text = _build_destructive_intent_question(message, _risk_intent)
                 _reply_text = question_text
                 self.reasoning_engine._last_exit_reason = "ask_user"
+                # Fix-14：streaming 路径风险早退同样需清空上轮 trace，
+                # 避免 done 事件 usage 字段复用上一轮真实调用的 token 用量。
+                try:
+                    self.reasoning_engine._last_react_trace = []
+                except Exception:
+                    pass
                 logger.warning(
                     "[RiskIntentGate] blocked free-form streaming execution before ReAct "
                     "(session=%s, conversation=%s, confirmation=%s, risk=%s, message=%r)",
@@ -5021,10 +5199,15 @@ class Agent:
                     task_monitor=task_monitor,
                 )
                 if not self._last_usage_summary and isinstance(_fast_usage, dict):
+                    _fi = _fast_usage.get("input_tokens", 0)
+                    _fo = _fast_usage.get("output_tokens", 0)
                     self._last_usage_summary = {
-                        "input_tokens": _fast_usage.get("input_tokens", 0),
-                        "output_tokens": _fast_usage.get("output_tokens", 0),
-                        "total_tokens": _fast_usage.get("input_tokens", 0) + _fast_usage.get("output_tokens", 0),
+                        "input_tokens": _fi,
+                        "output_tokens": _fo,
+                        "total_tokens": _fi + _fo,
+                        "billable_input_tokens": _fi,
+                        "billable_output_tokens": _fo,
+                        "billable_total_tokens": _fi + _fo,
                     }
                 return
 
@@ -5082,10 +5265,15 @@ class Agent:
                         task_monitor=task_monitor,
                     )
                     if not self._last_usage_summary and isinstance(_fast_usage, dict):
+                        _qi = _fast_usage.get("input_tokens", 0)
+                        _qo = _fast_usage.get("output_tokens", 0)
                         self._last_usage_summary = {
-                            "input_tokens": _fast_usage.get("input_tokens", 0),
-                            "output_tokens": _fast_usage.get("output_tokens", 0),
-                            "total_tokens": _fast_usage.get("input_tokens", 0) + _fast_usage.get("output_tokens", 0),
+                            "input_tokens": _qi,
+                            "output_tokens": _qo,
+                            "total_tokens": _qi + _qo,
+                            "billable_input_tokens": _qi,
+                            "billable_output_tokens": _qo,
+                            "billable_total_tokens": _qi + _qo,
                         }
                     return
 
@@ -5255,6 +5443,21 @@ class Agent:
 
         在 _finalize_session 中调用，提前缓存结果。
         cleanup 释放大对象后，chat.py 仍可读取此摘要而不依赖完整 trace。
+
+        Fix-13：字段同时输出新旧两套名字（前端兼容窗口期）：
+
+        ============================  =============================
+        旧字段 (deprecated)            新字段 (Fix-13)
+        ============================  =============================
+        ``input_tokens``              ``billable_input_tokens``
+        ``output_tokens``             ``billable_output_tokens``
+        ``total_tokens``              ``billable_total_tokens``
+        ``context_tokens``            ``history_context_tokens``
+        ``context_limit``             ``history_context_limit``
+        ============================  =============================
+
+        旧字段保留至前端切换完成；OpenAPI schema 在响应注释中标注新名为
+        权威字段，旧名字段已 deprecated。
         """
         if not trace:
             return {}
@@ -5264,8 +5467,10 @@ class Agent:
             "input_tokens": total_in,
             "output_tokens": total_out,
             "total_tokens": total_in + total_out,
+            "billable_input_tokens": total_in,
+            "billable_output_tokens": total_out,
+            "billable_total_tokens": total_in + total_out,
         }
-        # 估算上下文 token 数
         try:
             re = self.reasoning_engine
             ctx_mgr = getattr(self, "context_manager", None) or getattr(
@@ -5273,8 +5478,12 @@ class Agent:
             )
             if ctx_mgr and hasattr(ctx_mgr, "get_max_context_tokens"):
                 msgs = getattr(re, "_last_working_messages", None) or []
-                summary["context_tokens"] = ctx_mgr.estimate_messages_tokens(msgs) if msgs else 0
-                summary["context_limit"] = ctx_mgr.get_max_context_tokens()
+                ctx_tokens = ctx_mgr.estimate_messages_tokens(msgs) if msgs else 0
+                ctx_limit = ctx_mgr.get_max_context_tokens()
+                summary["context_tokens"] = ctx_tokens
+                summary["context_limit"] = ctx_limit
+                summary["history_context_tokens"] = ctx_tokens
+                summary["history_context_limit"] = ctx_limit
         except Exception:
             pass
         return summary
@@ -5291,14 +5500,18 @@ class Agent:
         """
         从最新的 react_trace 生成工具执行摘要文本。
 
-        返回格式:
+        返回格式（**内部 marker**，前端不渲染，LLM 不应模仿）:
 
-          [子Agent工作总结]      (仅多Agent委派时存在)
+          <<DELEGATION_TRACE>>      (仅多Agent委派时存在)
           1. [网探] 任务: ... | 状态: ✅完成 | 交付文件: ...
           2. [文助] 任务: ... | 状态: ✅完成 | 交付文件: ...
 
-          [执行摘要]
+          <<TOOL_TRACE>>
           - tool_name({key: val}) → result_hint...
+
+        marker 由 ``<<...>>`` 包裹是有意为之：自然中文里几乎不会出现，
+        可显著降低 LLM 看到历史回放后伪造同样格式作为 "幻觉执行摘要" 的概率。
+        旧 marker `[执行摘要]` / `[子Agent工作总结]` 仍被读取端识别（向后兼容）。
 
         调用方将返回值存入消息的 ``tool_summary`` 元数据字段（不要拼入 content）。
         空字符串表示无工具调用。
@@ -5383,7 +5596,7 @@ class Agent:
             if ws_section:
                 parts.append(ws_section)
 
-        parts.append("\n\n[执行摘要]\n" + "\n".join(lines))
+        parts.append("\n\n<<TOOL_TRACE>>\n" + "\n".join(lines))
 
         return "".join(parts)
 
@@ -5421,9 +5634,9 @@ class Agent:
         return "\n".join(kept).strip()
 
     def _build_work_summary_section(self) -> str:
-        """Build [子Agent工作总结] section from sub_agent_records.
+        """Build <<DELEGATION_TRACE>> section from sub_agent_records.
 
-        Placed BEFORE [执行摘要] so that high-level task summaries appear
+        Placed BEFORE <<TOOL_TRACE>> so that high-level task summaries appear
         before low-level tool call details, improving readability and
         ContextManager summarization quality.
         """
@@ -5436,7 +5649,7 @@ class Agent:
         summaries = [r.get("work_summary", "") for r in records if r.get("work_summary")]
         if not summaries:
             return ""
-        lines = ["\n\n[子Agent工作总结]"]
+        lines = ["\n\n<<DELEGATION_TRACE>>"]
         for i, ws in enumerate(summaries, 1):
             lines.append(f"{i}. {ws}")
         return "\n".join(lines)
