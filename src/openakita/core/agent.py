@@ -3949,6 +3949,11 @@ class Agent:
             role = msg.get("role", "user")
             content = msg.get("content", "")
             ts = msg.get("timestamp", "")
+            # 标记为「仅 UI 展示，不喂 LLM」的消息（例如风险确认/取消的系统回执），
+            # 跳过以避免污染上下文，导致下一轮 LLM 模仿"已确认高危..."口吻。
+            # UI 端依然能正常显示——history 物理上没删，只是不进 LLM messages。
+            if msg.get("transient_for_llm") or msg.get("transient"):
+                continue
             if role == "assistant":
                 for _marker in _STRIP_MARKERS:
                     while _marker in content:
@@ -4023,6 +4028,38 @@ class Agent:
         pending_videos = session.get_metadata("pending_videos") if session else None
         pending_audio = session.get_metadata("pending_audio") if session else None
         pending_files = session.get_metadata("pending_files") if session else None
+        from .current_turn import CurrentTurnInput, SessionObjectRegistry
+
+        current_turn = CurrentTurnInput.from_inputs(
+            compiled_message,
+            pending_images=pending_images,
+            pending_videos=pending_videos,
+            pending_audio=pending_audio,
+            pending_files=pending_files,
+            attachments=attachments,
+        )
+        object_registry = (
+            session.get_metadata("_session_object_registry") if session is not None else None
+        )
+        if not isinstance(object_registry, SessionObjectRegistry):
+            registry_state = (
+                session.get_metadata("session_object_registry") if session is not None else None
+            )
+            if session is None:
+                object_registry = getattr(self, "_session_object_registry", None)
+            if not isinstance(object_registry, SessionObjectRegistry):
+                object_registry = SessionObjectRegistry.from_dict(registry_state)
+        if not isinstance(object_registry, SessionObjectRegistry):
+            object_registry = SessionObjectRegistry()
+
+        current_turn.with_recent_objects(object_registry.resolve_for_turn(current_turn))
+        object_registry.register_turn(current_turn)
+        self._session_object_registry = object_registry
+        if session is not None:
+            with contextlib.suppress(Exception):
+                session.set_metadata("_session_object_registry", object_registry)
+                session.set_metadata("session_object_registry", object_registry.to_dict())
+        self._current_turn_input = current_turn
 
         # 处理 PDF/文档文件 — 如果 LLM 支持 PDF 则构建 DocumentBlock，否则降级提取文本
         document_blocks = []
@@ -4130,6 +4167,9 @@ class Agent:
 
         if _has_history and compiled_message and isinstance(compiled_message, str):
             compiled_message = f"[最新消息]\n{compiled_message}"
+
+        if isinstance(compiled_message, str):
+            compiled_message = current_turn.inject_into_message(compiled_message)
 
         # === 角色交替保护 ===
         # 如果历史末尾是 user 消息（通常由上下文边界标记产生），

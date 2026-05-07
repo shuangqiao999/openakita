@@ -116,6 +116,27 @@ def _is_readonly_exploration_round(tool_calls: list[dict]) -> bool:
     return bool(names) and names.issubset(_READONLY_EXPLORATION_TOOLS)
 
 
+def _format_budget_pause_message(status: Any) -> str:
+    """统一的预算耗尽 PAUSE 文案。
+
+    旧文案 "请调整预算后继续" 误导用户去翻 .env，但实测打"继续"两个字
+    就能续上（系统会以新任务接力）；同时 duration 维度真正命中 PAUSE 时
+    意味着近 60s 没有工具调用 / token 产出（被 ResourceBudget._check_dimension
+    豁免逻辑过滤掉了"有进展"场景），可能已陷入循环——告知用户具体处理方式。
+    """
+    dim = getattr(status, "dimension", "") or "unknown"
+    pct = getattr(status, "usage_ratio", 0.0) or 0.0
+    suffix = "（近 60s 无新工具调用或 token 产出，可能已陷入循环）" if dim == "duration" else ""
+    return (
+        f"⚠️ 任务暂停（{dim}: {pct:.0%}{suffix}）\n\n"
+        f"▸ 直接回复\"继续\"即可让我接力完成（系统会以新任务接力，"
+        f"对话历史和已有进展都已保留）\n"
+        f"▸ 如果你预期任务时间确实较长，到【配置 → 高级配置 → 长任务与上下文保护 → 任务预算】"
+        f"把对应预算调高并保存（TASK_BUDGET_DURATION 设为 0 = 不限时长，"
+        f"系统会在没有工具调用进展时才暂停）"
+    )
+
+
 def _apply_tool_result_budget(
     tool_results: list[dict],
     max_total: int | None = None,
@@ -1223,15 +1244,14 @@ class ReasoningEngine:
         tools_executed_in_task = False
         _supervisor_intervened = False
         _tool_call_counter: dict[str, int] = {}
-        _MAX_SAME_TOOL_PER_TASK = int(getattr(settings, "same_tool_call_limit", 5) or 5)
+        # same_tool_call_limit=0（默认）= 不限同工具同参数重复，调用处需先判 > 0
+        _MAX_SAME_TOOL_PER_TASK = max(0, int(getattr(settings, "same_tool_call_limit", 0) or 0))
+        # 0=不限/禁用对应检测；LoopBudgetGuard 内部已处理 0 短路
         _loop_budget_guard = LoopBudgetGuard(
-            max_total_tool_calls=max(1, int(getattr(settings, "task_budget_tool_calls", 30) or 30)),
-            readonly_stagnation_limit=int(
-                getattr(settings, "readonly_stagnation_limit", _READONLY_STAGNATION_LIMIT)
-                or _READONLY_STAGNATION_LIMIT
-            ),
-            readonly_stagnation_hard_limit=int(
-                getattr(settings, "readonly_stagnation_hard_limit", 6) or 6
+            max_total_tool_calls=max(0, int(getattr(settings, "task_budget_tool_calls", 0) or 0)),
+            readonly_stagnation_limit=max(0, int(getattr(settings, "readonly_stagnation_limit", 0) or 0)),
+            readonly_stagnation_hard_limit=max(
+                0, int(getattr(settings, "readonly_stagnation_hard_limit", 0) or 0)
             ),
             token_anomaly_threshold=int(
                 getattr(settings, "context_token_anomaly_threshold", TOKEN_ANOMALY_THRESHOLD)
@@ -1335,6 +1355,7 @@ class ReasoningEngine:
             budget_status = self._budget.check()
             if budget_status.action == BudgetAction.PAUSE:
                 logger.warning(f"[Budget] PAUSE: {budget_status.message}")
+                self._last_exit_reason = "budget_exceeded"
                 self._save_react_trace(
                     react_trace, conversation_id, session_type, "budget_exceeded", _trace_started_at
                 )
@@ -1351,17 +1372,27 @@ class ReasoningEngine:
                     task_description=task_description,
                     task_id=state.task_id,
                 )
-                return (
-                    f"⚠️ 任务资源预算已用尽（{budget_status.dimension}: "
-                    f"{budget_status.usage_ratio:.0%}），任务暂停。\n"
-                    f"已完成的工作进度已保存，请调整预算后继续。"
-                )
+                # 让 DelegationResult.exit_reason 反映"预算暂停"而不是误显示成 completed
+                self._last_exit_reason = "budget_paused"
+                return _format_budget_pause_message(budget_status)
             elif budget_status.action in (BudgetAction.WARNING, BudgetAction.DOWNGRADE):
-                logger.info(
-                    "[Budget] %s: %s — logged only, not injected",
-                    budget_status.dimension,
-                    budget_status.message,
+                # 非流式路径无事件通道，仅 log；下次进入流式或前端轮询时
+                # 用户能看到状态。NOT injected into LLM context (avoids
+                # 让 LLM 提前缩手缩脚 / 浪费 token).
+                threshold_name = (
+                    "downgrade"
+                    if budget_status.action == BudgetAction.DOWNGRADE
+                    else "warning"
                 )
+                if self._budget.should_emit_threshold(
+                    budget_status.dimension, threshold_name
+                ):
+                    logger.info(
+                        "[Budget] %s reached %s threshold: %s",
+                        budget_status.dimension,
+                        threshold_name,
+                        budget_status.message,
+                    )
 
             # 任务监控
             if task_monitor:
@@ -2054,7 +2085,10 @@ class ReasoningEngine:
                     _tc_args = tc.get("input", tc.get("arguments", {}))
                     _tc_key = _tool_rate_limit_key(_tc_name, _tc_args)
                     _tool_call_counter[_tc_key] = _tool_call_counter.get(_tc_key, 0) + 1
-                    if _tool_call_counter[_tc_key] > _MAX_SAME_TOOL_PER_TASK:
+                    if (
+                        _MAX_SAME_TOOL_PER_TASK > 0
+                        and _tool_call_counter[_tc_key] > _MAX_SAME_TOOL_PER_TASK
+                    ):
                         logger.warning(
                             f"[RateLimit] Tool invocation '{_tc_key}' called "
                             f"{_tool_call_counter[_tc_key]} times "
@@ -2909,15 +2943,14 @@ class ReasoningEngine:
             tools_executed_in_task = False
             _supervisor_intervened = False
             _tool_call_counter: dict[str, int] = {}
-            _MAX_SAME_TOOL_PER_TASK = int(getattr(settings, "same_tool_call_limit", 5) or 5)
+            # same_tool_call_limit=0（默认）= 不限同工具同参数重复，调用处需先判 > 0
+            _MAX_SAME_TOOL_PER_TASK = max(0, int(getattr(settings, "same_tool_call_limit", 0) or 0))
+            # 0=不限/禁用对应检测；LoopBudgetGuard 内部已处理 0 短路
             _loop_budget_guard = LoopBudgetGuard(
-                max_total_tool_calls=max(1, int(getattr(settings, "task_budget_tool_calls", 30) or 30)),
-                readonly_stagnation_limit=int(
-                    getattr(settings, "readonly_stagnation_limit", _READONLY_STAGNATION_LIMIT)
-                    or _READONLY_STAGNATION_LIMIT
-                ),
-                readonly_stagnation_hard_limit=int(
-                    getattr(settings, "readonly_stagnation_hard_limit", 6) or 6
+                max_total_tool_calls=max(0, int(getattr(settings, "task_budget_tool_calls", 0) or 0)),
+                readonly_stagnation_limit=max(0, int(getattr(settings, "readonly_stagnation_limit", 0) or 0)),
+                readonly_stagnation_hard_limit=max(
+                    0, int(getattr(settings, "readonly_stagnation_hard_limit", 0) or 0)
                 ),
                 token_anomaly_threshold=int(
                     getattr(settings, "context_token_anomaly_threshold", TOKEN_ANOMALY_THRESHOLD)
@@ -3016,6 +3049,8 @@ class ReasoningEngine:
                 budget_status = self._budget.check()
                 if budget_status.action == BudgetAction.PAUSE:
                     logger.warning(f"[Budget-Stream] PAUSE: {budget_status.message}")
+                    # 让 DelegationResult.exit_reason 反映"预算暂停"而非误显示 completed
+                    self._last_exit_reason = "budget_paused"
                     self._save_react_trace(
                         react_trace,
                         conversation_id,
@@ -3029,20 +3064,39 @@ class ReasoningEngine:
                         task_description=task_description,
                         task_id=state.task_id,
                     )
-                    msg = (
-                        f"⚠️ 任务资源预算已用尽（{budget_status.dimension}: "
-                        f"{budget_status.usage_ratio:.0%}），任务暂停。\n"
-                        f"已完成的工作进度已保存，请调整预算后继续。"
-                    )
+                    msg = _format_budget_pause_message(budget_status)
                     yield {"type": "text_delta", "content": msg}
                     yield {"type": "done"}
                     return
                 elif budget_status.action in (BudgetAction.WARNING, BudgetAction.DOWNGRADE):
-                    logger.info(
-                        "[Budget] %s: %s — logged only, not injected",
-                        budget_status.dimension,
-                        budget_status.message,
+                    # 软提示路径：发 SSE 事件给前端 UI（用户能看到 banner），
+                    # 但**不**写入 LLM 上下文（避免污染 / 让 LLM 提前缩手）。
+                    # 阈值去抖：每个 (dimension, threshold) 仅触发一次 emit。
+                    threshold_name = (
+                        "downgrade"
+                        if budget_status.action == BudgetAction.DOWNGRADE
+                        else "warning"
                     )
+                    if self._budget.should_emit_threshold(
+                        budget_status.dimension, threshold_name
+                    ):
+                        logger.info(
+                            "[Budget-Stream] %s reached %s threshold: %s",
+                            budget_status.dimension,
+                            threshold_name,
+                            budget_status.message,
+                        )
+                        # 详情由前端按 dimension + level 自行 i18n 展示。
+                        yield {
+                            "type": "budget_warning",
+                            "dimension": budget_status.dimension,
+                            "level": threshold_name,
+                            "usage_ratio": budget_status.usage_ratio,
+                            "renewed": bool(budget_status.details.get("renewed", False))
+                            if isinstance(budget_status.details, dict)
+                            else False,
+                            "message": budget_status.message,
+                        }
 
                 # --- TaskMonitor: 迭代开始 + 模型切换检查 ---
                 if task_monitor:
@@ -3898,7 +3952,10 @@ class ReasoningEngine:
                         # arguments is valid progress, especially for todo step updates.
                         _tool_key = _tool_rate_limit_key(tool_name, tool_args)
                         _tool_call_counter[_tool_key] = _tool_call_counter.get(_tool_key, 0) + 1
-                        if _tool_call_counter[_tool_key] > _MAX_SAME_TOOL_PER_TASK:
+                        if (
+                            _MAX_SAME_TOOL_PER_TASK > 0
+                            and _tool_call_counter[_tool_key] > _MAX_SAME_TOOL_PER_TASK
+                        ):
                             logger.warning(
                                 f"[RateLimit] Tool invocation '{_tool_key}' called "
                                 f"{_tool_call_counter[_tool_key]} times "

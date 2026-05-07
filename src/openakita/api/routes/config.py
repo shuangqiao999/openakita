@@ -512,6 +512,7 @@ class SaveEndpointRequest(BaseModel):
     api_key: str | None = None
     endpoint_type: str = "endpoints"
     expected_version: str | None = None
+    original_name: str | None = None
 
 
 class DeleteEndpointRequest(BaseModel):
@@ -550,6 +551,7 @@ async def save_endpoint(body: SaveEndpointRequest, request: Request):
             api_key=api_key,
             endpoint_type=body.endpoint_type,
             expected_version=body.expected_version,
+            original_name=body.original_name,
         )
     except ConflictError as e:
         return {"status": "conflict", "error": str(e), "current_version": e.current_version}
@@ -647,6 +649,7 @@ def _trigger_reload(request: Request) -> bool:
     """Trigger hot-reload of LLM clients after config change."""
     agent = getattr(request.app.state, "agent", None)
     if agent is None:
+        _notify_runtime_config_changed(request, "llm_config")
         return False
     brain = getattr(agent, "brain", None) or getattr(agent, "_local_agent", None)
     if brain and hasattr(brain, "brain"):
@@ -655,12 +658,13 @@ def _trigger_reload(request: Request) -> bool:
     if llm_client is None:
         llm_client = getattr(agent, "_llm_client", None)
     if llm_client is None:
+        _notify_runtime_config_changed(request, "llm_config")
         return False
     try:
         canonical = _endpoints_config_path()
         if llm_client._config_path is not None and llm_client._config_path != canonical:
             llm_client._config_path = canonical
-        llm_client.reload()
+        success = llm_client.reload()
         if brain and hasattr(brain, "reload_compiler_client"):
             brain.reload_compiler_client()
         gateway = getattr(request.app.state, "gateway", None)
@@ -669,11 +673,27 @@ def _trigger_reload(request: Request) -> bool:
 
             _, _, stt_eps, _ = load_endpoints_config()
             gateway.stt_client.reload(stt_eps)
+        if success:
+            _notify_runtime_config_changed(request, "llm_config")
         logger.info("[Config API] Hot-reload triggered after config change")
-        return True
+        return success
     except Exception as e:
         logger.error("[Config API] Hot-reload failed: %s", e, exc_info=True)
         return False
+
+
+def _notify_runtime_config_changed(request: Request, reason: str) -> None:
+    """Invalidate pooled desktop agents after runtime-affecting config changes."""
+    pool = getattr(request.app.state, "agent_pool", None)
+    if pool is None:
+        return
+    try:
+        if hasattr(pool, "notify_runtime_config_changed"):
+            pool.notify_runtime_config_changed(reason)
+        elif hasattr(pool, "notify_skills_changed"):
+            pool.notify_skills_changed()
+    except Exception as e:
+        logger.warning("[Config API] pool runtime invalidation failed: %s", e)
 
 
 @router.post("/api/config/reload")
@@ -722,6 +742,7 @@ async def reload_config(request: Request):
                 logger.warning(f"[Config API] STT reload failed: {stt_err}")
 
         if success:
+            _notify_runtime_config_changed(request, "llm_config")
             logger.info("[Config API] LLM endpoints reloaded successfully")
             return {
                 "status": "ok",
@@ -1171,7 +1192,7 @@ async def write_security_config(body: SecurityConfigUpdate):
 @router.get("/api/config/security/zones")
 async def read_security_zones():
     """Read zone path configuration."""
-    from openakita.core.policy import _default_protected_paths, _default_forbidden_paths
+    from openakita.core.policy import _default_forbidden_paths, _default_protected_paths
 
     data = _read_policies_yaml() or {}
     sec = data.get("security", {})
@@ -1326,8 +1347,7 @@ async def write_permission_mode(body: _PermissionModeBody):
     if mode not in ("cautious", "smart", "yolo"):
         return {"status": "error", "message": f"无效的安全模式: {mode}"}
     try:
-        from openakita.core.policy import get_policy_engine
-        from openakita.core.policy import reset_policy_engine
+        from openakita.core.policy import get_policy_engine, reset_policy_engine
 
         # Persist to YAML
         data = _read_policies_yaml()
@@ -1412,6 +1432,8 @@ async def reset_death_switch():
     try:
         from openakita.core.security_actions import (
             maybe_broadcast_death_switch_reset,
+        )
+        from openakita.core.security_actions import (
             reset_death_switch as reset_death_switch_action,
         )
 

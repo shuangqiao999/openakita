@@ -25,7 +25,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
+import platform
 import re
+import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -67,6 +70,39 @@ def _content_key(channel: str, text: str) -> str:
     return h[:12]
 
 
+# ---------------------------------------------------------------------------
+# Permanent-error detection
+# ---------------------------------------------------------------------------
+#
+# Some host adapters surface "permanent" failures that make any further
+# retry pointless — most notably WeChat iLink Bot ``ret=-2`` (request
+# rejected: usually chat_id unreachable / no friend / no fresh session)
+# and ``ret=-14`` (session expired). When dispatch sees one of these we
+# stop attempting follow-up sends (PDF → caption → markdown chunks) and
+# attach a human-readable hint so the operator knows what to do.
+
+_PERMANENT_ERROR_MARKERS: tuple[str, ...] = (
+    "ret=-2",
+    "ret=-14",
+    "session expired",
+    "session paused",
+    "no context_token",
+)
+
+_PERMANENT_ERROR_HINT = (
+    "微信会话失效或不可达（ret=-2/-14），"
+    "请让目标用户先给机器人发送一条消息以刷新 context_token，"
+    "或检查 chat_id 是否正确。"
+)
+
+
+def _looks_permanent(error: str | None) -> bool:
+    if not error:
+        return False
+    low = error.lower()
+    return any(marker.lower() in low for marker in _PERMANENT_ERROR_MARKERS)
+
+
 def _strip_markdown_inline(text: str) -> str:
     text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
     text = re.sub(r"[*_`>#]+", "", text)
@@ -103,6 +139,79 @@ def _build_file_caption(*, header: str = "", fallback_text: str | None = None) -
         lines.extend(f"- {item[:120]}" for item in highlights)
     caption = "\n".join(lines).strip()
     return caption[:900]
+
+
+def _bundled_runtime_roots() -> list[Path]:
+    """Return possible PyInstaller resource roots for bundled browser assets."""
+    roots: list[Path] = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        roots.append(Path(meipass))
+
+    exe_dir = Path(sys.executable).parent
+    candidates = [exe_dir]
+    if exe_dir.name != "_internal":
+        candidates.append(exe_dir / "_internal")
+    for candidate in candidates:
+        if candidate.is_dir() and candidate not in roots:
+            roots.append(candidate)
+    return roots
+
+
+def _find_bundled_chromium() -> tuple[str | None, Path | None]:
+    """Find bundled Playwright Chromium and its browser root, if packaged.
+
+    Playwright's default lookup may prefer chromium_headless_shell for
+    headless launches. The installer currently bundles regular Chromium, so
+    PDF rendering must pass chrome.exe explicitly in packaged runtime.
+    """
+    system = platform.system()
+    is_win = system == "Windows"
+    is_mac = system == "Darwin"
+    exe_name = "chrome.exe" if is_win else "chrome"
+
+    for root in _bundled_runtime_roots():
+        for browsers_name in ("playwright-browsers", "playwright-browser"):
+            browsers_root = root / browsers_name
+            if not browsers_root.is_dir():
+                continue
+            for chromium_dir in sorted(browsers_root.glob("chromium-*"), reverse=True):
+                candidates: list[Path] = []
+                if is_win:
+                    candidates.extend(
+                        chromium_dir / win_dir / exe_name
+                        for win_dir in ("chrome-win64", "chrome-win")
+                    )
+                elif is_mac:
+                    candidates.extend(
+                        chromium_dir
+                        / mac_dir
+                        / "Chromium.app"
+                        / "Contents"
+                        / "MacOS"
+                        / "Chromium"
+                        for mac_dir in ("chrome-mac-arm64", "chrome-mac")
+                    )
+                else:
+                    candidates.append(chromium_dir / "chrome-linux" / exe_name)
+
+                for candidate in candidates:
+                    if candidate.is_file():
+                        return str(candidate), browsers_root
+    return None, None
+
+
+def _configure_pdf_playwright_launch() -> dict[str, Any]:
+    """Build launch kwargs for PDF rendering in packaged and source runtimes."""
+    launch_kwargs: dict[str, Any] = {"headless": True}
+    executable, browsers_root = _find_bundled_chromium()
+    if browsers_root is not None:
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(browsers_root)
+        logger.info("[fin-pulse] Using bundled Playwright browsers: %s", browsers_root)
+    if executable:
+        launch_kwargs["executable_path"] = executable
+        logger.info("[fin-pulse] Rendering PDF with bundled Chromium: %s", executable)
+    return launch_kwargs
 
 
 class DispatchService:
@@ -175,6 +284,7 @@ class DispatchService:
                 return result
 
         adapter = self._get_adapter(channel)
+        permanent_failure = False
         if content_kind == "html" and adapter is not None:
             caption = file_caption or _build_file_caption(
                 header=header, fallback_text=fallback_text
@@ -195,9 +305,19 @@ class DispatchService:
                 return result
             if file_error:
                 result.errors.append(f"pdf_file:{file_error}")
-            if fallback_text is not None:
+                if _looks_permanent(file_error):
+                    permanent_failure = True
+            if fallback_text is not None and not permanent_failure:
                 text = fallback_text
                 result.content_kind = "text"
+
+        if permanent_failure:
+            # Attempting another text fan-out would just trigger the same
+            # rejection (and on WeChat re-pay 4×exponential-backoff per
+            # chunk), wasting minutes per push. Stop here with a clear
+            # hint instead.
+            result.errors.insert(0, f"hint:{_PERMANENT_ERROR_HINT}")
+            return result
 
         max_bytes = self._batch_bytes.get(channel, self._batch_bytes["default"])
         try:
@@ -215,6 +335,7 @@ class DispatchService:
             return result
 
         sent = 0
+        aborted = False
         for i, chunk in enumerate(chunks):
             try:
                 if adapter is not None:
@@ -225,14 +346,18 @@ class DispatchService:
                     self._api.send_message(channel=channel, chat_id=chat_id, text=chunk)
                 sent += 1
             except Exception as exc:  # noqa: BLE001 — defensive boundary
+                err_str = str(exc)
                 logger.warning(
                     "dispatch chunk %d/%d failed on %s: %s",
                     i + 1,
                     len(chunks),
                     channel,
-                    exc,
+                    err_str,
                 )
-                result.errors.append(str(exc))
+                result.errors.append(f"text_chunk_{i + 1}:{err_str}")
+                if _looks_permanent(err_str):
+                    aborted = True
+                    break
                 continue
             if i < len(chunks) - 1 and self._inter_chunk_delay > 0:
                 try:
@@ -242,6 +367,9 @@ class DispatchService:
 
         result.sent_chunks = sent
         result.ok = sent > 0
+
+        if aborted and sent == 0:
+            result.errors.insert(0, f"hint:{_PERMANENT_ERROR_HINT}")
 
         if result.ok:
             for k in effective_keys:
@@ -267,6 +395,19 @@ class DispatchService:
         file_name: str | None = None,
         caption: str | None = None,
     ) -> tuple[bool, str | None]:
+        """Render ``html`` to PDF then push it via ``adapter.send_file``.
+
+        Caption handling is **decoupled** from the file send: we pass an
+        empty caption to ``send_file`` so the adapter cannot fail on a
+        pre-emptive caption text send (some IMs — notably WeChat
+        iLink — send the caption as a separate text message *before*
+        the file body, which means a failing caption misattributes the
+        error as "PDF send failed" while the PDF is never even
+        attempted). After the file lands we try to push the caption as
+        a follow-up text via ``send_text`` — failures there are
+        intentionally swallowed because the file itself already made
+        it through.
+        """
         if not hasattr(adapter, "send_file"):
             return False, "unsupported"
         tmp_path: Path | None = None
@@ -281,16 +422,19 @@ class DispatchService:
             tmp_path = Path(tmp_dir.name) / safe_name
             await self._render_html_to_pdf(html, tmp_path)
             try:
-                await adapter.send_file(chat_id, str(tmp_path), caption=caption or "")
+                await adapter.send_file(chat_id, str(tmp_path), caption="")
             except TypeError as exc:
                 if "caption" not in str(exc):
                     raise
                 await adapter.send_file(chat_id, str(tmp_path))
-            return True, None
         except NotImplementedError as exc:
             return False, str(exc)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("pdf file dispatch failed on %s: %s", getattr(adapter, "channel_name", "?"), exc)
+        except Exception as exc:  # noqa: BLE001 — defensive boundary
+            logger.warning(
+                "pdf file dispatch failed on %s: %s",
+                getattr(adapter, "channel_name", "?"),
+                exc,
+            )
             return False, str(exc)
         finally:
             if tmp_path is not None:
@@ -301,14 +445,37 @@ class DispatchService:
             if tmp_dir is not None:
                 tmp_dir.cleanup()
 
+        # File landed. Try caption as a separate, best-effort follow-up
+        # so a failed caption does not invalidate a successful PDF.
+        if caption:
+            try:
+                if hasattr(adapter, "send_text"):
+                    await adapter.send_text(chat_id, caption)
+                elif hasattr(adapter, "send_message") and hasattr(
+                    adapter, "channel_name"
+                ):
+                    self._api.send_message(
+                        channel=getattr(adapter, "channel_name", ""),
+                        chat_id=chat_id,
+                        text=caption,
+                    )
+            except Exception as exc:  # noqa: BLE001 — caption is optional
+                logger.info(
+                    "pdf caption follow-up failed on %s (ignored, file already sent): %s",
+                    getattr(adapter, "channel_name", "?"),
+                    exc,
+                )
+        return True, None
+
     async def _render_html_to_pdf(self, html: str, out_path: Path) -> None:
+        launch_kwargs = _configure_pdf_playwright_launch()
         try:
             from playwright.async_api import async_playwright
         except ImportError as exc:
             raise RuntimeError("playwright_unavailable") from exc
 
         async with async_playwright() as pw:
-            browser = await pw.chromium.launch(headless=True)
+            browser = await pw.chromium.launch(**launch_kwargs)
             try:
                 page = await browser.new_page()
                 await page.set_content(html, wait_until="load")
