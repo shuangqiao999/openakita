@@ -26,6 +26,8 @@ import type {
   ChatAskQuestion,
   ChatAttachment,
   ChatArtifact,
+  ChatSource,
+  ChatMcpCall,
   SlashCommand,
   EndpointSummary,
   ChainGroup,
@@ -399,6 +401,29 @@ export function ChatView({
 
   const [displayActiveSubAgents, setDisplayActiveSubAgents] = useState<SubAgentEntry[]>([]);
   const [displaySubAgentTasks, setDisplaySubAgentTasks] = useState<SubAgentTask[]>([]);
+
+  // P5.1: agent_id → parent_agent_id map, populated client-side from
+  // agent_handoff / delegate_to_agent / delegate_parallel events.  Used by
+  // SubAgentCards to render delegation chains as a tree.  We keep it in a
+  // ref (not state) because SubAgentTask.parent_agent_id snapshots the value
+  // at the time we apply the next sub_agent_state / agents:sub_state patch.
+  const parentAgentMapRef = useRef<Map<string, string>>(new Map());
+
+  // Enrich sub-agent tasks with parent_agent_id inferred from the map.
+  // Used at every place that hydrates ctx.subAgentTasks (WS patch, REST
+  // polling fallback, refresh handlers) so the tree view stays consistent.
+  const enrichTasksWithParents = useCallback((tasks: SubAgentTask[]): SubAgentTask[] => {
+    if (!tasks?.length) return tasks;
+    let mutated = false;
+    const next = tasks.map((t) => {
+      if (t.parent_agent_id) return t;
+      const p = parentAgentMapRef.current.get(t.agent_id);
+      if (!p) return t;
+      mutated = true;
+      return { ...t, parent_agent_id: p };
+    });
+    return mutated ? next : tasks;
+  }, []);
 
   // ── Per-session streaming context (supports concurrent streams) ──
   const streamContexts = useRef<Map<string, StreamContext>>(new Map());
@@ -1110,13 +1135,21 @@ export function ChatView({
       const ctx = streamContexts.current.get(convId);
       if (!ctx) return;
 
-      const idx = ctx.subAgentTasks.findIndex((t) => t.agent_id === patch.agent_id);
+      // P5.1: enrich with the inferred parent so SubAgentCards can build the
+      // delegation tree.  We only set when known so a missing parent never
+      // overwrites a previously-known one.
+      const inferredParent = parentAgentMapRef.current.get(patch.agent_id);
+      const enrichedPatch: SubAgentTask = inferredParent
+        ? { ...patch, parent_agent_id: patch.parent_agent_id || inferredParent }
+        : patch;
+
+      const idx = ctx.subAgentTasks.findIndex((t) => t.agent_id === enrichedPatch.agent_id);
       if (idx >= 0) {
         ctx.subAgentTasks = ctx.subAgentTasks.map((t, i) =>
-          i === idx ? { ...t, ...patch } : t,
+          i === idx ? { ...t, ...enrichedPatch } : t,
         );
-      } else if (patch.status === "starting" || patch.status === "running") {
-        ctx.subAgentTasks = [...ctx.subAgentTasks, patch];
+      } else if (enrichedPatch.status === "starting" || enrichedPatch.status === "running") {
+        ctx.subAgentTasks = [...ctx.subAgentTasks, enrichedPatch];
       }
       if (activeConvIdRef.current === convId) {
         setDisplaySubAgentTasks([...ctx.subAgentTasks]);
@@ -2121,6 +2154,8 @@ export function ChatView({
       let currentAsk: ChatAskUser | null = null;
       let currentAgent: string | null = null;
       let currentArtifacts: ChatArtifact[] = [];
+      let currentSources: ChatSource[] = [];
+      let currentMcpCalls: ChatMcpCall[] = [];
       let currentError: ChatErrorInfo | null = null;
       let gracefulDone = false; // SSE 正常发送了 "done" 事件
 
@@ -2293,6 +2328,8 @@ export function ChatView({
                 const callId = event.call_id || event.id;
                 if (toolName === "delegate_to_agent" && event.args?.agent_id) {
                   const targetId = String(event.args.agent_id);
+                  // P5.1: the agent currently driving this stream is the parent.
+                  if (currentAgent) parentAgentMapRef.current.set(targetId, currentAgent);
                   updateSubAgents((prev) => {
                     const exists = prev.find((s) => s.agentId === targetId);
                     if (exists) return prev.map((s) => s.agentId === targetId ? { ...s, status: "delegating", startTime: Date.now() } : s);
@@ -2305,6 +2342,8 @@ export function ChatView({
                     for (const task of event.args.tasks as Array<{ agent_id?: string; reason?: string }>) {
                       if (!task.agent_id) continue;
                       const targetId = String(task.agent_id);
+                      // P5.1: same parent inference as delegate_to_agent.
+                      if (currentAgent) parentAgentMapRef.current.set(targetId, currentAgent);
                       const exists = updated.find((s) => s.agentId === targetId);
                       if (exists) {
                         updated = updated.map((s) => s.agentId === targetId ? { ...s, status: "delegating" as const, startTime: Date.now() } : s);
@@ -2348,8 +2387,9 @@ export function ChatView({
                   const doFetch = () => {
                     safeFetch(`${apiBase}/api/agents/sub-tasks?conversation_id=${encodeURIComponent(thisConvId)}`)
                       .then((r) => r.json())
-                      .then((data: SubAgentTask[]) => {
-                        if (!Array.isArray(data)) return;
+                      .then((rawData: SubAgentTask[]) => {
+                        if (!Array.isArray(rawData)) return;
+                        const data = enrichTasksWithParents(rawData);
                         const c = streamContexts.current.get(thisConvId);
                         if (c) c.subAgentTasks = data;
                         if (activeConvIdRef.current === thisConvId) setDisplaySubAgentTasks(data);
@@ -2402,8 +2442,9 @@ export function ChatView({
                   if (sctx.pollingTimer) { clearInterval(sctx.pollingTimer); sctx.pollingTimer = null; }
                   safeFetch(`${apiBase}/api/agents/sub-tasks?conversation_id=${encodeURIComponent(thisConvId)}`)
                     .then((r) => r.json())
-                    .then((data: SubAgentTask[]) => {
-                      if (!Array.isArray(data)) return;
+                    .then((rawData: SubAgentTask[]) => {
+                      if (!Array.isArray(rawData)) return;
+                      const data = enrichTasksWithParents(rawData);
                       const c = streamContexts.current.get(thisConvId);
                       if (c) c.subAgentTasks = data;
                       if (activeConvIdRef.current === thisConvId) setDisplaySubAgentTasks(data);
@@ -2605,7 +2646,37 @@ export function ChatView({
                   size: event.size,
                 }];
                 break;
+              case "source_used":
+                currentSources = [...currentSources, {
+                  tool_name: event.tool_name,
+                  tool_use_id: event.tool_use_id,
+                  requested_url: event.requested_url,
+                  final_url: event.final_url,
+                  hostname: event.hostname,
+                  redirected: event.redirected,
+                  from_cache: event.from_cache,
+                  status: event.status,
+                  hint: event.hint,
+                }];
+                break;
+              case "mcp_call":
+                currentMcpCalls = [...currentMcpCalls, {
+                  tool_use_id: event.tool_use_id,
+                  server: event.server,
+                  tool: event.tool,
+                  status: event.status,
+                  auto_connected: event.auto_connected,
+                  reconnected: event.reconnected,
+                  error: event.error,
+                }];
+                break;
               case "agent_handoff": {
+                // P5.1: capture delegation parentage so SubAgentCards can render
+                // a tree.  We only record when the from_agent is non-empty,
+                // letting unknown roots fall through as top-level nodes.
+                if (event.from_agent && event.to_agent) {
+                  parentAgentMapRef.current.set(String(event.to_agent), String(event.from_agent));
+                }
                 updateSubAgents((prev) => {
                   const exists = prev.find((s) => s.agentId === event.to_agent);
                   if (exists) return prev.map((s) => s.agentId === event.to_agent ? { ...s, status: "delegating", startTime: Date.now() } : s);
@@ -2632,6 +2703,8 @@ export function ChatView({
                     askUser: currentAsk,
                     errorInfo: currentError,
                     artifacts: currentArtifacts.length > 0 ? [...currentArtifacts] : null,
+                    sources: currentSources.length > 0 ? [...currentSources] : null,
+                    mcpCalls: currentMcpCalls.length > 0 ? [...currentMcpCalls] : null,
                     thinkingChain: chainGroups.length > 0 ? chainGroups.map(g => ({ ...g })) : null,
                     streaming: true,
                   }];
@@ -2663,6 +2736,51 @@ export function ChatView({
                     timestamp: Date.now(),
                   },
                 ]);
+                continue;
+              }
+              case "task_checkpoint": {
+                // 任务节点检查点：在 cancelled / budget_paused / completed /
+                // user_cancelled / loop_terminated / max_iterations 时由后端 emit。
+                //
+                // 渲染策略（避免与 budget_warning / done / error 文案重复）：
+                //   - user_cancelled                 → "已停止 + 继续提示"
+                //   - loop_terminated / max_iterations → 失败原因卡片（P5.3）
+                //   - budget_paused / completed      → 静默（已被 budget_warning / done 覆盖）
+                //   - 其他未知 exit_reason            → 静默累积，未来时间线 UI 使用
+                const exitReason = String((event as any).exit_reason || "");
+                const summary = String((event as any).summary || "").trim();
+                const hint = String((event as any).next_step_hint || "").trim();
+                const renderSystemMessage = (lines: string[]) => {
+                  updateMessages((prev) => [
+                    ...prev,
+                    {
+                      id: genId(),
+                      role: "system" as const,
+                      content: lines.join("\n"),
+                      timestamp: Date.now(),
+                    },
+                  ]);
+                };
+                if (exitReason === "user_cancelled" || exitReason === "cancelled") {
+                  const lines = ["⏸️ 任务已停止"];
+                  if (summary) lines.push(`已完成：${summary}`);
+                  if (hint) lines.push(`继续提示：${hint}`);
+                  else lines.push("如需继续，回复\"继续\"即可让我接力。");
+                  renderSystemMessage(lines);
+                } else if (exitReason === "loop_terminated") {
+                  // P5.3 失败原因卡片：循环检测 / 工具预算 / token 异常等异常终止。
+                  // 与 ErrorCard 区分 — ErrorCard 处理 LLM 调用层错误，这里是
+                  // 任务级"为什么停下来"的归因。
+                  const lines = ["⚠️ 任务异常终止"];
+                  if (summary) lines.push(`原因：${summary}`);
+                  if (hint) lines.push(`建议：${hint}`);
+                  renderSystemMessage(lines);
+                } else if (exitReason === "max_iterations") {
+                  const lines = ["⚠️ 已达迭代上限"];
+                  if (summary) lines.push(`原因：${summary}`);
+                  if (hint) lines.push(`建议：${hint}`);
+                  renderSystemMessage(lines);
+                }
                 continue;
               }
               case "budget_warning": {
@@ -2766,6 +2884,8 @@ export function ChatView({
                     askUser: currentAsk,
                     errorInfo: currentError,
                     artifacts: currentArtifacts.length > 0 ? [...currentArtifacts] : null,
+                    sources: currentSources.length > 0 ? [...currentSources] : null,
+                    mcpCalls: currentMcpCalls.length > 0 ? [...currentMcpCalls] : null,
                     thinkingChain: chainGroups.length > 0 ? chainGroups.map(g => ({ ...g })) : null,
                     usage: assistantMsg.usage ?? m.usage,
                     streaming: event.type !== "done",
@@ -2890,8 +3010,9 @@ export function ChatView({
           const doFetch = () => {
             safeFetch(`${apiBase}/api/agents/sub-tasks?conversation_id=${encodeURIComponent(thisConvId)}`)
               .then((r) => r.json())
-              .then((data: SubAgentTask[]) => {
-                if (!Array.isArray(data)) return;
+              .then((rawData: SubAgentTask[]) => {
+                if (!Array.isArray(rawData)) return;
+                const data = enrichTasksWithParents(rawData);
                 if (activeConvIdRef.current === thisConvId) setDisplaySubAgentTasks(data);
                 const allDone = data.length > 0 && data.every(
                   (t) => t.status === "completed" || t.status === "error" || t.status === "timeout" || t.status === "cancelled"
@@ -3991,6 +4112,14 @@ export function ChatView({
             apiBaseUrl={apiBaseUrl}
             mdModules={mdModules}
             isStreaming={isCurrentConvStreaming}
+            conversationId={activeConvId || undefined}
+            httpApiBase={() => apiBaseUrl}
+            onPlanStepAction={(action, stepIdx, description) => {
+              const msg = action === "skip"
+                ? `请跳过当前步骤（第 ${stepIdx + 1} 步：${description}），直接进入下一步。`
+                : `请重试这一步（第 ${stepIdx + 1} 步：${description}）。`;
+              setInputValue(msg);
+            }}
             onAtBottomChange={(atBottom) => { isMessageListAtBottomRef.current = atBottom; }}
             onAskAnswer={handleAskAnswer}
             onRetry={handleRegenerate}
