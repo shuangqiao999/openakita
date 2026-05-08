@@ -14,9 +14,11 @@ import asyncio
 import base64
 import collections
 import contextlib
+import hashlib
 import logging
 import os
 import random
+import re
 import time as _time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -28,7 +30,10 @@ from typing import TYPE_CHECKING, Optional
 from ..sessions import Session, SessionManager
 from .base import ChannelAdapter
 from .group_response import GroupResponseMode, SmartModeThrottle
-from .types import MediaStatus, OutgoingMessage, UnifiedMessage
+from .types import MediaStatus, MessageContent, OutgoingMessage, UnifiedMessage
+
+if TYPE_CHECKING:
+    from .dm_pairing import DMPairingManager
 
 
 def _notify_im_event(event: str, data: dict | None = None) -> None:
@@ -487,19 +492,20 @@ class ThinkingCommandHandler:
 
     支持的命令:
     - /thinking [on|off|auto]: 切换思考模式
-    - /thinking_depth [low|medium|high]: 设置思考深度
+    - /thinking_depth [low|medium|high|max]: 设置思考深度
     - /chain [on|off]: 开关思维链进度推送（默认关闭）
     """
 
     THINKING_COMMANDS = {"/thinking", "/thinking_depth", "/chain"}
 
     VALID_MODES = {"on", "off", "auto"}
-    VALID_DEPTHS = {"low", "medium", "high"}
+    VALID_DEPTHS = {"low", "medium", "high", "max", "xhigh"}
 
     DEPTH_LABELS = {
         "low": "低（快速响应）",
         "medium": "中（平衡）",
         "high": "高（深度推理）",
+        "max": "最大（最高推理强度）",
     }
 
     def __init__(self, session_manager: "SessionManager"):
@@ -563,8 +569,10 @@ class ThinkingCommandHandler:
             depth = text_lower.split(None, 1)[1].strip()
             if depth not in self.VALID_DEPTHS:
                 return (
-                    f"❌ 无效的思考深度: `{depth}`\n可选: `low`（低）| `medium`（中）| `high`（高）"
+                    f"❌ 无效的思考深度: `{depth}`\n可选: `low`（低）| `medium`（中）| `high`（高）| `max`（最大）"
                 )
+            if depth == "xhigh":
+                depth = "max"
             session.set_metadata("thinking_depth", depth)
             return f"✅ 思考深度已设置为: **{self.DEPTH_LABELS[depth]}**"
 
@@ -615,7 +623,7 @@ class ThinkingCommandHandler:
             "`/thinking on` — 强制开启深度思考",
             "`/thinking off` — 关闭深度思考",
             "`/thinking auto` — 自动决定（默认）",
-            "`/thinking_depth low|medium|high` — 设置思考深度",
+            "`/thinking_depth low|medium|high|max` — 设置思考深度",
         ]
         return "\n".join(lines)
 
@@ -631,7 +639,7 @@ class ThinkingCommandHandler:
         for key, label in self.DEPTH_LABELS.items():
             marker = " ⬅️" if key == (current_depth or "medium") else ""
             lines.append(f"• `{key}` — {label}{marker}")
-        lines.append("\n用法: `/thinking_depth low|medium|high`")
+        lines.append("\n用法: `/thinking_depth low|medium|high|max`")
         return "\n".join(lines)
 
 
@@ -934,7 +942,7 @@ class MessageGateway:
         ] = {}  # session_key -> accumulated progress lines (for card PATCH)
 
         # ==================== DM Pairing 配对授权 ====================
-        self._dm_pairing: "DMPairingManager | None" = None
+        self._dm_pairing: DMPairingManager | None = None
 
         # ==================== 群聊响应策略 ====================
         self._smart_throttle = SmartModeThrottle()
@@ -1022,10 +1030,14 @@ class MessageGateway:
 
         async def _run_background():
             try:
+                from ..config import settings
                 from ..scheduler.executor import TaskExecutor
                 from ..scheduler.task import ScheduledTask, TaskType, TriggerType
 
-                executor = TaskExecutor(gateway=self, timeout_seconds=1200)
+                executor = TaskExecutor(
+                    gateway=self,
+                    timeout_seconds=settings.scheduler_task_timeout,
+                )
 
                 task = ScheduledTask(
                     id=bg_id,
@@ -1213,7 +1225,6 @@ class MessageGateway:
 
     def _format_system_help(self) -> str:
         """格式化全局 /help 输出（所有模式可用）——基于统一命令注册表"""
-        from ..config import settings
         from .slash_commands import format_help
 
         lines = [
@@ -1311,6 +1322,105 @@ class MessageGateway:
             session.context.agent_profile_id = bot_agent
             self.session_manager.mark_dirty()
             logger.info(f"[IM] Applied bot default agent: {bot_agent} for {session.session_key}")
+
+    def _desktop_mirror_id_for_im(self, session: Session) -> str:
+        """Return a stable desktop conversation id for an IM chat."""
+        raw_key = f"{session.channel}:{session.chat_id}:{session.user_id}"
+        digest = hashlib.sha1(raw_key.encode("utf-8", errors="ignore")).hexdigest()[:12]
+        platform = re.sub(r"[^A-Za-z0-9_-]+", "_", session.channel.split(":", 1)[0])[:20]
+        return f"im_{platform}_{digest}"
+
+    def _format_im_mirror_label(self, session: Session) -> str:
+        platform = (session.channel or "im").split(":", 1)[0]
+        platform_label = {
+            "feishu": "飞书",
+            "lark": "飞书",
+            "wechat": "微信",
+            "wework": "企微",
+            "wework_ws": "企微",
+            "telegram": "Telegram",
+            "dingtalk": "钉钉",
+            "qqbot": "QQ",
+            "onebot": "OneBot",
+            "onebot_reverse": "OneBot",
+            "whatsapp": "WhatsApp",
+        }.get(platform.lower(), platform)
+        chat_label = session.chat_name or session.display_name or session.chat_id or "会话"
+        chat_type = "群聊" if session.chat_type == "group" else "私聊"
+        return f"{platform_label} · {chat_type} · {chat_label}"
+
+    def _mirror_im_message_to_desktop(
+        self,
+        session: Session,
+        *,
+        role: str,
+        content: str,
+        source_message_id: str | None = None,
+        chain_summary: list | None = None,
+        tool_summary: str | None = None,
+    ) -> None:
+        """Mirror IM turns into the normal desktop chat list.
+
+        This only improves visibility and continuity. The IM adapter still owns
+        inbound/outbound delivery, and the Agent execution path is unchanged.
+        """
+        if not content or not content.strip():
+            return
+        if session.channel in _NOOP_CHANNELS:
+            return
+
+        mirror_id = self._desktop_mirror_id_for_im(session)
+        label = self._format_im_mirror_label(session)
+        mirror = self.session_manager.get_session(
+            channel="desktop",
+            chat_id=mirror_id,
+            user_id="desktop_user",
+            create_if_missing=True,
+            chat_type="private",
+            display_name=label,
+            chat_name=label,
+        )
+        mirror.context.agent_profile_id = session.context.agent_profile_id
+        mirror.set_metadata("source_channel", session.channel)
+        mirror.set_metadata("source_chat_id", session.chat_id)
+        mirror.set_metadata("source_user_id", session.user_id)
+        mirror.set_metadata("source_session_key", session.session_key)
+
+        if role == "user":
+            mirrored_content = f"[来自{label}]\n{content}"
+        elif role == "assistant":
+            mirrored_content = f"[回复到{label}]\n{content}"
+        else:
+            mirrored_content = content
+
+        meta: dict = {
+            "source": "im_mirror",
+            "source_channel": session.channel,
+            "source_session_key": session.session_key,
+        }
+        if source_message_id:
+            meta["source_message_id"] = source_message_id
+        if chain_summary:
+            meta["chain_summary"] = chain_summary
+        if tool_summary:
+            meta["tool_summary"] = tool_summary
+
+        added = mirror.add_message(role=role, content=mirrored_content, **meta)
+        if not added:
+            return
+        self.session_manager.mark_dirty()
+        _notify_im_event(
+            "chat:message_update",
+            {
+                "conversation_id": mirror_id,
+                "title": label,
+                "last_message_preview": mirrored_content[:100],
+                "timestamp": _time.time(),
+                "source": "im_mirror",
+                "source_channel": session.channel,
+                "source_session_id": session.session_key,
+            },
+        )
 
     # ==================== 自然语言意图检测 ====================
 
@@ -2494,7 +2604,7 @@ class MessageGateway:
                     task = asyncio.create_task(self._session_dispatch(message))
                     self._session_tasks[session_key] = task
 
-            except (asyncio.TimeoutError, TimeoutError):
+            except TimeoutError:
                 continue
             except asyncio.CancelledError:
                 break
@@ -2868,6 +2978,12 @@ class MessageGateway:
                 message_id=message.id,
                 channel_message_id=message.channel_message_id,
             )
+            self._mirror_im_message_to_desktop(
+                session,
+                role="user",
+                content=message.plain_text,
+                source_message_id=message.channel_message_id or message.id,
+            )
             self.session_manager.mark_dirty()  # 触发保存
             _notify_im_event(
                 "im:new_message",
@@ -2924,6 +3040,13 @@ class MessageGateway:
             if _tool_summary:
                 _msg_meta["tool_summary"] = _tool_summary
             session.add_message(role="assistant", content=response_text, **_msg_meta)
+            self._mirror_im_message_to_desktop(
+                session,
+                role="assistant",
+                content=response_text,
+                chain_summary=_chain_summary,
+                tool_summary=_tool_summary,
+            )
             self.session_manager.persist()
             _notify_im_event(
                 "im:new_message",
@@ -3610,7 +3733,6 @@ class MessageGateway:
             # === 流式 / 非流式分支 ===
             adapter = self._adapters.get(message.channel)
             is_group = message.chat_type == "group"
-            from ..config import settings as _cfg
 
             use_streaming = (
                 allow_streaming
@@ -3636,15 +3758,21 @@ class MessageGateway:
                 # 不再套 wait_for 墙钟超时，避免活跃任务被误杀
                 response = await self.agent_handler(session, input_text)
             else:
-                _AGENT_TIMEOUT = float(os.environ.get("AGENT_HANDLER_TIMEOUT", "1200"))
-                try:
-                    response = await asyncio.wait_for(
-                        self.agent_handler(session, input_text),
-                        timeout=_AGENT_TIMEOUT,
-                    )
-                except (asyncio.TimeoutError, TimeoutError):
-                    logger.error(f"[Gateway] Agent handler timed out after {_AGENT_TIMEOUT}s")
-                    response = f"⚠️ 处理超时（{int(_AGENT_TIMEOUT)}秒），请稍后重试或简化您的问题。"
+                _agent_timeout = self._get_agent_handler_timeout()
+                if _agent_timeout is None:
+                    response = await self.agent_handler(session, input_text)
+                else:
+                    try:
+                        response = await asyncio.wait_for(
+                            self.agent_handler(session, input_text),
+                            timeout=_agent_timeout,
+                        )
+                    except TimeoutError:
+                        logger.error(
+                            "[Gateway] Agent handler timed out after %ss",
+                            _agent_timeout,
+                        )
+                        response = self._format_agent_timeout_message(_agent_timeout)
 
             return (response, streamed_ok)
 
@@ -3685,8 +3813,6 @@ class MessageGateway:
         if hasattr(adapter, "_streaming_buffers") and hasattr(adapter, "_make_session_key"):
             _sk = adapter._make_session_key(message.chat_id, message.thread_id)
             adapter._streaming_buffers.setdefault(_sk, "")
-
-        _STREAM_TIMEOUT = float(os.environ.get("AGENT_HANDLER_TIMEOUT", "1200"))
 
         async def _consume_stream():
             nonlocal reply_text, _thinking_buf
@@ -3763,11 +3889,15 @@ class MessageGateway:
                     pass
 
         try:
-            await asyncio.wait_for(_consume_stream(), timeout=_STREAM_TIMEOUT)
-        except (asyncio.TimeoutError, TimeoutError):
-            logger.error(f"[IM] Streaming agent timed out after {_STREAM_TIMEOUT}s")
+            _stream_timeout = self._get_agent_handler_timeout()
+            if _stream_timeout is None:
+                await _consume_stream()
+            else:
+                await asyncio.wait_for(_consume_stream(), timeout=_stream_timeout)
+        except TimeoutError:
+            logger.error("[IM] Streaming agent timed out after %ss", _stream_timeout)
             if not reply_text:
-                reply_text = f"⚠️ 处理超时（{int(_STREAM_TIMEOUT)}秒），请稍后重试或简化您的问题。"
+                reply_text = self._format_agent_timeout_message(_stream_timeout)
         except Exception as e:
             logger.error(f"[IM] Streaming agent error: {e}", exc_info=True)
             if not reply_text:
@@ -3813,6 +3943,42 @@ class MessageGateway:
         "wechat": 4000,
     }
     _DEFAULT_MAX_LENGTH = 4000
+
+    @staticmethod
+    def _get_agent_handler_timeout() -> float | None:
+        """Return an explicitly configured IM wall-clock timeout, if any.
+
+        Long IM tasks are user-driven conversations. By default, they should keep
+        running until completion or an explicit user stop/skip instead of being
+        killed by a hidden 20-minute wall-clock limit.
+        """
+        raw = os.environ.get("AGENT_HANDLER_TIMEOUT", "").strip()
+        if not raw:
+            return None
+        try:
+            timeout = float(raw)
+        except ValueError:
+            logger.warning(
+                "Invalid AGENT_HANDLER_TIMEOUT=%r; IM agent wall-clock timeout disabled",
+                raw,
+            )
+            return None
+        if timeout <= 0:
+            return None
+        return timeout
+
+    @staticmethod
+    def _format_agent_timeout_message(timeout_seconds: float) -> str:
+        if timeout_seconds >= 60 and timeout_seconds % 60 == 0:
+            timeout_display = f"{int(timeout_seconds // 60)}分钟"
+        elif timeout_seconds >= 1:
+            timeout_display = f"{int(timeout_seconds)}秒"
+        else:
+            timeout_display = f"{timeout_seconds:g}秒"
+        return (
+            f"⚠️ 当前任务超过配置的处理时长上限（{timeout_display}），已停止本轮处理。"
+            "可以回复“继续”让我接着做；如这是预期的长任务，可调高或关闭 AGENT_HANDLER_TIMEOUT。"
+        )
 
     # 分片间发送间隔（秒），避免触发平台限流
     _SPLIT_SEND_INTERVAL: dict[str, float] = {
@@ -3863,7 +4029,7 @@ class MessageGateway:
             chunks.append(current.rstrip())
         return chunks
 
-    async def _send_response(self, original: UnifiedMessage, response: str) -> None:
+    async def _send_response(self, original: UnifiedMessage, response: str) -> bool:
         """
         发送响应（带重试、按渠道分割长消息、分片间限流保护）
 
@@ -3900,7 +4066,7 @@ class MessageGateway:
                 )
             else:
                 logger.error(f"No adapter for channel: {original.channel}")
-            return
+            return False
 
         # 解析文本中的媒体引用
         media_result = parse_media_from_text(response)
@@ -3955,13 +4121,20 @@ class MessageGateway:
             from .retry import async_with_retry
 
             try:
-                await async_with_retry(
+                send_result = await async_with_retry(
                     adapter.send_message,
                     outgoing,
                     max_retries=2,
                     base_delay=1.0,
                     operation_name=f"send_response[{i + 1}/{len(messages)}]",
                 )
+                if not self._is_im_send_delivered(send_result):
+                    logger.warning(
+                        f"Response part {i + 1}/{len(messages)} was not immediately delivered "
+                        f"(channel={original.channel}, chat_id={original.chat_id})"
+                    )
+                    failed_at = i
+                    break
             except Exception as e:
                 logger.error(
                     f"Failed to send response part {i + 1}/{len(messages)} after retries: {e}"
@@ -3971,7 +4144,7 @@ class MessageGateway:
 
         if failed_at < 0:
             await self._send_extracted_media(adapter, original, media_result, outgoing_meta)
-            return
+            return True
 
         # 分片发送失败 → 仅将失败及后续分片以纯文本重发，避免已送达的部分重复
         remaining = messages[failed_at:]
@@ -3991,7 +4164,9 @@ class MessageGateway:
                 metadata=outgoing_meta,
             )
             try:
-                await adapter.send_message(plain_out)
+                plain_result = await adapter.send_message(plain_out)
+                if not self._is_im_send_delivered(plain_result):
+                    raise RuntimeError("adapter did not confirm immediate delivery")
             except Exception as e2:
                 logger.error(f"Plain-text fallback also failed for part {failed_at + j + 1}: {e2}")
                 _sent_count = failed_at + j
@@ -4008,9 +4183,10 @@ class MessageGateway:
                         thread_id=original.thread_id,
                         metadata=outgoing_meta,
                     )
-                return
+                return False
 
         await self._send_extracted_media(adapter, original, media_result, outgoing_meta)
+        return True
 
     async def _send_extracted_media(
         self,
@@ -4213,6 +4389,67 @@ class MessageGateway:
                 logger.error(f"Failed to deliver pending selfcheck report for {report_date}: {e}")
 
     # ==================== 主动发送 ====================
+
+    @staticmethod
+    def _is_im_send_delivered(result: object) -> bool:
+        """Return True only when an adapter reports an immediate delivery.
+
+        QQ official group bots return an empty string when a proactive message is
+        queued for the next user interaction. That queue is useful, but it is not
+        an immediate notification and should not make scheduler delivery look
+        successful.
+        """
+        if isinstance(result, str):
+            return bool(result)
+        return result is not None
+
+    async def send_text_reliably(
+        self,
+        channel: str,
+        chat_id: str,
+        text: str,
+        record_to_session: bool = True,
+        user_id: str = "system",
+        thread_id: str | None = None,
+        metadata: dict | None = None,
+    ) -> bool:
+        """Send final text through the same chunking/retry path as normal replies."""
+        if not isinstance(text, str):
+            logger.warning(
+                "[Gateway] Refusing to send non-text reliable payload to IM channel "
+                "%s/%s: %s",
+                channel,
+                chat_id,
+                type(text).__name__,
+            )
+            return False
+
+        message = UnifiedMessage.create(
+            channel=channel,
+            channel_message_id="",
+            user_id=user_id,
+            channel_user_id=user_id,
+            chat_id=chat_id,
+            thread_id=thread_id,
+            content=MessageContent.text_only(text),
+            metadata=dict(metadata or {}),
+        )
+        delivered = await self._send_response(message, text)
+
+        if delivered and record_to_session and self.session_manager:
+            try:
+                self.session_manager.add_message(
+                    channel=channel,
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    role="system",
+                    content=text,
+                    source="gateway.send_text_reliably",
+                )
+            except Exception as e:
+                logger.warning(f"Failed to record reliable message to session: {e}")
+
+        return delivered
 
     async def send(
         self,

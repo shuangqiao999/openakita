@@ -137,6 +137,17 @@ class ToolExecutor:
         "schedule-task": "schedule_task",
         "schedule_task_create": "schedule_task",
         "list-scheduled-tasks": "list_scheduled_tasks",
+        "browser-open": "browser_open",
+        "browser-navigate": "browser_navigate",
+        "browser-click": "browser_click",
+        "browser-type": "browser_type",
+        "browser-input": "browser_type",
+        "browser-input-text": "browser_type",
+        "browser-fill": "browser_type",
+        "browser_fill": "browser_type",
+        "browser-get-content": "browser_get_content",
+        "browser-screenshot": "browser_screenshot",
+        "browser-execute-js": "browser_execute_js",
     }
 
     def __init__(
@@ -181,20 +192,20 @@ class ToolExecutor:
         "list_resources",
     }
 
-    # 长时间运行工具的硬超时（秒），防止工具卡死拖垮整个 agent 循环
-    # 值为 0 表示不设硬超时（由工具自身的进度监控负责，如 Orchestrator 的 idle-timeout）
-    _TOOL_HARD_TIMEOUT: int = 120
-
-    _LONG_RUNNING_TOOLS: dict[str, int] = {
-        "org_request_meeting": 600,
-        "org_broadcast": 300,
-        "delegate_to_agent": 0,
-        "delegate_parallel": 0,
-        "spawn_agent": 0,
-        "browser_navigate": 300,
-        "browser_use": 300,
-        "run_shell": 300,
-    }
+    # 默认不对工具施加硬超时。长任务由用户停止/跳过、工具自身进度监控、
+    # 或用户显式配置的 timeout 控制，避免短硬限制打断真实任务。
+    _LONG_RUNNING_TOOLS: frozenset[str] = frozenset(
+        {
+            "org_request_meeting",
+            "org_broadcast",
+            "delegate_to_agent",
+            "delegate_parallel",
+            "spawn_agent",
+            "browser_navigate",
+            "browser_use",
+            "run_shell",
+        }
+    )
 
     def get_handler_name(self, tool_name: str) -> str | None:
         """获取工具对应的 handler 名称"""
@@ -204,13 +215,24 @@ class ToolExecutor:
             return None
 
     def _canonicalize_tool_name(self, tool_name: str) -> str:
-        canonical = self._TOOL_ALIASES.get(tool_name)
-        if canonical is None and "-" in tool_name:
-            canonical = self._TOOL_ALIASES.get(tool_name.replace("-", "_"))
+        normalized = (tool_name or "").strip()
+        canonical = self._TOOL_ALIASES.get(normalized)
+        if canonical is None:
+            lowered = normalized.lower()
+            canonical = self._TOOL_ALIASES.get(lowered)
+        if canonical is None and "-" in normalized:
+            canonical = self._TOOL_ALIASES.get(normalized.replace("-", "_"))
+        if canonical is None and "-" in normalized:
+            candidate = normalized.lower().replace("-", "_")
+            try:
+                if self._handler_registry.has_tool(candidate) is True:
+                    canonical = candidate
+            except Exception:
+                pass
         if canonical:
-            logger.info(f"[ToolExecutor] Alias corrected: '{tool_name}' -> '{canonical}'")
+            logger.info(f"[ToolExecutor] Alias corrected: '{normalized}' -> '{canonical}'")
             return canonical
-        return tool_name
+        return normalized
 
     def canonicalize_tool_name(self, tool_name: str) -> str:
         return self._canonicalize_tool_name(tool_name)
@@ -285,6 +307,23 @@ class ToolExecutor:
 
         return batches
 
+    def _hard_timeout_for_tool(self, tool_name: str) -> int:
+        """Return the user-configured hard timeout for a tool.
+
+        0 means no executor-level hard timeout. This keeps long user tasks from
+        being cut off by built-in short limits; users can still configure a
+        timeout when they want that safety net.
+        """
+        setting_name = (
+            "long_running_tool_timeout_seconds"
+            if tool_name in self._LONG_RUNNING_TOOLS
+            else "tool_hard_timeout_seconds"
+        )
+        try:
+            return max(0, int(getattr(settings, setting_name, 0)))
+        except (TypeError, ValueError):
+            return 0
+
     async def _execute_with_cancel(
         self,
         coro,
@@ -309,7 +348,7 @@ class ToolExecutor:
         if state and hasattr(state, "skip_event") and state.skip_event:
             skip_future = asyncio.ensure_future(state.skip_event.wait())
 
-        hard_timeout = self._LONG_RUNNING_TOOLS.get(tool_name, self._TOOL_HARD_TIMEOUT)
+        hard_timeout = self._hard_timeout_for_tool(tool_name)
 
         timeout_task: asyncio.Future | None = None
         if hard_timeout > 0:
@@ -482,15 +521,21 @@ class ToolExecutor:
 
                 # 如果有警告/错误日志，附加到结果
                 if new_logs:
-                    result += "\n\n[执行日志]:\n"
-                    for log in new_logs[-10:]:
-                        result += f"[{log['level']}] {log['module']}: {log['message']}\n"
+                    log_text = "\n\n[执行日志]:\n" + "".join(
+                        f"[{log['level']}] {log['module']}: {log['message']}\n"
+                        for log in new_logs[-10:]
+                    )
+                    if isinstance(result, list):
+                        result.append({"type": "text", "text": log_text})
+                    else:
+                        result += log_text
 
                 # ★ 通用截断守卫：工具自身未做截断时的安全网
-                result = self._guard_truncate(tool_name, result)
+                if isinstance(result, str):
+                    result = self._guard_truncate(tool_name, result)
                 self._observe_current_turn_tool_result(tool_name, tool_input, result)
 
-                span.set_attribute("result_length", len(result))
+                span.set_attribute("result_length", len(str(result)))
 
                 await self._dispatch_hook(
                     "on_after_tool_use",
@@ -501,7 +546,7 @@ class ToolExecutor:
                 self._record_experience(
                     tool_name,
                     tool_input,
-                    result,
+                    str(result),
                     success=True,
                     duration_ms=(time.monotonic() - started_at) * 1000,
                 )
@@ -848,7 +893,8 @@ class ToolExecutor:
                             tool_name,
                         )
 
-                result_str = str(result) if result is not None else "操作已完成"
+                result_content = result if result is not None else "操作已完成"
+                result_str = str(result_content)
 
                 # execute_tool 内部捕获所有异常并返回字符串，不会抛到这里。
                 # 对于 PARSE_ERROR_KEY（参数截断）路径，需要在此修正 success
@@ -856,6 +902,9 @@ class ToolExecutor:
                 from ..llm.converters.tools import PARSE_ERROR_KEY
 
                 if isinstance(tool_input, dict) and PARSE_ERROR_KEY in tool_input:
+                    success = False
+
+                if isinstance(result_str, str) and result_str.startswith("⚠️ 工具执行被中断:"):
                     success = False
 
                 if success and isinstance(result_str, str) and result_str.lstrip().startswith("{"):
@@ -905,9 +954,14 @@ class ToolExecutor:
                 skip_reason = e.reason or "用户请求跳过"
                 result_str = f"[用户跳过了此步骤: {skip_reason}]"
                 logger.info(f"[SkipStep] Tool {tool_name} skipped: {skip_reason}")
-                elapsed = time.time() - t0
                 if use_parallel_safe_monitor and task_monitor:
-                    task_monitor.record_tool_call(tool_name, tool_input, elapsed, True)
+                    task_monitor.record_tool_call(
+                        tool_name,
+                        tool_input,
+                        result_str,
+                        success=True,
+                        duration_ms=int((time.time() - t0) * 1000),
+                    )
                 elif (not parallel_enabled) and task_monitor:
                     task_monitor.end_tool_call(result_str, success=True)
                 return (
@@ -925,6 +979,7 @@ class ToolExecutor:
                 success = False
                 tool_error = classify_error(e, tool_name=tool_name)
                 result_str = tool_error.to_tool_result()
+                result_content = result_str
                 logger.error(f"Tool batch execution error: {tool_name}: {e}")
                 logger.info(f"[Tool] {tool_name} ❌ 错误: {result_str}")
 
@@ -932,14 +987,20 @@ class ToolExecutor:
 
             # 记录到 task_monitor
             if use_parallel_safe_monitor and task_monitor:
-                task_monitor.record_tool_call(tool_name, tool_input, elapsed, success)
+                task_monitor.record_tool_call(
+                    tool_name,
+                    tool_input,
+                    result_str,
+                    success=success,
+                    duration_ms=int(elapsed * 1000),
+                )
             elif (not parallel_enabled) and task_monitor:
                 task_monitor.end_tool_call(result_str, success)
 
             tool_result = {
                 "type": "tool_result",
                 "tool_use_id": tool_use_id,
-                "content": result_str,
+                "content": result_content,
                 "receipt_id": f"tool_{uuid.uuid4().hex[:12]}",
                 "tool_name": tool_name,
             }
@@ -1063,48 +1124,15 @@ class ToolExecutor:
         """
         检查是否需要先创建 Todo（仅 Agent 模式下的 todo 跟踪）。
 
-        如果当前 session 被标记为需要 Todo（compound 任务），
-        但还没有创建 Todo，则拒绝执行其他工具。
+        Todo 是任务管理提示，不应成为工具执行的硬门槛。旧逻辑会在复合任务未
+        创建 Todo 时拒绝 read_file/run_shell/browser 等工具，导致模型反复收到
+        “请先创建 Todo”的长提示，反而阻碍用户任务推进。
 
-        Plan/Ask 模式下跳过此检查（由模式提示词和工具过滤控制）。
+        现在统一放行，由 prompt 和 Todo 工具自身引导模型在合适时主动建计划。
 
         Returns:
-            阻止消息字符串，或 None（允许执行）
+            始终返回 None（允许执行）。
         """
-        if self._current_mode in ("plan", "ask"):
-            return None
-
-        if tool_name in (
-            "create_todo",
-            "create_plan_file",
-            "exit_plan_mode",
-            "get_todo_status",
-            "ask_user",
-        ):
-            return None
-
-        try:
-            from ..tools.handlers.plan import has_active_todo, is_todo_required
-
-            if session_id and is_todo_required(session_id) and not has_active_todo(session_id):
-                return (
-                    "⚠️ **这是一个多步骤任务，建议先创建 Todo！**\n\n"
-                    "请先调用 `create_todo` 工具创建任务计划，然后再执行具体操作。\n\n"
-                    "示例：\n"
-                    "```\n"
-                    "create_todo(\n"
-                    "  task_summary='写脚本获取时间并显示',\n"
-                    "  steps=[\n"
-                    "    {id: 'step1', description: '创建Python脚本', tool: 'write_file'},\n"
-                    "    {id: 'step2', description: '执行脚本', tool: 'run_shell'},\n"
-                    "    {id: 'step3', description: '读取结果', tool: 'read_file'}\n"
-                    "  ]\n"
-                    ")\n"
-                    "```"
-                )
-        except Exception:
-            pass
-
         return None
 
     def check_permission(self, tool_name: str, tool_input: dict) -> "PermissionDecision":

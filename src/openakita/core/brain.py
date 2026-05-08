@@ -510,7 +510,7 @@ class Brain:
 
         Args:
             use_thinking: 是否使用 thinking 模式
-            thinking_depth: 思考深度 ('low'/'medium'/'high'/None)
+            thinking_depth: 思考深度 ('low'/'medium'/'high'/'max'/None)
             **kwargs: Anthropic 格式参数 (messages, system, tools, max_tokens)
 
         Returns:
@@ -974,10 +974,12 @@ class Brain:
 
         result: list[Tool] = []
         skipped = 0
+        duplicate_names: list[str] = []
+        seen_names: set[str] = set()
         deferred = 0
         promoted = 0
         always_available = 0
-        schema_budget = int(getattr(settings, "api_tools_schema_budget_tokens", 12000) or 12000)
+        schema_budget = self._resolve_api_tools_schema_budget()
         schema_tokens = 0
         for tool in tools:
             name = tool.get("name", "")
@@ -995,6 +997,10 @@ class Brain:
             if not name:
                 skipped += 1
                 continue
+            if name in seen_names:
+                duplicate_names.append(name)
+                continue
+            seen_names.add(name)
 
             tool_payload_tokens = 0
             if schema:
@@ -1047,6 +1053,12 @@ class Brain:
                 len(tools),
                 len(result),
             )
+        if duplicate_names:
+            logger.warning(
+                "[Brain] _convert_tools_to_llm: removed %d duplicate tool definition(s): %s",
+                len(duplicate_names),
+                sorted(set(duplicate_names)),
+            )
         if deferred:
             logger.info(
                 "[Brain] defer_loading: deferred=%d total=%d schema_tokens~%d budget=%d "
@@ -1071,6 +1083,31 @@ class Brain:
             )
 
         return result if result else None
+
+    def _resolve_api_tools_schema_budget(self) -> int:
+        """Scale API tool schema budget to the active model context window."""
+        configured = int(getattr(settings, "api_tools_schema_budget_tokens", 12000) or 0)
+        if configured <= 0:
+            return configured
+
+        ctx = 0
+        try:
+            info = self.get_current_model_info()
+            endpoint_name = info.get("name", "")
+            for ep in getattr(getattr(self, "_llm_client", None), "endpoints", []):
+                if ep.name == endpoint_name:
+                    ctx = int(getattr(ep, "context_window", 0) or 0)
+                    break
+        except Exception:
+            ctx = 0
+
+        if ctx <= 0:
+            return configured
+        if ctx < 8000:
+            return min(configured, max(800, int(ctx * 0.25)))
+        if ctx < 32000:
+            return min(configured, max(2000, int(ctx * 0.20)))
+        return configured
 
     def _convert_response_to_anthropic(self, response: LLMResponse) -> AnthropicMessage:
         """将 LLMClient Response 转换为 Anthropic Message
@@ -1177,7 +1214,7 @@ class Brain:
             system: 系统提示词
             tools: 可用工具列表
             max_tokens: 最大输出 token（不传则使用 self.max_tokens）
-            thinking_depth: 思考深度 ('low'/'medium'/'high'/None)
+            thinking_depth: 思考深度 ('low'/'medium'/'high'/'max'/None)
 
         Returns:
             Response 对象
@@ -1532,7 +1569,6 @@ class Brain:
     ) -> None:
         """清理超过指定天数或目录体积上限的调试文件（request + response）。"""
         try:
-            import os
             from datetime import timedelta
 
             cutoff_time = datetime.now() - timedelta(days=max_age_days)
@@ -1627,6 +1663,7 @@ class Brain:
         hours: float = 12,
         reason: str = "",
         conversation_id: str | None = None,
+        policy: str = "prefer",
     ) -> tuple[bool, str]:
         """
         临时切换到指定模型
@@ -1640,7 +1677,7 @@ class Brain:
             (成功, 消息)
         """
         return self._llm_client.switch_model(
-            endpoint_name, hours, reason, conversation_id=conversation_id
+            endpoint_name, hours, reason, conversation_id=conversation_id, policy=policy
         )
 
     def get_fallback_model(self, conversation_id: str | None = None) -> str:

@@ -365,6 +365,7 @@ export interface OrgNodeData {
   skills: string[];
   skills_mode: string;
   preferred_endpoint: string | null;
+  endpoint_policy?: "prefer" | "require";
   max_concurrent_tasks: number;
   timeout_s: number;
   can_delegate: boolean;
@@ -424,6 +425,7 @@ export interface OrgFull {
   status: string;
   nodes: OrgNodeData[];
   edges: OrgEdgeData[];
+  layout_locked?: boolean;
   user_persona?: UserPersona;
   [key: string]: any;
 }

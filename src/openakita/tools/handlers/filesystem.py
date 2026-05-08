@@ -9,6 +9,7 @@
 - list_directory: 列出目录
 - grep: 内容搜索
 - glob: 文件名模式搜索
+- move_file: 移动或重命名文件/目录
 - delete_file: 删除文件
 """
 
@@ -25,6 +26,12 @@ logger = logging.getLogger(__name__)
 
 _terminal_managers: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
 _terminal_mgr_strong_refs: dict[int, Any] = {}
+_TRUNCATED_PREVIEW_MARKERS = (
+    "[OUTPUT_TRUNCATED]",
+    "[已截断",
+    "[部分工具结果已截断",
+    "[PAGE_HAS_MORE]",
+)
 
 
 def _get_terminal_manager(agent: "Agent") -> Any:
@@ -72,6 +79,7 @@ class FilesystemHandler:
         "list_directory",
         "grep",
         "glob",
+        "move_file",
         "delete_file",
     ]
 
@@ -94,6 +102,13 @@ class FilesystemHandler:
         if isinstance(policy, dict) and policy.get("enabled"):
             return policy
         return None
+
+    @staticmethod
+    def _looks_like_truncated_tool_preview(content: str) -> bool:
+        """Detect tool preview/pagination markers that should not be written as file content."""
+        if not isinstance(content, str) or not content:
+            return False
+        return any(marker in content for marker in _TRUNCATED_PREVIEW_MARKERS)
 
     def _resolve_to_abs(self, raw: str) -> Path:
         p = Path(raw)
@@ -137,6 +152,8 @@ class FilesystemHandler:
             return await self._grep(params)
         elif tool_name == "glob":
             return await self._glob(params)
+        elif tool_name == "move_file":
+            return await self._move_file(params)
         elif tool_name == "delete_file":
             return await self._delete_file(params)
         else:
@@ -496,6 +513,13 @@ class FilesystemHandler:
             return "❌ write_file 缺少必要参数 'path'。请提供文件路径和内容后重试。"
         if content is None:
             return "❌ write_file 缺少必要参数 'content'。请提供文件内容后重试。"
+        if self._looks_like_truncated_tool_preview(content):
+            return (
+                "❌ write_file 检测到内容里包含工具分页/截断预览标记，已拒绝写入，"
+                "避免把不完整的预览内容覆盖到真实文件。\n"
+                "请先用 read_file 的 offset/limit 继续读取缺失页，或使用 edit_file "
+                "只修改目标片段；确认拿到完整内容后再写入。"
+            )
         policy = self._get_fix_policy()
         if policy:
             target = self._resolve_to_abs(path)
@@ -584,8 +608,9 @@ class FilesystemHandler:
         if end < total_lines:
             remaining = total_lines - end
             result += (
-                f"\n\n[OUTPUT_TRUNCATED] 文件共 {total_lines} 行，"
-                f"当前显示第 {start + 1}-{end} 行，剩余 {remaining} 行。\n"
+                f"\n\n[PAGE_HAS_MORE] 这是分页读取结果，原文件未截断。"
+                f"文件共 {total_lines} 行，当前仅显示第 {start + 1}-{end} 行，"
+                f"剩余 {remaining} 行。\n"
                 f'使用 read_file(path="{path}", offset={end + 1}, limit={limit}) '
                 f"查看后续内容。"
             )
@@ -684,6 +709,8 @@ class FilesystemHandler:
                 f"或缩小查询范围。"
             )
 
+        result = self._append_traversal_note(result)
+
         from ...utils.subdir_context import inject_subdir_context
 
         return inject_subdir_context(result, path)
@@ -727,7 +754,7 @@ class FilesystemHandler:
             return f"❌ 正则表达式错误: {e}"
 
         if not results:
-            return f"未找到匹配 '{pattern}' 的内容。"
+            return self._append_traversal_note(f"未找到匹配 '{pattern}' 的内容。")
 
         lines: list[str] = []
         for m in results:
@@ -760,7 +787,7 @@ class FilesystemHandler:
             )
             return truncated
 
-        return output
+        return self._append_traversal_note(output)
 
     async def _glob(self, params: dict) -> str:
         """文件名模式搜索"""
@@ -778,21 +805,13 @@ class FilesystemHandler:
         if not dir_path.is_dir():
             return f"❌ 目录不存在: {path}"
 
-        from ..file import DEFAULT_IGNORE_DIRS
-
         results: list[tuple[str, float]] = []
         glob_pattern = pattern[3:] if pattern.startswith("**/") else pattern
-        for p in dir_path.rglob(glob_pattern):
-            if not p.is_file():
-                continue
-            parts = p.relative_to(dir_path).parts
-            if any(part in DEFAULT_IGNORE_DIRS for part in parts):
-                continue
-            if any(
-                part.startswith(".") and part not in (".github", ".vscode", ".cursor")
-                for part in parts[:-1]
-            ):
-                continue
+        for p in self.agent.file_tool._iter_matching_paths(
+            dir_path,
+            glob_pattern,
+            recursive=True,
+        ):
             try:
                 mtime = p.stat().st_mtime
             except OSError:
@@ -803,7 +822,7 @@ class FilesystemHandler:
         results.sort(key=lambda x: x[1], reverse=True)
 
         if not results:
-            return f"未找到匹配 '{pattern}' 的文件。"
+            return self._append_traversal_note(f"未找到匹配 '{pattern}' 的文件。")
 
         total = len(results)
         max_show = self.LIST_DIR_DEFAULT_MAX
@@ -813,7 +832,64 @@ class FilesystemHandler:
         if total > max_show:
             output += f"\n\n[OUTPUT_TRUNCATED] 共 {total} 个文件，已显示前 {max_show} 个。"
 
-        return output
+        return self._append_traversal_note(output)
+
+    def _append_traversal_note(self, output: str) -> str:
+        skipped = getattr(self.agent.file_tool, "last_traversal_skipped", 0)
+        if not skipped:
+            return output
+        return (
+            f"{output}\n\n[提示] 已跳过 {skipped} 个不可访问或临时变化的目录，"
+            "其余结果已正常返回。"
+        )
+
+    async def _move_file(self, params: dict) -> str:
+        """移动或重命名文件/目录，并验证磁盘状态。"""
+        src = (
+            params.get("src")
+            or params.get("source")
+            or params.get("source_path")
+            or params.get("from")
+            or ""
+        )
+        dst = (
+            params.get("dst")
+            or params.get("destination")
+            or params.get("target_path")
+            or params.get("to")
+            or ""
+        )
+        if not src or not dst:
+            return "❌ move_file 缺少必要参数 'src' 和 'dst'。"
+        if "\x00" in src or "\x00" in dst:
+            return "❌ move_file 路径包含无效空字符，请去掉不可见字符后重试。"
+
+        policy = self._get_fix_policy()
+        if policy:
+            write_roots = policy.get("write_roots") or []
+            for raw in (src, dst):
+                target = self._resolve_to_abs(raw)
+                if not self._is_under_any_root(target, write_roots):
+                    msg = f"❌ 自检自动修复护栏：禁止移动该路径。\n目标: {target}"
+                    logger.warning(msg)
+                    return msg
+
+        src_path = self.agent.file_tool._resolve_path(src)
+        dst_path = self.agent.file_tool._resolve_path(dst)
+
+        if not src_path.exists():
+            return f"❌ 源路径不存在: {src}"
+
+        final_dst_path = dst_path / src_path.name if dst_path.exists() and dst_path.is_dir() else dst_path
+        kind = "目录" if src_path.is_dir() else "文件"
+        success = await self.agent.file_tool.move(src, dst)
+        if not success:
+            return f"❌ 移动失败: {src} -> {dst}"
+        if src_path.exists():
+            return f"⚠️ 移动操作返回成功但源路径仍存在: {src}"
+        if not final_dst_path.exists():
+            return f"⚠️ 移动操作返回成功但目标路径不存在: {final_dst_path}"
+        return f"{kind}已移动: {src} -> {final_dst_path}"
 
     async def _delete_file(self, params: dict) -> str:
         """删除文件或空目录"""

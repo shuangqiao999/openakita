@@ -283,17 +283,6 @@ function getNextNodePosition(nodes: Node[]): { x: number; y: number } {
   return { x: maxX + NEW_NODE_STEP_X, y: maxY + NEW_NODE_STEP_Y };
 }
 
-function detectOverlap(nodes: Node[]): boolean {
-  for (let i = 0; i < nodes.length; i++) {
-    for (let j = i + 1; j < nodes.length; j++) {
-      const a = nodes[i].position || { x: 0, y: 0 };
-      const b = nodes[j].position || { x: 0, y: 0 };
-      if (Math.abs(a.x - b.x) < NODE_COLLISION_W && Math.abs(a.y - b.y) < NODE_COLLISION_H) return true;
-    }
-  }
-  return false;
-}
-
 // ── Custom Connection Line (visible dashed line from handle to cursor) ──
 
 function OrgConnectionLine({ fromX, fromY, toX, toY }: ConnectionLineComponentProps) {
@@ -646,6 +635,7 @@ export function OrgEditorView({
   const [promptPreviewLoading, setPromptPreviewLoading] = useState(false);
   const [layoutLocked, setLayoutLocked] = useState(false);
   const liveMode = currentOrg?.status === "active" || currentOrg?.status === "running";
+  const isCanvasLocked = layoutLocked || liveMode;
   const [activeDrawer, setActiveDrawer] = useState<"chat" | "inbox" | null>(null);
   const [showNodeChat, setShowNodeChat] = useState(false);
   const [orgStats, setOrgStats] = useState<any>(null);
@@ -764,7 +754,6 @@ export function OrgEditorView({
   const [showBlackboardPanel, setShowBlackboardPanel] = useState(false);
   const [creatingOrg, setCreatingOrg] = useState(false);
   const orgCreateBusyRef = useRef(false);
-  const wasRunningRef = useRef(false);
 
   useLayoutEffect(() => {
     let prev = window.innerWidth < 768 || IS_CAPACITOR;
@@ -778,18 +767,6 @@ export function OrgEditorView({
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
-
-  useEffect(() => {
-    if (!currentOrg) {
-      wasRunningRef.current = false;
-      return;
-    }
-    const running = currentOrg.status === "active" || currentOrg.status === "running";
-    if (running !== wasRunningRef.current) {
-      setLayoutLocked(running);
-      wasRunningRef.current = running;
-    }
-  }, [currentOrg?.id, currentOrg?.status]);
 
   useEffect(() => {
     setNodes((prev) =>
@@ -847,12 +824,12 @@ export function OrgEditorView({
         return fn;
       });
       const flowEdges = data.edges.map(orgEdgeToFlowEdge);
-      const hasOverlap = detectOverlap(flowNodes);
-      setNodes(hasOverlap ? computeTreeLayout(flowNodes, flowEdges) : flowNodes);
+      // Preserve the user's saved canvas. Auto-layout is only run from explicit user actions.
+      setNodes(flowNodes);
       setEdges(flowEdges);
       setSelectedNodeId(null);
       setEditingName(false);
-      setLayoutLocked(running);
+      setLayoutLocked(Boolean(data.layout_locked));
     } catch (e) {
       console.error("Failed to fetch org:", e);
     } finally {
@@ -965,10 +942,7 @@ export function OrgEditorView({
         const newStatus = (d as any).status as string;
         setCurrentOrg((prev) => prev ? { ...prev, status: newStatus } : prev);
         setOrgList((prev) => prev.map((o) => o.id === orgId ? { ...o, status: newStatus } : o));
-        if (newStatus === "active" || newStatus === "running") {
-          setLayoutLocked(true);
-        } else if (newStatus === "dormant" || newStatus === "paused") {
-          setLayoutLocked(false);
+        if (newStatus === "dormant" || newStatus === "paused") {
           if (newStatus === "dormant") {
             setNodes((prev) => prev.map((n) => ({
               ...n,
@@ -990,7 +964,7 @@ export function OrgEditorView({
         bbPanelRef.current?.refresh();
       }
     });
-  }, [visible, currentOrgId, setNodes, triggerEdgeAnimation, showToast, setLayoutLocked]);
+  }, [visible, currentOrgId, setNodes, triggerEdgeAnimation, showToast]);
 
   // ── Start/Stop org ──
   const handleStartOrg = useCallback(async () => {
@@ -999,7 +973,6 @@ export function OrgEditorView({
       await safeFetch(`${apiBaseUrl}/api/orgs/${currentOrg.id}/start`, { method: "POST" });
       setCurrentOrg({ ...currentOrg, status: "active" });
       setOrgList((prev) => prev.map((o) => o.id === currentOrg.id ? { ...o, status: "active" } : o));
-      setLayoutLocked(true);
       const mode = (currentOrg as any).operation_mode || "command";
       showToast(
         mode === "autonomous"
@@ -1034,7 +1007,6 @@ export function OrgEditorView({
           _runtime: null,
         },
       })));
-      setLayoutLocked(false);
     } catch (e: any) {
       console.error("Failed to stop org:", e);
       showToast(t("org.editor.stopFailed", { error: e?.message || e }), "error");
@@ -1042,7 +1014,7 @@ export function OrgEditorView({
       // 800ms 内拒绝二次触发；正常 stop 链路远小于此阈值。
       setTimeout(() => { stoppingRef.current = false; }, 800);
     }
-  }, [currentOrg, apiBaseUrl, showToast, setNodes, setLayoutLocked]);
+  }, [currentOrg, apiBaseUrl, showToast, setNodes]);
 
   // ── Org export/import ──
   const orgImportRef = useRef<HTMLInputElement>(null);
@@ -1139,6 +1111,7 @@ export function OrgEditorView({
       user_persona: currentOrg.user_persona || { title: t("org.editor.defaultPersonaTitle"), display_name: "", description: "" },
       operation_mode: (currentOrg as any).operation_mode || "command",
       core_business: currentOrg.core_business || "",
+      layout_locked: layoutLocked,
       workspace_dir: (currentOrg as any).workspace_dir || "",
       auto_persist_final_answer:
         (currentOrg as any).auto_persist_final_answer !== false,
@@ -1152,7 +1125,7 @@ export function OrgEditorView({
       nodes: updatedNodes,
       edges: updatedEdges,
     };
-  }, [currentOrg, nodes, edges]);
+  }, [currentOrg, nodes, edges, layoutLocked]);
 
   const doSave = useCallback(async (): Promise<boolean> => {
     if (!currentOrg) return false;
@@ -1313,6 +1286,7 @@ export function OrgEditorView({
         skills: [],
         skills_mode: "all",
         preferred_endpoint: null,
+        endpoint_policy: "prefer",
         max_concurrent_tasks: 1,
         timeout_s: 300,
         can_delegate: true,
@@ -1600,7 +1574,7 @@ export function OrgEditorView({
       id: newId, role_title: t("org.editor.newNode"), role_goal: "", role_backstory: "",
       agent_source: "local", agent_profile_id: null, position: pos, level: 0,
       department: "", custom_prompt: "", identity_dir: null, mcp_servers: [], skills: [],
-      skills_mode: "all", preferred_endpoint: null, max_concurrent_tasks: 1, timeout_s: 0,
+      skills_mode: "all", preferred_endpoint: null, endpoint_policy: "prefer", max_concurrent_tasks: 1, timeout_s: 0,
       can_delegate: true, can_escalate: true, can_request_scaling: true, is_clone: false,
       clone_source: null, external_tools: [], enable_file_tools: true, ephemeral: false, frozen_by: null,
       frozen_reason: null, frozen_at: null, avatar: null, status: "idle",
@@ -2142,7 +2116,7 @@ export function OrgEditorView({
               fitView
               snapToGrid
               snapGrid={[20, 20]}
-              nodesDraggable={!layoutLocked}
+              nodesDraggable={!isCanvasLocked}
               nodesConnectable
               defaultEdgeOptions={{
                 type: "default",
@@ -2163,11 +2137,13 @@ export function OrgEditorView({
                     <IconSitemap size={13} /> {t("org.editor.autoLayout")}
                   </button>
                   <button
-                    className={`org-cvs-btn${!layoutLocked ? " org-cvs-btn--active" : ""}`}
+                    className={`org-cvs-btn${isCanvasLocked ? " org-cvs-btn--active" : ""}`}
                     onClick={() => setLayoutLocked((v) => !v)}
-                    title={layoutLocked ? t("org.editor.unlockDrag") : t("org.editor.lockLayout")}
+                    disabled={liveMode}
+                    title={liveMode ? t("org.editor.runningLocked") : layoutLocked ? t("org.editor.unlockDrag") : t("org.editor.lockLayout")}
                   >
-                    <IconSitemap size={13} /> {layoutLocked ? t("org.editor.unlockDrag") : t("org.editor.lockLayout")}
+                    {layoutLocked ? <IconUnlock size={13} /> : <IconPin size={13} />}
+                    {layoutLocked ? t("org.editor.unlockDrag") : t("org.editor.lockLayout")}
                   </button>
                   {selectedNodeId && (
                     <button className="org-cvs-btn org-cvs-btn--danger" onClick={handleDeleteNode} title={t("org.editor.deleteSelected")}>
@@ -2268,7 +2244,7 @@ export function OrgEditorView({
               document.body
             )}
             {/* ── Canvas bottom: live activity feed ── */}
-            {liveMode && layoutLocked && orgStats && (() => {
+            {liveMode && isCanvasLocked && orgStats && (() => {
               const perNode: any[] = orgStats.per_node || [];
               const recentTasks: any[] = orgStats.recent_tasks || [];
               const anomalies: any[] = orgStats.anomalies || [];
@@ -4240,13 +4216,32 @@ export function OrgEditorView({
                       {t("org.editor.llmEndpointDesc")}
                     </CardDescription>
                   </CardHeader>
-                  <CardContent className="px-4 pb-4">
+                  <CardContent className="space-y-3 px-4 pb-4">
                     <ShadInput
                       value={selectedNode.preferred_endpoint || ""}
-                      onChange={(e) => updateNodeData("preferred_endpoint", e.target.value || null)}
+                      onChange={(e) => {
+                        const value = e.target.value || null;
+                        updateNodeData("preferred_endpoint", value);
+                        if (!value) updateNodeData("endpoint_policy", "prefer");
+                      }}
                       placeholder={t("org.editor.llmEndpointPlaceholder")}
                       className="h-8 text-xs"
                     />
+                    <div className="space-y-1.5">
+                      <ShadLabel className="text-xs opacity-70">{t("org.editor.llmEndpointPolicy")}</ShadLabel>
+                      <select
+                        value={selectedNode.endpoint_policy || "prefer"}
+                        onChange={(e) => updateNodeData("endpoint_policy", e.target.value)}
+                        className="h-8 w-full rounded-md border border-input bg-background px-3 text-xs"
+                        disabled={!selectedNode.preferred_endpoint}
+                      >
+                        <option value="prefer">{t("org.editor.llmEndpointPolicyPrefer")}</option>
+                        <option value="require">{t("org.editor.llmEndpointPolicyRequire")}</option>
+                      </select>
+                      <p className="text-[11px] text-muted-foreground">
+                        {t("org.editor.llmEndpointPolicyHint")}
+                      </p>
+                    </div>
                   </CardContent>
                 </Card>
                 </fieldset>

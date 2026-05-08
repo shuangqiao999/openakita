@@ -23,6 +23,7 @@ from ..converters.tools import (
     has_text_tool_calls,
     parse_text_tool_calls,
 )
+from ..model_registry import resolve_output_token_budget
 from ..types import (
     AuthenticationError,
     EndpointConfig,
@@ -125,7 +126,13 @@ class OpenAIResponsesProvider(OpenAIProvider):
                 if response.status_code == 401:
                     raise AuthenticationError(f"Authentication failed: {body}", status_code=401)
                 if response.status_code == 429:
-                    raise RateLimitError(f"Rate limit exceeded: {body}", status_code=429)
+                    retry_after = response.headers.get("retry-after")
+                    raw_body = f"{body}\nretry-after: {retry_after}" if retry_after else body
+                    raise RateLimitError(
+                        f"Rate limit exceeded: {body}",
+                        status_code=429,
+                        raw_body=raw_body,
+                    )
                 raise LLMError(
                     f"API error ({response.status_code}): {body}", status_code=response.status_code
                 )
@@ -192,6 +199,11 @@ class OpenAIResponsesProvider(OpenAIProvider):
             request.system,
             provider=self.config.provider,
             enable_thinking=request.enable_thinking,
+            vision_available=self.config.has_capability("vision") and not getattr(
+                self,
+                "_vision_payload_unsupported",
+                False,
+            ),
         )
 
         body: dict = {
@@ -203,12 +215,11 @@ class OpenAIResponsesProvider(OpenAIProvider):
             body["instructions"] = instructions
 
         # max_tokens → max_output_tokens (Responses API 字段名)
-        _max_tokens = request.max_tokens
-        if _max_tokens and _max_tokens > 0:
-            body["max_output_tokens"] = _max_tokens
-        else:
-            _fallback = self.config.max_tokens or 16384
-            body["max_output_tokens"] = _fallback
+        body["max_output_tokens"] = resolve_output_token_budget(
+            self.config.model,
+            request_max_tokens=request.max_tokens,
+            endpoint_max_tokens=self.config.max_tokens,
+        )
 
         # 工具
         if request.tools:
@@ -430,7 +441,17 @@ class OpenAIResponsesProvider(OpenAIProvider):
                             f"Authentication failed: {error_text}", status_code=401
                         )
                     if response.status_code == 429:
-                        raise RateLimitError(f"Rate limit exceeded: {error_text}", status_code=429)
+                        retry_after = response.headers.get("retry-after")
+                        raw_body = (
+                            f"{error_text}\nretry-after: {retry_after}"
+                            if retry_after
+                            else error_text
+                        )
+                        raise RateLimitError(
+                            f"Rate limit exceeded: {error_text}",
+                            status_code=429,
+                            raw_body=raw_body,
+                        )
                     raise LLMError(
                         f"API error ({response.status_code}): {error_text}",
                         status_code=response.status_code,

@@ -15,6 +15,7 @@ parser / shutil）都被 monkeypatch 屏蔽，保证测试不依赖网络与真�
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -23,7 +24,6 @@ import httpx
 import pytest
 
 from openakita.api.server import create_app
-
 
 # ---------------------------------------------------------------------------
 # FakeAgent：只提供路由实际触达的属性
@@ -134,6 +134,83 @@ class TestInstallRoute:
         assert "error" in resp.json()
         agent.propagate_skill_change.assert_not_called()
 
+    async def test_install_structured_error_keeps_specific_message(
+        self, app_with_fake_agent, client, monkeypatch
+    ):
+        from openakita.setup_center.bridge import SkillInstallError
+
+        _, agent = app_with_fake_agent
+        monkeypatch.setattr(
+            "openakita.setup_center.bridge.install_skill",
+            MagicMock(
+                side_effect=SkillInstallError(
+                    "skill_residual_cleanup_failed",
+                    "无法清理残留技能目录：C:/x/skills/demo",
+                )
+            ),
+        )
+
+        resp = await client.post("/api/skills/install", json={"url": "github:x/demo"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["error_code"] == "skill_residual_cleanup_failed"
+        assert "无法清理残留技能目录" in data["error"]
+        agent.propagate_skill_change.assert_not_called()
+
+
+class TestHubSkillInstallRoute:
+    async def test_store_install_updates_allowlist_and_uses_unified_propagation(
+        self, app_with_fake_agent, client, monkeypatch, tmp_path: Path
+    ):
+        """Store install must not bypass allowlist + runtime propagation."""
+        _, agent = app_with_fake_agent
+        skills_json = tmp_path / "data" / "skills.json"
+        skills_json.write_text(
+            json.dumps({"version": 1, "external_allowlist": ["existing"]}),
+            encoding="utf-8",
+        )
+        skill_dir = tmp_path / "workspaces" / "default" / "skills" / "store-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: store-skill\ndescription: test\n---\n# body",
+            encoding="utf-8",
+        )
+
+        class FakeSkillClient:
+            async def get_detail(self, skill_id: str):
+                return {
+                    "skill": {
+                        "id": skill_id,
+                        "name": "Store Skill",
+                        "installUrl": "owner/repo@store-skill",
+                        "trustLevel": "community",
+                    }
+                }
+
+            async def install_skill(self, install_url: str, *, skill_id: str):
+                assert install_url == "owner/repo@store-skill"
+                assert skill_id == "store-skill"
+                return skill_dir
+
+            async def close(self):
+                return None
+
+        monkeypatch.setattr(
+            "openakita.api.routes.hub._get_skill_client",
+            lambda: FakeSkillClient(),
+        )
+
+        resp = await client.post("/api/hub/skills/store-skill/install")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["skill_dir"] == str(skill_dir)
+        saved = json.loads(skills_json.read_text(encoding="utf-8"))
+        assert saved["external_allowlist"] == ["existing", "store-skill"]
+        agent.propagate_skill_change.assert_called_once()
+        call_args = agent.propagate_skill_change.call_args
+        assert getattr(call_args.args[0], "value", call_args.args[0]) == "store_install"
+        assert call_args.kwargs.get("rescan", True) is True
 
 # ---------------------------------------------------------------------------
 # /api/skills/uninstall
@@ -179,6 +256,29 @@ class TestReloadRoute:
         call = agent.propagate_skill_change.call_args
         assert call.args[0] == "reload"
         assert call.kwargs.get("rescan") is True
+
+    async def test_reload_all_reports_partial_success_for_skipped_skills(
+        self, app_with_fake_agent, client
+    ):
+        _, agent = app_with_fake_agent
+        agent.skill_loader.last_load_issues = [
+            {
+                "skill_id": "bad-skill",
+                "path": "D:/OpenAkita/workspaces/default/skills/bad-skill",
+                "error": "name must be lowercase alphanumeric with hyphens",
+            }
+        ]
+
+        resp = await client.post("/api/skills/reload", json={})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["partial"] is True
+        assert data["skipped_count"] == 1
+        assert data["skipped_skills"][0]["skill_id"] == "bad-skill"
+        assert "error" not in data
+        agent.propagate_skill_change.assert_called_once()
 
     async def test_reload_single_uses_rescan_false(self, app_with_fake_agent, client):
         _, agent = app_with_fake_agent

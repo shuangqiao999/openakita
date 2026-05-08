@@ -14,7 +14,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -38,6 +38,7 @@ def _project_root() -> Path:
 def _read_endpoints_safe(ep_path: Path) -> dict | None:
     """Read llm_endpoints.json with .bak fallback."""
     from openakita.utils.atomic_io import read_json_safe
+
     return read_json_safe(ep_path)
 
 
@@ -330,6 +331,76 @@ def _mask_raw_env(raw: str) -> str:
     )
 
 
+def _runtime_env_key_map() -> dict[str, str]:
+    """Map env-style keys to RuntimeState-managed settings fields."""
+    from openakita.config import _PERSISTABLE_KEYS
+
+    return {key.upper(): key for key in _PERSISTABLE_KEYS}
+
+
+def _runtime_env_value(field_name: str) -> str:
+    """Return a frontend-friendly string for a RuntimeState-backed setting."""
+    from openakita.config import settings
+
+    value = getattr(settings, field_name)
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (dict, list, tuple)):
+        return json.dumps(value, ensure_ascii=False)
+    return "" if value is None else str(value)
+
+
+def _runtime_default_value(field_name: str) -> Any:
+    """Return the Settings default for a RuntimeState-backed field."""
+    from openakita.config import Settings
+
+    field = Settings.model_fields[field_name]
+    return field.get_default(call_default_factory=True)
+
+
+def _coerce_runtime_value(field_name: str, raw_value: str) -> Any:
+    """Coerce a frontend env string into the typed Settings field value."""
+    from pydantic import TypeAdapter
+
+    from openakita.config import Settings
+
+    field = Settings.model_fields[field_name]
+    value: Any = raw_value.strip()
+    origin = getattr(field.annotation, "__origin__", None)
+    if origin in (list, dict) or str(field.annotation).startswith(("list[", "dict[")):
+        try:
+            value = json.loads(value) if value else _runtime_default_value(field_name)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{field_name} must be valid JSON") from exc
+    return TypeAdapter(field.annotation).validate_python(value)
+
+
+def _sync_runtime_agent_settings(request: Request, changed_fields: set[str]) -> None:
+    """Apply runtime settings that live inside already-created Agent objects."""
+    if "persona_name" not in changed_fields:
+        return
+
+    try:
+        from openakita.config import settings
+
+        agent = getattr(request.app.state, "agent", None)
+        actual_agent = getattr(agent, "_local_agent", agent)
+        persona_manager = getattr(actual_agent, "persona_manager", None)
+        if persona_manager is not None:
+            persona_manager.switch_preset(settings.persona_name)
+        if hasattr(actual_agent, "_invalidate_system_prompt_cache"):
+            actual_agent._invalidate_system_prompt_cache("persona config changed")
+        ctx = getattr(actual_agent, "_context", None)
+        if (
+            ctx is not None
+            and getattr(ctx, "system", None)
+            and hasattr(actual_agent, "_build_system_prompt")
+        ):
+            ctx.system = actual_agent._build_system_prompt()
+    except Exception as exc:
+        logger.warning("[Config API] persona runtime sync failed: %s", exc)
+
+
 @router.get("/api/config/env")
 async def read_env():
     """Read .env file content as key-value pairs.
@@ -342,10 +413,12 @@ async def read_env():
     (see apiKeyDirty in LLMView.tsx).
     """
     env_path = _project_root() / ".env"
-    if not env_path.exists():
-        return {"env": {}, "has_value": {}, "raw": ""}
-    content = env_path.read_bytes().decode("utf-8", errors="replace")
+    content = ""
+    if env_path.exists():
+        content = env_path.read_bytes().decode("utf-8", errors="replace")
     env = _parse_env(content)
+    for env_key, field_name in _runtime_env_key_map().items():
+        env[env_key] = _runtime_env_value(field_name)
     masked_env = {k: _mask_value(k, v) for k, v in env.items()}
     has_value = {k: bool(v and v.strip()) for k, v in env.items()}
     masked_raw = _mask_raw_env(content)
@@ -353,7 +426,7 @@ async def read_env():
 
 
 @router.post("/api/config/env")
-async def write_env(body: EnvUpdateRequest):
+async def write_env(body: EnvUpdateRequest, request: Request):
     """Update .env file with key-value entries (merge, preserving comments).
 
     - Non-empty values are upserted.
@@ -377,25 +450,76 @@ async def write_env(body: EnvUpdateRequest):
     _sensitive_key_re = _re.compile(
         r"(TOKEN|SECRET|PASSWORD|KEY|APIKEY|CREDENTIAL)", _re.IGNORECASE
     )
+    runtime_key_map = _runtime_env_key_map()
     safe_entries: dict[str, str] = {}
+    runtime_entries: dict[str, str] = {}
     for key, value in body.entries.items():
         if value and "***" in value and _sensitive_key_re.search(key):
-            logger.warning(
-                "[Config API] write_env: dropping masked value for %s", key
-            )
+            logger.warning("[Config API] write_env: dropping masked value for %s", key)
             continue
-        safe_entries[key] = value
+        field_name = runtime_key_map.get(key.upper())
+        if field_name:
+            runtime_entries[key.upper()] = value
+        else:
+            safe_entries[key] = value
 
-    new_content = _update_env_content(
-        existing, safe_entries, delete_keys=set(body.delete_keys)
-    )
-    safe_write(env_path, new_content)
+    runtime_delete_fields: dict[str, str] = {}
+    env_delete_keys: set[str] = set()
+    for key in body.delete_keys:
+        field_name = runtime_key_map.get(key.upper())
+        if field_name:
+            runtime_delete_fields[key.upper()] = field_name
+            env_delete_keys.add(key)
+        else:
+            env_delete_keys.add(key)
+
+    runtime_changed_fields: set[str] = set()
+    if runtime_entries or runtime_delete_fields:
+        from openakita.config import runtime_state, settings
+
+        errors: list[str] = []
+        runtime_updates: dict[str, Any] = {}
+        for env_key, raw_value in runtime_entries.items():
+            field_name = runtime_key_map[env_key]
+            try:
+                new_value = _coerce_runtime_value(field_name, raw_value)
+            except (TypeError, ValueError) as exc:
+                errors.append(f"{env_key}: {exc}")
+                continue
+            runtime_updates[field_name] = new_value
+            env_delete_keys.add(env_key)
+
+        for env_key, field_name in runtime_delete_fields.items():
+            runtime_updates[field_name] = _runtime_default_value(field_name)
+            env_delete_keys.add(env_key)
+
+        if errors:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "invalid_runtime_config",
+                    "messages": errors,
+                },
+            )
+
+        for field_name, new_value in runtime_updates.items():
+            if getattr(settings, field_name) != new_value:
+                setattr(settings, field_name, new_value)
+                runtime_changed_fields.add(field_name)
+
+        runtime_state.save()
+
+    if safe_entries or (env_delete_keys and env_path.exists()):
+        new_content = _update_env_content(existing, safe_entries, delete_keys=env_delete_keys)
+        safe_write(env_path, new_content)
     for key, value in safe_entries.items():
         if value:
             os.environ[key] = value
-    for key in body.delete_keys:
+    for key in env_delete_keys:
         os.environ.pop(key, None)
-    count = len([v for v in safe_entries.values() if v]) + len(body.delete_keys)
+    count = (
+        len([v for v in safe_entries.values() if v]) + len(runtime_entries) + len(env_delete_keys)
+    )
     logger.info(f"[Config API] Updated .env with {count} entries")
 
     # Push changes into the in-process Settings singleton so consumers that
@@ -407,9 +531,7 @@ async def write_env(body: EnvUpdateRequest):
 
         _settings_changed = _settings.reload()
         if _settings_changed:
-            logger.info(
-                "[Config API] Settings hot-reloaded fields: %s", _settings_changed
-            )
+            logger.info("[Config API] Settings hot-reloaded fields: %s", _settings_changed)
     except Exception as exc:
         logger.warning("[Config API] Settings.reload() failed: %s", exc)
 
@@ -463,7 +585,18 @@ async def write_env(body: EnvUpdateRequest):
         "SESSION_MAX_HISTORY",
         "BACKUP_",
     )
-    changed_keys = {k for k, v in safe_entries.items() if v} | set(body.delete_keys)
+    if runtime_changed_fields:
+        _sync_runtime_agent_settings(request, runtime_changed_fields)
+        _notify_runtime_config_changed(
+            request,
+            "runtime_config:" + ",".join(sorted(runtime_changed_fields)),
+        )
+
+    changed_keys = (
+        {k for k, v in safe_entries.items() if v}
+        | set(runtime_entries.keys())
+        | set(body.delete_keys)
+    )
     restart_required = any(
         any(k.upper().startswith(p) for p in _RESTART_REQUIRED_PREFIXES) for k in changed_keys
     )
@@ -479,7 +612,7 @@ async def write_env(body: EnvUpdateRequest):
 
     return {
         "status": "ok",
-        "updated_keys": list(safe_entries.keys()),
+        "updated_keys": list(safe_entries.keys()) + list(runtime_entries.keys()),
         "restart_required": restart_required,
         "hot_reloadable": hot_reloadable,
     }
@@ -515,6 +648,13 @@ class SaveEndpointRequest(BaseModel):
     original_name: str | None = None
 
 
+class SaveEndpointsRequest(BaseModel):
+    endpoints: list[dict]
+    api_key: str | None = None
+    endpoint_type: str = "endpoints"
+    expected_version: str | None = None
+
+
 class DeleteEndpointRequest(BaseModel):
     endpoint_type: str = "endpoints"
     clean_env: bool = True
@@ -538,13 +678,56 @@ async def save_endpoint(body: SaveEndpointRequest, request: Request):
     api_key = body.api_key
     if api_key and "***" in api_key:
         logger.warning(
-            "[Config API] save-endpoint: ignoring masked API key (len=%d), "
-            "treating as unchanged",
+            "[Config API] save-endpoint: ignoring masked API key (len=%d), treating as unchanged",
             len(api_key),
         )
         api_key = None
 
     mgr = _get_endpoint_manager()
+    existing_endpoint = None
+    lookup_name = (body.original_name or body.endpoint.get("name") or "").strip()
+    if lookup_name:
+        try:
+            existing_endpoint = next(
+                (
+                    ep
+                    for ep in mgr.list_endpoints(body.endpoint_type)
+                    if str(ep.get("name") or "").strip() == lookup_name
+                ),
+                None,
+            )
+        except Exception:
+            existing_endpoint = None
+
+    env_cache: dict[str, str] = {}
+    env_path = _project_root() / ".env"
+    if env_path.exists():
+        env_cache = _parse_env(env_path.read_bytes().decode("utf-8", errors="replace"))
+
+    def _lookup_key(name: str) -> str | None:
+        return os.environ.get(name) or env_cache.get(name)
+
+    try:
+        from openakita.llm.endpoint_validation import (
+            validate_endpoint_api_key,
+            validate_endpoint_model_usage,
+        )
+
+        validation_error = validate_endpoint_model_usage(
+            body.endpoint,
+            endpoint_type=body.endpoint_type,
+        ) or validate_endpoint_api_key(
+            body.endpoint,
+            api_key=api_key,
+            existing_endpoint=existing_endpoint,
+            env_lookup=_lookup_key,
+        )
+    except Exception as e:
+        logger.debug("[Config API] endpoint API key validation skipped: %s", e)
+        validation_error = None
+    if validation_error:
+        return {"status": "error", "error": validation_error}
+
     try:
         result = mgr.save_endpoint(
             endpoint=body.endpoint,
@@ -559,14 +742,106 @@ async def save_endpoint(body: SaveEndpointRequest, request: Request):
         logger.error("[Config API] save-endpoint failed: %s", e, exc_info=True)
         return {"status": "error", "error": str(e)}
 
-    # Auto-reload running clients
-    _trigger_reload(request)
+    # Auto-reload running clients. Saving is authoritative; reload is a
+    # runtime follow-up and should be reported separately instead of turning a
+    # successful write into a generic "model config failed" error.
+    reload_result = _trigger_reload(request)
 
-    return {
+    response = {
         "status": "ok",
+        "saved": True,
         "endpoint": result,
         "version": mgr.get_version(),
+        "reload": reload_result,
     }
+    if reload_result.get("status") == "failed":
+        response["warning"] = (
+            "配置已保存，但当前运行中的服务暂未加载新配置。"
+            "可以继续配置；如果马上要使用新模型，请重启服务或稍后再试。"
+        )
+    return response
+
+
+@router.post("/api/config/save-endpoints")
+async def save_endpoints(body: SaveEndpointsRequest, request: Request):
+    """Save multiple LLM endpoints in one import operation."""
+    from openakita.llm.endpoint_manager import ConflictError
+
+    api_key = body.api_key
+    if api_key and "***" in api_key:
+        logger.warning(
+            "[Config API] save-endpoints: ignoring masked API key (len=%d)",
+            len(api_key),
+        )
+        api_key = None
+
+    mgr = _get_endpoint_manager()
+    existing_by_name: dict[str, dict] = {}
+    try:
+        existing_by_name = {
+            str(ep.get("name") or "").strip(): ep for ep in mgr.list_endpoints(body.endpoint_type)
+        }
+    except Exception:
+        existing_by_name = {}
+
+    env_cache: dict[str, str] = {}
+    env_path = _project_root() / ".env"
+    if env_path.exists():
+        env_cache = _parse_env(env_path.read_bytes().decode("utf-8", errors="replace"))
+
+    def _lookup_key(name: str) -> str | None:
+        return os.environ.get(name) or env_cache.get(name)
+
+    try:
+        from openakita.llm.endpoint_validation import (
+            validate_endpoint_api_key,
+            validate_endpoint_model_usage,
+        )
+
+        for endpoint in body.endpoints:
+            endpoint_name = str(endpoint.get("name") or "").strip()
+            validation_error = validate_endpoint_model_usage(
+                endpoint,
+                endpoint_type=body.endpoint_type,
+            ) or validate_endpoint_api_key(
+                endpoint,
+                api_key=api_key,
+                existing_endpoint=existing_by_name.get(endpoint_name),
+                env_lookup=_lookup_key,
+            )
+            if validation_error:
+                return {"status": "error", "error": validation_error, "endpoint": endpoint_name}
+    except Exception as e:
+        logger.debug("[Config API] endpoint batch API key validation skipped: %s", e)
+
+    try:
+        result = mgr.save_endpoints(
+            endpoints=body.endpoints,
+            api_key=api_key,
+            endpoint_type=body.endpoint_type,
+            expected_version=body.expected_version,
+        )
+    except ConflictError as e:
+        return {"status": "conflict", "error": str(e), "current_version": e.current_version}
+    except (ValueError, Exception) as e:
+        logger.error("[Config API] save-endpoints failed: %s", e, exc_info=True)
+        return {"status": "error", "error": str(e)}
+
+    reload_result = _trigger_reload(request)
+    response = {
+        "status": "ok",
+        "saved": True,
+        "count": len(result),
+        "endpoints": result,
+        "version": mgr.get_version(),
+        "reload": reload_result,
+    }
+    if reload_result.get("status") == "failed":
+        response["warning"] = (
+            "配置已保存，但当前运行中的服务暂未加载新配置。"
+            "可以继续配置；如果马上要使用新模型，请重启服务或稍后再试。"
+        )
+    return response
 
 
 @router.delete("/api/config/endpoint/{name:path}")
@@ -579,8 +854,13 @@ async def delete_endpoint_by_name(
     if removed is None:
         return {"status": "not_found", "name": name}
 
-    _trigger_reload(request)
-    return {"status": "ok", "removed": removed, "version": mgr.get_version()}
+    reload_result = _trigger_reload(request)
+    return {
+        "status": "ok",
+        "removed": removed,
+        "version": mgr.get_version(),
+        "reload": reload_result,
+    }
 
 
 @router.get("/api/config/endpoint-status")
@@ -613,8 +893,13 @@ async def toggle_endpoint(body: ToggleEndpointRequest, request: Request):
     except (ValueError, Exception) as e:
         logger.error("[Config API] toggle-endpoint failed: %s", e, exc_info=True)
         return {"status": "error", "error": str(e)}
-    _trigger_reload(request)
-    return {"status": "ok", "endpoint": updated, "version": mgr.get_version()}
+    reload_result = _trigger_reload(request)
+    return {
+        "status": "ok",
+        "endpoint": updated,
+        "version": mgr.get_version(),
+        "reload": reload_result,
+    }
 
 
 @router.post("/api/config/reorder-endpoints")
@@ -623,13 +908,19 @@ async def reorder_endpoints(body: ReorderEndpointsRequest, request: Request):
     mgr = _get_endpoint_manager()
     try:
         result = mgr.reorder_endpoints(
-            body.ordered_names, endpoint_type=body.endpoint_type,
+            body.ordered_names,
+            endpoint_type=body.endpoint_type,
         )
     except (ValueError, Exception) as e:
         logger.error("[Config API] reorder-endpoints failed: %s", e, exc_info=True)
         return {"status": "error", "error": str(e)}
-    _trigger_reload(request)
-    return {"status": "ok", "endpoints": result, "version": mgr.get_version()}
+    reload_result = _trigger_reload(request)
+    return {
+        "status": "ok",
+        "endpoints": result,
+        "version": mgr.get_version(),
+        "reload": reload_result,
+    }
 
 
 @router.post("/api/config/update-settings")
@@ -641,45 +932,26 @@ async def update_endpoint_settings(body: UpdateSettingsRequest, request: Request
     except Exception as e:
         logger.error("[Config API] update-settings failed: %s", e, exc_info=True)
         return {"status": "error", "error": str(e)}
-    _trigger_reload(request)
-    return {"status": "ok", "settings": updated, "version": mgr.get_version()}
+    reload_result = _trigger_reload(request)
+    return {
+        "status": "ok",
+        "settings": updated,
+        "version": mgr.get_version(),
+        "reload": reload_result,
+    }
 
 
-def _trigger_reload(request: Request) -> bool:
-    """Trigger hot-reload of LLM clients after config change."""
-    agent = getattr(request.app.state, "agent", None)
-    if agent is None:
-        _notify_runtime_config_changed(request, "llm_config")
-        return False
-    brain = getattr(agent, "brain", None) or getattr(agent, "_local_agent", None)
-    if brain and hasattr(brain, "brain"):
-        brain = brain.brain
-    llm_client = getattr(brain, "_llm_client", None) if brain else None
-    if llm_client is None:
-        llm_client = getattr(agent, "_llm_client", None)
-    if llm_client is None:
-        _notify_runtime_config_changed(request, "llm_config")
-        return False
-    try:
-        canonical = _endpoints_config_path()
-        if llm_client._config_path is not None and llm_client._config_path != canonical:
-            llm_client._config_path = canonical
-        success = llm_client.reload()
-        if brain and hasattr(brain, "reload_compiler_client"):
-            brain.reload_compiler_client()
-        gateway = getattr(request.app.state, "gateway", None)
-        if gateway and hasattr(gateway, "stt_client") and gateway.stt_client:
-            from openakita.llm.config import load_endpoints_config
+def _trigger_reload(request: Request) -> dict[str, Any]:
+    """Apply persisted LLM config to live runtime components."""
+    from openakita.llm.runtime_config import apply_llm_runtime_config
 
-            _, _, stt_eps, _ = load_endpoints_config()
-            gateway.stt_client.reload(stt_eps)
-        if success:
-            _notify_runtime_config_changed(request, "llm_config")
-        logger.info("[Config API] Hot-reload triggered after config change")
-        return success
-    except Exception as e:
-        logger.error("[Config API] Hot-reload failed: %s", e, exc_info=True)
-        return False
+    return apply_llm_runtime_config(
+        agent=getattr(request.app.state, "agent", None),
+        gateway=getattr(request.app.state, "gateway", None),
+        pool=getattr(request.app.state, "agent_pool", None),
+        config_path=_endpoints_config_path(),
+        reason="llm_config",
+    )
 
 
 def _notify_runtime_config_changed(request: Request, reason: str) -> None:
@@ -703,59 +975,7 @@ async def reload_config(request: Request):
     This should be called after writing llm_endpoints.json so the running
     service picks up changes without a full restart.
     """
-    agent = getattr(request.app.state, "agent", None)
-    if agent is None:
-        return {"status": "ok", "reloaded": False, "reason": "agent not initialized"}
-
-    # Navigate: agent → brain → _llm_client
-    brain = getattr(agent, "brain", None) or getattr(agent, "_local_agent", None)
-    if brain and hasattr(brain, "brain"):
-        brain = brain.brain  # agent wrapper → actual agent → brain
-    llm_client = getattr(brain, "_llm_client", None) if brain else None
-    if llm_client is None:
-        # Try direct attribute on agent
-        llm_client = getattr(agent, "_llm_client", None)
-
-    if llm_client is None:
-        return {"status": "ok", "reloaded": False, "reason": "llm_client not found"}
-
-    try:
-        success = llm_client.reload()
-
-        # 同时刷新编译端点（Brain 对象上的 compiler_client）
-        compiler_reloaded = False
-        brain_obj = brain  # 上面已经解析过的 brain 对象
-        if brain_obj and hasattr(brain_obj, "reload_compiler_client"):
-            compiler_reloaded = brain_obj.reload_compiler_client()
-
-        # 同时刷新 STT 端点（Gateway 上的 stt_client）
-        stt_reloaded = False
-        gateway = getattr(request.app.state, "gateway", None)
-        if gateway and hasattr(gateway, "stt_client") and gateway.stt_client:
-            try:
-                from openakita.llm.config import load_endpoints_config
-
-                _, _, stt_eps, _ = load_endpoints_config()
-                gateway.stt_client.reload(stt_eps)
-                stt_reloaded = True
-            except Exception as stt_err:
-                logger.warning(f"[Config API] STT reload failed: {stt_err}")
-
-        if success:
-            _notify_runtime_config_changed(request, "llm_config")
-            logger.info("[Config API] LLM endpoints reloaded successfully")
-            return {
-                "status": "ok",
-                "reloaded": True,
-                "endpoints": len(llm_client.endpoints),
-                "compiler_reloaded": compiler_reloaded,
-                "stt_reloaded": stt_reloaded,
-            }
-        else:
-            return {"status": "ok", "reloaded": False, "reason": "reload returned false"}
-    except Exception as e:
-        logger.error(f"[Config API] Reload failed: {e}", exc_info=True)
-        return {"status": "error", "reloaded": False, "reason": str(e)}
+    return _trigger_reload(request)
 
 
 @router.post("/api/config/restart")
@@ -1201,8 +1421,12 @@ async def read_security_zones():
     return {
         "workspace": zones.get("workspace", []),
         "controlled": zones.get("controlled", []),
-        "protected": zones.get("protected") if zones.get("protected") is not None else _default_protected_paths(),
-        "forbidden": zones.get("forbidden") if zones.get("forbidden") is not None else _default_forbidden_paths(),
+        "protected": zones.get("protected")
+        if zones.get("protected") is not None
+        else _default_protected_paths(),
+        "forbidden": zones.get("forbidden")
+        if zones.get("forbidden") is not None
+        else _default_forbidden_paths(),
         "default_zone": zones.get("default_zone", "workspace" if mode == "yolo" else "controlled"),
     }
 
@@ -1246,7 +1470,9 @@ async def read_security_commands():
         "custom_critical": cp.get("custom_critical", []),
         "custom_high": cp.get("custom_high", []),
         "excluded_patterns": cp.get("excluded_patterns", []),
-        "blocked_commands": cp.get("blocked_commands") if cp.get("blocked_commands") is not None else list(_DEFAULT_BLOCKED_COMMANDS),
+        "blocked_commands": cp.get("blocked_commands")
+        if cp.get("blocked_commands") is not None
+        else list(_DEFAULT_BLOCKED_COMMANDS),
     }
 
 
@@ -1534,7 +1760,9 @@ async def read_self_protection():
         readonly = False
     return {
         "enabled": sp.get("enabled", mode != "yolo"),
-        "protected_dirs": sp.get("protected_dirs") if sp.get("protected_dirs") is not None else _default_protected_dirs,
+        "protected_dirs": sp.get("protected_dirs")
+        if sp.get("protected_dirs") is not None
+        else _default_protected_dirs,
         "death_switch_threshold": sp.get("death_switch_threshold", 3),
         "death_switch_total_multiplier": sp.get("death_switch_total_multiplier", 3),
         "audit_to_file": sp.get("audit_to_file", True),
@@ -1693,4 +1921,3 @@ async def list_extensions():
             },
         ],
     }
-

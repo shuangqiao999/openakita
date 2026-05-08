@@ -64,7 +64,7 @@ export type QueuedMessage = {
 
 /** SSE stream event union — synced with Python openakita.events / src/streamEvents.ts */
 export type StreamEvent =
-  | { type: "heartbeat" }
+  | { type: "heartbeat"; ts?: number }
   | { type: "iteration_start"; iteration: number }
   | { type: "context_compressed"; before_tokens: number; after_tokens: number }
   | { type: "thinking_start" }
@@ -120,6 +120,8 @@ export type StreamEvent =
       billable_input_tokens?: number;
       billable_output_tokens?: number;
       billable_total_tokens?: number;
+      usage_estimated?: boolean;
+      usage_source?: string;
       // ContextPressure 快照：来自 ReasoningEngine.calculate_context_pressure，
       // 给"上下文健康度" UI 用。所有字段都是 token 数。
       context_pressure?: {
@@ -191,4 +193,5 @@ export type AgentProfile = {
   name_i18n?: Record<string, string>;
   description_i18n?: Record<string, string>;
   preferred_endpoint?: string | null;
+  endpoint_policy?: "prefer" | "require";
 };

@@ -119,7 +119,7 @@ export function exportConversation(msgs: ChatMessage[], title: string, format: "
   let mimeType: string;
   let ext: string;
   if (format === "json") {
-    content = JSON.stringify(msgs.map(({ streaming, ...rest }) => rest), null, 2);
+    content = JSON.stringify(msgs.map(({ streaming, streamStatus, ...rest }) => rest), null, 2);
     mimeType = "application/json";
     ext = "json";
   } else {
@@ -175,6 +175,8 @@ export function stripLegacySummary(content: string): string {
 
 // ── 持久化：消息序列化 / 反序列化 ──
 
+export const STORED_MESSAGE_WINDOW = 120;
+
 export function sanitizeStoredMessages(raw: unknown): ChatMessage[] {
   if (!Array.isArray(raw)) return [];
   return raw.filter((m): m is ChatMessage => {
@@ -185,7 +187,7 @@ export function sanitizeStoredMessages(raw: unknown): ChatMessage[] {
     if (typeof m.timestamp !== "number") return false;
     return true;
   }).map((m) => {
-    const cleaned = { ...m, streaming: undefined };
+    const cleaned = { ...m, streaming: undefined, streamStatus: undefined };
     if (m.role === "assistant" && (!m.content || m.content.trim() === "") && !m.toolCalls?.length && !m.todo) {
       return null;
     }
@@ -204,13 +206,14 @@ export function loadMessagesFromStorage(key: string): ChatMessage[] {
   }
 }
 
-export function saveMessagesToStorage(key: string, msgs: ChatMessage[]): boolean {
-  const base = msgs.map(({ streaming, ...rest }) => rest);
+export function saveMessagesToStorage(key: string, msgs: ChatMessage[], maxMessages = STORED_MESSAGE_WINDOW): boolean {
+  const windowed = maxMessages > 0 && msgs.length > maxMessages ? msgs.slice(-maxMessages) : msgs;
+  const base = windowed.map(({ streaming, streamStatus, ...rest }) => rest);
   try {
     localStorage.setItem(key, JSON.stringify(base));
     return true;
   } catch {
-    const slim = msgs.map(({ streaming, thinkingChain, ...rest }) => rest);
+    const slim = windowed.map(({ streaming, streamStatus, thinkingChain, ...rest }) => rest);
     try {
       localStorage.setItem(key, JSON.stringify(slim));
       return true;
@@ -218,6 +221,50 @@ export function saveMessagesToStorage(key: string, msgs: ChatMessage[]): boolean
       return false;
     }
   }
+}
+
+export function shouldRenderConversationMessages(
+  conversationId: string | null | undefined,
+  activeConversationId: string | null | undefined,
+): boolean {
+  return Boolean(conversationId) && conversationId === activeConversationId;
+}
+
+function latestMessageTimestamp(msgs: ChatMessage[]): number {
+  return msgs.reduce((max, msg) => Math.max(max, Number.isFinite(msg.timestamp) ? msg.timestamp : 0), 0);
+}
+
+function messageSignature(msg: ChatMessage | undefined): string {
+  if (!msg) return "";
+  return `${msg.role}\n${msg.timestamp}\n${msg.content}`;
+}
+
+/**
+ * Choose which message history should hydrate the UI.
+ *
+ * Backend history is the source of truth after SSE disconnect recovery because
+ * the backend may save the completed answer after the local stream was aborted.
+ * Merge backend assistant content into local first, so a newer local streaming
+ * placeholder cannot hide a complete answer already persisted by the backend.
+ */
+export function chooseHydratedMessages(localMsgs: ChatMessage[], backendMsgs: ChatMessage[]): ChatMessage[] {
+  if (backendMsgs.length === 0) return localMsgs;
+  if (localMsgs.length === 0) return backendMsgs;
+
+  const patchedLocal = patchMessagesWithBackend(localMsgs, backendMsgs);
+
+  if (backendMsgs.length > localMsgs.length) return backendMsgs;
+  if (localMsgs.length > backendMsgs.length) return patchedLocal;
+  if (patchedLocal !== localMsgs) return patchedLocal;
+
+  const localLatest = latestMessageTimestamp(localMsgs);
+  const backendLatest = latestMessageTimestamp(backendMsgs);
+  if (backendLatest > localLatest) return backendMsgs;
+  if (localLatest > backendLatest) return localMsgs;
+
+  const localLast = messageSignature(localMsgs[localMsgs.length - 1]);
+  const backendLast = messageSignature(backendMsgs[backendMsgs.length - 1]);
+  return backendLast && backendLast !== localLast ? backendMsgs : localMsgs;
 }
 
 // ── 思维链 ──
@@ -350,16 +397,59 @@ export function formatAskUserAnswer(answer: string, askUser: ChatAskUser): strin
 
 // ── 后端数据修补 ──
 
+type BackendHistoryMessage = {
+  id?: string;
+  index?: number;
+  role: string;
+  content: string;
+  chain_summary?: ChainSummaryItem[];
+  artifacts?: ChatArtifact[] | null;
+  usage?: ChatMessage["usage"];
+};
+
 export function patchMessagesWithBackend(
   localMsgs: ChatMessage[],
-  backendMsgs: { role: string; content: string; chain_summary?: ChainSummaryItem[]; artifacts?: ChatArtifact[] }[],
+  backendMsgs: BackendHistoryMessage[],
 ): ChatMessage[] {
   const backendAssistant = backendMsgs.filter((m) => m.role === "assistant");
-  let aIdx = 0;
+  const backendByHistoryIndex = new Map<number, BackendHistoryMessage>();
+  const backendById = new Map<string, BackendHistoryMessage>();
+  backendAssistant.forEach((m) => {
+    if (typeof m.index === "number") backendByHistoryIndex.set(m.index, m);
+    if (m.id) backendById.set(m.id, m);
+  });
+  const usedBackendMessages = new Set<BackendHistoryMessage>();
+  let fallbackAssistantIdx = 0;
+
+  const claimBackendForLocalMessage = (m: ChatMessage): BackendHistoryMessage | undefined => {
+    if (typeof m.historyIndex === "number") {
+      const indexed = backendByHistoryIndex.get(m.historyIndex);
+      if (indexed && !usedBackendMessages.has(indexed)) {
+        usedBackendMessages.add(indexed);
+        return indexed;
+      }
+    }
+
+    const byId = backendById.get(m.id);
+    if (byId && !usedBackendMessages.has(byId)) {
+      usedBackendMessages.add(byId);
+      return byId;
+    }
+
+    while (fallbackAssistantIdx < backendAssistant.length) {
+      const candidate = backendAssistant[fallbackAssistantIdx++];
+      if (!usedBackendMessages.has(candidate)) {
+        usedBackendMessages.add(candidate);
+        return candidate;
+      }
+    }
+    return undefined;
+  };
+
   let changed = false;
   const patched = localMsgs.map((m) => {
     if (m.role !== "assistant") return m;
-    const backend = backendAssistant[aIdx++];
+    const backend = claimBackendForLocalMessage(m);
     if (!backend) return m;
 
     const patches: Partial<ChatMessage> = {};
@@ -382,6 +472,10 @@ export function patchMessagesWithBackend(
 
     if (!m.artifacts?.length && backend.artifacts?.length) {
       patches.artifacts = backend.artifacts;
+    }
+
+    if (!m.usage && backend.usage) {
+      patches.usage = backend.usage;
     }
 
     if (Object.keys(patches).length > 0) {

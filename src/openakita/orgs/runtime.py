@@ -18,11 +18,9 @@ from typing import TYPE_CHECKING, Any
 from ..core.response_handler import request_expects_artifact
 from .blackboard import OrgBlackboard
 from .event_store import OrgEventStore
-from .failure_diagnoser import (
-    format_human_summary,
-    is_soft_verify_incomplete as _is_soft_verify_incomplete,
-    summarize as _diagnose_failure,
-)
+from .failure_diagnoser import format_human_summary
+from .failure_diagnoser import is_soft_verify_incomplete as _is_soft_verify_incomplete
+from .failure_diagnoser import summarize as _diagnose_failure
 from .identity import OrgIdentity
 from .messenger import OrgMessenger
 from .models import (
@@ -36,7 +34,7 @@ from .models import (
     _now_iso,
 )
 from .tool_handler import OrgToolHandler
-from .tools import ORG_NODE_TOOLS, build_org_node_tools
+from .tools import build_org_node_tools
 
 if TYPE_CHECKING:
     from .heartbeat import OrgHeartbeat
@@ -249,7 +247,7 @@ class OrgRuntime:
         #   2) 阻断对已关闭 chain 的 delegate/submit；
         #   3) 其它与 chain 生命周期相关的幂等判断。
         # 长度受限：每个 org 最多保留最近 N 个，防止长时间运行的组织集合膨胀。
-        self._closed_chains: dict[str, "OrderedDict[str, float]"] = {}
+        self._closed_chains: dict[str, OrderedDict[str, float]] = {}
         self._closed_chain_max_per_org: int = 512
         # Root 节点已在「某次主任务」里通过 org_accept_deliverable 验收过的
         # task_chain_id 集合（按 org 隔离）。后续到达同 chain_id 的 TASK_DELIVERED
@@ -259,7 +257,7 @@ class OrgRuntime:
         # 主任务结束后 mailbox 残留消息触发的「补汇总」空跑 ReAct（每次约 150K
         # tokens 浪费，详见 2026-04-28 13:42:53 _134209 现象）。
         # OrderedDict + LRU 上限：与 _closed_chains 同款设计，防长跑组织内存膨胀。
-        self._root_processed_chains: dict[str, "OrderedDict[str, float]"] = {}
+        self._root_processed_chains: dict[str, OrderedDict[str, float]] = {}
         self._root_processed_chain_max_per_org: int = 512
         self.max_concurrent_per_node: int = 2
         self._idle_tasks: dict[str, asyncio.Task] = {}
@@ -1009,6 +1007,12 @@ class OrgRuntime:
                     "result": str(result) if result is not None else "",
                 }
 
+        if final_result.get("usable_incomplete"):
+            final_result.setdefault(
+                "warning",
+                "最终汇总已生成，但任务校验器未确认完成；已保留完整汇总内容。",
+            )
+
         if tracker.auto_stopped:
             final_result["stopped_by_watchdog"] = True
             if tracker.user_cancelled:
@@ -1613,10 +1617,6 @@ class OrgRuntime:
 
             is_normal = exit_reason in ("normal", "ask_user") or is_soft_verify
             is_terminated = exit_reason == "loop_terminated"
-            is_failed = (
-                exit_reason in ("max_iterations", "verify_incomplete")
-                and not is_soft_verify
-            )
 
             status_reason = "task_completed" if is_normal else (
                 "task_terminated" if is_terminated else "task_failed"
@@ -1797,18 +1797,17 @@ class OrgRuntime:
                 # 优先用显式传入的 activation_origin；若未传入（兼容旧路径）
                 # 则回退读 _root_activation_origin。默认保守按 "user_command"
                 # 处理，保证历史调用点（无命令跟踪）的行为不变。
-                if activation_origin:
-                    origin = activation_origin
-                else:
-                    origin = self._pop_root_origin(
-                        org.id, node.id, "user_command",
-                    )
-                if is_normal and origin in self._FINAL_RESULT_ORIGINS:
-                    self._latest_root_result[org.id] = {
-                        "node_id": node.id,
-                        "result": result_text,
-                        "origin": origin,
-                    }
+                origin = activation_origin or self._pop_root_origin(
+                    org.id, node.id, "user_command",
+                )
+                self._capture_root_visible_result(
+                    org.id,
+                    node.id,
+                    result_text=result_text,
+                    origin=origin,
+                    is_normal=is_normal,
+                    exit_reason=exit_reason,
+                )
 
             # 非正常结束时不触发 post-task hook（避免把"部分/失败结果"再次下发下游）；
             # 软 verify_incomplete 也走 hook，让父级能 drain 子节点交付队列。
@@ -2183,7 +2182,7 @@ class OrgRuntime:
         if hasattr(agent, "reasoning_engine"):
             from ..config import settings as _settings
             agent.reasoning_engine._force_tool_override = max(
-                1, int(getattr(_settings, "force_tool_call_max_retries", 2))
+                0, int(getattr(_settings, "force_tool_call_max_retries", 0))
             )
 
         self._register_org_tool_handler(agent, org.id, node.id)
@@ -2318,6 +2317,14 @@ class OrgRuntime:
                 "7. **缺少工具时申请**。如果任务需要你没有的工具，用 org_request_tools 向上级申请。"
             )
 
+        parts.append(
+            "## 轻量直答与收敛\n"
+            "- 用户只是要求一句话/简洁说明你的职责、身份或角色时，直接用 1-2 句话回答；"
+            "不要创建计划、不要委派、不要查制度。\n"
+            "- 已经有足够事实可回答时立即收敛；只有涉及真实任务状态、文件、日志、"
+            "交付验收或外部证据时，才调用对应工具。"
+        )
+
         # Core policy guardrails
         parts.append(
             "## 核心策略红线\n"
@@ -2334,20 +2341,26 @@ class OrgRuntime:
 
     def _build_profile_for_node(self, node: OrgNode, org_prompt: str) -> Any:
         """Build an AgentProfile-like object for factory.create()."""
-        from openakita.agents.profile import AgentProfile, SkillsMode
+        from openakita.agents.profile import AgentProfile, AgentType, SkillsMode
 
         if node.agent_profile_id:
             try:
                 base = self._get_shared_profile(node.agent_profile_id)
                 if base:
-                    profile = AgentProfile(
+                    preferred_endpoint = node.preferred_endpoint or base.preferred_endpoint
+                    endpoint_policy = node.endpoint_policy if node.preferred_endpoint else base.endpoint_policy
+                    profile = base.derive(
                         id=f"org_node_{node.id}",
                         name=node.role_title,
-                        icon=base.icon,
+                        type=AgentType.DYNAMIC,
                         custom_prompt=org_prompt,
                         skills=node.skills if node.skills else base.skills,
                         skills_mode=SkillsMode(node.skills_mode) if node.skills_mode != "all" else base.skills_mode,
-                        preferred_endpoint=node.preferred_endpoint or base.preferred_endpoint,
+                        preferred_endpoint=preferred_endpoint,
+                        endpoint_policy=endpoint_policy,
+                        created_by="org_runtime",
+                        ephemeral=True,
+                        inherit_from=node.agent_profile_id,
                     )
                     return profile
             except Exception as e:
@@ -2360,6 +2373,7 @@ class OrgRuntime:
             skills=node.skills,
             skills_mode=SkillsMode(node.skills_mode) if node.skills_mode != "all" else SkillsMode.ALL,
             preferred_endpoint=node.preferred_endpoint,
+            endpoint_policy=node.endpoint_policy,
         )
 
     def _get_shared_profile(self, profile_id: str) -> Any:
@@ -2702,6 +2716,15 @@ class OrgRuntime:
     def get_org(self, org_id: str) -> Organization | None:
         return self._active_orgs.get(org_id) or self._manager.get(org_id)
 
+    def get_org_snapshot(self, org_id: str) -> Organization | None:
+        """Return the authoritative organization snapshot for status readers.
+
+        Running organizations keep live node status in ``_active_orgs``.  API
+        and org-awareness tools should read that object first so dashboards do
+        not drift behind task execution events.
+        """
+        return self._active_orgs.get(org_id) or self._manager.get(org_id)
+
     def get_messenger(self, org_id: str) -> OrgMessenger | None:
         return self._messengers.get(org_id)
 
@@ -2760,12 +2783,12 @@ class OrgRuntime:
         if not node_id:
             return False
         try:
-            from datetime import datetime, timedelta, timezone
+            from datetime import UTC, datetime, timedelta
 
             store = self.get_event_store(org_id)
             if store is None:
                 return False
-            cutoff = datetime.now(timezone.utc) - timedelta(
+            cutoff = datetime.now(UTC) - timedelta(
                 seconds=max(1.0, float(window_secs)),
             )
             cutoff_iso = cutoff.isoformat()
@@ -2856,6 +2879,30 @@ class OrgRuntime:
         self._touch_trackers_for_org(org.id)
         if new_status == NodeStatus.IDLE:
             self._maybe_finalize_trackers_for_org(org.id)
+
+    async def set_node_status(
+        self,
+        org: Organization,
+        node: OrgNode,
+        new_status: NodeStatus,
+        reason: str = "",
+        *,
+        current_task: str | None = "",
+    ) -> None:
+        """Set, persist and broadcast one node status change.
+
+        This is the single public helper for externally triggered node status
+        updates (for example freeze/unfreeze tools).  It keeps REST snapshots,
+        org tools and the live dashboard on the same state source.
+        """
+        self._set_node_status(org, node, new_status, reason)
+        await self._save_org(org)
+        await self._broadcast_ws("org:node_status", {
+            "org_id": org.id,
+            "node_id": node.id,
+            "status": new_status.value,
+            "current_task": current_task,
+        })
 
     # ------------------------------------------------------------------
     # Internal
@@ -3872,6 +3919,58 @@ class OrgRuntime:
         "task_delivered",
         "delivery_followup",
     })
+    _ROOT_INCOMPLETE_RESULT_MIN_CHARS = 200
+
+    def _capture_root_visible_result(
+        self,
+        org_id: str,
+        node_id: str,
+        *,
+        result_text: str | None,
+        origin: str,
+        is_normal: bool,
+        exit_reason: str,
+    ) -> dict | None:
+        """Cache the best root-node answer that is safe to show to the user.
+
+        `verify_incomplete` can mean the verifier missed a valid final summary.
+        When the root has already produced substantial text for a user-visible
+        activation, keep that text for the HTTP command result instead of
+        falling back to an earlier partial activation.
+        """
+        if origin not in self._FINAL_RESULT_ORIGINS:
+            return None
+        text = result_text if isinstance(result_text, str) else ""
+        stripped = text.strip()
+        if not stripped:
+            return None
+
+        payload: dict[str, Any] | None = None
+        if is_normal:
+            payload = {
+                "node_id": node_id,
+                "result": text,
+                "origin": origin,
+            }
+        elif (
+            exit_reason.startswith("verify_incomplete")
+            and len(stripped) >= self._ROOT_INCOMPLETE_RESULT_MIN_CHARS
+        ):
+            payload = {
+                "node_id": node_id,
+                "result": text,
+                "origin": origin,
+                "exit_reason": exit_reason,
+                "usable_incomplete": True,
+                "warning": (
+                    "最终汇总已生成，但任务校验器未确认完成；"
+                    "已保留完整汇总内容。"
+                ),
+            }
+
+        if payload is not None:
+            self._latest_root_result[org_id] = payload
+        return payload
 
     async def _command_watchdog(self, tracker: UserCommandTracker) -> None:
         """Stuck-detection watchdog for a user command.
@@ -3930,7 +4029,7 @@ class OrgRuntime:
                         tracker.completed.wait(), timeout=poll_interval,
                     )
                     return
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     pass
 
                 if tracker.completed.is_set():

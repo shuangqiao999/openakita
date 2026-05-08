@@ -70,11 +70,10 @@ _ADMIN_TOOL_NAMES = frozenset({
 def _tool_rate_limit_key(tool_name: str, tool_args: Any) -> str:
     """Key repeated-tool throttling by the actual invocation, not just tool name."""
     try:
-        param_str = json.dumps(tool_args, sort_keys=True, ensure_ascii=False, default=str)
+        param_str = json.dumps(tool_args or {}, sort_keys=True, ensure_ascii=False, default=str)
     except Exception:
         param_str = str(tool_args)
-    param_hash = hashlib.md5(param_str.encode()).hexdigest()[:8]
-    return f"{tool_name}({param_hash})"
+    return f"{tool_name}:{hashlib.md5(param_str.encode()).hexdigest()}"
 
 
 from .token_tracking import TokenTrackingContext, reset_tracking_context, set_tracking_context
@@ -456,13 +455,33 @@ def _get_action_claim_re() -> "re.Pattern[str]":
     verbs = (
         "保存|发送|创建|删除|修改|上传|下载|执行|生成|导出|复制|移动|"
         "写入|添加|设置|配置|安装|部署|打包|编译|构建|启动|重启|停止|关闭|"
-        "记住|记录|存入|保存到记忆"
+        "记住|记录|存入|保存到记忆|调用|读取"
     )
     pat = _re.compile(
+        rf"(?:"
         rf"(?:已[经]?|成功|顺利|我已经|我已)(?:帮你?|为你|给你)?(?:{verbs})"
+        rf"|已通过.{{0,30}}(?:验证|读取|检查)"
+        rf"|工具已.{{0,10}}(?:调用|执行)"
+        rf"|(?:write_file|edit_file|read_file|run_shell|run_powershell)"
+        rf".{{0,30}}(?:已调用|已执行|已验证|验证完成)"
+        rf")"
     )
     _get_action_claim_re._cached = pat  # type: ignore[attr-defined]
     return pat
+
+
+_CLAIMED_TOOL_TO_FRAGMENTS: dict[str, tuple[str, ...]] = {
+    "write_file": ("write_file",),
+    "edit_file": ("edit_file",),
+    "read_file": ("read_file",),
+    "run_shell": ("run_shell",),
+    "run_powershell": ("run_powershell",),
+    "deliver_artifacts": ("deliver_artifacts",),
+    "schedule_task": ("schedule_task",),
+    "add_memory": ("add_memory",),
+    "move_file": ("move_file",),
+    "delete_file": ("delete_file",),
+}
 
 
 # 动词 → 候选工具名片段（小写子串匹配）。
@@ -483,11 +502,16 @@ _VERB_TO_TOOL_FRAGMENTS: dict[str, tuple[str, ...]] = {
     "存入": ("add_memory", "update_user_profile", "write_file"),
     "创建": ("write_file", "create_todo", "schedule_task", "create_agent"),
     "添加": ("add_memory", "create_todo", "schedule_task", "edit_file"),
+    "移动": ("move_file", "run_shell", "run_powershell", "write_file", "delete_file"),
+    "移至": ("move_file", "run_shell", "run_powershell", "write_file", "delete_file"),
+    "重命名": ("move_file", "run_shell", "run_powershell"),
+    "复制": ("write_file", "run_shell", "run_powershell"),
     "发送": ("deliver_artifacts", "send_to_chat", "smtp_email_sender", "send_message"),
     "调度": ("schedule_task",),
     "提醒": ("schedule_task",),
     "安装": ("install_skill",),
     "卸载": ("uninstall_skill",),
+    "读取": ("read_file", "run_shell", "run_powershell"),
 }
 
 
@@ -500,17 +524,22 @@ def _successful_tool_names(
         return set()
     if not tool_results:
         return set(executed_tool_names)
-    failed: set[str] = set()
+    executed = set(executed_tool_names)
+    seen: set[str] = set()
+    succeeded: set[str] = set()
     for tr in tool_results:
         if not isinstance(tr, dict):
             continue
-        if tr.get("is_error"):
-            tn = tr.get("tool_name") or tr.get("name") or ""
-            if tn:
-                failed.add(tn)
-    # Note: same tool may have multiple calls; if any succeeded, treat as success.
-    succeeded = set(executed_tool_names) - failed
-    return succeeded
+        tn = tr.get("tool_name") or tr.get("name") or ""
+        if not tn:
+            continue
+        seen.add(tn)
+        if not tr.get("is_error"):
+            succeeded.add(tn)
+    # Same tool may fail first and then succeed on retry. Treat any successful
+    # receipt as backing evidence, while tools without result entries keep the
+    # historical optimistic behavior.
+    return {name for name in executed if name not in seen or name in succeeded}
 
 
 def _extract_unbacked_verbs(
@@ -522,6 +551,26 @@ def _extract_unbacked_verbs(
 
     prefix_pat = _re.compile(r"(?:已[经]?|成功|顺利|我已经|我已)(?:帮你?|为你|给你)?")
     unbacked: list[str] = []
+
+    for tool_name, fragments in _CLAIMED_TOOL_TO_FRAGMENTS.items():
+        # Detect the issue #424 shape: the model writes a Markdown table saying
+        # "write_file/read_file 已调用" even though no matching tool receipt exists.
+        tool_claim_pat = _re.compile(
+            rf"{_re.escape(tool_name)}.{{0,40}}"
+            r"(?:已调用|已执行|已验证|验证完成|实际调用|执行完成|✅)",
+            _re.IGNORECASE,
+        )
+        reverse_claim_pat = _re.compile(
+            r"(?:已通过|通过|验证|读取|检查|调用|执行).{0,40}"
+            rf"{_re.escape(tool_name)}",
+            _re.IGNORECASE,
+        )
+        if not (tool_claim_pat.search(text) or reverse_claim_pat.search(text)):
+            continue
+        if any(any(frag in t for frag in fragments) for t in successful_tools):
+            continue
+        unbacked.append(f"{tool_name}调用")
+
     for verb, fragments in _VERB_TO_TOOL_FRAGMENTS.items():
         # Must appear right after an action-claim prefix to count as a real claim
         # (avoids matching plain narrative like "我会创建..." or "需要修改...").
@@ -580,6 +629,141 @@ def _guard_unbacked_action_claim(
         "如需重试请明确告知。"
     )
     return text.rstrip() + warning
+
+
+_USER_BLOCKED_MARKERS = (
+    "无法继续",
+    "不能继续",
+    "没法继续",
+    "需要用户",
+    "需要你",
+    "请手动",
+    "等待用户",
+    "卡住",
+    "卡在",
+    "遇到技术障碍",
+    "需要人工",
+    "需要协助",
+    "需要帮助",
+    "需要登录",
+    "验证码",
+    "权限不足",
+    "浏览器已关闭",
+    "浏览器被关闭",
+    "被用户关闭",
+)
+
+_USER_BLOCKED_ACTIONS = (
+    "无法",
+    "不能",
+    "没法",
+    "失败",
+    "超时",
+    "卡住",
+    "卡在",
+    "阻塞",
+    "需要",
+    "等待",
+)
+
+_RECOVERABLE_TOOL_ERROR_MARKERS = (
+    "未知工具",
+    "unknown_tool",
+    "No handler mapped for tool",
+    "is deferred",
+    "must first call tool_search",
+    "selector and text is required",
+    "selector or text is required",
+)
+
+_HARD_USER_BLOCKER_TOOL_MARKERS = (
+    "浏览器连接已断开",
+    "浏览器已被用户关闭",
+    "浏览器被用户关闭",
+    "验证码",
+    "需要用户确认",
+    "权限不足",
+)
+
+
+def _looks_like_waiting_for_user_response(text: str) -> bool:
+    """Whether a post-tool final answer is a real user handoff, not a task promise.
+
+    This protects long ReAct tasks from being pushed back into tool execution by
+    completion verification after the model has already reported a blocker such
+    as "需要你截图/请手动确认/浏览器被关闭". Those replies are valid stopping
+    points: the next step must come from the user, not another forced tool call.
+    """
+    normalized = (text or "").strip()
+    if not normalized:
+        return False
+
+    lowered = normalized.lower()
+    if any(
+        marker in lowered
+        for marker in (
+            "waiting for user",
+            "need your help",
+            "need you to",
+            "please provide",
+            "please confirm",
+            "manual confirmation",
+            "cannot continue",
+            "can't continue",
+            "blocked",
+        )
+    ):
+        return True
+
+    if any(marker in normalized for marker in _USER_BLOCKED_MARKERS):
+        return True
+
+    if "请" in normalized and any(
+        marker in normalized
+        for marker in (
+            "手动",
+            "确认",
+            "提供",
+            "截图",
+            "验证码",
+            "登录",
+            "权限",
+        )
+    ):
+        return True
+
+    # More conservative composite check for phrases that split the blocker and
+    # the requested user action across a sentence.
+    has_blocker = any(marker in normalized for marker in _USER_BLOCKED_ACTIONS)
+    asks_user = any(
+        marker in normalized
+        for marker in (
+            "你",
+            "用户",
+            "手动",
+            "确认",
+            "提供",
+            "截图",
+            "验证码",
+            "登录",
+            "权限",
+        )
+    )
+    return has_blocker and asks_user
+
+
+def _has_recoverable_tool_issue(tool_results: list[dict] | None) -> bool:
+    """Whether the latest blocker is a tool-call shape issue the model can repair."""
+    for result in tool_results or []:
+        content = str(result.get("content") or "")
+        if not content:
+            continue
+        if any(marker in content for marker in _HARD_USER_BLOCKER_TOOL_MARKERS):
+            return False
+        is_error = result.get("is_error")
+        if is_error and any(marker in content for marker in _RECOVERABLE_TOOL_ERROR_MARKERS):
+            return True
+    return False
 
 
 class ReasoningEngine:
@@ -1133,6 +1317,48 @@ class ReasoningEngine:
 
         return restored_messages, cp.iteration
 
+    def _apply_endpoint_override(
+        self,
+        endpoint_override: str | None,
+        *,
+        conversation_id: str | None,
+        reason: str,
+        endpoint_policy: str = "prefer",
+    ) -> bool:
+        """Apply an endpoint preference without making it a hard blocker."""
+        if not endpoint_override:
+            return False
+
+        llm_client = getattr(self._brain, "_llm_client", None)
+        if not llm_client or not hasattr(llm_client, "switch_model"):
+            logger.warning(
+                "[EndpointOverride] Ignoring %s because no switch-capable LLM client is available",
+                endpoint_override,
+            )
+            return False
+
+        ok, msg = llm_client.switch_model(
+            endpoint_name=endpoint_override,
+            hours=0.05,
+            reason=reason,
+            conversation_id=conversation_id,
+            policy=endpoint_policy,
+        )
+        if ok:
+            logger.info(
+                "[EndpointOverride] Switched to %s for %s",
+                endpoint_override,
+                conversation_id or "global",
+            )
+            return True
+
+        logger.warning(
+            "[EndpointOverride] Ignoring unavailable endpoint %s: %s; using auto selection",
+            endpoint_override,
+            msg,
+        )
+        return False
+
     async def run(
         self,
         messages: list[dict],
@@ -1150,7 +1376,9 @@ class ReasoningEngine:
         progress_callback: Any = None,
         agent_profile_id: str = "default",
         endpoint_override: str | None = None,
+        endpoint_policy: str = "prefer",
         force_tool_retries: int | None = None,
+        tool_evidence_required: bool = False,
         is_sub_agent: bool = False,
         mode: str = "agent",
     ) -> str:
@@ -1168,11 +1396,13 @@ class ReasoningEngine:
             interrupt_check_fn: 中断检查函数
             conversation_id: 对话 ID
             thinking_mode: 思考模式覆盖 ('auto'/'on'/'off'/None)
-            thinking_depth: 思考深度 ('low'/'medium'/'high'/None)
+            thinking_depth: 思考深度 ('low'/'medium'/'high'/'max'/None)
             progress_callback: 进度回调 async fn(str) -> None，用于 IM 实时输出思维链
             endpoint_override: 端点覆盖（来自 Agent profile 或 API 请求）
             force_tool_retries: Intent-driven override for max ForceToolCall retries
                 (None = use default from settings, 0 = disable ForceToolCall)
+            tool_evidence_required: true when the user request requires external
+                evidence/tool verification even if classified as a question
 
         Returns:
             最终响应文本
@@ -1242,31 +1472,25 @@ class ReasoningEngine:
         state.original_user_messages = [msg for msg in messages if self._is_human_user_message(msg)]
 
         working_messages = list(messages)
-        current_model = self._brain.model
+        current_model = getattr(self._brain, "model", "")
 
         # === 端点覆盖 ===
         if endpoint_override:
             if not conversation_id:
                 conversation_id = f"_run_{uuid.uuid4().hex[:12]}"
-            llm_client = getattr(self._brain, "_llm_client", None)
-            if llm_client and hasattr(llm_client, "switch_model"):
-                ok, msg = llm_client.switch_model(
-                    endpoint_name=endpoint_override,
-                    hours=0.05,
-                    reason=f"agent profile endpoint override: {endpoint_override}",
-                    conversation_id=conversation_id,
-                )
-                if ok:
-                    _provider = llm_client._providers.get(endpoint_override)
-                    if _provider:
-                        current_model = _provider.model
-                    logger.info(
-                        f"[EndpointOverride] Switched to {endpoint_override} for {conversation_id}"
-                    )
-                else:
-                    logger.warning(
-                        f"[EndpointOverride] Failed to switch to {endpoint_override}: {msg}, using default"
-                    )
+            self._apply_endpoint_override(
+                endpoint_override,
+                conversation_id=conversation_id,
+                reason=f"agent profile endpoint override: {endpoint_override}",
+                endpoint_policy=endpoint_policy,
+            )
+
+        try:
+            current_info = self._brain.get_current_model_info(conversation_id=conversation_id)
+            if isinstance(current_info, dict) and current_info.get("model"):
+                current_model = str(current_info["model"])
+        except Exception:
+            pass
 
         # ForceToolCall 配置
         im_floor = max(0, int(getattr(settings, "force_tool_call_im_floor", 2)))
@@ -1819,30 +2043,39 @@ class ReasoningEngine:
                     base_force_retries=base_force_retries,
                     conversation_id=conversation_id,
                     supervisor_intervened=_supervisor_intervened,
+                    tool_evidence_required=tool_evidence_required,
                     mode=mode,
                 )
 
                 if isinstance(result, str):
                     react_trace.append(_iter_trace)
+                    final_exit_reason = self._last_exit_reason
+                    is_verify_incomplete = final_exit_reason == "verify_incomplete"
+                    trace_result = "verify_incomplete" if is_verify_incomplete else "completed"
                     logger.info(
-                        f"[ReAct] === COMPLETED after {iteration + 1} iterations, "
+                        f"[ReAct] === {trace_result.upper()} after {iteration + 1} iterations, "
                         f"tools: {list(set(executed_tool_names))} ==="
                     )
                     self._save_react_trace(
-                        react_trace, conversation_id, session_type, "completed", _trace_started_at
+                        react_trace, conversation_id, session_type, trace_result, _trace_started_at
                     )
                     try:
-                        state.transition(TaskStatus.COMPLETED)
+                        state.transition(
+                            TaskStatus.FAILED if is_verify_incomplete else TaskStatus.COMPLETED
+                        )
                     except ValueError:
                         pass
                     tracer.end_trace(
                         metadata={
-                            "result": "completed",
+                            "result": trace_result,
                             "iterations": iteration + 1,
                             "tools_used": list(set(executed_tool_names)),
                         }
                     )
-                    await broadcast_event("pet-status-update", {"status": "success"})
+                    await broadcast_event(
+                        "pet-status-update",
+                        {"status": "error" if is_verify_incomplete else "success"},
+                    )
                     return result
                 else:
                     # 需要继续循环（验证不通过）
@@ -2790,12 +3023,14 @@ class ReasoningEngine:
         plan_mode: bool = False,
         mode: str = "agent",
         endpoint_override: str | None = None,
+        endpoint_policy: str = "prefer",
         conversation_id: str | None = None,
         thinking_mode: str | None = None,
         thinking_depth: str | None = None,
         agent_profile_id: str = "default",
         session: Any = None,
         force_tool_retries: int | None = None,
+        tool_evidence_required: bool = False,
         is_sub_agent: bool = False,
         request_id: str = "",
         turn_id: str = "",
@@ -2927,31 +3162,23 @@ class ReasoningEngine:
                     _agent_ref._last_tool_policy_source = "reason_stream_mode_filter"
 
             # === 端点覆盖 ===
-            _endpoint_switched = False
             if endpoint_override:
                 if not conversation_id:
                     conversation_id = f"_stream_{uuid.uuid4().hex[:12]}"
-                llm_client = getattr(self._brain, "_llm_client", None)
-                if llm_client and hasattr(llm_client, "switch_model"):
-                    ok, msg = llm_client.switch_model(
-                        endpoint_name=endpoint_override,
-                        hours=0.05,
-                        reason=f"chat endpoint override: {endpoint_override}",
-                        conversation_id=conversation_id,
-                    )
-                    if not ok:
-                        yield {"type": "error", "message": f"端点切换失败: {msg}"}
-                        yield {"type": "done"}
-                        return
-                    _endpoint_switched = True
+                self._apply_endpoint_override(
+                    endpoint_override,
+                    conversation_id=conversation_id,
+                    reason=f"chat endpoint override: {endpoint_override}",
+                    endpoint_policy=endpoint_policy,
+                )
 
-            current_model = self._brain.model
-            if _endpoint_switched and endpoint_override:
-                llm_client = getattr(self._brain, "_llm_client", None)
-                if llm_client:
-                    _provider = llm_client._providers.get(endpoint_override)
-                    if _provider:
-                        current_model = _provider.model
+            current_model = getattr(self._brain, "model", "")
+            try:
+                current_info = self._brain.get_current_model_info(conversation_id=conversation_id)
+                if isinstance(current_info, dict) and current_info.get("model"):
+                    current_model = str(current_info["model"])
+            except Exception:
+                pass
 
             # === 与 run() 一致的循环控制变量 ===
             state.original_user_messages = [
@@ -3330,6 +3557,14 @@ class ReasoningEngine:
                         elif _evt_type == "endpoint_meta":
                             # 由 LLMClient 注入的端点元信息（vision_degraded 等）
                             # 转换成前端协议一致的 endpoint_notice。
+                            if stream_event.get("failover_from"):
+                                yield {
+                                    "type": "endpoint_notice",
+                                    "notice_type": "failover",
+                                    "endpoint": stream_event.get("endpoint_name", ""),
+                                    "from_endpoint": stream_event.get("failover_from", ""),
+                                    "reason_code": "endpoint_failover",
+                                }
                             if stream_event.get("vision_degraded") and not _vision_notice_emitted:
                                 _vision_notice_emitted = True
                                 yield {
@@ -3525,9 +3760,33 @@ class ReasoningEngine:
                     _cache_create = _cache_create or getattr(
                         _usage, "cache_creation_input_tokens", 0
                     )
+                _usage_source = "provider" if (_in_tokens or _out_tokens) else ""
+                _usage_estimated = False
+                if not (_in_tokens or _out_tokens):
+                    try:
+                        _est_input = ContextManager.static_estimate_tokens(effective_prompt or "")
+                        _est_input += self._context_manager.estimate_messages_tokens(working_messages)
+                        _est_input += self._context_manager.estimate_tools_tokens(tools)
+                        _est_output_payload = {
+                            "thinking": decision.thinking_content or "",
+                            "text": decision.text_content or "",
+                            "tool_calls": decision.tool_calls or [],
+                        }
+                        _est_output = ContextManager.static_estimate_tokens(
+                            json.dumps(_est_output_payload, ensure_ascii=False, default=str)
+                        )
+                        if _est_input or _est_output:
+                            _in_tokens = _est_input
+                            _out_tokens = _est_output
+                            _usage_source = "estimate"
+                            _usage_estimated = True
+                    except Exception as _est_err:
+                        logger.debug(
+                            f"[ReAct-Stream] token estimate failed (non-fatal): {_est_err}"
+                        )
                 if _in_tokens or _out_tokens:
                     self._budget.record_tokens(_in_tokens, _out_tokens)
-                    if _in_tokens:
+                    if _in_tokens and not _usage_estimated:
                         _last_real_input_tokens = _in_tokens
                 # 流式路径下 brain 不落 token_tracking（详见 brain.messages_create_stream
                 # 注释），需在此显式落库以保留 cache_read/cache_create 命中统计。
@@ -3552,6 +3811,7 @@ class ReasoningEngine:
                                 request_id=_request_id,
                                 turn_id=_turn_id,
                                 operation_type="chat_react_iteration_stream",
+                                operation_detail=_usage_source,
                                 channel="api",
                                 iteration=_iteration + 1,
                                 agent_profile_id=agent_profile_id,
@@ -3602,6 +3862,8 @@ class ReasoningEngine:
                     ],
                     "tool_results": [],
                     "tokens": {"input": _in_tokens, "output": _out_tokens},
+                    "usage_source": _usage_source,
+                    "usage_estimated": _usage_estimated,
                     "context_compressed": _ctx_compressed_info,
                 }
                 tool_names_log = [tc.get("name", "?") for tc in (decision.tool_calls or [])]
@@ -3695,24 +3957,33 @@ class ReasoningEngine:
                         base_force_retries=base_force_retries,
                         conversation_id=conversation_id,
                         supervisor_intervened=_supervisor_intervened,
+                        tool_evidence_required=tool_evidence_required,
                         mode=_effective_mode,
                     )
 
                     if isinstance(result, str):
                         react_trace.append(_iter_trace)
+                        final_exit_reason = self._last_exit_reason
+                        is_verify_incomplete = final_exit_reason == "verify_incomplete"
+                        trace_result = "verify_incomplete" if is_verify_incomplete else "completed"
                         self._save_react_trace(
                             react_trace,
                             conversation_id,
                             session_type,
-                            "completed",
+                            trace_result,
                             _trace_started_at,
                         )
                         try:
-                            state.transition(TaskStatus.COMPLETED)
+                            state.transition(
+                                TaskStatus.FAILED if is_verify_incomplete else TaskStatus.COMPLETED
+                            )
                         except ValueError:
-                            state.status = TaskStatus.COMPLETED
+                            state.status = (
+                                TaskStatus.FAILED if is_verify_incomplete else TaskStatus.COMPLETED
+                            )
                         logger.info(
-                            f"[ReAct-Stream] === COMPLETED after {_iteration + 1} iterations ==="
+                            f"[ReAct-Stream] === {trace_result.upper()} after "
+                            f"{_iteration + 1} iterations ==="
                         )
                         if _streamed_text:
                             if result != _raw_streamed_text:
@@ -3722,7 +3993,10 @@ class ReasoningEngine:
                             for i in range(0, len(result), chunk_size):
                                 yield {"type": "text_delta", "content": result[i : i + chunk_size]}
                                 await asyncio.sleep(0.01)
-                        await broadcast_event("pet-status-update", {"status": "success"})
+                        await broadcast_event(
+                            "pet-status-update",
+                            {"status": "error" if is_verify_incomplete else "success"},
+                        )
                         # 终态检查点：summary 取最终回答前 200 字，便于"任务时间线"
                         # 直接显示"已完成什么"。
                         yield _build_task_checkpoint_event(
@@ -3730,7 +4004,7 @@ class ReasoningEngine:
                             conversation_id=conversation_id,
                             task_id=state.task_id,
                             iteration=_iteration,
-                            exit_reason="completed",
+                            exit_reason=trace_result,
                             summary=str(result or ""),
                         )
                         yield {"type": "done"}
@@ -5155,6 +5429,7 @@ class ReasoningEngine:
         session_type: str = "desktop",
         mode: str = "agent",
         endpoint_override: str | None = None,
+        endpoint_policy: str = "prefer",
         conversation_id: str | None = None,
         thinking_mode: str | None = None,
         thinking_depth: str | None = None,
@@ -5203,6 +5478,7 @@ class ReasoningEngine:
             session_type=session_type,
             mode=mode,
             endpoint_override=endpoint_override,
+            endpoint_policy=endpoint_policy,
             conversation_id=conversation_id,
             thinking_mode=thinking_mode,
             thinking_depth=thinking_depth,
@@ -5682,7 +5958,7 @@ class ReasoningEngine:
                             f"{block.text.strip()[:100]}"
                         )
                         break
-            except (asyncio.TimeoutError, TimeoutError):
+            except TimeoutError:
                 logger.warning("[ReAct-Stream][BgFarewell] LLM farewell 超时 (5s)")
             except Exception as e:
                 logger.warning(f"[ReAct-Stream][BgFarewell] LLM farewell 失败: {e}")
@@ -6155,6 +6431,7 @@ class ReasoningEngine:
         base_force_retries: int,
         conversation_id: str | None,
         supervisor_intervened: bool = False,
+        tool_evidence_required: bool = False,
         mode: str = "agent",
     ) -> str | tuple:
         """
@@ -6217,6 +6494,15 @@ class ReasoningEngine:
                     cleaned_text, executed_tool_names, all_tool_results
                 )
                 last_user_request = ResponseHandler.get_last_user_request(original_messages)
+                if _looks_like_waiting_for_user_response(
+                    cleaned_text
+                ) and not _has_recoverable_tool_issue(all_tool_results):
+                    logger.info(
+                        "[TaskVerify] Skipping completion verify because response "
+                        "hands control back to user."
+                    )
+                    self._last_exit_reason = "waiting_user"
+                    return cleaned_text
                 # 汇总轮（root post-summary 注入的 [用户指令最终汇总] 提示）下，
                 # 本次 ReAct 的目的就是输出汇总文本而非再产出文件，verify 全程绕过。
                 # 与 B1 的关键词白名单互补：B1 修关键词命中根因，B2 兜底全路径。
@@ -6462,29 +6748,34 @@ class ReasoningEngine:
                 max_no_tool_retries,
             )
 
-        if intent == "REPLY" and stripped_text and len(stripped_text.strip()) > 10:
+        if (
+            intent == "REPLY"
+            and stripped_text
+            and len(stripped_text.strip()) > 10
+            and not tool_evidence_required
+        ):
             logger.info(
                 "[IntentTag] REPLY intent with substantial text, "
                 "accepting as valid response (no ForceToolCall)"
             )
             return clean_llm_response(stripped_text)
 
-        # No intent tag but text is long enough to be a genuine analysis / knowledge
-        # response.  Accept as implicit REPLY **only if** the text does not look like
-        # an action-claim hallucination (e.g. "已帮你保存/删除/发送…" without any
-        # actual tool calls).
-        _IMPLICIT_REPLY_THRESHOLD = 200
+        # No intent tag but visible text is a genuine analysis / knowledge /
+        # writing response. Accept it as implicit REPLY as long as it does not
+        # look like an action-claim hallucination (e.g. "已帮你保存/删除/发送…"
+        # without any actual tool calls). This keeps tools available without
+        # forcing them into pure explanation or creative-writing turns.
         _ACTION_CLAIM_RE = _get_action_claim_re()
         _txt = (stripped_text or "").strip()
         if (
             intent is None
             and _txt
-            and len(_txt) > _IMPLICIT_REPLY_THRESHOLD
             and not _ACTION_CLAIM_RE.search(_txt)
+            and not tool_evidence_required
         ):
             logger.info(
-                f"[IntentTag] No intent tag but substantial text "
-                f"({len(_txt)} chars > {_IMPLICIT_REPLY_THRESHOLD}), "
+                f"[IntentTag] No intent tag but visible text "
+                f"({len(_txt)} chars), "
                 f"no action-claim detected — accepting as implicit REPLY"
             )
             return clean_llm_response(stripped_text)
@@ -6500,12 +6791,17 @@ class ReasoningEngine:
                         "reasoning_content": decision.thinking_content or None,
                     }
                 )
-            if intent == "REPLY":
+            if tool_evidence_required:
                 logger.warning(
-                    f"[IntentTag] REPLY intent but text too short — "
-                    f"ForceToolCall retry ({no_tool_call_count}/{max_no_tool_retries})"
+                    "[IntentTag] Tool evidence required but final answer had "
+                    f"tool_calls=0 — ForceToolCall retry "
+                    f"({no_tool_call_count}/{max_no_tool_retries})"
                 )
-                retry_msg = "[系统] 你的回复过于简短，请提供更详细的回答。"
+                retry_msg = (
+                    "[系统] 这个用户请求需要外部证据或工具验证，但你的上一条回复没有调用任何工具。"
+                    "请先调用合适的查询、读取、搜索、API 或 MCP 工具获取证据；"
+                    "如果当前没有可用工具或权限不足，请直接说明无法验证，不要编造结果。"
+                )
             elif intent == "ACTION":
                 logger.warning(
                     "[IntentTag] ACTION intent declared but no tool calls — "
@@ -6515,6 +6811,12 @@ class ReasoningEngine:
                     "[系统] ⚠️ 你声明了 [ACTION] 意图但没有调用任何工具。"
                     "请立即调用所需的工具来完成用户请求，不要只描述你会做什么。"
                 )
+            elif intent == "REPLY":
+                logger.warning(
+                    f"[IntentTag] REPLY intent but text too short — "
+                    f"ForceToolCall retry ({no_tool_call_count}/{max_no_tool_retries})"
+                )
+                retry_msg = "[系统] 你的回复过于简短，请提供更详细的回答。"
             else:
                 logger.warning(
                     f"[IntentTag] No intent tag, short text with action claims, tool_calls=0 — "
@@ -6534,7 +6836,11 @@ class ReasoningEngine:
                 max_no_tool_retries,
             )
 
-        # 追问次数用尽
+        # 追问次数用尽。证据敏感任务不继续反复提示，也不把无工具结论包装成已验证结果。
+        if tool_evidence_required and not tools_executed_in_task:
+            self._last_exit_reason = "tool_evidence_missing"
+            return "未执行任何工具，无法验证该结论。请允许我读取、搜索或调用相关工具后再继续核对。"
+
         cleaned_text = clean_llm_response(stripped_text)
         return cleaned_text or (
             "⚠️ 大模型返回异常：未产生可用输出。任务已中断。请重试、或更换端点/模型后再执行。"
@@ -6672,7 +6978,8 @@ class ReasoningEngine:
         """
         _PLACEHOLDER = (
             "[工具返回内容已移除：内容触发了平台安全审核，无法发送给模型。"
-            "请忽略此工具的结果，直接基于已有信息回答用户。]"
+            "不要基于被移除的内容下结论。请换用更具体的查询词、web_fetch、浏览器或权威来源继续获取证据；"
+            "如果当前确实无法验证，请简要说明无法联网验证，不要编造结果。]"
         )
         stripped = False
         result = list(messages)

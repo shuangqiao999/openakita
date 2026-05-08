@@ -9,6 +9,7 @@ File System 工具定义
 - list_directory: 列出目录
 - grep: 内容搜索
 - glob: 文件名模式搜索
+- move_file: 移动或重命名文件/目录
 - delete_file: 删除文件
 
 Description 质量对齐 Cursor Agent Mode — 所有行为约束前置到 description。
@@ -26,6 +27,7 @@ FILESYSTEM_TOOLS = [
             "IMPORTANT — Use specialized tools instead of shell equivalents when available:\n"
             "- read_file instead of cat/head/tail\n"
             "- write_file/edit_file instead of sed/awk/echo >\n"
+            "- move_file instead of mv/move/ren for moving or renaming files\n"
             "- grep/glob instead of find/grep/rg\n"
             "- web_fetch instead of curl (for reading webpage content)\n\n"
             "Windows routing:\n"
@@ -35,6 +37,8 @@ FILESYSTEM_TOOLS = [
             "- Commands that don't complete within block_timeout_ms (default 30s) are moved "
             "to background. Output streams to data/terminals/{session_id}.txt.\n"
             "- Set block_timeout_ms to 0 for dev servers, watchers, or any long-running process.\n"
+            "- Flask/FastAPI/Vite/other local web servers are normally successful when they keep running; "
+            "verify them with port checks and HTTP health/API requests instead of treating timeout as failure.\n"
             "- Monitor background commands by reading the terminal file with read_file.\n"
             "- Terminal file header has pid and running_for_ms (updated every 5s).\n"
             "- When finished, footer with exit_code and elapsed_ms appears.\n"
@@ -124,6 +128,9 @@ FILESYSTEM_TOOLS = [
             "- NEVER proactively create documentation files (*.md, README) unless the "
             "user explicitly asks\n"
             "- This tool will OVERWRITE the existing file — make sure this is intentional\n"
+            "- Do not write content copied from a truncated tool preview or paginated "
+            "read_file page (for example text containing [OUTPUT_TRUNCATED], "
+            "[PAGE_HAS_MORE], or [已截断]); read the missing pages or use edit_file first\n"
             "- Uses UTF-8 encoding\n\n"
             "When to use write_file vs edit_file:\n"
             "- write_file: Creating entirely new files, or replacing entire file content\n"
@@ -166,7 +173,9 @@ FILESYSTEM_TOOLS = [
             "- PDFs: automatically converts to text content\n\n"
             "Pagination:\n"
             "- Use offset (1-based line number) and limit to read specific sections\n"
-            "- Results include [OUTPUT_TRUNCATED] hint with next-page parameters when truncated\n"
+            "- Results include [PAGE_HAS_MORE] with next-page parameters when only one "
+            "page is shown. This means the display is paginated; the original file is "
+            "not truncated or damaged\n"
             "- For large files, read in chunks rather than requesting the entire file\n\n"
             "IMPORTANT:\n"
             "- You can call multiple read_file in parallel — always batch-read related files "
@@ -180,7 +189,8 @@ FILESYSTEM_TOOLS = [
 **分页参数**:
 - offset: 起始行号（1-based），默认 1
 - limit: 读取行数，默认 300
-- 如果文件超过 limit 行，结果末尾会包含 [OUTPUT_TRUNCATED] 提示和下一页参数
+- 如果文件超过 limit 行，结果末尾会包含 [PAGE_HAS_MORE] 提示和下一页参数。
+  这表示当前只是分页显示，不表示原文件被截断或损坏。
 
 **注意事项**:
 - 大文件自动分页，根据提示用 offset/limit 翻页
@@ -406,6 +416,49 @@ FILESYSTEM_TOOLS = [
                 },
             },
             "required": ["pattern"],
+        },
+    },
+    {
+        "name": "move_file",
+        "category": "File System",
+        "description": (
+            "Move or rename a file or directory, then verify the source disappeared "
+            "and the destination exists.\n\n"
+            "Use this when the user asks to move, rename, archive, or relocate a file. "
+            "Prefer this over run_shell('mv ...') / run_shell('move ...') so paths and "
+            "results are verified consistently.\n\n"
+            "IMPORTANT:\n"
+            "- `src` is the existing source file or directory path\n"
+            "- `dst` is the destination path; if it is an existing directory, the source "
+            "keeps its current name inside that directory\n"
+            "- To rename while moving, pass the full final destination filename in `dst`\n"
+            "- The tool rejects paths containing invalid null characters instead of "
+            "silently truncating them"
+        ),
+        "detail": """移动或重命名文件/目录。
+
+**适用场景**:
+- 将文件移动到另一个目录
+- 移动时顺便重命名
+- 归档生成的文件
+
+**注意事项**:
+- 自动创建目标父目录
+- 执行后会验证源路径已消失、目标路径已存在
+- 如果目标是已存在目录，会把源放入该目录并保留原文件名""",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "src": {
+                    "type": "string",
+                    "description": "源文件或目录路径",
+                },
+                "dst": {
+                    "type": "string",
+                    "description": "目标路径；移动并重命名时传完整的新文件路径",
+                },
+            },
+            "required": ["src", "dst"],
         },
     },
     {

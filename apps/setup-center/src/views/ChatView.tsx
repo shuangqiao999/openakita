@@ -61,10 +61,10 @@ import type {
 import {
   IDLE_THRESHOLD_MS, IDLE_TOKEN_THRESHOLD, PASTE_CHAR_THRESHOLD, UNDO_MAX_STEPS,
   exportConversation, appendAuthToken, stripLegacySummary,
-  sanitizeStoredMessages, loadMessagesFromStorage, saveMessagesToStorage,
+  sanitizeStoredMessages, loadMessagesFromStorage, saveMessagesToStorage, STORED_MESSAGE_WINDOW,
   buildChainFromSummary, formatAskUserAnswer, patchMessagesWithBackend,
   classifyError, basename, formatToolDescription, generateGroupSummary,
-  ERROR_META, SVG_PATHS, getNextSpinnerTip,
+  ERROR_META, SVG_PATHS, getNextSpinnerTip, shouldRenderConversationMessages,
 } from "./chat/utils/chatHelpers";
 import { useMdModules } from "./chat/hooks/useMdModules";
 import { useMessageReducer, useConversationReducer } from "./chat/hooks/useMessages";
@@ -90,6 +90,16 @@ function _cmdPrefix(cmd: string): string {
   if (parts.length >= 2) return `${parts[0]} ${parts[1]}`;
   return parts[0] || "";
 }
+
+const HISTORY_PAGE_LIMIT = 80;
+type EndpointPolicy = "prefer" | "require";
+
+type HistoryPageState = {
+  total: number;
+  startIndex: number | null;
+  hasMoreBefore: boolean;
+  loadingOlder: boolean;
+};
 
 // ─── 主组件 ───
 
@@ -169,6 +179,12 @@ export function ChatView({
     } catch { return null; }
   });
   const [hydrating, setHydrating] = useState(false);
+  const [historyPage, setHistoryPage] = useState<HistoryPageState>({
+    total: 0,
+    startIndex: null,
+    hasMoreBefore: false,
+    loadingOlder: false,
+  });
 
   // ── Workspace switch: reload chat state from new scoped keys ──
   // Also performs one-time migration of legacy global keys into the first real
@@ -253,6 +269,7 @@ export function ChatView({
     }
 
     setSelectedEndpoint("auto");
+    setSelectedEndpointPolicy("prefer");
   // eslint-disable-next-line react-hooks/exhaustive-deps -- STORAGE_KEY_*/OLD_KEY_* are
   // derived from wsTag (or are constants); listing wsTag alone is sufficient and
   // avoids re-running the migration on every render.
@@ -260,6 +277,7 @@ export function ChatView({
   const inputTextRef = useRef("");
   const [hasInputText, setHasInputText] = useState(false);
   const [selectedEndpoint, setSelectedEndpoint] = useState("auto");
+  const [selectedEndpointPolicy, setSelectedEndpointPolicy] = useState<EndpointPolicy>("prefer");
   const [chatMode, setChatMode] = useState<"agent" | "plan" | "ask">("agent");
   const planMode = chatMode === "plan";
   const [pendingApproval, setPendingApproval] = useState<PlanApprovalEvent | null>(null);
@@ -368,6 +386,7 @@ export function ChatView({
   const [selectedOrgNodeId, setSelectedOrgNodeId] = useState<string | null>(null);
   const [orgMenuOpen, setOrgMenuOpen] = useState(false);
   const orgMenuRef = useRef<HTMLDivElement | null>(null);
+  const isOrgConvSwitchRef = useRef(false);
   const [orgCommandPending, setOrgCommandPending] = useState(false);
   const orgCommandPendingRef = useRef(false);
 
@@ -474,8 +493,12 @@ export function ChatView({
     try { const v = localStorage.getItem("chat_thinkingMode"); return (v === "on" || v === "off") ? v : "auto"; }
     catch { return "auto"; }
   });
-  const [thinkingDepth, setThinkingDepth] = useState<"low" | "medium" | "high">(() => {
-    try { const v = localStorage.getItem("chat_thinkingDepth"); return (v === "low" || v === "medium" || v === "high") ? v : "medium"; }
+  const [thinkingDepth, setThinkingDepth] = useState<"low" | "medium" | "high" | "max">(() => {
+    try {
+      const v = localStorage.getItem("chat_thinkingDepth");
+      if (v === "xhigh") return "max";
+      return (v === "low" || v === "medium" || v === "high" || v === "max") ? v : "medium";
+    }
     catch { return "medium"; }
   });
   const [thinkingModeTipOpen, setThinkingModeTipOpen] = useState(false);
@@ -653,8 +676,7 @@ export function ChatView({
         // Re-hydrate active conversation if it was among the stale ones
         const curActive = activeConvIdRef.current;
         if (curActive && staleIds.has(curActive) && !busyIds.has(curActive)) {
-          const meta = convs.find((c) => c.id === curActive);
-          void hydrateConversationMessages(curActive, meta?.messageCount || 0);
+          void hydrateConversationMessages(curActive);
         }
       } catch {
         setConversations((prev) =>
@@ -691,52 +713,116 @@ export function ChatView({
   const hydrateSeqRef = useRef(0);
 
   const mapBackendHistoryToMessages = useCallback(
-    (rows: { id: string; role: string; content: string; timestamp: number; chain_summary?: ChainSummaryItem[]; artifacts?: ChatArtifact[]; ask_user?: { question: string; options?: { id: string; label: string }[]; questions?: ChatAskQuestion[] } }[]): ChatMessage[] => {
+    (rows: { id: string; index?: number; role: string; content: string; timestamp: number; chain_summary?: ChainSummaryItem[]; artifacts?: ChatArtifact[]; ask_user?: { question: string; options?: { id: string; label: string }[]; questions?: ChatAskQuestion[] }; usage?: ChatMessage["usage"] }[]): ChatMessage[] => {
       return rows.map((m) => ({
         id: m.id,
+        ...(typeof m.index === "number" ? { historyIndex: m.index } : {}),
         role: m.role as "user" | "assistant" | "system",
         content: m.content,
         timestamp: m.timestamp,
         ...(m.chain_summary?.length ? { thinkingChain: buildChainFromSummary(m.chain_summary) } : {}),
         ...(m.artifacts?.length ? { artifacts: m.artifacts } : {}),
         ...(m.ask_user ? { askUser: m.ask_user, content: "" } : {}),
+        ...(m.usage ? { usage: m.usage } : {}),
       }));
     },
     [],
   );
 
-  const hydrateConversationMessages = useCallback(async (convId: string, expectedCount = 0) => {
+  const hydrateConversationMessages = useCallback(async (convId: string) => {
     const seq = ++hydrateSeqRef.current;
     setHydrating(true);
-    const localMsgs = loadMessagesFromStorage(STORAGE_KEY_MSGS_PREFIX + convId);
+    const localMsgs = loadMessagesFromStorage(STORAGE_KEY_MSGS_PREFIX + convId).slice(-STORED_MESSAGE_WINDOW);
 
-    const localCount = Array.isArray(localMsgs) ? localMsgs.length : 0;
-    const shouldSyncBackend = serviceRunning && (localCount === 0 || (expectedCount > 0 && localCount < expectedCount));
+    // Always ask the backend when available.  A completed answer may be saved
+    // there after a desktop/web SSE disconnect while localStorage still has the
+    // interrupted placeholder with the same message count.
+    const shouldSyncBackend = serviceRunning;
 
     if (!shouldSyncBackend) {
-      if (seq === hydrateSeqRef.current) { setMessages(localMsgs); setHydrating(false); }
+      if (seq === hydrateSeqRef.current) {
+        setMessages(localMsgs);
+        setHistoryPage({
+          total: localMsgs.length,
+          startIndex: null,
+          hasMoreBefore: false,
+          loadingOlder: false,
+        });
+        setHydrating(false);
+      }
       return;
     }
 
     try {
-      const res = await safeFetch(`${apiBaseUrl}/api/sessions/${encodeURIComponent(convId)}/history`);
+      const res = await safeFetch(`${apiBaseUrl}/api/sessions/${encodeURIComponent(convId)}/history?limit=${HISTORY_PAGE_LIMIT}`);
       const data = await res.json();
       const backendMsgs = Array.isArray(data?.messages) ? mapBackendHistoryToMessages(data.messages) : [];
 
-      const chosen = backendMsgs.length >= localCount ? backendMsgs : localMsgs;
-      if (seq === hydrateSeqRef.current) { setMessages(chosen); setHydrating(false); }
+      const chosen = backendMsgs.length > 0 ? backendMsgs : localMsgs;
+      if (seq === hydrateSeqRef.current) {
+        setMessages(chosen);
+        setHistoryPage({
+          total: typeof data?.total === "number" ? data.total : chosen.length,
+          startIndex: typeof data?.start_index === "number" ? data.start_index : null,
+          hasMoreBefore: Boolean(data?.has_more_before),
+          loadingOlder: false,
+        });
+        setHydrating(false);
+      }
 
-      if (backendMsgs.length >= localCount) {
-        saveMessagesToStorage(STORAGE_KEY_MSGS_PREFIX + convId, backendMsgs);
+      if (chosen !== localMsgs) {
+        saveMessagesToStorage(STORAGE_KEY_MSGS_PREFIX + convId, chosen);
       }
     } catch {
-      if (seq === hydrateSeqRef.current) { setMessages(localMsgs); setHydrating(false); }
+      if (seq === hydrateSeqRef.current) {
+        setMessages(localMsgs);
+        setHistoryPage({
+          total: localMsgs.length,
+          startIndex: null,
+          hasMoreBefore: false,
+          loadingOlder: false,
+        });
+        setHydrating(false);
+      }
     }
   }, [serviceRunning, apiBaseUrl, mapBackendHistoryToMessages, STORAGE_KEY_MSGS_PREFIX]);
+
+  const loadOlderMessages = useCallback(async () => {
+    const convId = activeConvIdRef.current;
+    if (!convId || !serviceRunning || historyPage.loadingOlder || !historyPage.hasMoreBefore || historyPage.startIndex == null) {
+      return;
+    }
+    setHistoryPage((prev) => ({ ...prev, loadingOlder: true }));
+    messageListRef.current?.saveScrollPosition();
+    try {
+      const res = await safeFetch(
+        `${apiBaseUrl}/api/sessions/${encodeURIComponent(convId)}/history?limit=${HISTORY_PAGE_LIMIT}&before=${historyPage.startIndex}`,
+      );
+      const data = await res.json();
+      const olderMsgs = Array.isArray(data?.messages) ? mapBackendHistoryToMessages(data.messages) : [];
+      if (olderMsgs.length > 0) {
+        setMessages((prev) => {
+          const seen = new Set(prev.map((m) => m.id));
+          return [...olderMsgs.filter((m) => !seen.has(m.id)), ...prev];
+        });
+      }
+      setHistoryPage({
+        total: typeof data?.total === "number" ? data.total : historyPage.total,
+        startIndex: typeof data?.start_index === "number" ? data.start_index : historyPage.startIndex,
+        hasMoreBefore: Boolean(data?.has_more_before),
+        loadingOlder: false,
+      });
+      requestAnimationFrame(() => messageListRef.current?.restoreScrollPosition());
+    } catch {
+      setHistoryPage((prev) => ({ ...prev, loadingOlder: false }));
+      requestAnimationFrame(() => messageListRef.current?.restoreScrollPosition());
+    }
+  }, [serviceRunning, historyPage, apiBaseUrl, mapBackendHistoryToMessages]);
 
   useEffect(() => {
     if (!activeConvId) {
       setMessages([]);
+      setHistoryPage({ total: 0, startIndex: null, hasMoreBefore: false, loadingOlder: false });
       return;
     }
     if (skipConvLoadRef.current) {
@@ -751,9 +837,7 @@ export function ChatView({
       setDisplayActiveSubAgents(ctx.activeSubAgents);
       setDisplaySubAgentTasks(ctx.subAgentTasks);
     } else {
-      const activeMeta = conversations.find((c) => c.id === activeConvId);
-      const expectedCount = activeMeta?.messageCount || 0;
-      void hydrateConversationMessages(activeConvId, expectedCount);
+      void hydrateConversationMessages(activeConvId);
       setDisplayActiveSubAgents([]);
       setDisplaySubAgentTasks([]);
     }
@@ -764,6 +848,11 @@ export function ChatView({
     isConvSwitchRef.current = true;
     setSelectedAgent(agentId);
     setSelectedEndpoint(conv?.endpointId || "auto");
+    setSelectedEndpointPolicy(conv?.endpointPolicy || "prefer");
+    isOrgConvSwitchRef.current = true;
+    setOrgMode(Boolean(conv?.orgMode && conv?.orgId));
+    setSelectedOrgId(conv?.orgId || null);
+    setSelectedOrgNodeId(conv?.orgNodeId || null);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- conversations 故意排除：
     // 此 effect 语义是"切换对话时加载消息"，不应因 messageCount/title 等元数据变更而重新 hydrate，
     // 否则流结束后 setConversations 更新 messageCount 会触发竞态覆盖。
@@ -855,12 +944,13 @@ export function ChatView({
   const prevSelectedAgentRef = useRef(selectedAgent);
   const isConvSwitchRef = useRef(false);
   useEffect(() => {
-    if (selectedAgent === prevSelectedAgentRef.current) return;
-    prevSelectedAgentRef.current = selectedAgent;
     if (isConvSwitchRef.current) {
       isConvSwitchRef.current = false;
+      prevSelectedAgentRef.current = selectedAgent;
       return;
     }
+    if (selectedAgent === prevSelectedAgentRef.current) return;
+    prevSelectedAgentRef.current = selectedAgent;
     const convId = activeConvIdRef.current;
     if (!convId) return;
     setConversations((prev) => {
@@ -868,22 +958,79 @@ export function ChatView({
       if (current?.agentProfileId === selectedAgent) return prev;
       return prev.map((c) => c.id === convId ? { ...c, agentProfileId: selectedAgent } : c);
     });
-  }, [selectedAgent]);
+  }, [activeConvId, selectedAgent]);
 
-  // Sync selectedEndpoint → current conversation's endpointId
-  const prevSelectedEndpointRef = useRef(selectedEndpoint);
+  // Sync selectedEndpoint/selectedEndpointPolicy → current conversation's model selection.
+  const prevSelectedEndpointRef = useRef({ selectedEndpoint, selectedEndpointPolicy });
   useEffect(() => {
-    if (selectedEndpoint === prevSelectedEndpointRef.current) return;
-    prevSelectedEndpointRef.current = selectedEndpoint;
+    const prevSelected = prevSelectedEndpointRef.current;
+    if (
+      selectedEndpoint === prevSelected.selectedEndpoint &&
+      selectedEndpointPolicy === prevSelected.selectedEndpointPolicy
+    ) return;
+    prevSelectedEndpointRef.current = { selectedEndpoint, selectedEndpointPolicy };
     const convId = activeConvIdRef.current;
     if (!convId) return;
     const epVal = selectedEndpoint === "auto" ? undefined : selectedEndpoint;
+    const policyVal = epVal ? selectedEndpointPolicy : undefined;
     setConversations((prev) => {
       const current = prev.find((c) => c.id === convId);
-      if ((current?.endpointId || undefined) === epVal) return prev;
-      return prev.map((c) => c.id === convId ? { ...c, endpointId: epVal } : c);
+      if (
+        (current?.endpointId || undefined) === epVal &&
+        (current?.endpointPolicy || undefined) === policyVal
+      ) return prev;
+      return prev.map((c) => c.id === convId ? { ...c, endpointId: epVal, endpointPolicy: policyVal } : c);
     });
-  }, [selectedEndpoint]);
+  }, [selectedEndpoint, selectedEndpointPolicy]);
+
+  // Sync organization mode → current conversation.
+  // This mirrors endpoint/agent isolation so two chat windows can keep different orgs.
+  const prevOrgSelectionRef = useRef({
+    orgMode,
+    selectedOrgId,
+    selectedOrgNodeId,
+  });
+  useEffect(() => {
+    const prev = prevOrgSelectionRef.current;
+    if (isOrgConvSwitchRef.current) {
+      isOrgConvSwitchRef.current = false;
+      prevOrgSelectionRef.current = { orgMode, selectedOrgId, selectedOrgNodeId };
+      return;
+    }
+    if (
+      prev.orgMode === orgMode &&
+      prev.selectedOrgId === selectedOrgId &&
+      prev.selectedOrgNodeId === selectedOrgNodeId
+    ) {
+      return;
+    }
+    prevOrgSelectionRef.current = { orgMode, selectedOrgId, selectedOrgNodeId };
+    const convId = activeConvIdRef.current;
+    if (!convId) return;
+    const nextOrgMode = Boolean(orgMode && selectedOrgId);
+    setConversations((prevConvs) => {
+      const current = prevConvs.find((c) => c.id === convId);
+      if (
+        current?.orgMode === nextOrgMode &&
+        (current?.orgId || undefined) === (nextOrgMode ? selectedOrgId || undefined : undefined) &&
+        (current?.orgNodeId || undefined) === (
+          nextOrgMode ? selectedOrgNodeId || undefined : undefined
+        )
+      ) {
+        return prevConvs;
+      }
+      return prevConvs.map((c) =>
+        c.id === convId
+          ? {
+              ...c,
+              orgMode: nextOrgMode,
+              orgId: nextOrgMode ? selectedOrgId || undefined : undefined,
+              orgNodeId: nextOrgMode ? selectedOrgNodeId || undefined : undefined,
+            }
+          : c
+      );
+    });
+  }, [activeConvId, orgMode, selectedOrgId, selectedOrgNodeId, setConversations]);
 
   // Validate selectedEndpoint against current endpoints list.
   // When endpoints is empty (new workspace / no config), also reset to "auto"
@@ -894,6 +1041,40 @@ export function ChatView({
       setSelectedEndpoint("auto");
     }
   }, [endpoints, selectedEndpoint]);
+
+  useEffect(() => {
+    const convId = activeConvId;
+    if (!convId) return;
+    const conv = conversations.find((c) => c.id === convId);
+    if (!conv) return;
+    // Avoid creating empty backend sessions just because the user explored selectors.
+    if ((conv.messageCount || 0) === 0 && messages.length === 0) return;
+
+    const timer = setTimeout(() => {
+      safeFetch(`${apiBaseUrl}/api/sessions/${encodeURIComponent(convId)}/ui-state`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          endpointId: selectedEndpoint === "auto" ? null : selectedEndpoint,
+          endpointPolicy: selectedEndpoint === "auto" ? "prefer" : selectedEndpointPolicy,
+          orgMode: Boolean(orgMode && selectedOrgId),
+          orgId: orgMode && selectedOrgId ? selectedOrgId : null,
+          orgNodeId: orgMode && selectedOrgId ? selectedOrgNodeId : null,
+        }),
+      }).catch(() => {});
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [
+    activeConvId,
+    selectedEndpoint,
+    selectedEndpointPolicy,
+    orgMode,
+    selectedOrgId,
+    selectedOrgNodeId,
+    conversations,
+    messages.length,
+    apiBaseUrl,
+  ]);
 
   useEffect(() => {
     if (!agentMenuOpen) return;
@@ -942,7 +1123,7 @@ export function ChatView({
           return;
         }
 
-        const backendSessions: { id: string; title: string; lastMessage: string; timestamp: number; messageCount: number; agentProfileId?: string }[] = data.sessions || [];
+        const backendSessions: ChatConversation[] = data.sessions || [];
 
         // ── Factory reset detection (epoch-based only) ──
         // Only clear local data when data_epoch actually changes, which signals
@@ -978,6 +1159,11 @@ export function ChatView({
           timestamp: s.timestamp,
           messageCount: s.messageCount || 0,
           agentProfileId: s.agentProfileId,
+          endpointId: s.endpointId,
+          endpointPolicy: s.endpointPolicy,
+          orgMode: s.orgMode,
+          orgId: s.orgId,
+          orgNodeId: s.orgNodeId,
         }));
 
         setConversations((prev) => {
@@ -992,6 +1178,11 @@ export function ChatView({
               timestamp: Math.max(local.timestamp || 0, b.timestamp || 0),
               messageCount: Math.max(local.messageCount || 0, b.messageCount || 0),
               agentProfileId: b.agentProfileId || local.agentProfileId,
+              endpointId: b.endpointId || local.endpointId,
+              endpointPolicy: b.endpointPolicy || local.endpointPolicy,
+              orgMode: b.orgMode ?? local.orgMode,
+              orgId: b.orgId || local.orgId,
+              orgNodeId: b.orgNodeId || local.orgNodeId,
             };
           });
           const backendIds = new Set(restoredConvs.map((c) => c.id));
@@ -1070,16 +1261,20 @@ export function ChatView({
             .catch(() => {});
         }
         const preview = (d.last_message_preview as string) || "";
+        const title = (d.title as string) || "";
         const ts = ((d.timestamp as number) || 0) * 1000 || Date.now();
         setConversations((prev) => {
           const idx = prev.findIndex(c => c.id === convId);
           if (idx >= 0) {
             const updated = [...prev];
-            updated[idx] = { ...updated[idx], lastMessage: preview || updated[idx].lastMessage, timestamp: Math.max(updated[idx].timestamp || 0, ts), messageCount: (updated[idx].messageCount || 0) + 1 };
+            updated[idx] = { ...updated[idx], title: title || updated[idx].title, lastMessage: preview || updated[idx].lastMessage, timestamp: Math.max(updated[idx].timestamp || 0, ts), messageCount: (updated[idx].messageCount || 0) + 1 };
             return updated;
           }
-          return [{ id: convId, title: preview.slice(0, 20) || "对话", lastMessage: preview, timestamp: ts, messageCount: 1 }, ...prev];
+          return [{ id: convId, title: title || preview.slice(0, 20) || "对话", lastMessage: preview, timestamp: ts, messageCount: 1 }, ...prev];
         });
+        if (!activeConvIdRef.current) {
+          setActiveConvId(convId);
+        }
       } else if (event === "chat:conversation_deleted") {
         setConversations((prev) => {
           const filtered = prev.filter(c => c.id !== convId);
@@ -1215,13 +1410,29 @@ export function ChatView({
   useEffect(() => { apiBaseRef.current = apiBase; }, [apiBase]);
 
   // ── 文件上传辅助函数：上传文件到 /api/upload 并返回访问 URL ──
-  const uploadFile = useCallback(async (file: Blob, filename: string): Promise<string> => {
+  const uploadFile = useCallback(async (file: Blob, filename: string): Promise<{
+    url: string;
+    localPath?: string;
+    uploadId?: string;
+    size?: number;
+    mimeType?: string;
+  }> => {
     const form = new FormData();
     form.append("file", file, filename);
-    const res = await safeFetch(`${apiBaseRef.current}/api/upload`, { method: "POST", body: form });
+    const res = await safeFetch(`${apiBaseRef.current}/api/upload`, {
+      method: "POST",
+      body: form,
+      signal: AbortSignal.timeout(15 * 60 * 1000),
+    });
     if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
     const data = await res.json();
-    return data.url as string;
+    return {
+      url: data.url as string,
+      localPath: data.local_path as string | undefined,
+      uploadId: data.upload_id as string | undefined,
+      size: data.size as number | undefined,
+      mimeType: (data.mime_type || data.content_type) as string | undefined,
+    };
   }, []);
 
   // ── 组件卸载清理：abort 所有流式请求 + 停止麦克风 ──
@@ -1414,12 +1625,14 @@ export function ChatView({
       if (args === "off" || args === "关闭") {
         setOrgMode(false);
         setSelectedOrgId(null);
+        setSelectedOrgNodeId(null);
         setMessages((prev) => [...prev, { id: genId(), role: "system", content: "已退出组织模式", timestamp: Date.now() }]);
       } else if (args) {
         const match = orgList.find(o => o.name.includes(args) || o.id === args);
         if (match) {
           setOrgMode(true);
           setSelectedOrgId(match.id);
+          setSelectedOrgNodeId(null);
           setMessages((prev) => [...prev, { id: genId(), role: "system", content: `已切换到组织: ${match.icon} ${match.name}`, timestamp: Date.now() }]);
         } else {
           setMessages((prev) => [...prev, { id: genId(), role: "system", content: `未找到组织「${args}」。可用组织: ${orgList.map(o => o.name).join(", ") || "无"}`, timestamp: Date.now() }]);
@@ -1440,15 +1653,16 @@ export function ChatView({
         setMessages((prev) => [...prev, { id: genId(), role: "system", content: `当前思考模式: ${currentLabel}\n用法: /thinking on|off|auto`, timestamp: Date.now() }]);
       }
     }},
-    { id: "thinking_depth", label: "思考程度", description: "设置思考程度 (low/medium/high)", action: (args) => {
+    { id: "thinking_depth", label: "思考程度", description: "设置思考程度 (low/medium/high/max)", action: (args) => {
       const depth = args?.toLowerCase().trim();
-      if (depth === "low" || depth === "medium" || depth === "high") {
-        setThinkingDepth(depth);
-        const label = { low: "低", medium: "中", high: "高" }[depth];
+      const normalizedDepth = depth === "xhigh" ? "max" : depth;
+      if (normalizedDepth === "low" || normalizedDepth === "medium" || normalizedDepth === "high" || normalizedDepth === "max") {
+        setThinkingDepth(normalizedDepth);
+        const label = { low: "低", medium: "中", high: "高", max: "最大" }[normalizedDepth];
         setMessages((prev) => [...prev, { id: genId(), role: "system", content: `思考程度已设置为: ${label}`, timestamp: Date.now() }]);
       } else {
-        const currentLabel = { low: "低", medium: "中", high: "高" }[thinkingDepth];
-        setMessages((prev) => [...prev, { id: genId(), role: "system", content: `当前思考程度: ${currentLabel}\n用法: /thinking_depth low|medium|high`, timestamp: Date.now() }]);
+        const currentLabel = { low: "低", medium: "中", high: "高", max: "最大" }[thinkingDepth];
+        setMessages((prev) => [...prev, { id: genId(), role: "system", content: `当前思考程度: ${currentLabel}\n用法: /thinking_depth low|medium|high|max`, timestamp: Date.now() }]);
       }
     }},
     { id: "export", label: t("chat.exportLabel", "导出会话"), description: t("chat.exportDesc", "导出当前对话 (md/json)"), action: (args) => {
@@ -1527,6 +1741,9 @@ export function ChatView({
     setDisplayActiveSubAgents([]);
     setDisplaySubAgentTasks([]);
     setSelectedEndpoint("auto");
+    setOrgMode(false);
+    setSelectedOrgId(null);
+    setSelectedOrgNodeId(null);
     setConversations((prev) => [{
       id,
       title: "新对话",
@@ -1534,6 +1751,7 @@ export function ChatView({
       timestamp: Date.now(),
       messageCount: 0,
       agentProfileId: selectedAgent,
+      orgMode: false,
     }, ...prev]);
   }, [activeConvId, messages, selectedAgent]);
 
@@ -1624,6 +1842,18 @@ export function ChatView({
   const sendMessage = useCallback(async (overrideText?: string, targetConvId?: string, displayContent?: string, modeOverride?: "agent" | "plan" | "ask") => {
     const text = (overrideText ?? inputTextRef.current).trim();
     if (!text && pendingAttachments.length === 0) return;
+    const pendingUploads = pendingAttachments.filter((a) =>
+      a.type !== "image" && a.type !== "video" && (!a.url || a.uploadStatus === "uploading")
+    );
+    if (pendingUploads.length > 0) {
+      notifyError(t("chat.uploadStillRunning", "附件还在上传，请稍等一下"));
+      return;
+    }
+    const failedUploads = pendingAttachments.filter((a) => a.uploadStatus === "failed");
+    if (failedUploads.length > 0) {
+      notifyError(t("chat.uploadFailedRetry", "有附件上传失败，请重新选择或稍后重试"));
+      return;
+    }
     if (orgCommandPendingRef.current) return;
 
     const resolvedConvId = targetConvId || activeConvId;
@@ -1645,6 +1875,11 @@ export function ChatView({
       }
     }
 
+    if (endpoints.length === 0) {
+      notifyError(t("chat.noChatEndpointConfigured"));
+      return;
+    }
+
     // @org: 前缀或组织模式 — 路由到组织 API
     const orgPrefixMatch = text.match(/^@org:(\S+?)(?:\/(\S+?))?\s+([\s\S]+)/);
     if (orgPrefixMatch || (orgMode && selectedOrgId)) {
@@ -1664,6 +1899,9 @@ export function ChatView({
         }
       }
       if (targetOrgId) {
+        setOrgMode(true);
+        setSelectedOrgId(targetOrgId);
+        setSelectedOrgNodeId(targetNodeId || null);
         const orgUserMsg: ChatMessage = { id: genId(), role: "user", content: text, timestamp: Date.now() };
         const placeholderId = genId();
         const orgOrgName = orgList.find(o => o.id === targetOrgId)?.name || targetOrgId;
@@ -1907,6 +2145,10 @@ export function ChatView({
         status: "running",
         agentProfileId: selectedAgent,
         endpointId: selectedEndpoint !== "auto" ? selectedEndpoint : undefined,
+        endpointPolicy: selectedEndpoint !== "auto" ? selectedEndpointPolicy : undefined,
+        orgMode: Boolean(orgMode && selectedOrgId),
+        orgId: orgMode && selectedOrgId ? selectedOrgId : undefined,
+        orgNodeId: orgMode && selectedOrgId ? selectedOrgNodeId || undefined : undefined,
       }, ...prev]);
     } else {
       updateConvStatus(convId, "running");
@@ -1934,37 +2176,63 @@ export function ChatView({
       _hadError: false,
     };
     streamContexts.current.set(thisConvId, sctx);
-    // Sending a new turn should always reveal the latest messages immediately.
-    messageListRef.current?.forceFollow();
-    isMessageListAtBottomRef.current = true;
+    const isTargetConversationActive = () =>
+      shouldRenderConversationMessages(thisConvId, activeConvIdRef.current);
+    const renderTargetMessages = (nextMessages: ChatMessage[]) => {
+      if (!isTargetConversationActive()) return;
+      setMessages(nextMessages);
+    };
+
+    // Sending a turn in the visible conversation should reveal the latest messages
+    // immediately. Background queued turns must not repaint the active chat.
+    if (isTargetConversationActive()) {
+      messageListRef.current?.forceFollow();
+      isMessageListAtBottomRef.current = true;
+    }
     // Functional updater chains with any pending setMessages (e.g. handleAskAnswer's answered flag)
-    if (thisConvId === activeConvIdRef.current) {
+    if (isTargetConversationActive()) {
       setMessages((prev) => {
         const updated = [...prev, userMsg, assistantMsg];
         sctx.messages = updated;
         return updated;
       });
     } else {
-      setMessages(sctx.messages);
+      saveMessagesToStorage(STORAGE_KEY_MSGS_PREFIX + thisConvId, sctx.messages);
     }
     setStreamingTick(t => t + 1);
 
     // ── Per-session helpers: write to StreamContext, sync to screen only if active ──
-    // rAF throttle: StreamContext always gets the latest data immediately,
-    // but React state (setMessages) is flushed at most once per animation frame.
-    // This reduces O(N) reconciliation from ~30-60/s to ≤60fps, critical for long histories.
+    // StreamContext always gets the latest data immediately, while React state is
+    // flushed at a bounded cadence. This protects typing from long SSE event bursts.
+    const SCREEN_FLUSH_MIN_MS = 50;
     let screenFlushRaf = 0;
+    let screenFlushTimer: ReturnType<typeof setTimeout> | null = null;
+    let lastScreenFlushAt = 0;
     const flushToScreen = () => {
       screenFlushRaf = 0;
+      if (screenFlushTimer) {
+        clearTimeout(screenFlushTimer);
+        screenFlushTimer = null;
+      }
+      lastScreenFlushAt = Date.now();
       const c = streamContexts.current.get(thisConvId);
-      if (c && activeConvIdRef.current === thisConvId) setMessages(c.messages);
+      if (c) renderTargetMessages(c.messages);
+    };
+    const scheduleScreenFlush = () => {
+      if (screenFlushRaf || screenFlushTimer) return;
+      const elapsed = Date.now() - lastScreenFlushAt;
+      const delay = Math.max(0, SCREEN_FLUSH_MIN_MS - elapsed);
+      screenFlushTimer = setTimeout(() => {
+        screenFlushTimer = null;
+        screenFlushRaf = requestAnimationFrame(flushToScreen);
+      }, delay);
     };
     const updateMessages = (updater: (msgs: ChatMessage[]) => ChatMessage[]) => {
       const c = streamContexts.current.get(thisConvId);
       if (!c) return;
       c.messages = updater(c.messages);
-      if (activeConvIdRef.current === thisConvId && !screenFlushRaf) {
-        screenFlushRaf = requestAnimationFrame(flushToScreen);
+      if (isTargetConversationActive()) {
+        scheduleScreenFlush();
       }
     };
     const updateSubAgents = (
@@ -2018,8 +2286,7 @@ export function ChatView({
       };
 
       const poll = () => {
-        const ctx = streamContexts.current.get(thisConvId);
-        if (!ctx || ctx.userStopped) return;
+        if (sctx.userStopped) return;
         attempts++;
         safeFetch(`${apiBaseRef.current}/api/sessions/${encodeURIComponent(convId)}/history`)
           .then((r) => r.ok ? r.json() : null)
@@ -2050,7 +2317,9 @@ export function ChatView({
               staleCount++;
             }
             setMessages((prev) => {
-              const updated = prev.map((m) => {
+              const isActiveRecovery = activeConvIdRef.current === thisConvId;
+              const baseMessages = isActiveRecovery ? prev : loadMessagesFromStorage(_recoverKey);
+              const updated = baseMessages.map((m) => {
                 if (m.id !== _recoverMsgId) return m;
                 if (m.content && m.content.length >= contentLen) return m;
                 const patched: ChatMessage = { ...m, content: lastAssistant.content };
@@ -2063,8 +2332,10 @@ export function ChatView({
                 }
                 return patched;
               });
+              const liveCtx = streamContexts.current.get(thisConvId);
+              if (liveCtx) liveCtx.messages = updated;
               try { saveMessagesToStorage(_recoverKey, updated); } catch { /* quota */ }
-              return updated;
+              return isActiveRecovery ? updated : prev;
             });
             if (staleCount < maxStale && attempts < maxAttempts) {
               setTimeout(poll, getInterval());
@@ -2086,9 +2357,13 @@ export function ChatView({
         mode: effectiveMode,
         plan_mode: effectiveMode === "plan",
         endpoint: selectedEndpoint === "auto" ? null : selectedEndpoint,
+        endpoint_policy: selectedEndpoint === "auto" ? "prefer" : selectedEndpointPolicy,
         thinking_mode: thinkingMode !== "auto" ? thinkingMode : null,
         thinking_depth: thinkingMode !== "off" ? thinkingDepth : null,
         agent_profile_id: selectedAgent,
+        org_mode: Boolean(orgMode && selectedOrgId),
+        org_id: orgMode && selectedOrgId ? selectedOrgId : null,
+        org_node_id: orgMode && selectedOrgId ? selectedOrgNodeId : null,
         client_id: getClientId(),
       };
 
@@ -2098,6 +2373,9 @@ export function ChatView({
           type: a.type,
           name: a.name,
           url: a.url,
+          local_path: a.localPath,
+          upload_id: a.uploadId,
+          size: a.size,
           mime_type: a.mimeType,
         }));
       }
@@ -2128,9 +2406,28 @@ export function ChatView({
             }
           } catch { /* fall through to generic error */ }
         }
-        const errText = await response.text().catch(() => "请求失败");
+        let displayError = `错误：${response.status} 请求失败`;
+        try {
+          const contentType = response.headers.get("content-type") || "";
+          if (contentType.includes("application/json")) {
+            const data = await response.json().catch(() => null);
+            const pickText = (value: unknown): string => {
+              if (typeof value === "string") return value;
+              if (value == null) return "";
+              try { return JSON.stringify(value); } catch { return String(value); }
+            };
+            const message = pickText(data?.message || data?.detail || data?.error);
+            const hint = pickText(data?.hint);
+            displayError = [`错误：${response.status}`, message, hint].filter(Boolean).join("\n\n");
+          } else {
+            const errText = await response.text().catch(() => "请求失败");
+            displayError = `错误：${response.status} ${errText}`;
+          }
+        } catch {
+          // Keep the compact fallback above.
+        }
         updateMessages((prev) => prev.map((m) =>
-          m.id === assistantMsg.id ? { ...m, content: `错误：${response.status} ${errText}`, streaming: false } : m
+          m.id === assistantMsg.id ? { ...m, content: displayError, streaming: false } : m
         ));
         if (thisConvId) updateConvStatus(thisConvId, "error");
         return;
@@ -2158,6 +2455,11 @@ export function ChatView({
       let currentMcpCalls: ChatMcpCall[] = [];
       let currentError: ChatErrorInfo | null = null;
       let gracefulDone = false; // SSE 正常发送了 "done" 事件
+      let currentStreamStatus: string | null = null;
+      const streamStartedAt = Date.now();
+      let longWaitNoticeShown = false;
+      const LONG_WAIT_NOTICE_MS = 15_000;
+      const LONG_WAIT_NOTICE = t("chat.longWaitNotice", "本地模型还在生成，可能需要几十秒。");
 
       // 思维链: 分组数据
       let chainGroups: ChainGroup[] = [];
@@ -2209,6 +2511,15 @@ export function ChatView({
 
             switch (event.type) {
               case "heartbeat":
+                if (!currentContent && !longWaitNoticeShown && Date.now() - streamStartedAt >= LONG_WAIT_NOTICE_MS) {
+                  longWaitNoticeShown = true;
+                  currentStreamStatus = LONG_WAIT_NOTICE;
+                  updateMessages((prev) => prev.map((m) =>
+                    m.id === assistantMsg.id
+                      ? { ...m, streamStatus: currentStreamStatus }
+                      : m
+                  ));
+                }
                 continue;
               case "user_insert": {
                 const insertContent = (event.content || "").trim();
@@ -2271,6 +2582,7 @@ export function ChatView({
                 }
                 break;
               case "thinking_delta":
+                currentStreamStatus = null;
                 currentThinking += event.content;
                 currentThinkingContent += event.content;
                 if (currentChainGroup) {
@@ -2301,6 +2613,7 @@ export function ChatView({
                 break;
               }
               case "chain_text":
+                currentStreamStatus = null;
                 if (!currentChainGroup) {
                   currentChainGroup = { iteration: chainGroups.length + 1, entries: [], toolCalls: [], hasThinking: false, collapsed: false };
                   chainGroups = [...chainGroups, currentChainGroup];
@@ -2318,12 +2631,15 @@ export function ChatView({
                 }
                 break;
               case "text_delta":
+                currentStreamStatus = null;
                 currentContent += event.content;
                 break;
               case "text_replace":
+                currentStreamStatus = null;
                 currentContent = event.content ?? "";
                 break;
               case "tool_call_start": {
+                currentStreamStatus = null;
                 const toolName = event.tool_name || event.tool;
                 const callId = event.call_id || event.id;
                 if (toolName === "delegate_to_agent" && event.args?.agent_id) {
@@ -2430,6 +2746,7 @@ export function ChatView({
                 break;
               }
               case "tool_call_end": {
+                currentStreamStatus = null;
                 const toolName = event.tool_name || event.tool;
                 const callId = event.call_id || event.id;
                 const _isAgentToolEnd = toolName === "delegate_to_agent" || toolName === "delegate_parallel" || toolName === "spawn_agent" || toolName === "create_agent";
@@ -2720,6 +3037,11 @@ export function ChatView({
                   noticeText = endpointName
                     ? `当前模型「${endpointName}」未返回思考过程，已自动降级为非思考模式继续回答。`
                     : "当前模型未返回思考过程，已自动降级为非思考模式继续回答。";
+                } else if (reasonCode === "endpoint_failover") {
+                  const fromEndpoint = String((event as any).from_endpoint || "");
+                  noticeText = fromEndpoint && endpointName
+                    ? `所选模型「${fromEndpoint}」本轮请求失败，已切换到「${endpointName}」继续回答。`
+                    : "所选模型本轮请求失败，已自动切换到可用模型继续回答。";
                 } else if (reasonCode === "vision_degraded") {
                   noticeText = endpointName
                     ? `当前选中的模型「${endpointName}」不支持视觉，本轮的图片已被隐藏，仅根据文字内容回答。`
@@ -2839,14 +3161,17 @@ export function ChatView({
                   const ctxLimit = event.usage.history_context_limit ?? event.usage.context_limit;
                   if (typeof ctxTokens === "number") setContextTokens(ctxTokens);
                   if (typeof ctxLimit === "number") setContextLimit(ctxLimit);
-                  const inTokens = event.usage.billable_input_tokens ?? event.usage.input_tokens;
-                  const outTokens = event.usage.billable_output_tokens ?? event.usage.output_tokens;
-                  const totalTokens = event.usage.billable_total_tokens ?? event.usage.total_tokens;
+                  const isEstimatedUsage = Boolean(event.usage.usage_estimated);
+                  const inTokens = isEstimatedUsage ? event.usage.input_tokens : (event.usage.billable_input_tokens ?? event.usage.input_tokens);
+                  const outTokens = isEstimatedUsage ? event.usage.output_tokens : (event.usage.billable_output_tokens ?? event.usage.output_tokens);
+                  const totalTokens = isEstimatedUsage ? event.usage.total_tokens : (event.usage.billable_total_tokens ?? event.usage.total_tokens);
                   if (typeof inTokens === "number" && typeof outTokens === "number") {
                     assistantMsg.usage = {
                       input_tokens: inTokens,
                       output_tokens: outTokens,
                       total_tokens: totalTokens ?? inTokens + outTokens,
+                      usage_estimated: isEstimatedUsage,
+                      usage_source: event.usage.usage_source,
                     };
                   }
                 }
@@ -2889,6 +3214,7 @@ export function ChatView({
                     thinkingChain: chainGroups.length > 0 ? chainGroups.map(g => ({ ...g })) : null,
                     usage: assistantMsg.usage ?? m.usage,
                     streaming: event.type !== "done",
+                    streamStatus: event.type === "done" ? null : currentStreamStatus,
                   }
                 : m
             ));
@@ -2911,12 +3237,12 @@ export function ChatView({
         if (sctx.userStopped) {
           updateMessages((prev) => prev.map((m) =>
             m.id === assistantMsg.id
-              ? { ...m, content: m.content || "（已中止）", streaming: false }
+              ? { ...m, content: m.content || "（已中止）", streaming: false, streamStatus: null }
               : m
           ));
         } else {
           updateMessages((prev) => prev.map((m) =>
-            m.id === assistantMsg.id ? { ...m, streaming: false } : m
+            m.id === assistantMsg.id ? { ...m, streaming: false, streamStatus: null } : m
           ));
           attemptRecovery(4000);
         }
@@ -2927,6 +3253,7 @@ export function ChatView({
                 ...m,
                 content: m.content || (m.askUser ? "" : "未收到有效回复，请重试。"),
                 streaming: false,
+                streamStatus: null,
               }
             : m
         ));
@@ -2934,40 +3261,32 @@ export function ChatView({
         if (!gracefulDone && convId) {
           // SSE 连接被中断（未收到 "done" 事件），后端可能仍在运行，启动持续轮询恢复
           attemptRecovery(3000);
-        } else if (gracefulDone) {
-          // SSE 正常完成，但若未交付任何有效响应，做一次性回填
-          const streamDeliveredPayload = !!(
-            currentContent.trim() || currentAsk || currentToolCalls.length > 0
-          );
-          if (!streamDeliveredPayload && convId) {
-            safeFetch(`${apiBase}/api/sessions/${encodeURIComponent(convId)}/history`)
-              .then((r) => r.json())
-              .then((data) => {
-                const rows = Array.isArray(data?.messages) ? data.messages : [];
-                const candidates = rows.filter((m: { role?: string; content?: string }) => m?.role === "assistant" && typeof m?.content === "string");
-                const newerThanUser = candidates.filter((m: { timestamp?: number }) => typeof m?.timestamp === "number" && m.timestamp >= userMsg.timestamp);
-                const lastAssistant = (newerThanUser.length > 0 ? newerThanUser : candidates).slice(-1)[0];
-                if (!lastAssistant?.content) return;
-                const backendLen = (lastAssistant.content as string).length;
-                setMessages((prev) => prev.map((m) => {
-                  if (m.id !== assistantMsg.id) return m;
-                  if (m.content && m.content.length >= backendLen) return m;
-                  const patched: ChatMessage = { ...m, content: lastAssistant.content };
-                  if ((!m.thinkingChain || m.thinkingChain.length === 0) && Array.isArray(lastAssistant.chain_summary) && lastAssistant.chain_summary.length > 0) {
-                    patched.thinkingChain = buildChainFromSummary(lastAssistant.chain_summary);
-                  }
-                  return patched;
-                }));
-              })
-              .catch(() => {});
-          }
+        } else if (gracefulDone && convId) {
+          // SSE 正常完成后也静默校验一次后端历史。桌面端恢复前台或
+          // fetch 流边界异常时，UI 可能已经显示了半截 Markdown 表格；
+          // 后端 session history 是最终落盘结果，用它补齐更完整的回答。
+          safeFetch(`${apiBase}/api/sessions/${encodeURIComponent(convId)}/history`)
+            .then((r) => r.json())
+            .then((data) => {
+              const rows = Array.isArray(data?.messages) ? data.messages : [];
+              if (!rows.length) return;
+              setMessages((prev) => {
+                const patched = patchMessagesWithBackend(prev, rows);
+                if (patched === prev) return prev;
+                const liveCtx = streamContexts.current.get(thisConvId);
+                if (liveCtx) liveCtx.messages = patched;
+                try { saveMessagesToStorage(STORAGE_KEY_MSGS_PREFIX + thisConvId, patched); } catch { /* quota */ }
+                return patched;
+              });
+            })
+            .catch(() => {});
         }
       }
     } catch (e: unknown) {
       sctx._hadError = true;
       if (sctx.userStopped) {
         updateMessages((prev) => prev.map((m) =>
-          m.id === assistantMsg.id ? { ...m, content: m.content || "（已中止）", streaming: false } : m
+          m.id === assistantMsg.id ? { ...m, content: m.content || "（已中止）", streaming: false, streamStatus: null } : m
         ));
       } else {
         const isAbortLike =
@@ -2977,7 +3296,7 @@ export function ChatView({
 
         if (isAbortLike) {
           updateMessages((prev) => prev.map((m) =>
-            m.id === assistantMsg.id ? { ...m, streaming: false } : m
+            m.id === assistantMsg.id ? { ...m, streaming: false, streamStatus: null } : m
           ));
         } else {
           const errMsg = e instanceof Error ? e.message : String(e);
@@ -2998,6 +3317,7 @@ export function ChatView({
     } finally {
       if (idleTimer) clearTimeout(idleTimer);
       if (screenFlushRaf) { cancelAnimationFrame(screenFlushRaf); screenFlushRaf = 0; }
+      if (screenFlushTimer) { clearTimeout(screenFlushTimer); screenFlushTimer = null; }
       const ctx = streamContexts.current.get(thisConvId);
       if (ctx) {
         ctx.isStreaming = false;
@@ -3083,7 +3403,7 @@ export function ChatView({
         return updated;
       });
     }
-  }, [pendingAttachments, isCurrentConvStreaming, activeConvId, chatMode, selectedEndpoint, apiBase, slashCommands, thinkingMode, thinkingDepth, t, setInputValue]);
+  }, [pendingAttachments, isCurrentConvStreaming, activeConvId, chatMode, selectedEndpoint, selectedEndpointPolicy, apiBase, slashCommands, endpoints.length, thinkingMode, thinkingDepth, t, setInputValue]);
 
   // ── 处理用户回答 (ask_user) ──
   const handleAskAnswer = useCallback((msgId: string, answer: string) => {
@@ -3321,6 +3641,7 @@ export function ChatView({
         name: file.name,
         size: file.size,
         mimeType: file.type,
+        uploadStatus: file.type.startsWith("image/") || file.type.startsWith("video/") ? "uploaded" : "uploading",
         _uploadId: uploadId,
       };
       if (att.type === "video" && file.size > 7 * 1024 * 1024) {
@@ -3341,16 +3662,28 @@ export function ChatView({
       } else {
         setPendingAttachments((prev) => [...prev, att]);
         uploadFile(file, file.name)
-          .then((serverUrl) => {
+          .then((uploaded) => {
             setPendingAttachments((prev) =>
               prev.map((a) => a._uploadId === uploadId
-                ? { ...a, url: `${apiBaseRef.current}${serverUrl}` } : a)
+                ? {
+                  ...a,
+                  url: `${apiBaseRef.current}${uploaded.url}`,
+                  localPath: uploaded.localPath,
+                  uploadId: uploaded.uploadId,
+                  size: uploaded.size ?? a.size,
+                  mimeType: uploaded.mimeType ?? a.mimeType,
+                  uploadStatus: "uploaded",
+                  uploadError: undefined,
+                } : a)
             );
           })
-          .catch(() => {
+          .catch((err) => {
             notifyError(`文件上传失败: ${file.name}`);
             setPendingAttachments((prev) =>
-              prev.filter((a) => a._uploadId !== uploadId || a.url));
+              prev.map((a) => a._uploadId === uploadId
+                ? { ...a, uploadStatus: "failed", uploadError: String(err) }
+                : a)
+            );
           });
       }
     }
@@ -3407,6 +3740,8 @@ export function ChatView({
       gif: "image/gif", webp: "image/webp", bmp: "image/bmp", svg: "image/svg+xml",
       mp4: "video/mp4", webm: "video/webm", avi: "video/x-msvideo",
       mov: "video/quicktime", mkv: "video/x-matroska",
+      mp3: "audio/mpeg", wav: "audio/wav", m4a: "audio/mp4",
+      aac: "audio/aac", flac: "audio/flac", ogg: "audio/ogg", opus: "audio/opus",
       pdf: "application/pdf", txt: "text/plain", md: "text/plain",
       json: "application/json", csv: "text/csv",
     };
@@ -3432,6 +3767,7 @@ export function ChatView({
         const ext = (name.split(".").pop() || "").toLowerCase();
         const isImage = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"].includes(ext);
         const isVideo = ["mp4", "webm", "avi", "mov", "mkv"].includes(ext);
+        const isAudio = ["mp3", "wav", "m4a", "aac", "flac", "ogg", "opus", "weba", "wma", "amr"].includes(ext);
         const mimeType = mimeMap[ext] || "application/octet-stream";
         readFileBase64(filePath)
           .then((dataUrl) => {
@@ -3476,27 +3812,37 @@ export function ChatView({
             const uploadId = genId();
             const isPdf = ext === "pdf" || mimeType === "application/pdf";
             const att: ChatAttachment = {
-              type: isPdf ? "document" : "file",
+              type: isAudio ? "voice" : isPdf ? "document" : "file",
               name,
               size: estimatedSize,
               mimeType,
+              uploadStatus: "uploading",
               _uploadId: uploadId,
             };
             setPendingAttachments((prev) => [...prev, att]);
             uploadFile(blob, name)
-              .then((serverUrl) => {
+              .then((uploaded) => {
                 if (cancelled) return;
                 setPendingAttachments((prev) => prev.map((a) =>
                   a._uploadId === uploadId
-                    ? { ...a, url: `${apiBaseRef.current}${serverUrl}` }
+                    ? {
+                      ...a,
+                      url: `${apiBaseRef.current}${uploaded.url}`,
+                      localPath: uploaded.localPath,
+                      uploadId: uploaded.uploadId,
+                      size: uploaded.size ?? a.size,
+                      mimeType: uploaded.mimeType ?? a.mimeType,
+                      uploadStatus: "uploaded",
+                      uploadError: undefined,
+                    }
                     : a,
                 ));
               })
               .catch((err) => {
                 notifyError(`文件上传失败: ${name}`);
                 logger.error("Chat.Upload", "DragDrop uploadFile failed", { name, error: String(err) });
-                setPendingAttachments((prev) => prev.filter((a) =>
-                  a._uploadId !== uploadId || a.url));
+                setPendingAttachments((prev) => prev.map((a) =>
+                  a._uploadId === uploadId ? { ...a, uploadStatus: "failed", uploadError: String(err) } : a));
               });
           })
           .catch((err) => logger.error("Chat", "DragDrop read_file_base64 failed", { name, error: String(err) }));
@@ -3552,18 +3898,28 @@ export function ChatView({
         const filename = `voice-${Date.now()}.${ext}`;
         const tempAtt: ChatAttachment = {
           type: "voice", name: filename, previewUrl: localPreview,
-          size: blob.size, mimeType: mimeType || "audio/webm", _uploadId: uploadId,
+          size: blob.size, mimeType: mimeType || "audio/webm", uploadStatus: "uploading", _uploadId: uploadId,
         };
         setPendingAttachments((prev) => [...prev, tempAtt]);
         uploadFile(blob, filename)
-          .then((serverUrl) => {
+          .then((uploaded) => {
             setPendingAttachments((prev) =>
-              prev.map((a) => a._uploadId === uploadId ? { ...a, url: `${apiBaseRef.current}${serverUrl}` } : a)
+              prev.map((a) => a._uploadId === uploadId ? {
+                ...a,
+                url: `${apiBaseRef.current}${uploaded.url}`,
+                localPath: uploaded.localPath,
+                uploadId: uploaded.uploadId,
+                size: uploaded.size ?? a.size,
+                mimeType: uploaded.mimeType ?? a.mimeType,
+                uploadStatus: "uploaded",
+                uploadError: undefined,
+              } : a)
             );
           })
-          .catch(() => {
+          .catch((err) => {
             notifyError(t("chat.voiceUploadFailed", "语音上传失败"));
-            setPendingAttachments((prev) => prev.filter((a) => a._uploadId !== uploadId || a.url));
+            setPendingAttachments((prev) => prev.map((a) =>
+              a._uploadId === uploadId ? { ...a, uploadStatus: "failed", uploadError: String(err) } : a));
           });
         stream.getTracks().forEach((t) => t.stop());
       };
@@ -3716,6 +4072,7 @@ export function ChatView({
       if (match) {
         setOrgMode(true);
         setSelectedOrgId(match.id);
+        setSelectedOrgNodeId(null);
       }
     }
 
@@ -4114,6 +4471,9 @@ export function ChatView({
             isStreaming={isCurrentConvStreaming}
             conversationId={activeConvId || undefined}
             httpApiBase={() => apiBaseUrl}
+            hasMoreBefore={historyPage.hasMoreBefore}
+            loadingOlder={historyPage.loadingOlder}
+            onLoadOlder={loadOlderMessages}
             onPlanStepAction={(action, stepIdx, description) => {
               const msg = action === "skip"
                 ? `请跳过当前步骤（第 ${stepIdx + 1} 步：${description}），直接进入下一步。`
@@ -4526,7 +4886,7 @@ export function ChatView({
                 <div className="chatModelMenu">
                   <div
                     className={`chatModelMenuItem ${selectedEndpoint === "auto" ? "chatModelMenuItemActive" : ""}`}
-                    onClick={() => { setSelectedEndpoint("auto"); setModelMenuOpen(false); }}
+                    onClick={() => { setSelectedEndpoint("auto"); setSelectedEndpointPolicy("prefer"); setModelMenuOpen(false); }}
                   >
                     {t("chat.selectModel")}
                   </div>
@@ -4548,6 +4908,31 @@ export function ChatView({
                       </div>
                     );
                   })}
+                  {selectedEndpoint !== "auto" && (
+                    <div className="px-3 py-2 border-t border-border/50 text-xs text-muted-foreground">
+                      <div className="mb-1.5 font-medium text-foreground">
+                        {selectedEndpointPolicy === "require"
+                          ? t("chat.modelPolicyStrict", "严格使用此模型")
+                          : t("chat.modelPolicyPrefer", "优先使用此模型")}
+                      </div>
+                      <button
+                        type="button"
+                        className="chatModelMenuItem"
+                        style={{ width: "100%", justifyContent: "flex-start", padding: "6px 8px" }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedEndpointPolicy((p) => (p === "require" ? "prefer" : "require"));
+                        }}
+                        title={selectedEndpointPolicy === "require"
+                          ? t("chat.modelPolicyStrictHint", "当前模型不可用时直接提示失败，不自动切换。")
+                          : t("chat.modelPolicyPreferHint", "当前模型不可用时允许自动切换到可用模型。")}
+                      >
+                        {selectedEndpointPolicy === "require"
+                          ? t("chat.switchToPreferModel", "改为不可用时自动切换")
+                          : t("chat.switchToStrictModel", "改为只用当前模型")}
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
               {agentProfiles.length > 0 && !orgMode && (
@@ -4601,6 +4986,7 @@ export function ChatView({
                       if (orgMode) {
                         setOrgMode(false);
                         setSelectedOrgId(null);
+                        setSelectedOrgNodeId(null);
                         setOrgMenuOpen(false);
                       } else {
                         setOrgMenuOpen((v) => !v);
@@ -4629,6 +5015,7 @@ export function ChatView({
                           onClick={() => {
                             setOrgMode(true);
                             setSelectedOrgId(o.id);
+                            setSelectedOrgNodeId(null);
                             setOrgMenuOpen(false);
                           }}
                         >
@@ -4786,20 +5173,21 @@ export function ChatView({
                         onMouseEnter={() => setThinkingDepthTipOpen(true)}
                         onMouseLeave={() => setThinkingDepthTipOpen(false)}
                         onClick={() => {
-                          setThinkingDepth((d) => d === "low" ? "medium" : d === "medium" ? "high" : "low");
+                          setThinkingDepth((d) => d === "low" ? "medium" : d === "medium" ? "high" : d === "high" ? "max" : "low");
                         }}
                         className="chatInputIconBtn"
                       >
-                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style={{ flexShrink: 0 }}>
-                          <rect x="1" y="9" width="3" height="4" rx="0.5" fill="currentColor" opacity={thinkingDepth === "low" || thinkingDepth === "medium" || thinkingDepth === "high" ? 1 : 0.25} />
-                          <rect x="5.5" y="5.5" width="3" height="7.5" rx="0.5" fill="currentColor" opacity={thinkingDepth === "medium" || thinkingDepth === "high" ? 1 : 0.25} />
-                          <rect x="10" y="2" width="3" height="11" rx="0.5" fill="currentColor" opacity={thinkingDepth === "high" ? 1 : 0.25} />
+                        <svg width="18" height="14" viewBox="0 0 18 14" fill="none" style={{ flexShrink: 0 }}>
+                          <rect x="1" y="9" width="3" height="4" rx="0.5" fill="currentColor" opacity={thinkingDepth === "low" || thinkingDepth === "medium" || thinkingDepth === "high" || thinkingDepth === "max" ? 1 : 0.25} />
+                          <rect x="5.5" y="5.5" width="3" height="7.5" rx="0.5" fill="currentColor" opacity={thinkingDepth === "medium" || thinkingDepth === "high" || thinkingDepth === "max" ? 1 : 0.25} />
+                          <rect x="10" y="2" width="3" height="11" rx="0.5" fill="currentColor" opacity={thinkingDepth === "high" || thinkingDepth === "max" ? 1 : 0.25} />
+                          <rect x="14.5" y="0.5" width="2.5" height="12.5" rx="0.5" fill="currentColor" opacity={thinkingDepth === "max" ? 1 : 0.25} />
                         </svg>
-                        <span style={{ fontSize: 10 }}>{{ low: t("chat.depthLow"), medium: t("chat.depthMedium"), high: t("chat.depthHigh") }[thinkingDepth]}</span>
+                        <span style={{ fontSize: 10 }}>{{ low: t("chat.depthLow"), medium: t("chat.depthMedium"), high: t("chat.depthHigh"), max: t("chat.depthMax") }[thinkingDepth]}</span>
                       </button>
                     </TooltipTrigger>
                     <TooltipContent side="top" className="text-xs" onPointerDownOutside={(e) => e.preventDefault()}>
-                      {{ low: t("chat.depthTipLow"), medium: t("chat.depthTipMedium"), high: t("chat.depthTipHigh") }[thinkingDepth]}
+                      {{ low: t("chat.depthTipLow"), medium: t("chat.depthTipMedium"), high: t("chat.depthTipHigh"), max: t("chat.depthTipMax") }[thinkingDepth]}
                       <span className="block text-[10px] opacity-60 mt-0.5">{t("chat.depthClickToSwitch")}</span>
                     </TooltipContent>
                   </Tooltip>

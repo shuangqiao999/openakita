@@ -145,6 +145,7 @@ class OrgNode:
     skills: list[str] = field(default_factory=list)
     skills_mode: str = "all"
     preferred_endpoint: str | None = None
+    endpoint_policy: str = "prefer"
     max_concurrent_tasks: int = 1
     timeout_s: int = 0
     can_delegate: bool = True
@@ -188,6 +189,7 @@ class OrgNode:
             "skills": list(self.skills) if self.skills else [],
             "skills_mode": self.skills_mode,
             "preferred_endpoint": self.preferred_endpoint,
+            "endpoint_policy": self.endpoint_policy,
             "max_concurrent_tasks": self.max_concurrent_tasks,
             "timeout_s": self.timeout_s,
             "can_delegate": self.can_delegate,
@@ -216,6 +218,8 @@ class OrgNode:
                 d["status"] = NodeStatus(d["status"])
             except ValueError:
                 d["status"] = NodeStatus.IDLE
+        if d.get("endpoint_policy") not in {"prefer", "require"}:
+            d["endpoint_policy"] = "prefer"
         return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
 
 
@@ -392,6 +396,9 @@ class Organization:
     # Core business mission — drives proactive operations
     core_business: str = ""
 
+    # Canvas layout
+    layout_locked: bool = False
+
     # Token budget (reserved, not enforced initially)
     token_budget: int | None = None  # TODO: not yet enforced
     token_budget_period: str | None = None  # TODO: not yet enforced
@@ -463,6 +470,7 @@ class Organization:
             "total_tokens_used": self.total_tokens_used,
             "user_persona": self.user_persona.to_dict(),
             "core_business": self.core_business,
+            "layout_locked": self.layout_locked,
             "token_budget": self.token_budget,
             "token_budget_period": self.token_budget_period,
             "operation_mode": self.operation_mode,
@@ -566,7 +574,7 @@ class Organization:
     # directly and surface the candidate list in their error messages.
     def resolve_reference(
         self, query: str
-    ) -> tuple["OrgNode | None", list["OrgNode"], str]:
+    ) -> tuple[OrgNode | None, list[OrgNode], str]:
         if not query:
             return None, [], "not_found"
 

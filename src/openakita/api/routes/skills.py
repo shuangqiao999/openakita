@@ -68,6 +68,23 @@ async def _propagate(request: Request, action: str, *, rescan: bool = True) -> N
         logger.warning("propagate_skill_change(%s) failed: %s", action, e)
 
 
+def _skill_load_issues(loader, *, limit: int = 20) -> list[dict[str, str]]:
+    """Return concise non-fatal skill load diagnostics from the active loader."""
+    raw = getattr(loader, "last_load_issues", []) or []
+    if not isinstance(raw, list | tuple):
+        return []
+    issues: list[dict[str, str]] = []
+    for item in raw[:limit]:
+        if not isinstance(item, dict):
+            continue
+        skill_id = str(item.get("skill_id") or "").strip()
+        error = str(item.get("error") or "").strip()
+        path = str(item.get("path") or "").strip()
+        if skill_id and error:
+            issues.append({"skill_id": skill_id, "error": error, "path": path})
+    return issues
+
+
 async def _auto_translate_new_skills(request: Request, install_url: str) -> None:
     """安装后为缺少 i18n 翻译的技能自动生成中文翻译（写入 agents/openai.yaml）。
 
@@ -272,10 +289,14 @@ async def install_skill(request: Request):
     except Exception:
         workspace_dir = str(Path.cwd())
 
-    try:
-        from openakita.setup_center.bridge import install_skill as _install_skill
+    from openakita.setup_center.bridge import SkillInstallError
+    from openakita.setup_center.bridge import install_skill as _install_skill
 
+    try:
         await asyncio.to_thread(_install_skill, workspace_dir, url, category=category)
+    except SkillInstallError as e:
+        logger.error("Skill install failed (%s): %s", e.code, e.message, exc_info=True)
+        return {"error": e.message, "error_code": e.code}
     except FileNotFoundError as e:
         missing = getattr(e, "filename", None) or "外部命令"
         logger.error("Skill install missing dependency: %s", e, exc_info=True)
@@ -478,11 +499,25 @@ async def reload_skills(request: Request):
 
         await _propagate(request, "reload", rescan=True)
         total = len(registry.list_all())
-        return {
+        issues = _skill_load_issues(loader)
+        result = {
             "status": "ok",
             "reloaded": "all",
             "total": total,
         }
+        if issues:
+            result.update(
+                {
+                    "partial": True,
+                    "skipped_count": len(issues),
+                    "skipped_skills": issues,
+                    "warning": (
+                        f"已刷新可用技能，但有 {len(issues)} 个技能未加载。"
+                        "其他技能可正常使用。"
+                    ),
+                }
+            )
+        return result
     except Exception as e:
         logger.error(f"Skill reload failed: {e}")
         return {"error": str(e)}

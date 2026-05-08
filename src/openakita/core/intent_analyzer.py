@@ -116,6 +116,7 @@ class IntentResult:
     memory_scope: MemoryScope = MemoryScope.RELEVANT
     catalog_scope: list[str] = field(default_factory=list)
     requires_tools: bool = False
+    evidence_required: bool = False
     requires_project_context: bool = False
     risk_level_hint: RiskLevelHint = RiskLevelHint.NONE
 
@@ -128,6 +129,7 @@ _DEFAULT_RESULT = IntentResult(
     prompt_depth=PromptDepth.MINIMAL,
     memory_scope=MemoryScope.PINNED_ONLY,
     requires_tools=False,
+    evidence_required=False,
 )
 
 INTENT_ANALYZER_SYSTEM = """\
@@ -161,6 +163,7 @@ prompt_depth: <fast|minimal|standard|full>
 memory_scope: <none|pinned_only|relevant|full>
 catalog_scope: [tools|skills|plugins|mcp|memory|project]
 requires_tools: <true/false>
+evidence_required: <true/false>
 requires_project_context: <true/false>
 risk_level_hint: <none|low|medium|high>
 destructive: <true/false>
@@ -183,6 +186,7 @@ suggest_plan: <true/false>
 - 不确定时，如果不需要工具就能回答，选 query
 - destructive 判断要基于语义分析，理解操作的实际后果，而不是简单匹配关键词
 - prompt_depth 只表示需要注入多少系统上下文；简单问答用 minimal，真实项目/文件/插件任务才用 standard/full
+- 只要回答需要核对外部事实（GitHub/issue/网页/技能仓库/日志/当前代码/配置/API 状态/下载/排查/验证），evidence_required 必须为 true；这不是限制任务，而是防止无证据结论
 - add/remove/delete 等词只有在语义上要求修改外部系统时才表示风险；算术、事实修正、假设性安全讨论不是风险任务
 
 重要：你必须分析用户的实际消息内容来判断意图，不要复制上面的示例。"""
@@ -299,6 +303,20 @@ _QUERY_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
+# Direct short-answer requests are still knowledge/chat style questions.  They
+# should not enter the full ReAct loop just because they contain words like
+# "回答" or "介绍".
+_DIRECT_SHORT_ANSWER_RE = re.compile(
+    r"^(?:请)?(?:只)?(?:用)?一[句段]话(?:回答|说明|解释|介绍)?[，,:：\s]*"
+    r"(?:你(?:的)?(?:职责|角色)(?:是什么)?|你是谁|介绍(?:一下)?你自己|"
+    r"解释\s*\S{1,30}|说明\s*\S{1,30}|介绍\s*\S{1,30})$"
+    r"|^(?:你(?:的)?(?:职责|角色)(?:是什么)?|你是谁|介绍(?:一下)?你自己)$"
+    r"|^(?:请)?(?:简洁|简单|直接)(?:回答|说明|解释|介绍)[，,:：\s]*"
+    r"(?:你(?:的)?(?:职责|角色)(?:是什么)?|你是谁|介绍(?:一下)?你自己|"
+    r"\S{1,30}(?:是什么|怎么理解))$",
+    re.IGNORECASE,
+)
+
 # Context-dependent markers: when present the user is referencing prior
 # conversation turns, so the fast (history-free) path MUST be skipped.
 _CONTEXT_DEPENDENT_RE = re.compile(
@@ -307,6 +325,128 @@ _CONTEXT_DEPENDENT_RE = re.compile(
     r"来着|我的.{0,6}叫什么|"
     r"^[我你他她它](?:的|们的))"
 )
+
+_ACTION_VERB_RE = re.compile(
+    r"(?:帮我|请你|开始|继续|执行|处理|排查|查看|看看|检查|分析|修复|安装|"
+    r"下载|打开|运行|创建|生成|写入|修改|改成|删除|清理|搜索)"
+)
+
+_TOOL_TARGET_RE = re.compile(
+    r"(?:日志|报错|警告|错误|文件|目录|项目|代码|仓库|网页|浏览器|GitHub|issue|"
+    r"skill|技能|配置|环境|数据库|截图|任务|命令|脚本|记录|待办|记忆|进度)"
+)
+
+_STRONG_EVIDENCE_RE = re.compile(
+    r"(?:https?://|github\.com|GitHub|issue\s*#?\d+|日志|log|报错|警告|错误|"
+    r"当前代码|代码中|本仓库|这个仓库|技能市场|SkillHub|Skill Store|skill\s*store|"
+    r"技能仓库|诊断包|反馈包|下载日志|API\s*状态|接口状态)",
+    re.IGNORECASE,
+)
+
+_EVIDENCE_ACTION_RE = re.compile(r"(?:分析|排查|检查|验证|复现|下载|查看|看看|定位)")
+
+_EXECUTION_FOLLOWUP_RE = re.compile(
+    r"^(?:立即|马上|现在|直接|开始|继续|接着)?\s*"
+    r"(?:执行|处理|推进|继续执行|接着做)"
+    r"(?:\s*(?:任务|这个|它|上面|刚才的|之前的|不要停|别停|下去|吧|。|！|!))?$"
+)
+
+_RECORD_CONTENT_RE = re.compile(
+    r"^(?:(?:\d{4}-\d{1,2}-\d{1,2})|(?:\d{1,2}|[一二三四五六七八九十]+)月"
+    r"(?:\d{1,2}|[一二三四五六七八九十]+)日)?"
+    r".{0,12}(?:工作|日常|记录|进度|待办)[:：]",
+    re.IGNORECASE,
+)
+
+_WRITE_CONFIRMATION_RE = re.compile(
+    r"(?:写入|保存|记录|读取|验证|文件|内容).{0,12}"
+    r"(?:成功|了吗|没有|没看到|看不到|不同|不一致|确认|确定)"
+    r"|(?:还是)?没有写入成功|(?:系统中)?没看到(?:该)?文件|和你显示不同",
+    re.IGNORECASE,
+)
+
+
+def _requires_external_evidence(message: str) -> bool:
+    """Whether the answer should be backed by current external/project evidence.
+
+    This guard intentionally does not add timeouts or hard loop limits. It only
+    prevents evidence-sensitive questions from being accepted as pure memory
+    answers.
+    """
+    stripped = message.strip()
+    if not stripped:
+        return False
+    if _RECORD_CONTENT_RE.search(stripped) or _WRITE_CONFIRMATION_RE.search(stripped):
+        return True
+    if _STRONG_EVIDENCE_RE.search(stripped):
+        return True
+    if _EXECUTION_FOLLOWUP_RE.search(stripped):
+        return True
+    return bool(_EVIDENCE_ACTION_RE.search(stripped) and _TOOL_TARGET_RE.search(stripped))
+
+
+def _looks_like_tool_action_request(message: str) -> bool:
+    """Return True for requests that clearly require operating on external state."""
+    stripped = message.strip()
+    if not stripped:
+        return False
+
+    if _RECORD_CONTENT_RE.search(stripped) or _WRITE_CONFIRMATION_RE.search(stripped):
+        return True
+
+    # Continuation commands are only treated as tool actions when they explicitly
+    # refer to an execution/task, avoiding ordinary acknowledgements like "继续说".
+    if _EXECUTION_FOLLOWUP_RE.search(stripped):
+        return True
+    if re.search(r"(?:继续|执行).{0,8}(?:任务|处理|排查|操作|执行|不要停|别停)", stripped):
+        return True
+
+    return bool(_ACTION_VERB_RE.search(stripped) and _TOOL_TARGET_RE.search(stripped))
+
+
+def _infer_tool_action_hints(message: str) -> tuple[list[str], bool]:
+    hints: list[str] = []
+    needs_project_context = False
+
+    def add_hint(name: str) -> None:
+        if name not in hints:
+            hints.append(name)
+
+    if re.search(r"(?:浏览器|网页)", message):
+        add_hint("Browser")
+    if re.search(r"(?:GitHub|issue|网页|搜索|下载|仓库)", message, flags=re.IGNORECASE):
+        add_hint("Web Search")
+    if re.search(r"(?:日志|报错|警告|错误|文件|目录|项目|代码|skill|技能|配置|数据库|命令|脚本)", message):
+        add_hint("File System")
+        needs_project_context = True
+
+    if not hints:
+        add_hint("File System")
+
+    return hints, needs_project_context
+
+
+def _make_tool_action_result(message: str, *, follow_up: bool = False) -> IntentResult:
+    intent = IntentType.FOLLOW_UP if follow_up else IntentType.TASK
+    tool_hints, requires_project_context = _infer_tool_action_hints(message)
+    return IntentResult(
+        intent=intent,
+        confidence=0.95,
+        task_definition=message[:600],
+        task_type="action",
+        tool_hints=tool_hints,
+        memory_keywords=[],
+        force_tool=True,
+        todo_required=False,
+        raw_output="[action-tool-guard]",
+        fast_reply=False,
+        prompt_depth=PromptDepth.STANDARD,
+        memory_scope=MemoryScope.RELEVANT,
+        requires_tools=True,
+        evidence_required=True,
+        requires_project_context=requires_project_context,
+        risk_level_hint=RiskLevelHint.NONE,
+    )
 
 
 def _try_fast_query_shortcut(message: str) -> IntentResult | None:
@@ -317,7 +457,9 @@ def _try_fast_query_shortcut(message: str) -> IntentResult | None:
         return None
     if _CONTEXT_DEPENDENT_RE.search(stripped):
         return None
-    if _QUERY_PATTERNS.match(stripped):
+    if _looks_like_tool_action_request(stripped):
+        return _make_tool_action_result(stripped)
+    if _QUERY_PATTERNS.match(stripped) or _DIRECT_SHORT_ANSWER_RE.match(stripped):
         logger.info(f"[IntentAnalyzer] Fast-path: '{stripped}' matched as QUERY (rule-based)")
         return IntentResult(
             intent=IntentType.QUERY,
@@ -333,6 +475,7 @@ def _try_fast_query_shortcut(message: str) -> IntentResult | None:
             prompt_depth=PromptDepth.FAST,
             memory_scope=MemoryScope.PINNED_ONLY,
             requires_tools=False,
+            evidence_required=False,
             risk_level_hint=RiskLevelHint.NONE,
         )
     return None
@@ -375,6 +518,7 @@ def _try_fast_chat_shortcut(message: str, has_history: bool = False) -> IntentRe
             prompt_depth=PromptDepth.FAST,
             memory_scope=MemoryScope.PINNED_ONLY,
             requires_tools=False,
+            evidence_required=False,
             risk_level_hint=RiskLevelHint.NONE,
         )
 
@@ -398,6 +542,7 @@ def _try_fast_chat_shortcut(message: str, has_history: bool = False) -> IntentRe
             prompt_depth=PromptDepth.FAST,
             memory_scope=MemoryScope.PINNED_ONLY,
             requires_tools=False,
+            evidence_required=False,
             risk_level_hint=RiskLevelHint.NONE,
         )
 
@@ -423,6 +568,14 @@ class IntentAnalyzer:
         if query_result is not None:
             return query_result
 
+        # Rule-based fast-path for greetings and other unambiguous casual chat.
+        # This avoids sending a full prompt/tool context to small local models for
+        # messages like "你好", while still letting ambiguous follow-ups with
+        # history go through the normal analyzer.
+        chat_result = _try_fast_chat_shortcut(message, has_history=has_history)
+        if chat_result is not None:
+            return chat_result
+
         try:
             response = await self.brain.compiler_think(
                 prompt=message,
@@ -444,22 +597,27 @@ class IntentAnalyzer:
 
 def _make_default(message: str) -> IntentResult:
     """Fallback: behaves like the old flow (TASK + full tools + ForceToolCall)."""
+    evidence_required = _requires_external_evidence(message)
+    tool_hints, requires_project_context = (
+        _infer_tool_action_hints(message) if evidence_required else ([], False)
+    )
     return IntentResult(
         intent=IntentType.QUERY,
         confidence=0.0,
         task_definition=message[:600],
         task_type="question",
-        tool_hints=[],
+        tool_hints=tool_hints,
         memory_keywords=[],
-        force_tool=False,
+        force_tool=evidence_required,
         todo_required=False,
         raw_output="",
         prompt_depth=PromptDepth.MINIMAL,
         memory_scope=MemoryScope.PINNED_ONLY,
         capability_scope=[],
         catalog_scope=[],
-        requires_tools=False,
-        requires_project_context=False,
+        requires_tools=evidence_required,
+        evidence_required=evidence_required,
+        requires_project_context=requires_project_context,
         risk_level_hint=RiskLevelHint.NONE,
     )
 
@@ -489,6 +647,7 @@ def _parse_intent_output(raw_output: str, message: str) -> IntentResult:
             "memory_scope",
             "catalog_scope",
             "requires_tools",
+            "evidence_required",
             "requires_project_context",
             "risk_level_hint",
             "constraints",
@@ -556,9 +715,26 @@ def _parse_intent_output(raw_output: str, message: str) -> IntentResult:
         extracted.get("requires_tools", ""),
         default=intent == IntentType.TASK and bool(tool_hints or capability_scope),
     )
+    llm_evidence_required = _parse_bool(
+        extracted.get("evidence_required", ""),
+        default=False,
+    )
+    evidence_required = llm_evidence_required or _requires_external_evidence(message)
+    if evidence_required:
+        requires_tools = True
+        inferred_hints, inferred_project_context = _infer_tool_action_hints(message)
+        for hint in inferred_hints:
+            if hint not in tool_hints:
+                tool_hints.append(hint)
+    else:
+        inferred_project_context = False
     requires_project_context = _parse_bool(
         extracted.get("requires_project_context", ""),
-        default=CapabilityScope.CODE in capability_scope or "project" in catalog_scope,
+        default=(
+            inferred_project_context
+            or CapabilityScope.CODE in capability_scope
+            or "project" in catalog_scope
+        ),
     )
     risk_level_hint = _parse_enum(
         extracted.get("risk_level_hint", ""),
@@ -586,6 +762,7 @@ def _parse_intent_output(raw_output: str, message: str) -> IntentResult:
         memory_scope=memory_scope,
         catalog_scope=catalog_scope,
         requires_tools=requires_tools,
+        evidence_required=evidence_required,
         requires_project_context=requires_project_context,
         risk_level_hint=risk_level_hint,
     )
@@ -614,6 +791,14 @@ def _parse_intent_output(raw_output: str, message: str) -> IntentResult:
                 f"[IntentAnalyzer] Complex task detected (score={signal.score}), "
                 f"suggesting Plan mode"
             )
+
+    if result.intent in (IntentType.CHAT, IntentType.QUERY) and _looks_like_tool_action_request(message):
+        logger.info(
+            "[IntentAnalyzer] Coerced %s to task because message requires external action: %r",
+            result.intent.value,
+            message[:120],
+        )
+        return _make_tool_action_result(message)
 
     return result
 

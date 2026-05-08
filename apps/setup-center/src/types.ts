@@ -193,6 +193,8 @@ export type ChatErrorInfo = {
 
 export type ChatMessage = {
   id: string;
+  /** Stable backend history index used for paged history loading. */
+  historyIndex?: number;
   role: "user" | "assistant" | "system";
   content: string;
   thinking?: string | null;
@@ -206,9 +208,17 @@ export type ChatMessage = {
   mcpCalls?: ChatMcpCall[] | null;
   thinkingChain?: ChainGroup[] | null;
   errorInfo?: ChatErrorInfo | null;
-  usage?: { input_tokens: number; output_tokens: number; total_tokens?: number } | null;
+  usage?: {
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens?: number;
+    usage_estimated?: boolean;
+    usage_source?: string;
+  } | null;
   timestamp: number;
   streaming?: boolean;
+  /** Ephemeral UI-only status while an SSE stream is alive; never persisted as message content. */
+  streamStatus?: string | null;
 };
 
 // ─── 思维链 (Thinking Chain) 类型 ───
@@ -306,9 +316,13 @@ export type ChatAttachment = {
   type: "image" | "file" | "voice" | "video" | "document";
   name: string;
   url?: string;
+  localPath?: string;
+  uploadId?: string;
   previewUrl?: string;
   size?: number;
   mimeType?: string;
+  uploadStatus?: "uploading" | "uploaded" | "failed";
+  uploadError?: string;
   /** Transient upload tracking ID — not persisted to backend */
   _uploadId?: string;
 };
@@ -326,6 +340,10 @@ export type ChatConversation = {
   titleManuallySet?: boolean;
   agentProfileId?: string;
   endpointId?: string;
+  endpointPolicy?: "prefer" | "require";
+  orgMode?: boolean;
+  orgId?: string;
+  orgNodeId?: string;
   status?: ConversationStatus;
 };
 

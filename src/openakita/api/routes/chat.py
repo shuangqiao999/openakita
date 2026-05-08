@@ -29,6 +29,56 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _chat_startup_error_response(
+    exc: Exception,
+    *,
+    conversation_id: str,
+    request_id: str,
+    stage: str,
+) -> JSONResponse:
+    """Return a structured pre-stream error instead of FastAPI's bare 500 page."""
+    logger.exception(
+        "[Chat API] Pre-stream startup failed stage=%s conv=%s request=%s",
+        stage,
+        conversation_id,
+        request_id,
+    )
+    detail = str(exc)[:300] if str(exc) else type(exc).__name__
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error": "chat_startup_failed",
+            "stage": stage,
+            "conversation_id": conversation_id,
+            "request_id": request_id,
+            "retryable": True,
+            "message": "聊天服务启动本轮回复时遇到临时异常，消息没有丢失。请稍后重试，或切换一个可用的模型端点。",
+            "hint": "如果后端健康但仍反复出现，请检查模型端点网络、API Key 或当前端点是否可用。",
+            "detail": detail,
+        },
+    )
+
+
+def _chat_endpoint_names() -> set[str]:
+    """Return configured main-chat endpoint names.
+
+    Compiler/STT endpoints are intentionally excluded here: they can validate
+    API keys or support prompt compilation, but they cannot serve chat turns.
+    """
+    try:
+        from openakita.api.routes.config import _get_endpoint_manager
+
+        mgr = _get_endpoint_manager()
+        return {
+            str(ep.get("name"))
+            for ep in (mgr.list_endpoints("endpoints") or [])
+            if ep.get("name") and ep.get("enabled", True)
+        }
+    except Exception as exc:
+        logger.warning("[Chat API] Failed to inspect chat endpoints: %s", exc)
+        return set()
+
+
 def _format_controlled_action_result(
     decision: ConfirmationDecision,
     result: dict,
@@ -573,6 +623,8 @@ def _schedule_background_save(
                 et = ev.get("type", "")
                 if et == "text_delta" and "content" in ev:
                     bg_reply += ev["content"]
+                elif et == "text_replace" and "content" in ev:
+                    bg_reply = ev["content"]
         except Exception:
             pass
 
@@ -688,6 +740,8 @@ async def _stream_chat(
     _agent_done = asyncio.Event()
     _agent_queue: asyncio.Queue = asyncio.Queue()
     _save_done = False
+    session = None
+    conversation_id = chat_request.conversation_id or ""
 
     try:
         actual_agent = _resolve_agent(agent)
@@ -711,7 +765,6 @@ async def _stream_chat(
 
         conversation_id = chat_request.conversation_id or f"api_{_uuid.uuid4().hex[:12]}"
         turn_id = f"{conversation_id}:{request_id or _uuid.uuid4().hex[:12]}"
-        session = None
         session_messages_history: list[dict] = []
 
         if session_manager and conversation_id:
@@ -725,6 +778,16 @@ async def _stream_chat(
                 if session:
                     if chat_request.agent_profile_id:
                         _apply_agent_profile(session, chat_request.agent_profile_id)
+                    session.set_metadata("selected_endpoint", chat_request.endpoint or "")
+                    session.set_metadata("endpoint_policy", chat_request.endpoint_policy or "prefer")
+                    session.set_metadata(
+                        "ui_org_state",
+                        {
+                            "orgMode": bool(chat_request.org_mode and chat_request.org_id),
+                            "orgId": chat_request.org_id or "",
+                            "orgNodeId": chat_request.org_node_id or "",
+                        },
+                    )
 
                     if chat_request.message:
                         session.add_message("user", chat_request.message)
@@ -747,6 +810,7 @@ async def _stream_chat(
                     plan_mode=chat_request.plan_mode,
                     mode=chat_request.mode,
                     endpoint_override=chat_request.endpoint,
+                    endpoint_policy=chat_request.endpoint_policy,
                     attachments=chat_request.attachments,
                     thinking_mode=chat_request.thinking_mode,
                     thinking_depth=chat_request.thinking_depth,
@@ -788,7 +852,7 @@ async def _stream_chat(
                                     timeout=DISCONNECT_GRACE_SECONDS,
                                 )
                                 logger.info("[Chat API] Agent task 在宽限期内完成")
-                            except (asyncio.TimeoutError, TimeoutError):
+                            except TimeoutError:
                                 logger.warning(
                                     "[Chat API] 宽限期超时（%ds），取消任务",
                                     DISCONNECT_GRACE_SECONDS,
@@ -814,7 +878,7 @@ async def _stream_chat(
         while True:
             try:
                 event = await asyncio.wait_for(_agent_queue.get(), timeout=SSE_KEEPALIVE_INTERVAL)
-            except (asyncio.TimeoutError, TimeoutError):
+            except TimeoutError:
                 if not _client_disconnected and not await _check_disconnected():
                     yield _sse("heartbeat", {"ts": time.time()})
                 continue
@@ -855,9 +919,9 @@ async def _stream_chat(
             _source_used = _extract_source_used(event)
             if _source_used:
                 try:
-                    setattr(actual_agent, "_last_link_diagnostic", dict(_source_used))
+                    actual_agent._last_link_diagnostic = dict(_source_used)
                     if http_request is not None:
-                        setattr(http_request.app.state, "last_link_diagnostic", dict(_source_used))
+                        http_request.app.state.last_link_diagnostic = dict(_source_used)
                 except Exception:
                     pass
                 yield _sse("source_used", _source_used)
@@ -956,6 +1020,71 @@ async def _stream_chat(
 
         # --- Save assistant response to session ---
         _save_done = True
+
+        # Collect usage once and reuse the same payload for SSE and session history.
+        # Missing provider usage must not be persisted as a real-looking zero.
+        _usage_data: dict | None = None
+        try:
+            _cached = getattr(actual_agent, "_last_usage_summary", None)
+            if _cached:
+                _usage_data = dict(_cached)
+            else:
+                re = getattr(actual_agent, "reasoning_engine", None)
+                trace = getattr(actual_agent, "_last_finalized_trace", None) or (
+                    getattr(re, "_last_react_trace", []) if re else []
+                )
+                if trace:
+                    total_in = sum(t.get("tokens", {}).get("input", 0) for t in trace)
+                    total_out = sum(t.get("tokens", {}).get("output", 0) for t in trace)
+                    if total_in or total_out:
+                        usage_estimated = any(bool(t.get("usage_estimated")) for t in trace)
+                        usage_sources = {
+                            str(t.get("usage_source"))
+                            for t in trace
+                            if str(t.get("usage_source") or "").strip()
+                        }
+                        _usage_data = {
+                            "input_tokens": total_in,
+                            "output_tokens": total_out,
+                            "total_tokens": total_in + total_out,
+                        }
+                        if usage_estimated:
+                            _usage_data["usage_estimated"] = True
+                        else:
+                            # Fix-13: 双写新字段名，前端可逐步切换。
+                            _usage_data["billable_input_tokens"] = total_in
+                            _usage_data["billable_output_tokens"] = total_out
+                            _usage_data["billable_total_tokens"] = total_in + total_out
+                        if usage_sources:
+                            _usage_data["usage_source"] = (
+                                "mixed" if len(usage_sources) > 1 else next(iter(usage_sources))
+                            )
+                ctx_mgr = getattr(actual_agent, "context_manager", None) or getattr(
+                    re, "_context_manager", None
+                )
+                if ctx_mgr and hasattr(ctx_mgr, "get_max_context_tokens"):
+                    _max_ctx = ctx_mgr.get_max_context_tokens()
+                    _msgs = getattr(re, "_last_working_messages", None) or getattr(
+                        getattr(actual_agent, "_context", None), "messages", []
+                    )
+                    _cur_ctx = ctx_mgr.estimate_messages_tokens(_msgs) if _msgs else 0
+                    if _usage_data is None:
+                        _usage_data = {}
+                    _usage_data["context_tokens"] = _cur_ctx
+                    _usage_data["context_limit"] = _max_ctx
+                    _usage_data["history_context_tokens"] = _cur_ctx
+                    _usage_data["history_context_limit"] = _max_ctx
+                # 透出 ContextPressure 摘要 — 供前端"上下文健康度"展示。
+                # 已由 reasoning_engine 在每轮 token 异常检测时同步刷新，
+                # 此处直接读取，零额外计算。
+                _last_pressure = getattr(re, "_last_context_pressure", None)
+                if _last_pressure:
+                    if _usage_data is None:
+                        _usage_data = {}
+                    _usage_data["context_pressure"] = dict(_last_pressure)
+        except Exception:
+            pass
+
         # ask_user 场景：_ask_user_question 已包含 LLM 文本 + 问题（由 reason_stream 拼接），
         # 优先使用它作为保存文本，确保下一轮 LLM 能看到完整的确认问题上下文。
         if _ask_user_question or _ask_user_questions:
@@ -1015,6 +1144,10 @@ async def _stream_chat(
                     _msg_meta["tool_summary"] = _tool_summary
                 if _collected_artifacts:
                     _msg_meta["artifacts"] = _collected_artifacts
+                if _usage_data and (
+                    _usage_data.get("input_tokens") or _usage_data.get("output_tokens")
+                ):
+                    _msg_meta["usage"] = _usage_data
                 if _ask_user_question:
                     _ask_user_data: dict = {"question": _ask_user_question}
                     if _ask_user_options:
@@ -1034,56 +1167,6 @@ async def _stream_chat(
         if session and hasattr(session, "context") and session_manager:
             if getattr(session.context, "sub_agent_records", None):
                 session_manager.mark_dirty()
-
-        # Collect usage — prefer pre-computed summary (survives cleanup),
-        # fall back to reading full trace (legacy path)
-        _usage_data: dict | None = None
-        try:
-            _cached = getattr(actual_agent, "_last_usage_summary", None)
-            if _cached:
-                _usage_data = dict(_cached)
-            else:
-                re = getattr(actual_agent, "reasoning_engine", None)
-                trace = getattr(actual_agent, "_last_finalized_trace", None) or (
-                    getattr(re, "_last_react_trace", []) if re else []
-                )
-                if trace:
-                    total_in = sum(t.get("tokens", {}).get("input", 0) for t in trace)
-                    total_out = sum(t.get("tokens", {}).get("output", 0) for t in trace)
-                    _usage_data = {
-                        "input_tokens": total_in,
-                        "output_tokens": total_out,
-                        "total_tokens": total_in + total_out,
-                        # Fix-13: 双写新字段名，前端可逐步切换。
-                        "billable_input_tokens": total_in,
-                        "billable_output_tokens": total_out,
-                        "billable_total_tokens": total_in + total_out,
-                    }
-                ctx_mgr = getattr(actual_agent, "context_manager", None) or getattr(
-                    re, "_context_manager", None
-                )
-                if ctx_mgr and hasattr(ctx_mgr, "get_max_context_tokens"):
-                    _max_ctx = ctx_mgr.get_max_context_tokens()
-                    _msgs = getattr(re, "_last_working_messages", None) or getattr(
-                        getattr(actual_agent, "_context", None), "messages", []
-                    )
-                    _cur_ctx = ctx_mgr.estimate_messages_tokens(_msgs) if _msgs else 0
-                    if _usage_data is None:
-                        _usage_data = {}
-                    _usage_data["context_tokens"] = _cur_ctx
-                    _usage_data["context_limit"] = _max_ctx
-                    _usage_data["history_context_tokens"] = _cur_ctx
-                    _usage_data["history_context_limit"] = _max_ctx
-                # 透出 ContextPressure 摘要 — 供前端"上下文健康度"展示。
-                # 已由 reasoning_engine 在每轮 token 异常检测时同步刷新，
-                # 此处直接读取，零额外计算。
-                _last_pressure = getattr(re, "_last_context_pressure", None)
-                if _last_pressure:
-                    if _usage_data is None:
-                        _usage_data = {}
-                    _usage_data["context_pressure"] = dict(_last_pressure)
-        except Exception:
-            pass
 
         if not _client_disconnected and not _agent_errored:
             # 透传本轮真实生效的 mode（IntentAnalyzer 可能把 CHAT 类闲聊静默
@@ -1246,12 +1329,20 @@ async def chat(request: Request, body: ChatRequest):
             content={"error": "empty_message", "message": "消息内容不能为空"},
         )
 
-    pending_response = await _handle_pending_risk_answer(
-        request=request,
-        conversation_id=conversation_id,
-        answer=body.message or "",
-        as_stream=True,
-    )
+    try:
+        pending_response = await _handle_pending_risk_answer(
+            request=request,
+            conversation_id=conversation_id,
+            answer=body.message or "",
+            as_stream=True,
+        )
+    except Exception as exc:
+        return _chat_startup_error_response(
+            exc,
+            conversation_id=conversation_id,
+            request_id=request_id,
+            stage="pending_risk_answer",
+        )
     if isinstance(pending_response, _RiskAuthorizedReplay):
         # 用户已对上一轮高风险请求授权，且无受控执行入口 — 用原始 message
         # 替换当前的"确认继续"，让 LLM 重新规划工具调用。后续 risk gate
@@ -1260,11 +1351,39 @@ async def chat(request: Request, body: ChatRequest):
     elif pending_response is not None:
         return pending_response
 
+    chat_endpoint_names = _chat_endpoint_names()
+    if not chat_endpoint_names:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "no_chat_endpoints_configured",
+                "message": (
+                    "尚未配置主聊天 LLM 端点。请在设置中心的「LLM 端点」中添加"
+                    "主聊天端点；编译端点只用于提示词编译/摘要，不能用于聊天。"
+                ),
+            },
+        )
+    if body.endpoint and body.endpoint not in chat_endpoint_names:
+        logger.warning(
+            "[Chat API] Ignoring stale chat endpoint %r; falling back to auto selection",
+            body.endpoint,
+        )
+        body.endpoint = None
+        body.endpoint_policy = "prefer"
+
     # ── Busy-lock check (via lifecycle manager) ──
     lifecycle = get_lifecycle_manager()
     busy_gen = 0
     if client_id:
-        conflict, busy_gen = await lifecycle.start(conversation_id, client_id)
+        try:
+            conflict, busy_gen = await lifecycle.start(conversation_id, client_id)
+        except Exception as exc:
+            return _chat_startup_error_response(
+                exc,
+                conversation_id=conversation_id,
+                request_id=request_id,
+                stage="conversation_lifecycle",
+            )
         if conflict is not None:
             return JSONResponse(
                 status_code=409,
@@ -1298,37 +1417,18 @@ async def chat(request: Request, body: ChatRequest):
                 },
             )
 
-    if body.endpoint:
-        try:
-            from openakita.api.routes.config import _get_endpoint_manager
-            _mgr = _get_endpoint_manager()
-            _names: set[str] = set()
-            for _et in ("endpoints", "compiler_endpoints", "stt_endpoints"):
-                for _ep in _mgr.list_endpoints(_et) or []:
-                    _n = _ep.get("name")
-                    if _n:
-                        _names.add(_n)
-        except Exception:
-            _names = set()
-        if _names and body.endpoint not in _names:
-            if client_id:
-                await lifecycle.finish(conversation_id, generation=busy_gen)
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "error": "unknown_endpoint",
-                    "endpoint": body.endpoint,
-                    "message": f"未知的 endpoint: {body.endpoint}",
-                },
-            )
-
     try:
         agent = await _get_agent_for_session(request, conversation_id, body.agent_profile_id)
         session_manager = getattr(request.app.state, "session_manager", None)
-    except Exception:
+    except Exception as exc:
         if client_id:
             await lifecycle.finish(conversation_id, generation=busy_gen)
-        raise
+        return _chat_startup_error_response(
+            exc,
+            conversation_id=conversation_id,
+            request_id=request_id,
+            stage="agent_init",
+        )
 
     # Resolve effective mode: backward compat plan_mode=true -> mode="plan"
     effective_mode = body.mode
@@ -1359,6 +1459,7 @@ async def chat(request: Request, body: ChatRequest):
         f'[Chat API] 收到消息: "{msg_preview}"'
         + (f" (+{att_count}个附件)" if att_count else "")
         + (f" | endpoint={body.endpoint}" if body.endpoint else "")
+        + (f" | endpoint_policy={body.endpoint_policy}" if body.endpoint else "")
         + (f" | mode={effective_mode}" if effective_mode != "agent" else "")
         + (f" | thinking={body.thinking_mode}" if body.thinking_mode else "")
         + (f" | depth={body.thinking_depth}" if body.thinking_depth else "")
