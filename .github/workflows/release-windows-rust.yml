@@ -1,0 +1,400 @@
+name: Release Build Pipeline (Windows Only) - Rust Backend
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要上传/发布到的 tag（例如 v1.2.7）。留空则从代码自动获取。"
+        required: false
+        default: ""
+      ref:
+        description: "要构建的 commit SHA 或分支（留空则使用 tag 指向的 commit）"
+        required: false
+        default: ""
+  push:
+    tags:
+      - 'v*'
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  get_version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
+      tag: ${{ steps.get_version.outputs.tag }}
+      ref: ${{ steps.get_version.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 从代码中获取版本号（支持手动输入 tag）
+        id: get_version
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+            VERSION="${TAG#v}"
+            echo "使用手动指定的 tag: ${TAG}"
+          elif [[ "${{ github.event_name }}" == "push" && "${{ github.ref_type }}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+            TAG="${{ github.ref_name }}"
+            echo "使用 push tag: ${TAG}"
+          else
+            if [ -f "backend_rs/Cargo.toml" ]; then
+              VERSION=$(grep -m 1 '^version' backend_rs/Cargo.toml | cut -d'"' -f2)
+            elif [ -f "apps/setup-center/package.json" ]; then
+              VERSION=$(node -p "require('./apps/setup-center/package.json').version")
+            else
+              echo "错误: 无法从代码中确定版本号"
+              exit 1
+            fi
+            TAG="v${VERSION}"
+            echo "从代码自动获取版本: ${VERSION}"
+          fi
+
+          if [ -n "${{ github.event.inputs.ref }}" ]; then
+            REF="${{ github.event.inputs.ref }}"
+          elif [ -n "${{ github.event.inputs.tag }}" ]; then
+            REF="${{ github.event.inputs.tag }}"
+          elif [[ "${{ github.event_name }}" == "push" && "${{ github.ref_type }}" == "tag" ]]; then
+            REF="${{ github.ref_name }}"
+          else
+            REF="${{ github.sha }}"
+          fi
+
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "ref=${REF}" >> $GITHUB_OUTPUT
+
+          echo "📦 版本号: ${VERSION}"
+          echo "🏷️ 标签: ${TAG}"
+          echo "🔖 提交: ${REF}"
+
+  create_release:
+    needs: get_version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      release_id: ${{ steps.gh_release.outputs.id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.get_version.outputs.ref }}
+          fetch-depth: 0
+
+      - name: 检查发布是否已存在
+        id: check_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.get_version.outputs.tag }}
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "${{ github.repository }}" > /dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "✅ 发布 $RELEASE_TAG 已存在 — 将上传新的构建产物"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "📦 发布 $RELEASE_TAG 不存在 — 将创建草稿"
+          fi
+
+      - name: 创建草稿发布
+        if: steps.check_release.outputs.exists != 'true'
+        id: gh_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.get_version.outputs.tag }}
+          draft: true
+          generate_release_notes: true
+
+  windows_release:
+    needs: [create_release, get_version]
+    permissions:
+      contents: write
+    runs-on: windows-latest
+    env:
+      RELEASE_TAG: ${{ needs.get_version.outputs.tag }}
+      CHECKOUT_REF: ${{ needs.get_version.outputs.ref }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.get_version.outputs.ref }}
+          fetch-depth: 0
+
+      - name: 显示构建信息
+        shell: bash
+        run: |
+          echo "=========================================="
+          echo "🔨 Windows AVX2/BMI2 优化构建 (Rust 后端)"
+          echo "=========================================="
+          echo "版本标签: ${{ env.RELEASE_TAG }}"
+          echo "提交引用: ${{ env.CHECKOUT_REF }}"
+          echo "触发事件: ${{ github.event_name }}"
+          echo "运行 ID: ${{ github.run_id }}"
+          echo "=========================================="
+
+      - name: 🧹 清理所有构建残留
+        shell: bash
+        run: |
+          echo "=========================================="
+          echo "🧹 清理所有构建缓存/残留"
+          echo "=========================================="
+          rm -rf apps/setup-center/node_modules || true
+          rm -rf apps/setup-center/.vite || true
+          rm -rf apps/setup-center/dist || true
+          rm -rf apps/setup-center/dist-web || true
+          rm -rf backend_rs/target || true
+          rm -rf docs-site/.vitepress/dist || true
+          rm -rf node_modules || true
+          find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+          echo "✅ 清理完成"
+
+      - name: 验证版本与标签一致性（如果使用 Cargo.toml）
+        if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags') }}
+        shell: bash
+        run: |
+          if [ -f "backend_rs/Cargo.toml" ]; then
+            CARGO_VERSION=$(grep -m 1 '^version' backend_rs/Cargo.toml | cut -d'"' -f2)
+            TAG_VERSION="${{ needs.get_version.version }}"
+            if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
+              echo "❌ 标签版本 $TAG_VERSION 与 Cargo.toml 版本 $CARGO_VERSION 不匹配"
+              exit 1
+            fi
+            echo "✅ 版本一致性验证通过: $TAG_VERSION"
+          fi
+
+      - name: 创建 docs-site 目录（修复构建错误）
+        shell: bash
+        run: |
+          mkdir -p docs-site/.vitepress/dist
+          echo "修复: 创建缺失的 docs-site/.vitepress/dist 目录"
+          echo "Placeholder for docs-site" > docs-site/.vitepress/dist/index.html
+
+      - name: 设置 Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+          cache: ''
+
+      - name: 安装 Rust 工具链（稳定版）
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: 构建 Web 前端
+        working-directory: apps/setup-center
+        run: |
+          echo "📦 安装前端依赖..."
+          npm ci --no-audit --no-fund
+          npm run build:web
+
+      - name: 构建用户文档（VitePress，可选）
+        working-directory: docs-site
+        run: |
+          npm ci --no-audit --no-fund
+          npx vitepress build
+        continue-on-error: true
+
+      - name: 编译 Rust 后端（AVX2 + BMI2 优化）
+        working-directory: backend_rs
+        env:
+          RUSTFLAGS: >
+            -C target-cpu=core-avx2
+            -C opt-level=3
+            -C debuginfo=0
+            -C embed-bitcode=yes
+            -C target-feature=+avx2,+bmi2,+fma,+bmi1,+popcnt,+lzcnt,+aes,+sse3,+ssse3,+sse4.1,+sse4.2,+pclmulqdq,+movbe
+          CARGO_PROFILE_RELEASE_OPT_LEVEL: "3"
+          CARGO_PROFILE_RELEASE_LTO: "thin"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
+          CARGO_PROFILE_RELEASE_DEBUG: "false"
+          CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS: "false"
+          CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS: "false"
+          CARGO_PROFILE_RELEASE_PANIC: "abort"
+          CARGO_PROFILE_RELEASE_INCREMENTAL: "false"
+          CARGO_PROFILE_RELEASE_STRIP: "none"
+          CARGO_BUILD_JOBS: "8"
+          RUSTC_BOOTSTRAP: "1"
+        run: |
+          echo "=========================================="
+          echo "🦀 编译 Rust 后端"
+          echo "=========================================="
+          rustc --version
+          echo "强制清理 target 目录..."
+          cargo clean
+          echo "开始编译 release 版本..."
+          cargo build --release --verbose
+          echo "✅ 编译完成"
+          ls -la target/release/
+
+      - name: 复制 Rust 后端到 Tauri 资源目录
+        shell: bash
+        run: |
+          RESOURCE_DIR="apps/setup-center/src-tauri/resources"
+          mkdir -p "$RESOURCE_DIR/openakita-backend"
+          cp -f backend_rs/target/release/openakita-backend.exe "$RESOURCE_DIR/openakita-backend/"
+          echo "Rust 后端已复制到: $RESOURCE_DIR/openakita-backend/"
+          ls -la "$RESOURCE_DIR/openakita-backend/"
+
+      - name: 安装前端依赖（Tauri 部分）
+        working-directory: apps/setup-center
+        run: |
+          echo "📦 安装 Tauri 前端依赖..."
+          npm ci --no-audit --no-fund
+
+      - name: 构建 Tauri Windows 安装包（AVX2 + BMI2）
+        working-directory: apps/setup-center
+        timeout-minutes: 180
+        env:
+          TAURI_CONFIG: '{}'
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          NO_STRIP: true
+          APPIMAGE_EXTRACT_AND_RUN: 1
+          RUSTFLAGS: >
+            -C target-cpu=core-avx2
+            -C opt-level=3
+            -C debuginfo=0
+            -C embed-bitcode=yes
+            -C target-feature=+avx2,+bmi2,+fma,+bmi1,+popcnt,+lzcnt,+aes,+sse3,+ssse3,+sse4.1,+sse4.2,+pclmulqdq,+movbe
+          CARGO_PROFILE_RELEASE_OPT_LEVEL: "3"
+          CARGO_PROFILE_RELEASE_LTO: "thin"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
+          CARGO_PROFILE_RELEASE_DEBUG: "false"
+          CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS: "false"
+          CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS: "false"
+          CARGO_PROFILE_RELEASE_PANIC: "abort"
+          CARGO_PROFILE_RELEASE_INCREMENTAL: "false"
+          CARGO_BUILD_JOBS: "8"
+          RUSTC_BOOTSTRAP: "1"
+        shell: bash
+        run: |
+          set +e
+          echo "=========================================="
+          echo "🚀 构建 Tauri Windows 安装包"
+          echo "=========================================="
+          echo "Rust 版本: $(rustc --version)"
+          echo "Node 版本: $(node --version)"
+          echo "=========================================="
+
+          cargo clean --manifest-path src-tauri/Cargo.toml
+          rm -rf src-tauri/target/release/incremental
+
+          npx tauri build --bundles "nsis"
+          BUILD_EXIT=$?
+
+          if [ $BUILD_EXIT -ne 0 ]; then
+            echo "❌ Tauri 构建失败"
+            exit 1
+          fi
+
+          echo "✅ 构建成功"
+          TARGET_BASE="src-tauri/target"
+          RELEASE_DIR="${TARGET_BASE}/release"
+          BUNDLE_DIR="${RELEASE_DIR}/bundle"
+          echo "📦 构建产物:"
+          ls -la "${BUNDLE_DIR}/nsis/" || true
+
+      - name: 列出构建产物
+        shell: bash
+        run: |
+          TARGET_BASE="apps/setup-center/src-tauri/target"
+          RELEASE_DIR="${TARGET_BASE}/release"
+          BUNDLE_DIR="${RELEASE_DIR}/bundle"
+
+          echo "=========================================="
+          echo "📂 构建产物"
+          echo "=========================================="
+          echo "== 发布目录 =="
+          ls -la "${RELEASE_DIR}" || true
+          echo ""
+          echo "== 捆绑目录 =="
+          ls -la "${BUNDLE_DIR}" || true
+          echo ""
+          echo "== NSIS 安装包目录 =="
+          ls -la "${BUNDLE_DIR}/nsis" || true
+
+          if ls "${BUNDLE_DIR}/nsis/"*.exe 1> /dev/null 2>&1; then
+            echo ""
+            echo "📊 安装包大小:"
+            ls -lh "${BUNDLE_DIR}"/nsis/*.exe
+          fi
+
+      - name: 收集 Windows 安装包
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TARGET_BASE="apps/setup-center/src-tauri/target"
+          BUNDLE_DIR="${TARGET_BASE}/release/bundle"
+          OUT_DIR="${BUNDLE_DIR}/_upload"
+          rm -rf "${OUT_DIR}"
+          mkdir -p "${OUT_DIR}"
+
+          found=0
+          while IFS= read -r -d '' f; do
+            case "$f" in
+              */nsis/*.exe)
+                if [ "$(basename "$f")" = "uninstall.exe" ]; then
+                  continue
+                fi
+                base_name="$(basename "$f" .exe)"
+                cp -f "$f" "${OUT_DIR}/${base_name}_windows-x64-rust-avx2-bmi2.exe"
+                found=$((found+1))
+                ;;
+            esac
+          done < <(find "${BUNDLE_DIR}" -type f -name "*.exe" -print0)
+
+          sig_count=0
+          while IFS= read -r -d '' sigf; do
+            cp -f "$sigf" "${OUT_DIR}/"
+            sig_count=$((sig_count+1))
+          done < <(find "${BUNDLE_DIR}" -type f -name "*.sig" -print0)
+
+          echo "✅ 已收集 ${found} 个 Windows 安装包 (Rust AVX2/BMI2 优化)"
+          echo "✅ 已收集 ${sig_count} 个签名文件"
+          echo "📂 输出目录内容:"
+          ls -la "${OUT_DIR}" || true
+
+          if [ "${found}" -eq 0 ]; then
+            echo "❌ 错误: 未找到 Windows 安装包。" >&2
+            exit 1
+          fi
+
+      - name: 上传 Windows 安装包到 GitHub 发布
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TARGET_BASE="apps/setup-center/src-tauri/target"
+          BUNDLE_DIR="${TARGET_BASE}/release/bundle"
+          OUT_DIR="${BUNDLE_DIR}/_upload"
+          echo "📤 上传构建产物到 GitHub 发布: $RELEASE_TAG"
+          ls -la "${OUT_DIR}"
+          gh release upload "${RELEASE_TAG}" "${OUT_DIR}"/* --clobber
+          echo "✅ 上传完成"
+
+      - name: 上传签名文件作为构建产物
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-rust-avx2-bmi2-signatures
+          path: apps/setup-center/src-tauri/target/**/bundle/_upload/*.sig
+          if-no-files-found: ignore
+          retention-days: 5
+
+      - name: 上传构建日志（失败时）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-rust-build-logs
+          path: |
+            apps/setup-center/src-tauri/target/release/build/**/output
+            apps/setup-center/src-tauri/target/release/build/**/stderr
+            C:\Users\runneradmin\AppData\Local\tauri\tauri-build*.log
+            backend_rs/target/release/build/**/output
+          if-no-files-found: ignore
+          retention-days: 7
