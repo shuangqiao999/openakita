@@ -286,6 +286,17 @@ jobs:
           echo "Node 版本: $(node --version)"
           echo "=========================================="
 
+          echo ""
+          echo "📦 验证技能文件夹..."
+          SKILL_COUNT=0
+          if [ -d "skills" ]; then
+            SKILL_COUNT=$(find skills -name 'SKILL.md' | wc -l)
+            echo "✅ 技能文件夹存在，SKILL.md 数量: $SKILL_COUNT"
+          else
+            echo "⚠️  警告: 未找到 skills/ 目录，安装包将不包含技能"
+          fi
+          echo ""
+
           cargo clean --manifest-path src-tauri/Cargo.toml
           rm -rf src-tauri/target/release/incremental
 
