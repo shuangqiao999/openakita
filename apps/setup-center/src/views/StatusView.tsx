@@ -27,7 +27,22 @@ export interface StatusViewProps {
   currentWorkspaceId: string | null;
   workspaces: WorkspaceSummary[];
   envDraft: EnvMap;
-  serviceStatus: { running: boolean; pid: number | null; pidFile: string; port?: number } | null;
+  serviceStatus: {
+    running: boolean;
+    pid: number | null;
+    pidFile: string;
+    port?: number;
+    heartbeatPhase?: string;
+    heartbeatHttpReady?: boolean;
+    heartbeatImReady?: boolean;
+    heartbeatReady?: boolean;
+  } | null;
+  /**
+   * 后端启动阶段。区分 "starting"（自动启动中 / 用户刚点启动）与 "stopped"（确认未启动）
+   * 是为了避免老 UI 那种"启动中→未启动→运行中"的红色误报闪烁：
+   * starting 期间显示蓝色"正在启动" banner，只有 stopped/error 才显示红色"未启动"。
+   */
+  backendBootPhase?: "unknown" | "starting" | "running" | "stopped" | "error";
   heartbeatState: "alive" | "suspect" | "degraded" | "dead";
   busy: string | null;
   autostartEnabled: boolean | null;
@@ -71,7 +86,7 @@ export function StatusView(props: StatusViewProps) {
   const { t } = useTranslation();
   const {
     currentWorkspaceId, workspaces, envDraft,
-    serviceStatus, heartbeatState, busy,
+    serviceStatus, backendBootPhase = "unknown", heartbeatState, busy,
     autostartEnabled, autoUpdateEnabled, setAutostartEnabled, setAutoUpdateEnabled,
     endpointSummary, endpointHealth, setEndpointHealth,
     imHealth, setImHealth,
@@ -122,16 +137,61 @@ export function StatusView(props: StatusViewProps) {
     return { ...c, enabled, ok: enabled ? missing.length === 0 : true, missing };
   });
 
+  // ── 启动阶段与"未启动"严格区分 ──
+  // showStartingBanner: 蓝色 spinner banner，表达"正在启动 / 初始化中"。
+  //   - 后端进程还没起来，但 phase 是 starting
+  //   - 或者 HTTP API 已可访问，但 heartbeat/readiness 仍显示 starting/http_ready/starting_im
+  //   - 或者 phase 是 unknown 且 serviceStatus 还没探到（首次 mount 的极早期）
+  // showNotRunningBanner: 红色"未启动"banner，仅当：
+  //   - phase 已经明确转为 stopped 或 error
+  //   - 且后端确实没运行
+  // 这样就避免了老逻辑里"自动启动到一半 invoke 失败 → setServiceStatus(false)
+  // → 红条闪一下 → 后端真起来后又变绿"的诡异闪烁。
+  const isRunning = !!serviceStatus?.running;
+  const heartbeatPhase = serviceStatus?.heartbeatPhase || "";
+  const phaseStarting =
+    backendBootPhase === "starting" ||
+    (isRunning && serviceStatus?.heartbeatReady === false) ||
+    ["starting", "initializing", "http_ready", "starting_im"].includes(heartbeatPhase) ||
+    (backendBootPhase === "unknown" && serviceStatus === null);
+  const showStartingBanner = IS_TAURI && phaseStarting && effectiveWsId;
+  const showNotRunningBanner =
+    IS_TAURI &&
+    !isRunning &&
+    !phaseStarting &&
+    (backendBootPhase === "stopped" || backendBootPhase === "error" || (serviceStatus !== null && backendBootPhase === "unknown")) &&
+    effectiveWsId;
+
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-5 px-6 py-5">
-      {/* Banner: backend not running (hide during initial probe; hide in web mode — backend is always running) */}
-      {IS_TAURI && !serviceStatus?.running && serviceStatus !== null && effectiveWsId && (
+      {/* Banner: starting / auto-starting backend */}
+      {showStartingBanner && (
+        <Card className="gap-0 border-primary/30 bg-primary/10 py-0 shadow-sm">
+          <CardContent className="flex flex-wrap items-center gap-4 px-5 py-4">
+            <div className="spinner" style={{ width: 22, height: 22, flexShrink: 0, color: "var(--brand)" }} />
+            <div className="min-w-[180px] flex-1">
+              <div className="mb-1 text-sm font-semibold text-primary">
+                {busy || (isRunning ? "后端正在完成初始化" : t("status.backendStarting"))}
+              </div>
+              <div className="text-xs text-primary/80">
+                {heartbeatPhase === "starting_im"
+                  ? "HTTP API 已就绪，正在启动 IM 通道和后台连接。"
+                  : heartbeatPhase === "http_ready"
+                    ? "HTTP API 已就绪，后台服务仍在继续初始化。"
+                    : t("status.backendStartingHint")}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+      {/* Banner: backend confirmed not running (hide in web mode — backend is always running) */}
+      {showNotRunningBanner && (
         <Card className="gap-0 border-amber-500/40 bg-amber-500/10 py-0 shadow-sm">
           <CardContent className="flex flex-wrap items-center gap-4 px-5 py-4">
             <div className="text-2xl leading-none text-amber-600">&#9888;</div>
             <div className="min-w-[180px] flex-1">
               <div className="mb-1 text-sm font-semibold text-amber-700 dark:text-amber-400">
-                {t("status.backendNotRunning")}
+                {backendBootPhase === "error" ? t("status.backendStartFailed") : t("status.backendNotRunning")}
               </div>
               <div className="text-xs text-amber-700/80 dark:text-amber-400/80">
                 {t("status.backendNotRunningHint")}
@@ -149,22 +209,6 @@ export function StatusView(props: StatusViewProps) {
           </CardContent>
         </Card>
       )}
-      {/* Banner: auto-starting backend (shown while serviceStatus is null and busy with auto-start) */}
-      {IS_TAURI && serviceStatus === null && !!busy && effectiveWsId && (
-        <Card className="gap-0 border-primary/30 bg-primary/10 py-0 shadow-sm">
-          <CardContent className="flex flex-wrap items-center gap-4 px-5 py-4">
-            <div className="spinner" style={{ width: 22, height: 22, flexShrink: 0, color: "var(--brand)" }} />
-            <div className="min-w-[180px] flex-1">
-              <div className="mb-1 text-sm font-semibold text-primary">
-                {busy}
-              </div>
-              <div className="text-xs text-primary/80">
-                {t("status.backendNotRunningHint")}
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      )}
 
       {/* Top: Unified status panel */}
       <Card className="gap-0 overflow-hidden border-border/80 py-0 shadow-sm">
@@ -178,21 +222,21 @@ export function StatusView(props: StatusViewProps) {
             <div className="statusPanelTitle">
               {t("status.service")}
               <Badge variant={
-                serviceStatus === null ? "secondary"
+                phaseStarting ? "secondary"
                 : heartbeatState === "alive" ? "default"
                 : heartbeatState === "degraded" || heartbeatState === "suspect" ? "secondary"
-                : serviceStatus?.running ? "default"
+                : isRunning ? "default"
                 : "outline"
               } className={`statusBadgeInline ${
-                serviceStatus === null ? "statusBadgeWarn"
+                phaseStarting ? "statusBadgeWarn"
                 : heartbeatState === "alive" ? "statusBadgeOk"
                 : heartbeatState === "degraded" || heartbeatState === "suspect" ? "statusBadgeWarn"
-                : serviceStatus?.running ? "statusBadgeOk"
+                : isRunning ? "statusBadgeOk"
                 : "statusBadgeOff"
               }`}>
-                {serviceStatus === null ? (busy || t("topbar.starting"))
+                {phaseStarting ? (busy || (isRunning ? "初始化中" : t("topbar.autoStarting")))
                 : heartbeatState === "degraded" ? t("status.unresponsive")
-                : serviceStatus?.running ? t("topbar.running")
+                : isRunning ? t("topbar.running")
                 : t("topbar.stopped")}
               </Badge>
             </div>
@@ -202,12 +246,18 @@ export function StatusView(props: StatusViewProps) {
           </div>
           {IS_TAURI && (
           <div className="statusPanelActions">
-            {!serviceStatus?.running && serviceStatus !== null && effectiveWsId && (
+            {!isRunning && !phaseStarting && effectiveWsId && (
               <Button size="sm" className="statusBtn" onClick={startBackend} disabled={!!busy || startingService}>
                 {startingService || busy
                   ? <><Loader2 className="animate-spin" size={13} />{busy || t("topbar.starting")}</>
                   : <><Play size={13} />{t("topbar.start")}</>}
               </Button>
+            )}
+            {phaseStarting && effectiveWsId && (
+              <Badge variant="secondary" className="statusBadgeInline statusBadgeWarn">
+                <Loader2 className="animate-spin mr-1" size={12} />
+                {t("topbar.autoStarting")}
+              </Badge>
             )}
             {serviceStatus?.running && effectiveWsId && (<>
               <Button size="sm" variant="destructive" className="statusBtn" onClick={async () => {
@@ -547,7 +597,7 @@ export function StatusView(props: StatusViewProps) {
                   <span className={"healthDot " + dot} />
                 </span>
                 <span className="inline-flex h-4 w-4 items-center justify-center">
-                  {LogoComp && <span style={{ display: "inline-flex", flexShrink: 0 }}>{LogoComp({ size: 16 })}</span>}
+                  {LogoComp && <span style={{ display: "inline-flex", flexShrink: 0 }}><LogoComp size={16} /></span>}
                 </span>
                 <span style={{ fontWeight: 600, fontSize: 13, minWidth: 0 }}>{c.name}</span>
                 <span className="imStatusLabel text-right">{label}</span>

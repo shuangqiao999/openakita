@@ -236,6 +236,7 @@ export function IMView({
 }) {
   const { t } = useTranslation();
   const api = apiBaseUrl ?? DEFAULT_API;
+  const [activeTab, setActiveTab] = useState<"messages" | "groupPolicy">("messages");
 
   if (!serviceRunning) {
     return (
@@ -246,8 +247,6 @@ export function IMView({
       </div>
     );
   }
-
-  const [activeTab, setActiveTab] = useState<"messages" | "groupPolicy">("messages");
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-4 px-6 py-6 h-full overflow-hidden">
@@ -1575,9 +1574,9 @@ export function BotConfigTab({ apiBase, onRequestRestart, venvDir, apiBaseUrl }:
       </div>
 
       {bots.length === 0 && !loading && (
-        <div className="flex flex-col items-center justify-center py-10 text-muted-foreground opacity-50">
-          <IconBot size={40} />
-          <div className="mt-3">{t("im.noBots")}</div>
+        <div className="flex flex-col items-center justify-center py-8 text-muted-foreground opacity-60">
+          <IconBot size={32} />
+          <div className="mt-2">{t("im.noBots")}</div>
           <div className="text-xs mt-1">{t("im.noBotsHint")}</div>
         </div>
       )}

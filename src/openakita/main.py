@@ -46,6 +46,41 @@ setup_logging(
 logger = logging.getLogger(__name__)
 
 
+# ── Windows asyncio Proactor 噪音抑制（logging 层兜底）──
+# Tauri/uvicorn 在 Windows 上 SSE/WebSocket 客户端断开时会触发
+# ``_ProactorBasePipeTransport._call_connection_lost`` 抛 ``ConnectionResetError
+# [WinError 10054]``。``_serve()`` 里的 ``loop.set_exception_handler`` 已经
+# 处理了同一 loop 内的 callback，但有些路径（跨 loop / 多 worker / 后置
+# install 时机错过）仍会冒到 asyncio 模块自己的 logger 里。
+# 在 logging 层加一个 filter 是最稳的兜底——只要 record 命中特征就降级，不写
+# error.log，前端 BugReport 不再被 60% 噪音占据。
+class _WindowsAsyncioPipeFilter(logging.Filter):
+    _NEEDLES = (
+        "_ProactorBasePipeTransport._call_connection_lost",
+        "ConnectionResetError",
+        "WinError 10054",
+    )
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: D401
+        try:
+            msg = record.getMessage()
+        except Exception:
+            msg = str(record.msg) if record.msg else ""
+        if any(needle in msg for needle in self._NEEDLES):
+            return False
+        if record.exc_info and record.exc_info[1] is not None:
+            exc = record.exc_info[1]
+            if isinstance(exc, ConnectionResetError):
+                return False
+            if "WinError 10054" in str(exc):
+                return False
+        return True
+
+
+if sys.platform == "win32":
+    logging.getLogger("asyncio").addFilter(_WindowsAsyncioPipeFilter())
+
+
 # 初始化追踪系统
 def _init_tracing() -> None:
     """根据配置初始化 Agent 追踪系统"""
@@ -627,7 +662,11 @@ async def ensure_session_manager():
 
 
 def _setup_session_backfill(agent_or_master):
-    """从 SQLite 回填 session 中可能缺失的消息（崩溃恢复）。"""
+    """从 SQLite 回填 session 中可能缺失的消息（崩溃恢复）。
+
+    PR-D3：同时绑定 ``set_turn_writer``，让 ``Session.add_message`` 能在
+    用户/助手每条消息落地时同步写一份到 SQLite，进程崩溃也不丢历史。
+    """
     _actual_agent = agent_or_master
     if _actual_agent and hasattr(_actual_agent, "memory_manager"):
         _mm = _actual_agent.memory_manager
@@ -635,9 +674,45 @@ def _setup_session_backfill(agent_or_master):
             _session_manager.set_turn_loader(
                 lambda safe_id: _mm.store.get_recent_turns(safe_id, limit=200)
             )
+
+            def _write_turn(safe_id, turn_index, role, content, metadata):
+                try:
+                    _mm.store.save_turn(
+                        session_id=safe_id,
+                        turn_index=turn_index,
+                        role=role,
+                        content=content if isinstance(content, str) else str(content),
+                        timestamp=metadata.get("timestamp"),
+                    )
+                except Exception as exc:
+                    logger.debug(f"[main] turn writer failed: {exc}")
+
+            try:
+                _session_manager.set_turn_writer(_write_turn)
+            except Exception as exc:
+                logger.warning(f"[main] set_turn_writer failed: {exc}")
             backfilled = _session_manager.backfill_sessions_from_store()
             if backfilled:
                 logger.info(f"Session backfill: recovered {backfilled} turns from SQLite")
+
+
+def _web_password_already_set() -> bool:
+    """PR-L1: 检查 data/web_access.json 是否已经存了哈希密码。
+
+    用于 lan_mode 开启时的安全闸：只要本机已配置过密码，就允许 0.0.0.0；
+    否则拒绝启动，避免无密码裸奔。
+    """
+    try:
+        ws = settings.user_workspace_path
+        web_access = Path(ws) / "data" / "web_access.json"
+        if not web_access.exists():
+            return False
+        import json as _json
+
+        data = _json.loads(web_access.read_text(encoding="utf-8"))
+        return bool(data.get("password_hash") or data.get("hash"))
+    except Exception:
+        return False
 
 
 async def init_core_services(agent_or_master):
@@ -1019,7 +1094,7 @@ async def start_im_channels(agent_or_master):
 
     if hasattr(agent, "_plugin_manager") and agent._plugin_manager:
         _message_gateway._plugin_hooks = agent._plugin_manager.hook_registry
-        agent._plugin_manager._host_refs["gateway"] = _message_gateway
+        agent._plugin_manager._external_host_refs["gateway"] = _message_gateway
         if _session_manager is not None:
             _session_manager._plugin_hooks = agent._plugin_manager.hook_registry
 
@@ -1961,6 +2036,31 @@ def serve(
     import warnings
     from pathlib import Path
 
+    # ── 最早期心跳：在加载 IM/Skills/Plugins/uvicorn 之前先写一次心跳 ──
+    # 让 Tauri 心跳读到 phase=starting/http_ready=false，避免 dual-venv hack
+    # 期间（cold start 90~120s）前端因为读不到任何信号而误判 backend 已死。
+    # 这一段只用 stdlib，不引入任何新依赖，保证即使后续 import 失败心跳也已落盘。
+    try:
+        _early_hb_path = Path.cwd() / "data" / "backend.heartbeat"
+        _early_hb_path.parent.mkdir(parents=True, exist_ok=True)
+        _early_hb_tmp = _early_hb_path.with_suffix(".heartbeat.tmp")
+        _early_hb_tmp.write_text(
+            json.dumps(
+                {
+                    "pid": os.getpid(),
+                    "timestamp": time.time(),
+                    "phase": "starting",
+                    "http_ready": False,
+                    "im_ready": False,
+                    "ready": False,
+                }
+            ),
+            encoding="utf-8",
+        )
+        _early_hb_tmp.replace(_early_hb_path)
+    except Exception:
+        pass  # 早期心跳写失败不应阻塞 serve
+
     from openakita import config as cfg
 
     # 压制 Windows asyncio 关闭时的 ResourceWarning
@@ -1987,8 +2087,10 @@ def serve(
     # 以表明进程已卡死）。心跳文件位于 {CWD}/data/backend.heartbeat。
     _heartbeat_file = Path.cwd() / "data" / "backend.heartbeat"
     _heartbeat_stop = threading.Event()
-    _heartbeat_phase = "starting"  # "starting" | "initializing" | "running" | "restarting"
+    _heartbeat_phase = "starting"  # "starting" | "initializing" | "http_ready" | "starting_im" | "running" | "restarting"
     _heartbeat_http_ready = False
+    _heartbeat_im_ready = False
+    _heartbeat_ready = False
 
     def _write_heartbeat():
         """写入一次心跳（原子写入：先写临时文件再重命名）"""
@@ -2001,6 +2103,8 @@ def serve(
                 "timestamp": time.time(),
                 "phase": _heartbeat_phase,
                 "http_ready": _heartbeat_http_ready,
+                "im_ready": _heartbeat_im_ready,
+                "ready": _heartbeat_ready,
                 "version": __version__,
                 "git_hash": __git_hash__,
             }
@@ -2019,10 +2123,12 @@ def serve(
 
     def _start_heartbeat():
         """启动心跳线程"""
-        nonlocal _heartbeat_phase, _heartbeat_http_ready
+        nonlocal _heartbeat_phase, _heartbeat_http_ready, _heartbeat_im_ready, _heartbeat_ready
         _heartbeat_stop.clear()
         _heartbeat_phase = "starting"
         _heartbeat_http_ready = False
+        _heartbeat_im_ready = False
+        _heartbeat_ready = False
         _write_heartbeat()  # 立即写一次
         t = threading.Thread(target=_heartbeat_loop, daemon=True, name="heartbeat")
         t.start()
@@ -2044,11 +2150,15 @@ def serve(
 
     async def _serve():
         nonlocal shutdown_event, agent_or_master, shutdown_triggered
-        nonlocal _heartbeat_phase, _heartbeat_http_ready
+        nonlocal _heartbeat_phase, _heartbeat_http_ready, _heartbeat_im_ready, _heartbeat_ready
         _install_windows_asyncio_pipe_filter()
         shutdown_event = asyncio.Event()
         shutdown_triggered = False
         _heartbeat_phase = "initializing"
+        _heartbeat_http_ready = False
+        _heartbeat_im_ready = False
+        _heartbeat_ready = False
+        _write_heartbeat()
 
         from openakita import get_version_string
 
@@ -2090,7 +2200,37 @@ def serve(
         api_task = None
         _api_fatal = False
         try:
-            from openakita.api.server import start_api_server
+            from openakita.api.server import API_HOST, API_PORT, start_api_server
+
+            # PR-L1: 解析 API host / port，按 settings.api_lan_mode 决定绑定范围。
+            # 优先级：环境变量 API_HOST > settings.api_lan_mode 推导 > settings.api_host。
+            # 安全闸：开启 lan_mode 必须有 web_access 密码或 api_token，
+            # 否则 0.0.0.0 暴露后任何同网段设备无认证即可调 API。
+            _api_host = API_HOST  # 已经是 env(API_HOST) > "127.0.0.1"
+            _api_port = API_PORT
+            try:
+                if getattr(settings, "api_lan_mode", False):
+                    _has_password = bool(os.environ.get("OPENAKITA_WEB_PASSWORD") or _web_password_already_set())
+                    _has_token = bool(getattr(settings, "api_token", "") or "").strip()
+                    if not (_has_password or _has_token):
+                        raise RuntimeError(
+                            "api_lan_mode=True 但既没有 web_access 密码也没有 api_token，"
+                            "拒绝启动以避免裸奔暴露。请先在 Setup Center 设置访问密码，"
+                            "或在 .env 设置 OPENAKITA_API_TOKEN=<32 字符随机串>。"
+                        )
+                    if not os.environ.get("API_HOST"):
+                        _api_host = "0.0.0.0"
+                        console.print(
+                            "[yellow]⚠ 已开启 api_lan_mode，HTTP API 将绑定到 0.0.0.0 ——"
+                            " 同网段所有设备都能看到这个端口。[/yellow]"
+                        )
+                else:
+                    if not os.environ.get("API_HOST"):
+                        _api_host = getattr(settings, "api_host", "127.0.0.1") or "127.0.0.1"
+            except RuntimeError:
+                raise
+            except Exception as _exc:
+                logger.warning(f"[main] api host resolution fallback: {_exc}")
 
             api_task = await start_api_server(
                 agent=agent_or_master,
@@ -2099,10 +2239,21 @@ def serve(
                 gateway=_message_gateway,
                 orchestrator=_orchestrator,
                 agent_pool=_desktop_pool,
+                host=_api_host,
+                port=_api_port,
             )
-            console.print("[green]✓[/green] HTTP API 已启动: http://127.0.0.1:18900")
-            _heartbeat_phase = "running"
+            _display_host = "127.0.0.1" if _api_host in ("0.0.0.0", "::") else _api_host
+            console.print(
+                f"[green]✓[/green] HTTP API 已启动: http://{_display_host}:{_api_port}"
+                + ("  [dim](lan_mode: 0.0.0.0)[/dim]" if _api_host == "0.0.0.0" else "")
+            )
+            # HTTP API 已可访问，但 IM 通道、晚绑定 gateway、部分后台服务可能仍在启动。
+            # 不要在这里把 phase 标成 running，否则前端会把"HTTP ready"误解为
+            # "整个后端已完成启动"，这正是状态面板反复出现假运行/未知 IM 的根因。
+            _heartbeat_phase = "http_ready"
             _heartbeat_http_ready = True
+            _heartbeat_im_ready = False
+            _heartbeat_ready = False
             _write_heartbeat()  # 立即刷新心跳，标记 HTTP 就绪
         except ImportError:
             console.print("[yellow]⚠[/yellow] HTTP API 未启动（缺少 fastapi/uvicorn 依赖）")
@@ -2122,6 +2273,11 @@ def serve(
         if not _api_fatal:
             # 启动 IM 通道（可选）。放在 HTTP API 之后，避免首次安装通道依赖时
             # 桌面端长时间无法访问本地健康检查。
+            _heartbeat_phase = "starting_im"
+            _heartbeat_http_ready = True
+            _heartbeat_im_ready = False
+            _heartbeat_ready = False
+            _write_heartbeat()
             console.print("[bold green]正在启动 IM 通道...[/bold green]")
             im_channels = await start_im_channels(agent_or_master)
 
@@ -2134,13 +2290,33 @@ def serve(
             # 回填给已经运行的 FastAPI app state。
             if _message_gateway is not None:
                 _message_gateway.set_shutdown_event(shutdown_event)
-                if api_task is not None:
-                    try:
-                        from openakita.api.server import update_runtime_refs
+            if api_task is not None:
+                try:
+                    from openakita.api.server import update_runtime_refs
 
-                        update_runtime_refs(api_task, gateway=_message_gateway)
-                    except Exception:
-                        logger.debug("Failed to update API gateway reference", exc_info=True)
+                    update_runtime_refs(
+                        api_task,
+                        gateway=_message_gateway,
+                        startup_phase="running",
+                        readiness={
+                            "phase": "running",
+                            "http_ready": True,
+                            "im_ready": True,
+                            "ready": True,
+                            "started_im_channels": im_channels,
+                            "gateway_bound": _message_gateway is not None,
+                        },
+                    )
+                except Exception:
+                    logger.debug("Failed to update API runtime readiness", exc_info=True)
+
+            # 到这里才是真正的 serve 启动完成：HTTP API 可访问，IM 启动路径也已收敛
+            # （即便没有启用 IM 或某些 adapter 失败，后台服务也已完成启动流程）。
+            _heartbeat_phase = "running"
+            _heartbeat_http_ready = True
+            _heartbeat_im_ready = True
+            _heartbeat_ready = True
+            _write_heartbeat()
 
         console.print()
         if dev:

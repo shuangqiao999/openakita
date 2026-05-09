@@ -127,11 +127,27 @@ def _get_all_lan_ips() -> list[str]:
 
 @router.get("/api/health")
 async def health(request: Request):
-    """Basic health check - returns 200 if server is running."""
+    """Basic health check - returns 200 if the HTTP API is reachable.
+
+    注意：HTTP API 可访问不等于整个后端业务已完成启动。IM 通道、晚绑定
+    gateway、后台任务可能在 HTTP 之后继续初始化。因此这里同时返回
+    ``readiness``，前端应使用 ``readiness.ready`` / ``readiness.phase`` 展示
+    "启动中 / 部分就绪 / 运行中"，而不是只看 HTTP 200。
+    """
     import os
 
     from openakita import __git_hash__, get_version_string
     from openakita import __version__ as backend_version
+
+    readiness = getattr(request.app.state, "readiness", None)
+    if not isinstance(readiness, dict):
+        gateway = getattr(request.app.state, "gateway", None)
+        readiness = {
+            "phase": getattr(request.app.state, "startup_phase", "http_ready"),
+            "http_ready": True,
+            "im_ready": gateway is not None,
+            "ready": bool(gateway is not None),
+        }
 
     return {
         "status": "ok",
@@ -148,6 +164,8 @@ async def health(request: Request):
         "api_host": os.environ.get("API_HOST", "127.0.0.1"),
         "api_port": _safe_int(os.environ.get("API_PORT", "18900"), 18900),
         "last_link_diagnostic": getattr(request.app.state, "last_link_diagnostic", None),
+        "startup_phase": readiness.get("phase", "http_ready"),
+        "readiness": readiness,
     }
 
 
@@ -421,15 +439,8 @@ async def diagnostics():
     }
 
 
-@router.post("/api/health/check")
-async def health_check(request: Request, body: HealthCheckRequest):
-    """
-    Check health of a specific LLM endpoint or all endpoints.
-
-    Uses dry_run mode: sends a real test request but does NOT modify
-    the provider's healthy/cooldown state, ensuring no interference
-    with ongoing Agent LLM calls.
-    """
+async def _do_health_check(request: Request, body: HealthCheckRequest):
+    """共享 GET / POST 的实际探测逻辑。"""
     agent = getattr(request.app.state, "agent", None)
     if agent is None:
         return {"error": "Agent not initialized"}
@@ -441,18 +452,45 @@ async def health_check(request: Request, body: HealthCheckRequest):
     results: list[HealthResult] = []
 
     if body.endpoint_name:
-        # Check specific endpoint (with timeout)
         provider = llm_client._providers.get(body.endpoint_name)
         if not provider:
             return {"error": f"Endpoint not found: {body.endpoint_name}"}
         result = await _check_with_timeout(body.endpoint_name, provider)
         results.append(result)
     else:
-        # Check all endpoints concurrently with per-endpoint timeout
         tasks = [_check_with_timeout(name, p) for name, p in llm_client._providers.items()]
         results = list(await asyncio.gather(*tasks))
 
     return {"results": [r.model_dump() for r in results]}
+
+
+@router.post("/api/health/check")
+async def health_check_post(request: Request, body: HealthCheckRequest):
+    """
+    Check health of a specific LLM endpoint or all endpoints (POST).
+
+    Uses dry_run mode: sends a real test request but does NOT modify
+    the provider's healthy/cooldown state, ensuring no interference
+    with ongoing Agent LLM calls.
+    """
+    return await _do_health_check(request, body)
+
+
+# PR-S1: 新增 GET 版本，便于浏览器 / curl / 监控脚本一键探测，
+# 不必每次都构造 POST 请求体。endpoint_name 通过 query string 传入；
+# 不带参数则探测全部端点。
+@router.get("/api/health/check")
+async def health_check_get(request: Request, endpoint_name: str = ""):
+    """
+    Check health of a specific LLM endpoint or all endpoints (GET).
+
+    GET /api/health/check                 → 探测全部端点
+    GET /api/health/check?endpoint_name=x → 探测指定端点
+
+    与 POST /api/health/check 行为一致；前端 / 监控集成可任选其一。
+    """
+    body = HealthCheckRequest(endpoint_name=endpoint_name or None)
+    return await _do_health_check(request, body)
 
 
 @router.get("/api/health/loop")

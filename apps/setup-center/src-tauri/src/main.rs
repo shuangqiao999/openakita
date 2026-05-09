@@ -42,7 +42,26 @@ static AUTO_START_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 /// 用于 ``is_backend_auto_starting`` 的超时兜底：超过 ``AUTO_START_TIMEOUT_MS``
 /// 视为后台 spawn 线程已经死掉/卡死，强制返回 false 防止前端 toast 永久卡住。
 static AUTO_START_STARTED_AT_MS: AtomicU64 = AtomicU64::new(0);
-const AUTO_START_TIMEOUT_MS: u64 = 90_000;
+const AUTO_START_TIMEOUT_MS: u64 = 180_000;
+
+/// 后端启动宽限期（秒）。Backend cold-start 在 dual-venv hack 下：
+///   * Python 解释器 import 整个生态 ≈ 30s
+///   * 加载 122 个 skills + 30 个 handler + 数百兆 Memory ≈ 60s
+///   * IM channel 初始化 + uvicorn bind ≈ 10s
+/// 实测从 spawn 到 HTTP /api/health 可访问需要 90~120 秒。
+///
+/// 启动宽限期内：
+///   - Rust 心跳即使 fetch /api/health 失败也不视为"backend down"，不发
+///     `backend:lost`、不触发 auto-spawn（避免在 startup 期间反复刷
+///     "[heartbeat] backend down" 日志、误以为后端崩溃）。
+///   - `is_backend_auto_starting` 仍然返回 true，让前端 UI 显示
+///     "正在启动" 而非 "未启动"。
+const BACKEND_BOOT_GRACE_SEC: u64 = 150;
+
+/// 即便 PID 已不在跑，也允许在 spawn 后这段窗口内继续认为"在启动宽限"。
+/// 用于覆盖 spawn → Python 闪退 → Rust 心跳自愈重 spawn 的过渡窗口，
+/// 避免前端 UI 在这个 30 秒小窗口里闪一下"已停止"。
+const BACKEND_BOOT_GRACE_PID_DEAD_SEC: u64 = 30;
 
 /// `openakita_service_start` 的进程级互斥窗口（毫秒）。
 /// 在 3 秒内对同一 workspace 的第二次调用将被直接拒绝，避免前端重试/竞态
@@ -1069,11 +1088,57 @@ fn health_check_python(py: &Path, code: &str, log_path: &Path) -> bool {
     }
 }
 
+/// 严格判断目录是否是一个完整的 venv。
+///
+/// uv 在 Windows 上创建 venv 时会先写 `Scripts/python.exe`（一个 launcher
+/// 桩），随后再写 `pyvenv.cfg`、`Lib/site-packages/`、seed pip。如果中间任何
+/// 一步失败（被杀软拦截、断网下载 pip 失败、权限问题、用户强行关窗口等），
+/// 残骸 launcher 会留在磁盘上。它跑起来时因为读不到 `pyvenv.cfg`，
+/// `sys.prefix` 会回退到 base interpreter（即 uv 管理的全局 Python），
+/// `import pip` 也能成功——但 `uv pip install --python <这个 launcher>`
+/// 会判定为 "externally managed" 而拒绝安装。所以光看 `import pip`
+/// 不足以证明这是一个真正的、隔离的 venv。
+fn venv_is_real_isolated(venv_dir: &Path, py: &Path, log_path: &Path) -> bool {
+    if !py.exists() {
+        return false;
+    }
+    if !venv_dir.join("pyvenv.cfg").exists() {
+        return false;
+    }
+    health_check_python(
+        py,
+        "import sys, pip; assert sys.prefix != sys.base_prefix, 'venv launcher fell back to base interpreter'",
+        log_path,
+    )
+}
+
 fn ensure_venv(venv_dir: &Path, python_version: &str, log_path: &Path) -> Result<PathBuf, String> {
     let py = runtime_venv_python_path(venv_dir);
-    if health_check_python(&py, "import pip", log_path) {
+    if venv_is_real_isolated(venv_dir, &py, log_path) {
         return Ok(py);
     }
+
+    // 在重建前彻底清空残骸目录。`uv venv --clear` 自身在某些边界条件下
+    // 会留下半残文件（典型场景：上次 uv 在 seed pip 阶段被中断，留下
+    // launcher 但缺 pyvenv.cfg），下次再调 `uv venv --clear` 不一定能恢复。
+    // 自己 remove_dir_all 一刀更稳。
+    if venv_dir.exists() {
+        if let Err(e) = fs::remove_dir_all(venv_dir) {
+            if let Ok(mut log) = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log_path)
+            {
+                let _ = writeln!(
+                    log,
+                    "warning: pre-clean of {} failed: {} (will fall back to `uv venv --clear`)",
+                    venv_dir.display(),
+                    e
+                );
+            }
+        }
+    }
+
     let uv = bootstrap_uv_path();
     let mut cmd = Command::new(&uv);
     // uv does not guarantee pip is present unless the venv is seeded. The
@@ -1083,12 +1148,15 @@ fn ensure_venv(venv_dir: &Path, python_version: &str, log_path: &Path) -> Result
     cmd.arg(venv_dir);
     apply_no_window(&mut cmd);
     run_and_log(cmd, log_path)?;
-    if health_check_python(&py, "import pip", log_path) {
+    if venv_is_real_isolated(venv_dir, &py, log_path) {
         Ok(py)
     } else {
+        let has_cfg = venv_dir.join("pyvenv.cfg").exists();
         Err(format!(
-            "venv health check failed after creation: {}",
-            py.display()
+            "venv health check failed after creation: {} (pyvenv.cfg present={}, see {} for details)",
+            py.display(),
+            has_cfg,
+            log_path.display()
         ))
     }
 }
@@ -1124,6 +1192,11 @@ fn ensure_app_venv(
     cmd.args(["pip", "install", "--python"]);
     cmd.arg(&app_py);
     cmd.arg(wheel_arg);
+    // 显式把 certifi 加进同一次安装：虽然 httpx/requests/aiohttp 会传递依赖
+    // certifi，但 [desktop] extras 不一定每次都触发它；显式钉死避免万一某个
+    // resolver 走捷径跳过 certifi 导致 ssl.create_default_context() 找不到
+    // cacert.pem（用户日志里 dashscope/QQBot 的 SSL [Errno 2] 根因）。
+    cmd.arg("certifi");
     cmd.args(["--reinstall-package", "openakita"]);
     // `uv pip install` does not support pip's `--prefer-binary` flag.
     // Keep binary preference on Python-side `pip install` calls only.
@@ -1179,11 +1252,20 @@ fn write_runtime_manifest(info: &RuntimeEnvInfo, bootstrap: &BootstrapManifest) 
 fn mark_legacy_runtime_mode(error: &str) {
     let pip_index = resolve_runtime_pip_index();
     let now = now_epoch_secs().to_string();
+    // 即便 dual-venv 创建失败回退到 PyInstaller bundled 后端，也把 bootstrap
+    // manifest 中的 wheel sha256 写进 runtime manifest。否则 wheel_hash 永远是
+    // 空串，`runtime_wheel_hash_matches_bootstrap()` 永远返回 false，下一次
+    // `startup_version_check` 会判定"wheel 变了"并主动 stop_backend_for_restart，
+    // 把刚 fallback 拉起来的 bundled 后端反复杀掉，造成"启动一下又无响应"循环。
+    let (wheel_hash, python_version) = match read_bootstrap_manifest() {
+        Ok(b) => (b.wheel.sha256, b.python_version),
+        Err(_) => (String::new(), "3.12".to_string()),
+    };
     let manifest = RuntimeManifest {
         schema_version: 1,
         app_version: env!("CARGO_PKG_VERSION").into(),
-        wheel_hash: String::new(),
-        python_version: "3.12".into(),
+        wheel_hash,
+        python_version,
         app_venv: RuntimeEnvState {
             path: app_venv_dir().to_string_lossy().to_string(),
             status: "failed".into(),
@@ -1254,6 +1336,28 @@ fn apply_dual_runtime_env(cmd: &mut Command) {
         cmd.env("PIP_TRUSTED_HOST", &pip_index.trusted_host);
     }
     prepend_path(cmd, &runtime_venv_bin_dir(&agent_venv_dir()));
+
+    // ── SSL CA bundle 注入 ──
+    // uv-managed Python 没有内置 OS-level 信任 store，``ssl.create_default_context()``
+    // 在 Windows 上会因为找不到 cafile 报 ``FileNotFoundError`` —— LLM 调用、
+    // QQBot、httpx/requests/aiohttp 全部会被这条路径影响（用户日志里
+    // dashscope-qwen3.5-plus / QQ Bot 的 SSL [Errno 2] 都是同一个根因）。
+    // 解决：拿 app-venv 里 certifi 提供的 cacert.pem，注入到所有标准变量里：
+    //   - ssl 模块: SSL_CERT_FILE / SSL_CERT_DIR
+    //   - requests: REQUESTS_CA_BUNDLE
+    //   - libcurl/aiohttp: CURL_CA_BUNDLE
+    if let Some(sp) = runtime_venv_site_packages_dir(&app_venv_dir()) {
+        let cacert = sp.join("certifi").join("cacert.pem");
+        if cacert.exists() {
+            cmd.env("SSL_CERT_FILE", &cacert);
+            cmd.env("REQUESTS_CA_BUNDLE", &cacert);
+            cmd.env("CURL_CA_BUNDLE", &cacert);
+            // SSL_CERT_DIR 指向 certifi 目录，作为 hash-named symlink 兜底
+            if let Some(parent) = cacert.parent() {
+                cmd.env("SSL_CERT_DIR", parent);
+            }
+        }
+    }
 }
 
 /// 获取安装包内置的 Python 解释器路径（openakita-server/_internal）
@@ -2140,6 +2244,45 @@ fn write_pid_file(workspace_id: &str, pid: u32, started_by: &str) -> Result<(), 
     Ok(())
 }
 
+/// 判断当前 workspace 的后端是否仍在"启动宽限期"内。
+///
+/// 宽限规则：
+///   1. PID 文件存在，且 `started_at > 0`（旧格式/外部进程不进入宽限）
+///   2. age < BACKEND_BOOT_GRACE_SEC
+///   3. **PID 还在跑**：仍在宽限
+///      **或** PID 已死但 age < BACKEND_BOOT_GRACE_PID_DEAD_SEC：依然算宽限
+///         —— 这是为了对付 dual-venv hack 启动初期"Python 子进程
+///         一闪而过又被自愈重 spawn"的窗口，避免心跳立刻误判 down
+///         然后前端跟着闪一下"已停止"红条。
+///
+/// 用于压制 startup 期间的"backend down"误报和无意义的 auto-spawn，
+/// 同时让前端 UI 在这段时间内持续显示"正在启动"而非"未启动"。
+fn backend_in_boot_grace(workspace_id: &str) -> bool {
+    let Some(data) = read_pid_file(workspace_id) else {
+        return false;
+    };
+    if data.started_at == 0 {
+        return false;
+    }
+    let age = now_epoch_secs().saturating_sub(data.started_at);
+    if age >= BACKEND_BOOT_GRACE_SEC {
+        return false;
+    }
+    if is_pid_running(data.pid) {
+        return true;
+    }
+    // PID 已死，但还在 spawn-死亡-重 spawn 自愈窗口内 → 仍视作宽限，
+    // 避免心跳跳过 boot-grace 直接报 lost。
+    age < BACKEND_BOOT_GRACE_PID_DEAD_SEC
+}
+
+/// 暴露给前端的命令版本，便于 App.tsx 心跳直接判定"是否还在启动宽限"，
+/// 而不必走 `is_backend_auto_starting`（后者复用同一逻辑但语义偏向"自启动"）。
+#[tauri::command]
+fn backend_in_boot_grace_cmd(workspace_id: String) -> bool {
+    backend_in_boot_grace(&workspace_id)
+}
+
 /// 读取 PID 文件，兼容旧版纯数字格式
 fn read_pid_file(workspace_id: &str) -> Option<PidFileData> {
     let path = service_pid_file(workspace_id);
@@ -2213,9 +2356,13 @@ struct HeartbeatData {
     pid: u32,
     timestamp: f64, // unix epoch seconds (float for sub-second precision)
     #[serde(default)]
-    phase: String, // "starting" | "initializing" | "running" | "restarting" | "stopping"
+    phase: String, // "starting" | "initializing" | "http_ready" | "starting_im" | "running" | "restarting" | "stopping"
     #[serde(default)]
     http_ready: bool, // HTTP API 是否就绪
+    #[serde(default)]
+    im_ready: bool, // IM / late-bound gateway 是否完成启动路径
+    #[serde(default)]
+    ready: bool, // 后端业务启动流程是否整体收敛
 }
 
 /// 心跳文件路径：{workspace_dir}/data/backend.heartbeat
@@ -3367,7 +3514,17 @@ fn runtime_wheel_hash_matches_bootstrap() -> bool {
         return true;
     }
     read_runtime_manifest()
-        .map(|m| !m.legacy_mode && m.wheel_hash == bootstrap_hash)
+        .map(|m| {
+            // legacy 模式下 dual-venv 没创建成功，wheel hash 字段写不写都
+            // 不代表"app-venv 包含 bootstrap wheel 的代码"。但如果重启后
+            // 端只会再走一遍 dual-venv 创建（大概率仍然失败）然后再 fallback
+            // 到同一个 PyInstaller bundled 后端，重启没有任何意义，反而把
+            // 唯一能用的后端杀掉。所以 legacy 模式直接视为 hash 匹配。
+            if m.legacy_mode {
+                return true;
+            }
+            m.wheel_hash == bootstrap_hash
+        })
         .unwrap_or(false)
 }
 
@@ -3886,6 +4043,122 @@ fn main() {
             } else {
                 log_to_file("[auto-start] skipped: no current_workspace_id in state");
             }
+
+            // PR-F1: 启动常驻 5s 心跳。后端崩溃时连续 3 次失败（≈ 15s）就尝试
+            // 自动重启 + 向前端 emit `backend:lost` / `backend:back`。
+            // 旧实现仅依赖 startup_version_check 一次性探测，进程死后用户要等
+            // 60+ 分钟才能在 autostart.log 里看到下一次探测。
+            {
+                let app_handle = app.handle().clone();
+                let app_version_for_hb = app_version.clone();
+                std::thread::spawn(move || {
+                    let mut consecutive_failures: u32 = 0;
+                    let mut last_status_was_healthy: Option<bool> = None;
+                    let mut last_starting_log_at: u64 = 0;
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_secs(5));
+                        let state_snap = read_state_file();
+                        let ws_id = match state_snap.current_workspace_id {
+                            Some(s) => s,
+                            None => continue,
+                        };
+                        let port = read_workspace_api_port(&ws_id).unwrap_or(18900);
+                        let healthy = is_backend_http_healthy(Some(port));
+                        if healthy {
+                            consecutive_failures = 0;
+                            if last_status_was_healthy != Some(true) {
+                                let _ = app_handle.emit(
+                                    "backend:status",
+                                    serde_json::json!({"healthy": true, "port": port}),
+                                );
+                                if last_status_was_healthy == Some(false) {
+                                    let _ = app_handle.emit(
+                                        "backend:back",
+                                        serde_json::json!({"port": port}),
+                                    );
+                                }
+                                last_status_was_healthy = Some(true);
+                            }
+                            continue;
+                        }
+
+                        // ── 启动宽限期：PID 还在 spawn 后的 BACKEND_BOOT_GRACE_SEC 秒内 ──
+                        // 后端 dual-venv hack cold start 实测需要 90~120 秒（Python
+                        // import + 122 个 skills + Memory + IM channels + uvicorn bind）。
+                        // 心跳 5s × 3 次失败 = 15s 就报 down 完全不合理：那时后端
+                        // 才刚开始加载 skills，HTTP 还没绑定端口。
+                        // 在宽限期内：
+                        //   - emit `backend:status starting=true` 让 UI 显示"正在启动"
+                        //   - 不发 backend:lost，不触发 auto-spawn
+                        //   - 不累加 consecutive_failures
+                        if backend_in_boot_grace(&ws_id) {
+                            let now = now_epoch_secs();
+                            // 最多每 30 秒打一条 log + emit，避免刷屏
+                            if now.saturating_sub(last_starting_log_at) >= 30 {
+                                log_to_file(&format!(
+                                    "[heartbeat] backend in boot-grace (port={}) — skipping down/spawn",
+                                    port
+                                ));
+                                let _ = app_handle.emit(
+                                    "backend:status",
+                                    serde_json::json!({"healthy": false, "starting": true, "port": port}),
+                                );
+                                last_starting_log_at = now;
+                            }
+                            consecutive_failures = 0;
+                            continue;
+                        }
+
+                        consecutive_failures = consecutive_failures.saturating_add(1);
+                        if consecutive_failures < 3 {
+                            continue;
+                        }
+                        if last_status_was_healthy != Some(false) {
+                            let _ = app_handle.emit(
+                                "backend:lost",
+                                serde_json::json!({
+                                    "port": port,
+                                    "consecutive_failures": consecutive_failures,
+                                }),
+                            );
+                            log_to_file(&format!(
+                                "[heartbeat] backend down for {}s, attempting auto spawn (port={})",
+                                consecutive_failures * 5,
+                                port,
+                            ));
+                            last_status_was_healthy = Some(false);
+                        }
+                        if AUTO_START_IN_PROGRESS.load(Ordering::SeqCst) {
+                            continue;
+                        }
+                        let check_result = startup_version_check(&app_version_for_hb, port);
+                        let need_start = !matches!(check_result, VersionCheckResult::RunningOk);
+                        if !need_start {
+                            // 端口又被别人占了或 health 临时抖动 — 重置计数
+                            consecutive_failures = 0;
+                            continue;
+                        }
+                        AUTO_START_IN_PROGRESS.store(true, Ordering::SeqCst);
+                        AUTO_START_STARTED_AT_MS.store(now_ms(), Ordering::SeqCst);
+                        let venv_dir = openakita_root_dir()
+                            .join("venv")
+                            .to_string_lossy()
+                            .to_string();
+                        let ws_clone = ws_id.clone();
+                        match openakita_service_start(venv_dir, ws_clone) {
+                            Ok(status) => log_to_file(&format!(
+                                "[heartbeat] auto-spawn returned: running={}, pid={:?} (note: pid may be existing process if dedupe-skip)",
+                                status.running, status.pid
+                            )),
+                            Err(e) => log_to_file(&format!("[heartbeat] auto-spawn FAILED: {}", e)),
+                        }
+                        AUTO_START_IN_PROGRESS.store(false, Ordering::SeqCst);
+                        AUTO_START_STARTED_AT_MS.store(0, Ordering::SeqCst);
+                        consecutive_failures = 0;
+                    }
+                });
+            }
+
             Ok(())
             })();
 
@@ -3934,6 +4207,8 @@ fn main() {
             openakita_check_pid_alive,
             set_tray_backend_status,
             is_backend_auto_starting,
+            backend_in_boot_grace_cmd,
+            repair_runtime_env,
             get_auto_start_backend,
             set_auto_start_backend,
             get_auto_update,
@@ -4051,9 +4326,18 @@ struct ServiceStatus {
     running: bool,
     pid: Option<u32>,
     pid_file: String,
-    /// 后端心跳阶段："starting" | "initializing" | "running" | "restarting" | "stopping" | ""
+    /// 后端心跳阶段："starting" | "initializing" | "http_ready" | "starting_im" | "running" | "restarting" | "stopping" | ""
     #[serde(default)]
     heartbeat_phase: String,
+    /// HTTP API 是否就绪
+    #[serde(default)]
+    heartbeat_http_ready: bool,
+    /// IM / late-bound gateway 启动路径是否已收敛
+    #[serde(default)]
+    heartbeat_im_ready: bool,
+    /// 后端业务启动流程是否整体收敛
+    #[serde(default)]
+    heartbeat_ready: bool,
     /// 心跳是否过期（超过 30 秒没更新）。None = 没有心跳文件（旧版后端）
     #[serde(default)]
     heartbeat_stale: Option<bool>,
@@ -4069,20 +4353,23 @@ fn build_service_status(
     pid: Option<u32>,
     pid_file_str: String,
 ) -> ServiceStatus {
-    let (heartbeat_phase, heartbeat_stale, heartbeat_age_secs) =
+    let (heartbeat_phase, heartbeat_http_ready, heartbeat_im_ready, heartbeat_ready, heartbeat_stale, heartbeat_age_secs) =
         if let Some(hb) = read_heartbeat_file(workspace_id) {
             let now = now_epoch_secs() as f64;
             let age = now - hb.timestamp;
             let stale = age > 30.0; // 超过 30 秒无心跳视为过期
-            (hb.phase, Some(stale), Some(age))
+            (hb.phase, hb.http_ready, hb.im_ready, hb.ready, Some(stale), Some(age))
         } else {
-            (String::new(), None, None)
+            (String::new(), false, false, false, None, None)
         };
     ServiceStatus {
         running,
         pid,
         pid_file: pid_file_str,
         heartbeat_phase,
+        heartbeat_http_ready,
+        heartbeat_im_ready,
+        heartbeat_ready,
         heartbeat_stale,
         heartbeat_age_secs,
     }
@@ -4664,9 +4951,21 @@ fn openakita_service_start(
         });
     }
 
-    // Confirm the process is still alive shortly after spawning.
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    if !is_pid_running(pid) {
+    // Confirm the process is still alive after spawning.
+    // 实测在 dual-venv hack 下，Python 解释器 import 失败/路径错误等
+    // "立即退出"故障通常发生在 spawn 后 1-3 秒内。原来 sleep 500ms 仅能
+    // 抓到极少数现场，导致 service_start 误返回 Ok，前端跟着进入 starting
+    // 死循环。改成 6 次 × 500ms 轮询，命中即停，最多多等 2.5s 即可换来
+    // 准确的失败判定。
+    let mut alive = true;
+    for _ in 0..6 {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        if !is_pid_running(pid) {
+            alive = false;
+            break;
+        }
+    }
+    if !alive {
         {
             let mut guard = MANAGED_CHILD.lock().unwrap();
             if let Some(ref mp) = *guard {
@@ -4828,27 +5127,104 @@ fn autostart_set_enabled(app: tauri::AppHandle, enabled: bool) -> Result<(), Str
 
 /// 前端调用：查询后端是否正在自动启动中。
 /// 返回 true 时前端应禁用启动/重启按钮并显示"正在自动启动服务"提示。
+///
+/// 判定优先级：
+/// 1. `AUTO_START_IN_PROGRESS` 为 true 且未超时 — 自动启动 spawn 线程仍在跑
+/// 2. 后端 PID 文件存在但仍处于 BOOT_GRACE 期 + HTTP 不可达 — 进程已 spawn
+///    但还在 cold-start（dual-venv hack 实测要 90~120 秒）
+///
+/// 第 2 条是关键：spawn 调用本身是同步立即返回的，AUTO_START_IN_PROGRESS
+/// 在 spawn 返回后立即被清掉，但此时后端可能还要 90 秒才能 HTTP ready。
+/// 老逻辑会让前端在 spawn 返回后立刻把 UI 从"启动中"切回"未启动"，
+/// 等 90 秒后端真起来再切回"运行中"——这就是用户感知到的诡异闪烁。
 #[tauri::command]
 fn is_backend_auto_starting() -> bool {
-    if !AUTO_START_IN_PROGRESS.load(Ordering::SeqCst) {
-        return false;
-    }
-    // 90s 兜底：spawn 线程理应在该窗口内完成（成功/失败都会清 flag）。
-    // 超时仍 true 视为线程已死掉/卡住，主动清掉，避免前端 toast 永久卡住。
-    let started_at = AUTO_START_STARTED_AT_MS.load(Ordering::SeqCst);
-    if started_at > 0 {
-        let elapsed = now_ms().saturating_sub(started_at);
-        if elapsed >= AUTO_START_TIMEOUT_MS {
-            log_to_file(&format!(
-                "[auto-start] is_backend_auto_starting timeout after {}ms, clearing flag",
-                elapsed
-            ));
-            AUTO_START_IN_PROGRESS.store(false, Ordering::SeqCst);
-            AUTO_START_STARTED_AT_MS.store(0, Ordering::SeqCst);
-            return false;
+    // 优先级 1：显式的 AUTO_START_IN_PROGRESS flag
+    if AUTO_START_IN_PROGRESS.load(Ordering::SeqCst) {
+        let started_at = AUTO_START_STARTED_AT_MS.load(Ordering::SeqCst);
+        if started_at > 0 {
+            let elapsed = now_ms().saturating_sub(started_at);
+            if elapsed >= AUTO_START_TIMEOUT_MS {
+                log_to_file(&format!(
+                    "[auto-start] is_backend_auto_starting timeout after {}ms, clearing flag",
+                    elapsed
+                ));
+                AUTO_START_IN_PROGRESS.store(false, Ordering::SeqCst);
+                AUTO_START_STARTED_AT_MS.store(0, Ordering::SeqCst);
+            } else {
+                return true;
+            }
+        } else {
+            return true;
         }
     }
-    true
+    // 优先级 2：BOOT_GRACE — 进程已 spawn、PID 还活着、HTTP 还没起来
+    let state = read_state_file();
+    if let Some(ws_id) = state.current_workspace_id {
+        if backend_in_boot_grace(&ws_id) {
+            let port = read_workspace_api_port(&ws_id).unwrap_or(18900);
+            if !is_backend_http_healthy(Some(port)) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// 前端"重试启动/修复"按钮调用：先把残骸 venv 和 manifest 删干净，
+/// 然后重新 ensure dual runtime venv。Bug-rescue 路径，正常启动不会走这里。
+///
+/// 老的"重试启动/修复"只是再次调 `openakita_service_start`，但 `ensure_venv`
+/// 的早期健康检查会被残骸 launcher 蒙混通过、直接 return Ok 而不重建 venv，
+/// 用户怎么点都修不好——必须先把 app-venv 目录砍了再重建。
+#[tauri::command]
+fn repair_runtime_env() -> Result<String, String> {
+    let mut report = String::new();
+    for dir in [app_venv_dir(), agent_venv_dir()] {
+        if dir.exists() {
+            match fs::remove_dir_all(&dir) {
+                Ok(()) => report.push_str(&format!("removed {}\n", dir.display())),
+                Err(e) => {
+                    report.push_str(&format!("warn: remove {} failed: {}\n", dir.display(), e));
+                }
+            }
+        }
+    }
+    let manifest = runtime_manifest_path();
+    if manifest.exists() {
+        match fs::remove_file(&manifest) {
+            Ok(()) => report.push_str(&format!("removed {}\n", manifest.display())),
+            Err(e) => {
+                report.push_str(&format!(
+                    "warn: remove {} failed: {}\n",
+                    manifest.display(),
+                    e
+                ));
+            }
+        }
+    }
+    let app_venv_log = runtime_logs_dir().join("app-venv.log");
+    if app_venv_log.exists() {
+        let _ = fs::remove_file(&app_venv_log);
+    }
+    let agent_venv_log = runtime_logs_dir().join("agent-venv.log");
+    if agent_venv_log.exists() {
+        let _ = fs::remove_file(&agent_venv_log);
+    }
+    match ensure_dual_runtime_env() {
+        Ok(info) => {
+            report.push_str(&format!(
+                "ok: app_python={} agent_python={}\n",
+                info.app_python.display(),
+                info.agent_python.display()
+            ));
+            Ok(report)
+        }
+        Err(e) => {
+            report.push_str(&format!("ensure_dual_runtime_env failed: {}\n", e));
+            Err(report)
+        }
+    }
 }
 
 #[tauri::command]

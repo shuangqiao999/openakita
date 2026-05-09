@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ...memory.json_utils import coerce_tool_names
+from ...memory.json_utils import coerce_text, coerce_tool_names
 
 if TYPE_CHECKING:
     from ...core.agent import Agent
@@ -43,6 +43,7 @@ class MemoryHandler:
         "trace_memory",
         "search_relational_memory",
         "get_session_context",
+        "memory_delete_by_query",
     ]
 
     _SEARCH_TOOLS = frozenset(
@@ -122,9 +123,31 @@ class MemoryHandler:
     _TASK_REPORT_RE = re.compile(
         r"(?:任务执行|执行摘要|已交付文件|文件已生成|成功完成|搞定|完成项|工具调用)"
     )
+    # 稳定事实 / 用户档案级信息：放宽匹配，覆盖 LLM 常见的改写句式。
+    # 关键修复：原正则要求 `用户` 后紧跟动词，导致 "用户陈彦廷居住在重庆…"
+    # 这种 LLM 把人名插入主语位的写法完全漏判，被错误降级为 session。
     _STABLE_FACT_RE = re.compile(
-        r"(?:用户(?:是|为|叫|称呼|使用|偏好|喜欢|习惯|从事|负责)|"
-        r"职业|公司|行业|时区|操作系统|常用工具|长期|以后|每次|总是|始终)"
+        r"(?:"
+        # 1) 用户 + 任意 0-12 字 + 稳定属性动词 / 居住状态
+        r"用户.{0,12}(?:是|为|叫|称呼|使用|偏好|喜欢|习惯|从事|负责|"
+        r"居住|位于|来自|住在|在.{0,4}(?:工作|生活|居住|定居))"
+        # 2) 用户 + 时间副词 + 任意行为（"用户每月可投入..."）
+        r"|用户.{0,8}(?:每月|每周|每天|每年|每次|每隔|常常|经常|总是|始终|长期|平时)"
+        # 3) 项目 / 代号 / 产品 这种命名实体出现 → 倾向于是项目档案
+        r"|(?:项目代号|产品代号|代号为|代号叫|项目名|产品名|项目叫)"
+        # 4) 经典身份/地理/工具关键词
+        r"|职业|公司|行业|时区|操作系统|常用工具|首选|默认使用"
+        # 5) 时间副词独立出现
+        r"|长期|以后|每次|总是|始终|永久"
+        r")"
+    )
+    # 用户消息里出现这些关键词 → 明确希望跨会话长期保存。
+    # 由 _detect_user_persistence_intent 检索 session 上下文使用。
+    _USER_PERSIST_INTENT_RE = re.compile(
+        r"(?:永久(?:保存|记住|记下)|长期(?:记住|保存|留着)|"
+        r"跨会话|新(?:窗口|会话|对话).{0,6}(?:也能|可以|还能).{0,6}(?:查|看|找|记)|"
+        r"下次.{0,6}(?:也能|还能|可以).{0,6}(?:查|看|找|记|用)|"
+        r"一直记(?:住|着)|别忘了|不要忘|永远(?:记|不要忘))"
     )
     _SUPERSEDE_RE = re.compile(r"(?:取消|不要了|不再|改用|改成|替代|更新为|撤销)")
 
@@ -152,26 +175,53 @@ class MemoryHandler:
         content: str,
         mem_type_str: str,
         memory_manager: Any,
+        explicit_scope: str | None = None,
+        user_intent_hint: str | None = None,
     ) -> tuple[str, str, list[str], str | None]:
         """Choose where a manual memory should live without blocking useful learning.
 
-        Stable user preferences/rules/skills remain global. Ambiguous one-off
-        task facts are still kept, but only in the current session when possible
-        so they can help the ongoing conversation without polluting future ones.
+        Decision priority (high → low):
+        1. ``explicit_scope`` — model passed scope= argument (global/session)
+        2. ``user_intent_hint`` — recent user message contains explicit cross-
+           session keywords ("永久保存"/"下次新会话也能查到"/...)
+        3. Stable preferences/rules/skills/experiences → global by default
+        4. ``_STABLE_FACT_RE`` heuristic on memory content → global
+        5. One-off task or report → session (or short-term global fallback)
+        6. Default → session when an active session exists
         """
         current_scope, current_owner = cls._current_scope(memory_manager)
         tags: list[str] = ["manual"]
         content = content.strip()
         mem_type = (mem_type_str or "fact").lower()
+        normalized_scope = (explicit_scope or "auto").strip().lower()
 
+        # 1) explicit scope wins — model knows best when user is explicit
+        if normalized_scope == "global":
+            tags.append("explicit-global")
+            return "global", "", tags, None
+        if normalized_scope == "session":
+            tags.append("explicit-session")
+            if current_scope == "session" and current_owner:
+                return current_scope, current_owner, tags, None
+            # No active session — fall back to global short-term
+            return "global", "", tags, None
+
+        # 2) user explicitly asked for cross-session persistence in their msg
+        if user_intent_hint and cls._USER_PERSIST_INTENT_RE.search(user_intent_hint):
+            tags.append("user-requested-global")
+            return "global", "", tags, None
+
+        # 3) durable types default to global unless caller is in a tight session
         if mem_type in {"preference", "rule", "skill", "error", "experience"}:
             if cls._SUPERSEDE_RE.search(content):
                 tags.append("supersedes-prior-memory")
             return "global", "", tags, None
 
+        # 4) regex on content body
         if cls._STABLE_FACT_RE.search(content):
             return "global", "", tags, None
 
+        # 5) one-off / task report → session-scoped
         if cls._ONE_OFF_TASK_RE.search(content) or cls._TASK_REPORT_RE.search(content):
             tags.append("session-only")
             if current_scope == "session" and current_owner:
@@ -188,13 +238,16 @@ class MemoryHandler:
                 "这更像一次性任务记录，已按低优先级短期记忆保存。",
             )
 
+        # 6) default — keep within session, but make the downgrade message
+        # actionable so model knows how to escalate next time.
         if current_scope == "session" and current_owner:
             tags.append("session-only")
             return (
                 current_scope,
                 current_owner,
                 tags,
-                "这条事实暂未判断为长期偏好，已先保存在当前会话。",
+                "未识别为长期偏好，已先保存在当前会话。"
+                "如需跨会话持久化，请改传 scope=\"global\" 重试。",
             )
 
         return "global", "", tags, None
@@ -264,15 +317,52 @@ class MemoryHandler:
         overlap = len(left_bigrams & right_bigrams) / len(left_bigrams | right_bigrams)
         return overlap >= 0.12
 
+    # Persistent marker file path: once created, the navigation guide will
+    # never be shown again — for any session, any agent re-creation, any
+    # process restart. Delete this file to re-enable the guide.
+    _GUIDE_MARKER_FILENAME = "memory_navigation_guide_shown.flag"
+
     def __init__(self, agent: "Agent"):
         self.agent = agent
         self._guide_injected: bool = False
         self._recent_add_contents: list[str] = []
+        # Hydrate _guide_injected from the persistent marker so AgentPool
+        # eviction / process restart don't reinject the guide.
+        self._guide_marker_path = self._compute_guide_marker_path()
+        if self._guide_marker_path is not None and self._guide_marker_path.exists():
+            self._guide_injected = True
+
+    def _compute_guide_marker_path(self) -> Path | None:
+        try:
+            from ...config import settings
+
+            base = settings.data_dir / "state"
+            base.mkdir(parents=True, exist_ok=True)
+            return base / self._GUIDE_MARKER_FILENAME
+        except Exception:
+            return None
+
+    def _persist_guide_marker(self) -> None:
+        if self._guide_marker_path is None:
+            return
+        try:
+            self._guide_marker_path.write_text("1", encoding="utf-8")
+        except Exception:
+            pass
 
     def reset_guide(self) -> None:
-        """Reset the one-shot guide flag (call on new session start)."""
-        self._guide_injected = False
+        """Reset the per-session add-dedup cache.
+
+        Note: ``_guide_injected`` is intentionally **not** reset here anymore.
+        The navigation guide is meant as a one-shot onboarding artifact —
+        re-emitting it on every new session burns ~800 tokens of context for
+        no value, and was responsible for P1-6's "guide spam across turns".
+        Once the persistent marker exists the guide stays suppressed forever;
+        operators can re-enable it by deleting ``data/state/<flag>``.
+        """
         self._recent_add_contents.clear()
+        if self._guide_marker_path is not None and self._guide_marker_path.exists():
+            self._guide_injected = True
 
     async def handle(self, tool_name: str, params: dict[str, Any]) -> str:
         """处理工具调用"""
@@ -294,11 +384,14 @@ class MemoryHandler:
             result = await self._search_relational_memory(params)
         elif tool_name == "get_session_context":
             return self._get_session_context(params)
+        elif tool_name == "memory_delete_by_query":
+            return self._delete_by_query(params)
         else:
             return f"❌ Unknown memory tool: {tool_name}"
 
         if tool_name in self._SEARCH_TOOLS and not self._guide_injected:
             self._guide_injected = True
+            self._persist_guide_marker()
             return self._NAVIGATION_GUIDE + result
         return result
 
@@ -356,10 +449,33 @@ class MemoryHandler:
             return "未记录：记忆内容为空。"
         mem_type_str = params.get("type", "fact")
         importance = self._importance_value(params.get("importance", 0.5))
+        explicit_scope_raw = params.get("scope")
+        explicit_scope: str | None = None
+        if isinstance(explicit_scope_raw, str):
+            normalized = explicit_scope_raw.strip().lower()
+            if normalized in {"global", "session", "auto"}:
+                explicit_scope = normalized
+            elif normalized in {"permanent", "long_term", "long-term", "longterm"}:
+                explicit_scope = "global"
+            elif normalized in {"short_term", "short-term", "shortterm", "temporary"}:
+                explicit_scope = "session"
+        # 取最近一条用户消息作为意图判断依据：当用户口头说
+        # "永久保存 / 下次新会话也能查到 / 长期记住" 等，但模型仍传
+        # scope=auto 时，由 hint 兜底升级为 global，避免出现
+        # "模型说存了 / 实际只在本会话可见" 的撕裂。
+        user_intent_hint: str | None = None
+        try:
+            recent_user = getattr(self.agent, "_current_user_message", "") or ""
+            if isinstance(recent_user, str) and recent_user:
+                user_intent_hint = recent_user
+        except Exception:
+            user_intent_hint = None
         scope, scope_owner, tags, scope_note = self._memory_scope_for_manual_add(
             content,
             mem_type_str,
             self.agent.memory_manager,
+            explicit_scope=explicit_scope,
+            user_intent_hint=user_intent_hint,
         )
 
         content_key = content.strip()[:100].lower()
@@ -440,8 +556,10 @@ class MemoryHandler:
                 self._recent_add_contents.pop(0)
             self._recent_add_contents.append(content_key)
             lines = [f"✅ 已记住: [{mem_type_str}] {content}", f"ID: {memory_id}"]
-            if scope != "global":
-                lines.append(f"范围: 当前会话 ({scope_owner})")
+            if scope == "global":
+                lines.append("范围: 跨会话长期记忆 (global)")
+            else:
+                lines.append(f"范围: 仅当前会话 (session={scope_owner})")
             if superseded:
                 lines.append(f"已替代旧记忆: {superseded} 条")
             if scope_note:
@@ -661,7 +779,7 @@ class MemoryHandler:
                             "episode_id": row.get("episode_id", ""),
                             "timestamp": row.get("timestamp", ""),
                             "role": row.get("role", ""),
-                            "content": str(row.get("content", ""))[:500],
+                            "content": coerce_text(row.get("content"))[:500],
                             "tool_calls": row.get("tool_calls") or [],
                             "tool_results": row.get("tool_results") or [],
                         }
@@ -772,7 +890,7 @@ class MemoryHandler:
             lines.append(f"\n## 相关对话（共 {len(turns)} 轮，显示前 6 轮）\n")
             for t in turns[:6]:
                 role = t.get("role", "?")
-                content = str(t.get("content", ""))[:200]
+                content = coerce_text(t.get("content"))[:200]
                 lines.append(f"[{role}] {content}")
                 if t.get("tool_calls"):
                     tc = t["tool_calls"]
@@ -820,7 +938,7 @@ class MemoryHandler:
             lines.append(f"\n## 对话原文（共 {len(turns)} 轮，显示前 8 轮）\n")
             for t in turns[:8]:
                 role = t.get("role", "?")
-                content = str(t.get("content", ""))[:300]
+                content = coerce_text(t.get("content"))[:300]
                 lines.append(f"[{role}] {content}")
                 if t.get("tool_calls"):
                     tc = t["tool_calls"]
@@ -928,7 +1046,7 @@ class MemoryHandler:
                             "file": jsonl_file.name,
                             "timestamp": ts,
                             "role": turn.get("role", ""),
-                            "content": str(turn.get("content", ""))[:500],
+                            "content": coerce_text(turn.get("content"))[:500],
                             "tool_calls": turn.get("tool_calls", []),
                             "tool_results": turn.get("tool_results", []),
                         }
@@ -1103,6 +1221,160 @@ class MemoryHandler:
                 parts.append(f"[{ts_display}] {role}: {content}")
 
         return "\n".join(parts) if parts else "无可用会话信息"
+
+    def _delete_by_query(self, params: dict) -> str:
+        """受控的按查询条件批量删除记忆 (PR-A3)。
+
+        前置条件（任一）：
+        - 用户已通过 RiskGate 授权（session.metadata 含 risk_authorized_intent_active）
+        - 调用方显式 dry_run=True 仅预览
+
+        参数：
+        - query: 必填，按内容关键字过滤
+        - source: 可选，按 source 过滤（如 "profile_fallback"）
+        - memory_type: 可选，按 MemoryType 过滤
+        - dry_run: 默认 True，先返回预览再要求 dry_run=False 真删
+        - max_delete: 默认 50，硬上限 200，避免一次性误删
+        - confirm_token: dry_run=False 时必填，由前一次 dry_run 返回（防止 LLM 自我授权）
+        """
+        try:
+            from ...memory.types import MemoryType
+        except Exception as exc:
+            return f"❌ memory_delete_by_query 不可用: {exc}"
+
+        query = (params.get("query") or "").strip()
+        source = (params.get("source") or "").strip() or None
+        type_str = (params.get("memory_type") or "").strip()
+        dry_run = params.get("dry_run", True)
+        if not isinstance(dry_run, bool):
+            dry_run = str(dry_run).lower() not in ("false", "0", "no")
+        try:
+            max_delete = int(params.get("max_delete") or 50)
+        except (TypeError, ValueError):
+            max_delete = 50
+        max_delete = max(1, min(max_delete, 200))
+        confirm_token = (params.get("confirm_token") or "").strip()
+
+        # 真删前必须有 dry_run 预览返回的 token，避免 LLM 直接 dry_run=False 误删或无匹配时静默返回
+        if not dry_run and not confirm_token:
+            return (
+                "❌ 拒绝执行：`dry_run=False` 时必须提供 `confirm_token`（由上一次 "
+                "`dry_run=True` 预览末尾给出）。请先预览再确认删除。"
+            )
+
+        if not query and not source and not type_str:
+            return (
+                "❌ memory_delete_by_query 至少需要 query / source / memory_type 之一。"
+                "拒绝执行无差别删除。"
+            )
+
+        memory_type: MemoryType | None = None
+        if type_str:
+            try:
+                memory_type = MemoryType(type_str.lower())
+            except ValueError:
+                return (
+                    f"❌ memory_type 无效: {type_str}. "
+                    f"可用值: {', '.join(t.value for t in MemoryType)}"
+                )
+
+        mm = getattr(self.agent, "memory_manager", None)
+        if mm is None or not hasattr(mm, "search_memories"):
+            return "❌ memory_manager 不可用，无法删除"
+
+        try:
+            candidates = mm.search_memories(
+                query=query,
+                memory_type=memory_type,
+                limit=max_delete + 1,
+            )
+        except Exception as exc:
+            return f"❌ 搜索候选记忆失败: {exc}"
+
+        if source:
+            candidates = [
+                m for m in candidates
+                if str(getattr(m, "source", "") or "") == source
+            ]
+
+        candidates = candidates[:max_delete]
+        if not candidates:
+            return f"未找到符合条件的记忆（query={query!r}, source={source!r}）。"
+
+        preview_lines = [f"将删除 {len(candidates)} 条记忆，预览前 5 条："]
+        for mem in candidates[:5]:
+            content = (getattr(mem, "content", "") or "")[:120]
+            mem_id = str(getattr(mem, "id", ""))[:12]
+            mem_source = str(getattr(mem, "source", "") or "?")
+            preview_lines.append(
+                f"- [{mem_id}] type={getattr(mem, 'type', '?')} source={mem_source}\n"
+                f"  内容: {content}"
+            )
+
+        # 生成 token 以防 LLM 在没有 dry_run 预览的情况下直接删
+        try:
+            import hashlib
+
+            token_seed = "|".join(str(getattr(m, "id", "")) for m in candidates)
+            expected_token = hashlib.sha256(token_seed.encode("utf-8")).hexdigest()[:16]
+        except Exception:
+            expected_token = ""
+
+        if dry_run:
+            preview_lines.append("")
+            preview_lines.append(
+                "（这只是预览，未执行删除。如确认无误，请用相同参数 + "
+                f"`dry_run=False` 且 `confirm_token=\"{expected_token}\"` 再调一次。）"
+            )
+            return "\n".join(preview_lines)
+
+        if expected_token and confirm_token != expected_token:
+            preview_lines.append("")
+            preview_lines.append(
+                "❌ 拒绝执行：confirm_token 不匹配。请先以 dry_run=True 预览，"
+                "拷贝返回的 confirm_token 再调用。"
+            )
+            return "\n".join(preview_lines)
+
+        # 同时检查 RiskGate 已授权，二次保险
+        try:
+            session = getattr(self.agent, "current_session", None)
+            authorized = False
+            if session is not None:
+                intent = session.get_metadata("risk_authorized_intent_active")
+                if isinstance(intent, dict) and intent.get("operation") == "memory_delete":
+                    authorized = True
+            if not authorized:
+                preview_lines.append("")
+                preview_lines.append(
+                    "❌ 拒绝执行：未检测到用户在 RiskGate 中确认的授权范围。"
+                    "请引导用户重新发起删除请求并通过弹窗确认。"
+                )
+                return "\n".join(preview_lines)
+        except Exception:
+            pass
+
+        deleted = 0
+        for mem in candidates:
+            try:
+                mem_id = str(getattr(mem, "id", ""))
+                if mem_id and mm.delete_memory(mem_id):
+                    deleted += 1
+            except Exception as exc:
+                logger.warning("[memory_delete_by_query] delete %s failed: %s", mem_id, exc)
+
+        # 消费授权
+        try:
+            session = getattr(self.agent, "current_session", None)
+            if session is not None:
+                session.set_metadata("risk_authorized_intent_active", None)
+        except Exception:
+            pass
+
+        return (
+            f"✅ 已删除 {deleted}/{len(candidates)} 条记忆。\n"
+            f"前 5 条预览见上一步 dry_run 输出。"
+        )
 
 
 def create_handler(agent: "Agent"):

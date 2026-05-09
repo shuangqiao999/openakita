@@ -263,6 +263,17 @@ _ARTIFACT_INTENT_KEYWORDS: tuple[str, ...] = (
     "出一份",
     "做一份",
     "写一份",
+    # 强信号：带量词的"整理/准备/拟一份"——用户场景"帮我整理一份OpenAkita
+    # 的展会宣传策划"必然命中"整理一份"，触发 expects_artifact=True，
+    # 避免 trust-but-verify 走 LLM 复核绕远路。
+    "整理一份",
+    "整理一个",
+    "准备一份",
+    "准备一个",
+    "拟一份",
+    "拟一个",
+    "起草一份",
+    "起草一个",
     "image",
     "photo",
     "picture",
@@ -273,13 +284,111 @@ _ARTIFACT_INTENT_KEYWORDS: tuple[str, ...] = (
     "export",
 )
 
+# 弱信号关键词：单独出现时不足以判 expects_artifact=True（因为正常对话里
+# "你的方案/这个计划/这个报告"的引用很常见），但**当上下文已经产出过文件**
+# （sub-agent 的 output_files 非空 / 当前 ReAct 已 write_file 过）时就视为
+# 用户期望最终回复挂上附件——典型场景是用户说"整理一份…策划"，子节点
+# 已经写好 markdown 但 coordinator 没用 deliver_artifacts 转发。
+_SOFT_ARTIFACT_KEYWORDS: tuple[str, ...] = (
+    "方案",
+    "策划",
+    "策略",
+    "计划",
+    "报告",
+    "汇总",
+    "总结",
+    "文档",
+    "ppt",
+    "幻灯片",
+    "脚本",
+    "白皮书",
+    "提案",
+    "plan",
+    "report",
+    "proposal",
+    "document",
+    "summary",
+)
 
-def request_expects_artifact(user_request: str | None) -> bool:
+_INPUT_ARTIFACT_REFERENCE_PATTERNS: tuple[str, ...] = (
+    r"\bread\s+(?:the\s+)?attached\b",
+    r"\bopen\s+(?:the\s+)?attached\b",
+    r"\banaly[sz]e\s+(?:the\s+)?attached\b",
+    r"\bsummar(?:ize|ise|y)\s+(?:the\s+)?attached\b",
+    r"\bextract\b.+\b(?:attached|file|attachment)\b",
+    r"\b(?:attached|uploaded)\s+(?:file|image|photo|picture|document|attachment)\b",
+    r"读取(?:我)?(?:刚)?(?:上传|发送|发来)?的?(?:附件|文件|图片)",
+    r"阅读(?:我)?(?:刚)?(?:上传|发送|发来)?的?(?:附件|文件|图片)",
+    r"分析(?:我)?(?:刚)?(?:上传|发送|发来)?的?(?:附件|文件|图片)",
+    r"查看(?:我)?(?:刚)?(?:上传|发送|发来)?的?(?:附件|文件|图片)",
+    r"总结(?:我)?(?:刚)?(?:上传|发送|发来)?的?(?:附件|文件|图片)",
+    r"(?:附件|文件|图片)(?:里|中|内容)",
+)
+
+_ARTIFACT_DELIVERY_INTENT_KEYWORDS: tuple[str, ...] = (
+    "下载",
+    "发我",
+    "发给我",
+    "给我一张",
+    "给我发",
+    "导出",
+    "另存",
+    "保存为",
+    "生成一份",
+    "出一份",
+    "做一份",
+    "写一份",
+    "生成文件",
+    "创建文件",
+    "输出文件",
+    "生成图片",
+    "生成图像",
+    "生成海报",
+    "download",
+    "send me",
+    "export",
+    "attach the file",
+    "attach a file",
+    "create a file",
+    "write a file",
+    "generate a file",
+    "save as",
+    "generate an image",
+    "create an image",
+    "make an image",
+)
+
+
+def _looks_like_input_artifact_reference(text: str) -> bool:
+    return any(
+        re.search(pattern, text, flags=re.IGNORECASE)
+        for pattern in _INPUT_ARTIFACT_REFERENCE_PATTERNS
+    )
+
+
+def _has_artifact_delivery_intent(text: str) -> bool:
+    return any(key in text for key in _ARTIFACT_DELIVERY_INTENT_KEYWORDS)
+
+
+def request_expects_artifact(
+    user_request: str | None,
+    has_produced_files: bool = False,
+) -> bool:
     """判断用户原始请求是否明显要求附件/文件类交付物。
 
     返回 True 表示用户文本里出现了"交付物"信号，调用方据此决定是否
     强约束 LLM 走 ``write_file`` / ``org_submit_deliverable(file_attachments=...)``
     路径。返回 False 时调用方应避免向用户喷发"必须交付文件"的诊断噪音。
+
+    Args:
+        user_request: 用户原始请求文本。
+        has_produced_files: 上下文中是否已经产出过文件（如 sub-agent 已 write_file、
+            或当前会话有 delivery_receipts）。默认 False。
+            为 True 时，弱信号词（"方案/策划/计划/报告/汇总/文档"等）也会触发
+            expects_artifact=True；典型场景是 coordinator 收到 sub-agent 已经
+            写好的 markdown 文件但还没用 deliver_artifacts 转发——这时把弱信号
+            升级成强信号，让 trust-but-verify 直接走"必须 deliver_artifacts"
+            分支，避免兜到 LLM 再绕一圈。
     """
     raw = (user_request or "").strip()
     if not raw:
@@ -287,7 +396,13 @@ def request_expects_artifact(user_request: str | None) -> bool:
     if raw.startswith(_SYSTEM_REQUEST_PREFIXES_TUPLE):
         return False
     text = raw.lower()
-    return any(key in text for key in _ARTIFACT_INTENT_KEYWORDS)
+    if _looks_like_input_artifact_reference(text) and not _has_artifact_delivery_intent(text):
+        return False
+    if any(key in text for key in _ARTIFACT_INTENT_KEYWORDS):
+        return True
+    if has_produced_files and any(key in text for key in _SOFT_ARTIFACT_KEYWORDS):
+        return True
+    return False
 
 
 class ResponseHandler:
@@ -317,11 +432,14 @@ class ResponseHandler:
     _SYSTEM_REQUEST_PREFIXES: tuple[str, ...] = _SYSTEM_REQUEST_PREFIXES_TUPLE
 
     @staticmethod
-    def _request_expects_artifact(user_request: str | None) -> bool:
+    def _request_expects_artifact(
+        user_request: str | None,
+        has_produced_files: bool = False,
+    ) -> bool:
         # 兼容旧调用点：转发到模块级 ``request_expects_artifact``。
         # 该函数同时被 runtime / reasoning_engine 直接 import，避免依赖
         # ResponseHandler 实例属性导致的 stale 信号问题。
-        return request_expects_artifact(user_request)
+        return request_expects_artifact(user_request, has_produced_files=has_produced_files)
 
     async def verify_task_completion(
         self,
@@ -431,7 +549,18 @@ class ResponseHandler:
         # 生成报告/做 PPT"等场景下，只回长文 = 没完成；放行就成了用户反馈的
         # "明明要附件结果一个文件没有"。这条收紧只在 expects_artifact 才生效，
         # 其它场景（普通问答 / 计划讨论 / 复盘）维持原 PASS 阈值，行为不变。
-        expects_artifact = self._request_expects_artifact(user_request)
+        # ──── has_produced_files 信号：当本次会话已经有 delivery_receipts 或
+        # write_file 已被执行时，"方案/策划/计划/报告"等弱信号词也升级为
+        # expects_artifact=True，避免 coordinator 收到子节点 markdown 后忘
+        # deliver_artifacts 又被 trust-but-verify INSUFFICIENT 兜到 LLM 复核。
+        _has_produced_files = bool(delivery_receipts) or any(
+            (tr.get("tool_name") or tr.get("name") or "") in {"write_file", "auto_persist_node_final_answer"}
+            for tr in (tool_results or [])
+            if isinstance(tr, dict) and not tr.get("is_error")
+        )
+        expects_artifact = self._request_expects_artifact(
+            user_request, has_produced_files=_has_produced_files
+        )
         try:
             executed_set = set(executed_tools or [])
             tool_results_list = tool_results or []

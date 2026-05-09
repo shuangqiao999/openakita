@@ -17,6 +17,64 @@ logger = logging.getLogger(__name__)
 class Settings(BaseSettings):
     """应用配置"""
 
+    # === HTTP API 网络绑定与访问控制（PR-L1: 默认仅本机, lan_mode 显式开启） ===
+    api_host: str = Field(
+        default="127.0.0.1",
+        description=(
+            "HTTP API 绑定地址。默认 127.0.0.1（仅本机访问）；"
+            "若需被同网段其他机器访问，请改为 0.0.0.0 并同时开启 api_lan_mode。"
+            "环境变量 API_HOST 仍可覆盖此值，但出于安全审计目的建议改在配置里显式设置。"
+        ),
+    )
+    api_port: int = Field(default=18900, description="HTTP API 监听端口")
+    api_lan_mode: bool = Field(
+        default=False,
+        description=(
+            "是否暴露到局域网。默认 False=只监听 127.0.0.1。"
+            "开启后会自动把 host 改成 0.0.0.0，同时强制要求设置 web_access 密码或 api_token，"
+            "否则启动会失败（避免无密码裸奔）。"
+        ),
+    )
+    api_token: str = Field(
+        default="",
+        description=(
+            "API 共享访问令牌（可选）。设置后非本机请求必须在 Authorization: Bearer <token> "
+            "或 X-OpenAkita-Token 头里携带它，作为 web_access 密码之外的二次校验。"
+            "首次开启 lan_mode 时若未填写会自动生成一个 32 字符 token 并写入 .env。"
+        ),
+    )
+
+    grep_timeout_sec: int = Field(
+        default=30,
+        ge=5,
+        le=600,
+        description="单次 grep（文件内容搜索）最大耗时（秒），超时返回提示以避免 worker 被大目录卡住。",
+    )
+
+    # PR-R1: 系统 prompt / catalog header 的语言。
+    # 取值 "zh"（中文，默认）/ "en"（英文）。tool_catalog header、AGENTS.md 段
+    # 引导文本等会按此切换；工具自身的 description 仍按工具定义里的语言。
+    prompt_lang: str = Field(
+        default="zh",
+        description="System prompt 主语言：'zh' 中文 / 'en' 英文。",
+    )
+
+    # PR-T1: 灰度开关（feature flags）配置入口。
+    # core/feature_flags.py 会读取这里的 dict，作为持久化的 flag 覆盖源；
+    # 优先级：runtime override > 环境变量 OPENAKITA_FF_DISABLE/ENABLE >
+    #         settings.feature_flags > 代码内默认值。
+    # 在 .env / openakita.toml 里这样写就能关掉本批新行为之一：
+    #   FEATURE_FLAGS={"text_replace_on_restart_v1": false}
+    # 解析失败永不阻断启动；不在此处写白名单，未知 flag 直接被 is_enabled 当作 False。
+    feature_flags: dict = Field(
+        default_factory=dict,
+        description=(
+            "灰度开关 dict，用于覆盖 core/feature_flags.py 中的默认值。"
+            "可在配置文件 / 环境变量 FEATURE_FLAGS（JSON）中按 flag_name=true/false 设置，"
+            "便于一键回退某个治本修复到老路径。"
+        ),
+    )
+
     # Anthropic API
     anthropic_api_key: str = Field(default="", description="Anthropic API Key")
     anthropic_base_url: str = Field(
@@ -96,6 +154,56 @@ class Settings(BaseSettings):
     long_running_tool_timeout_seconds: int = Field(
         default=0,
         description="长耗时工具（shell/browser/org 等）硬超时（秒），0=不限时（默认）",
+    )
+    tool_result_max_chars: int = Field(
+        default=32000,
+        ge=1000,
+        description="单个工具结果进入模型前的兜底截断字符数；完整内容会保存到 overflow 文件",
+    )
+    tool_overflow_max_files: int = Field(
+        default=200,
+        ge=10,
+        description="工具超长输出 overflow 目录保留的最大文件数",
+    )
+    run_shell_default_block_timeout_ms: int = Field(
+        default=30000,
+        ge=0,
+        description="run_shell 未显式设置 block_timeout_ms/timeout 时的阻塞等待毫秒数；0=立即后台化",
+    )
+    run_shell_max_block_timeout_ms: int = Field(
+        default=1800000,
+        ge=0,
+        description="run_shell 兼容 timeout 参数换算后的最大阻塞等待毫秒数；0=不额外钳制",
+    )
+    powershell_default_timeout_seconds: int = Field(
+        default=120,
+        ge=0,
+        description="run_powershell 默认等待时间（秒）；0=不设置子进程超时",
+    )
+    powershell_max_timeout_seconds: int = Field(
+        default=1800,
+        ge=0,
+        description="run_powershell 显式 timeout 的最大值（秒）；0=不额外钳制",
+    )
+    cli_command_timeout_seconds: int = Field(
+        default=300,
+        ge=0,
+        description="CLI-Anything 普通命令默认等待时间（秒）；0=不设置子进程超时",
+    )
+    opencli_command_timeout_seconds: int = Field(
+        default=300,
+        ge=0,
+        description="OpenCLI list/doctor 默认等待时间（秒）；0=不设置子进程超时",
+    )
+    opencli_task_timeout_seconds: int = Field(
+        default=900,
+        ge=0,
+        description="OpenCLI run 默认等待时间（秒）；0=不设置子进程超时",
+    )
+    read_file_default_limit: int = Field(
+        default=2000,
+        ge=1,
+        description="read_file 未指定 limit 时默认读取的行数",
     )
     web_search_attempt_timeout_seconds: int = Field(
         default=25,
@@ -249,7 +357,11 @@ class Settings(BaseSettings):
 
     # === MCP 配置 ===
     mcp_enabled: bool = Field(default=True, description="是否启用 MCP (Model Context Protocol)")
-    mcp_timeout: int = Field(default=60, description="MCP 工具调用超时时间（秒），默认 60 秒")
+    mcp_timeout: int = Field(
+        default=0,
+        ge=0,
+        description="MCP 工具/资源/提示词调用超时时间（秒），0=不限制；连接超时单独由 mcp_connect_timeout 控制",
+    )
     mcp_connect_timeout: int = Field(
         default=30, description="MCP 服务器连接超时时间（秒），默认 30 秒"
     )
@@ -397,8 +509,12 @@ class Settings(BaseSettings):
         description="多Agent模式 (Beta)，开启后支持多Agent协作、专用Agent、IM多Bot等",
     )
     coordinator_mode_enabled: bool = Field(
-        default=False,
-        description="协调者模式 (CC-3)：启用后，role=coordinator 的 Agent 仅能委派/规划，不能直接执行文件/命令操作",
+        default=True,
+        description=(
+            "协调者模式 (CC-3)：启用后，role=coordinator 的 Agent 仅能委派/规划，"
+            "不能直接执行文件/命令操作。组织模式下的协调者节点（有下级的节点）"
+            "始终启用协调者提示词，与本开关解耦。"
+        ),
     )
 
     # IM 多 Bot 配置（多Agent模式下支持同一通道类型多个Bot实例）
@@ -952,6 +1068,16 @@ _PERSISTABLE_KEYS: list[str] = [
     "confirmation_text_max_retries",
     "tool_hard_timeout_seconds",
     "long_running_tool_timeout_seconds",
+    "tool_result_max_chars",
+    "tool_overflow_max_files",
+    "run_shell_default_block_timeout_ms",
+    "run_shell_max_block_timeout_ms",
+    "powershell_default_timeout_seconds",
+    "powershell_max_timeout_seconds",
+    "cli_command_timeout_seconds",
+    "opencli_command_timeout_seconds",
+    "opencli_task_timeout_seconds",
+    "read_file_default_limit",
     "web_search_attempt_timeout_seconds",
     "always_load_tools",
     "always_load_categories",

@@ -16,6 +16,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from ..memory.json_utils import coerce_text
 from .task import ScheduledTask
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,21 @@ class TaskExecutor:
         self.persona_manager = None
         self.memory_manager = None
         self.proactive_engine = None  # 复用 agent 上的实例，保留 _last_user_interaction 状态
+
+    @staticmethod
+    def _metadata_bool(task: ScheduledTask, key: str, default: bool) -> bool:
+        """Read bool-like scheduler metadata values from persisted JSON safely."""
+
+        value = (task.metadata or {}).get(key, default)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "yes", "on"}:
+                return True
+            if normalized in {"0", "false", "no", "off"}:
+                return False
+        return bool(value)
 
     def _escape_telegram_chars(self, text: str) -> str:
         """
@@ -312,7 +328,9 @@ class TaskExecutor:
 
 只回复 NO_ACTION 或 NEEDS_ACTION，不要有其他内容。"""
 
-                response = await brain.think(check_prompt)
+                response = await brain.think(
+                    check_prompt, enable_thinking=False, max_tokens=16
+                )
                 result = response.content.strip().upper()
 
                 needs_action = "NEEDS_ACTION" in result
@@ -457,7 +475,7 @@ class TaskExecutor:
             return
 
         # 检查是否启用开始通知
-        if not task.metadata.get("notify_on_start", True):
+        if not self._metadata_bool(task, "notify_on_start", True):
             logger.debug(f"Task {task.id} has start notification disabled")
             return
 
@@ -485,7 +503,12 @@ class TaskExecutor:
         message: str,
     ) -> bool:
         """发送任务结束通知（IM 通道 + 桌面通知）"""
-        # 桌面通知（独立于 IM 通道，始终尝试）
+        notify_on_complete = self._metadata_bool(task, "notify_on_complete", True)
+        if not notify_on_complete:
+            logger.debug(f"Task {task.id} has completion notification disabled")
+            return True
+
+        # 桌面通知（独立于 IM 通道，但仍尊重 notify_on_complete）
         try:
             from ..config import settings
 
@@ -512,10 +535,6 @@ class TaskExecutor:
                 f"{task.channel_id}/{task.chat_id} but no gateway is attached"
             )
             return False
-
-        if not task.metadata.get("notify_on_complete", True):
-            logger.debug(f"Task {task.id} has completion notification disabled")
-            return True
 
         status = "✅ 任务完成" if success else "❌ 任务失败"
         notification = f"""{status}: {task.name}
@@ -677,7 +696,21 @@ class TaskExecutor:
         """
         # 优先使用 Ralph 模式（execute_task_from_message）
         if hasattr(agent, "execute_task_from_message"):
-            result = await agent.execute_task_from_message(prompt)
+            # Scheduler owns start/end delivery. Prevent Agent's generic
+            # desktop completion toast from producing a second notification.
+            # 必须用 try/finally 包住整个执行段：旧实现只在调用前 set，
+            # 一旦 set 自身或 execute_task_from_message 抛异常，
+            # 标志状态会泄漏到下一次复用同一 agent 实例的调用，
+            # 边缘情况下还可能漏 set，让 Agent 内部再弹一条桌面通知。
+            try:
+                agent._suppress_desktop_task_notification = True
+            except Exception as e:
+                logger.warning(f"Failed to set _suppress_desktop_task_notification on agent: {e}")
+            try:
+                result = await agent.execute_task_from_message(prompt)
+            finally:
+                with contextlib.suppress(Exception):
+                    agent._suppress_desktop_task_notification = False
             if isinstance(result, str):
                 return True, result
             if result.success:
@@ -922,7 +955,7 @@ class TaskExecutor:
                 return True, "No recent conversation turns to review"
 
             conversation_text = "\n".join(
-                f"[{t.get('role', 'unknown')}]: {t.get('content', '')[:500]}"
+                f"[{t.get('role', 'unknown')}]: {coerce_text(t.get('content'))[:500]}"
                 for t in recent_turns
                 if t.get("content")
             )

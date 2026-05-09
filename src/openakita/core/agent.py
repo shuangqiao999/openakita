@@ -36,6 +36,7 @@ from ..config import settings
 
 # 记忆系统
 from ..memory import MemoryManager
+from ..memory.json_utils import coerce_text
 
 # Prompt 编译管线 (v2)
 # 技能系统 (SKILL.md 规范)
@@ -190,6 +191,7 @@ def _looks_like_explicit_no_tool_request(message: str) -> bool:
             "纯文本回复",
             "no tools",
             "without tools",
+            "without using tools",
             "do not use tools",
             "don't use tools",
             "plain text",
@@ -374,48 +376,114 @@ def _apply_previous_answer_replay_hint(message: str) -> str:
     return f"{_PREVIOUS_ANSWER_REPLAY_HINT}\n\n{message}"
 
 
+_EXTERNAL_TOOL_MARKERS: tuple[str, ...] = (
+    # ---- 直接的"调用工具/读写文件/上网"动作 ----
+    "读取",
+    "读文件",
+    "查看文件",
+    "搜索",
+    "联网",
+    "网页",
+    "下载",
+    "保存",
+    "写入",
+    "创建文件",
+    "生成文件",
+    "附件",
+    "运行",
+    "执行命令",
+    "调用工具",
+    # ---- "做一份/写一份/出一份" 类需要落盘交付的产出动词 ----
+    # 这些动词单独出现就强烈暗示"产出可交付物"——纯模型对话很少使用，
+    # 真正的纯写作场景（"写一首诗"/"翻译一句话"）走 _looks_like_explicit_no_tool_request
+    # 显式排除，或由调用方传 task_type=analysis 覆盖。
+    "做一份",
+    "做个",
+    "做一个",
+    "写一份",
+    "写个",
+    "写一个",
+    "出一份",
+    "出个",
+    "整理一份",
+    "整理出",
+    "汇总一份",
+    "汇总出",
+    "梳理一份",
+    "梳理出",
+    "输出一份",
+    "输出文件",
+    "生成一份",
+    "产出",
+    "交付",
+    # ---- 协作 / 研究 / 报告 类（团队语境的强信号） ----
+    "策划",
+    "排期",
+    "选题",
+    "调研",
+    "竞品",
+    "行业分析",
+    "市场分析",
+    "数据分析",
+    "趋势分析",
+    "可行性",
+    "立项",
+    "需求分析",
+    "评测",
+    "对比",
+    "宣传",
+    "运营",
+    "上线",
+    "发布",
+    # ---- 英文动词 ----
+    "api",
+    "mcp",
+    "read file",
+    "search",
+    "web",
+    "download",
+    "write file",
+    "save",
+    "run command",
+    "call tool",
+    "create a",
+    "make a plan",
+    "draft a",
+    "produce a",
+    "deliver a",
+    "generate a",
+    "write a report",
+    "research",
+    "analyze",
+    "compare",
+)
+
+
 def _looks_like_external_tool_request(message: str) -> bool:
     """Conservative guard for sub-agent delegation.
 
     Sub-agents skip the full IntentAnalyzer for latency.  Only explicit external
     action/evidence requests should force tools; otherwise the model can still
     call tools if useful, but plain writing/analysis is accepted as text.
+
+    History: the original 5/8 keyword list (read file / search / write file /
+    api / mcp …) missed common Chinese phrasings like "做一份 X 计划", "整理
+    一下", "出个报告", which let coordinator nodes silently bypass delegation
+    (root agents would write the deliverable themselves instead of dispatching
+    to subordinates). The expanded list here covers the high-frequency Chinese
+    "produce a deliverable" verbs without forcing tools on plain chit-chat.
+
+    NOTE: organization coordinator nodes are also forced via a separate
+    structural path (``Agent._prepare_session_context`` checks
+    ``_is_org_coordinator``); this keyword check is the secondary safety net
+    for non-org sub-agents.
     """
     text = (message or "").lower()
     if not text.strip():
         return False
     if _looks_like_explicit_no_tool_request(text):
         return False
-    return any(
-        marker in text
-        for marker in (
-            "读取",
-            "读文件",
-            "查看文件",
-            "搜索",
-            "联网",
-            "网页",
-            "下载",
-            "保存",
-            "写入",
-            "创建文件",
-            "生成文件",
-            "附件",
-            "运行",
-            "执行命令",
-            "调用工具",
-            "api",
-            "mcp",
-            "read file",
-            "search",
-            "web",
-            "download",
-            "write file",
-            "save",
-            "run command",
-            "call tool",
-        )
-    )
+    return any(marker in text for marker in _EXTERNAL_TOOL_MARKERS)
 
 
 # ---- 本地图片附件 → data URL（BUG-1 修复） ----
@@ -682,33 +750,75 @@ def _consume_risk_authorization(session: Any, message: str) -> bool:
             "original_message": ...,
         }
 
-    If the current ``message`` matches and the stamp is still fresh, return
-    ``True`` and **consume** the marker (single-use). Otherwise return
-    ``False``.
+    PR-A2 also writes a structured ``risk_authorized_intent`` (see
+    :class:`AuthorizedIntent`). Both are checked here for backward
+    compatibility; whichever matches is consumed in a single-use fashion.
 
     Single-use + short TTL (30s) avoids granting blanket future authority.
     """
     if session is None or not message:
         return False
+    consumed_any = False
     try:
         stamp = session.get_metadata("risk_authorized_replay")
     except Exception:
-        return False
-    if not isinstance(stamp, dict):
-        return False
+        stamp = None
+    if isinstance(stamp, dict):
+        expired = False
+        try:
+            expired = float(stamp.get("expires_at", 0)) < time.time()
+        except (TypeError, ValueError):
+            expired = True
+        msg_match = (
+            (stamp.get("original_message") or "").strip()
+            == (message or "").strip()
+        )
+        if expired:
+            try:
+                session.set_metadata("risk_authorized_replay", None)
+            except Exception:
+                pass
+        elif msg_match:
+            try:
+                session.set_metadata("risk_authorized_replay", None)
+            except Exception:
+                pass
+            consumed_any = True
+        # mismatch + not expired: 保留 stamp，等正确的消息再来消费
+        # （改动原因：原实现 mismatch 也清掉，会让"先 a 再 b"场景误清 a 的授权）
+
+    # 结构化 AuthorizedIntent（PR-A2）
     try:
-        if float(stamp.get("expires_at", 0)) < time.time():
-            session.set_metadata("risk_authorized_replay", None)
-            return False
-    except (TypeError, ValueError):
-        return False
-    if (stamp.get("original_message") or "").strip() != (message or "").strip():
-        return False
-    try:
-        session.set_metadata("risk_authorized_replay", None)
+        intent_data = session.get_metadata("risk_authorized_intent")
     except Exception:
-        pass
-    return True
+        intent_data = None
+    if isinstance(intent_data, dict):
+        try:
+            from .risk_intent import AuthorizedIntent
+
+            intent = AuthorizedIntent.from_dict(intent_data)
+        except Exception:
+            intent = None
+        if intent is None or intent.is_expired(time.time()):
+            try:
+                session.set_metadata("risk_authorized_intent", None)
+            except Exception:
+                pass
+        else:
+            msg_match = (intent.original_message or "").strip() == (message or "").strip()
+            if msg_match:
+                # 把 intent 暂存到 session，供 prompt builder 注入到 system prompt；
+                # 实际"消费"在 ToolExecutor 路由完成后再做（保证拿到 scope）。
+                try:
+                    session.set_metadata(
+                        "risk_authorized_intent_active",
+                        intent.to_dict(),
+                    )
+                    session.set_metadata("risk_authorized_intent", None)
+                except Exception:
+                    pass
+                consumed_any = True
+    return consumed_any
 
 
 def _check_trusted_path_skip(
@@ -750,15 +860,66 @@ def _check_trusted_path_skip(
 
 
 def _build_destructive_intent_question(message: str, classification: RiskIntentResult | None = None) -> str:
+    """生成高危确认提示。
+
+    PR-1.1：两步式 summary。先把用户的长描述抽成 ≤30 字的"准备执行 X"
+    摘要 + scope，再给三选项；避免直接抛出原始 message 让用户读不懂。
+    """
     target = (message or "").strip()
-    if len(target) > 240:
-        target = target[:240] + "..."
+    summary = _summarize_destructive_action(target, classification)
+    options = "回复 **继续** / **只查看** / **取消** 三选一。"
+    if classification is not None:
+        op = (
+            classification.operation_kind.value
+            if hasattr(classification.operation_kind, "value")
+            else str(classification.operation_kind or "")
+        )
+        target_kind = (
+            classification.target_kind.value
+            if hasattr(classification.target_kind, "value")
+            else str(classification.target_kind or "")
+        )
+        meta_parts = []
+        if op and op not in ("none", "unknown"):
+            meta_parts.append(f"op={op}")
+        if target_kind and target_kind not in ("unknown",):
+            meta_parts.append(f"target={target_kind}")
+        meta_line = f"（{', '.join(meta_parts)}）" if meta_parts else ""
+    else:
+        meta_line = ""
+
     return (
-        f"想跟你确认下：你是要 **{target}**？\n\n"
-        "这个动作可能会改动文件 / 配置 / 权限，做完不一定能撤回，所以我先停一下。\n"
-        "回复 **继续**（或 好 / 是 / yes）就开始执行；\n"
-        "回复 **只查看** 我就只读不改；回复 **取消** 就跳过。"
+        f"准备执行：**{summary}** {meta_line}\n\n"
+        "这个动作可能改动文件 / 配置 / 权限，做完不一定能撤回，先确认一下。\n"
+        f"{options}"
     )
+
+
+_DESTRUCTIVE_VERBS = (
+    "删除", "删掉", "清空", "清除", "重置", "覆盖", "禁用", "关闭",
+    "卸载", "销毁", "格式化",
+)
+
+
+def _summarize_destructive_action(text: str, classification: Any | None = None) -> str:
+    """Best-effort one-line summary of a destructive request (≤30 chars)."""
+    raw = (text or "").strip()
+    if not raw:
+        return "未指定操作"
+    if len(raw) <= 30:
+        return raw
+    # 尝试切到第一句
+    for sep in ("。", "\n", "；", ";", "！", "!"):
+        idx = raw.find(sep)
+        if 5 <= idx <= 30:
+            return raw[:idx].strip() or raw[:30] + "…"
+    # 找到第一个动词 + 下文
+    for verb in _DESTRUCTIVE_VERBS:
+        i = raw.find(verb)
+        if i != -1:
+            tail = raw[i : i + 28]
+            return tail + ("…" if len(raw) > i + 28 else "")
+    return raw[:28] + "…"
 
 # Prompt Compiler 系统提示词（两段式 Prompt 第一阶段）
 PROMPT_COMPILER_SYSTEM = """【角色】
@@ -1168,6 +1329,13 @@ class Agent:
 
         # Sub-agent call flag: set by orchestrator._call_agent()
         self._is_sub_agent_call = False
+        # Organization coordinator flag: set by ``orgs.runtime._create_node_agent``
+        # iff the node has direct subordinates. Used by
+        # ``_prepare_session_context`` to keep the coordinator strictly in
+        # delegation mode (force_tool=True) and by orchestrator to pick the
+        # coordinator-mode prompt independent of the global
+        # ``coordinator_mode_enabled`` flag.
+        self._is_org_coordinator = False
         # Agent tool names to exclude when running as sub-agent
         self._agent_tool_names = frozenset(
             {"delegate_to_agent", "delegate_parallel", "create_agent", "spawn_agent"}
@@ -1300,6 +1468,19 @@ class Agent:
 
         logger.info(f"Agent '{self.name}' created (with refactored sub-modules)")
 
+    # 永远不会因为 intent-driven defer 被剔除的工具分类。
+    #
+    # 这两类是 OpenAkita 在每一轮里都需要的"基础能力"：
+    # - ``System``：``ask_user`` / ``schedule_task`` 等控制流工具，没有它们
+    #   LLM 没办法触发追问或排程，体验直接退化。
+    # - ``Memory``：``memory_search`` / ``memory_recall`` 之类，被裁掉就等于
+    #   切断了"我曾经记住过 X"的入口，会导致明显的健忘 bug。
+    #
+    # 暴露成类常量主要是为了：(1) 单测 / 文档可以直接 import 看到；
+    # (2) 用户在 ``settings.always_load_categories`` 里追加新分类时不必
+    # 重复列举这两类。运行时会和 ``settings.always_load_categories`` 取并集。
+    _ALWAYS_KEEP_CATEGORIES: tuple[str, ...] = ("System", "Memory")
+
     @property
     def _effective_tools(self) -> list[dict]:
         """Tools available for the current call context.
@@ -1311,6 +1492,7 @@ class Agent:
            - Intent hints can un-defer specific categories
            - IM sessions auto-include IM Channel category
            - User settings.always_load_tools / always_load_categories override defer
+             (always_load_categories 自动并入 ``_ALWAYS_KEEP_CATEGORIES``)
            - _discovered_tools (from tool_search) override defer
            - Deferred tools stay in list but marked _deferred=True (schema omitted by Brain)
         3. Context window: reduce set for small models
@@ -1389,7 +1571,11 @@ class Agent:
             intent_hints.add("IM Channel")
 
         user_always_tools = frozenset(settings.always_load_tools)
-        user_always_cats = frozenset(settings.always_load_categories)
+        # 把 ``_ALWAYS_KEEP_CATEGORIES`` 和用户自己配的 ``always_load_categories``
+        # 取并集，作为最终的 always-keep 类别集合（System / Memory 始终在内）。
+        user_always_cats = frozenset(
+            list(settings.always_load_categories) + list(self._ALWAYS_KEEP_CATEGORIES)
+        )
         discovered = getattr(self, "_discovered_tools", set())
 
         hint_names: set[str] = set()
@@ -3122,6 +3308,13 @@ class Agent:
                     if session_config
                     else "zh",
                 }
+                # PR-A2：把活跃的授权意图传给 prompt builder，让它注入到 system prompt
+                try:
+                    intent_data = session.get_metadata("risk_authorized_intent_active")
+                    if isinstance(intent_data, dict) and intent_data:
+                        session_context["authorized_intent"] = intent_data
+                except Exception:
+                    pass
             except Exception:
                 pass
 
@@ -4447,6 +4640,22 @@ class Agent:
         if self._is_sub_agent_call:
             _profile_hints = self._derive_tool_hints_from_profile()
             _requires_tools = _looks_like_external_tool_request(message)
+
+            # Structural override for organization coordinator nodes: any node
+            # that has direct subordinates (set by ``runtime._create_node_agent``
+            # via ``_is_org_coordinator``) must use tools — its only legitimate
+            # outputs are ``org_delegate_task`` / ``org_wait_for_deliverable``
+            # / ``org_accept_deliverable`` / ``org_submit_deliverable``.
+            # Without this override the relaxed force-tool policy (5/8) lets
+            # the editor-in-chief / CEO / tech-lead style root nodes "do the
+            # work themselves" by calling write_file directly, bypassing the
+            # team. Keyword detection alone is not enough because users often
+            # phrase requests as "帮我做一份 X" without any external-tool
+            # marker, so we anchor the contract to the org topology.
+            _is_org_coord = bool(getattr(self, "_is_org_coordinator", False))
+            if _is_org_coord:
+                _requires_tools = True
+
             intent_result = IntentResult(
                 intent=IntentType.TASK,
                 confidence=1.0,
@@ -4461,7 +4670,9 @@ class Agent:
             )
             logger.info(
                 f"[Session:{session_id}] Sub-agent: skipping IntentAnalyzer, "
-                f"requires_tools={_requires_tools}, profile_tool_hints={_profile_hints}"
+                f"requires_tools={_requires_tools}, "
+                f"is_org_coordinator={_is_org_coord}, "
+                f"profile_tool_hints={_profile_hints}"
             )
         else:
             if not hasattr(self, "_intent_analyzer"):
@@ -4634,7 +4845,7 @@ class Agent:
 
             def _fp(m: dict) -> str:
                 return _hl.md5(
-                    f"{m.get('role', '')}:{(m.get('content', '') or '')[:200]}".encode(
+                    f"{m.get('role', '')}:{coerce_text(m.get('content', ''))[:200]}".encode(
                         errors="replace"
                     )
                 ).hexdigest()
@@ -4668,7 +4879,7 @@ class Agent:
         messages: list[dict] = []
         for msg in history_messages:
             role = msg.get("role", "user")
-            content = msg.get("content", "")
+            content = coerce_text(msg.get("content", ""))
             ts = msg.get("timestamp", "")
             # 标记为「仅 UI 展示，不喂 LLM」的消息（例如风险确认/取消的系统回执），
             # 跳过以避免污染上下文，导致下一轮 LLM 模仿"已确认高危..."口吻。
@@ -5179,6 +5390,9 @@ class Agent:
         """Fire per-turn start hooks and collect optional context snippets."""
         hooks = getattr(getattr(self, "_plugin_manager", None), "hook_registry", None)
         run_key = conversation_id or session_id
+        # 防御：mock / 子类化测试可能绕过 ``Agent.__init__``。
+        if not isinstance(getattr(self, "_active_agent_lifecycle_runs", None), dict):
+            self._active_agent_lifecycle_runs = {}
         self._active_agent_lifecycle_runs[run_key] = {
             "session_id": session_id,
             "conversation_id": conversation_id,
@@ -5235,9 +5449,14 @@ class Agent:
         status: str = "completed",
     ) -> None:
         run_key = conversation_id or session_id
-        payload = self._active_agent_lifecycle_runs.pop(run_key, None)
+        # 测试 / 子类化场景里偶尔会绕过 ``Agent.__init__`` 直接 mock，
+        # 防御性地确保字典存在，避免 AttributeError 把整条 chat 链路拉炸。
+        runs = getattr(self, "_active_agent_lifecycle_runs", None)
+        if not isinstance(runs, dict):
+            return
+        payload = runs.pop(run_key, None)
         if payload is None and conversation_id:
-            payload = self._active_agent_lifecycle_runs.pop(session_id, None)
+            payload = runs.pop(session_id, None)
         if payload is None:
             return
 
@@ -6121,6 +6340,8 @@ class Agent:
             # Simple queries stay lightweight, but evidence-seeking queries must
             # produce a real tool trace before the final answer is accepted.
             _force_tool_retries, _tool_evidence_required = _resolve_force_tool_policy(_intent)
+            if _looks_like_explicit_no_tool_request(message):
+                _force_tool_retries, _tool_evidence_required = 0, False
 
             _agent_profile_id = "default"
             if session and hasattr(session, "context"):
@@ -6133,43 +6354,123 @@ class Agent:
             _turn_id = turn_id or f"{conversation_id}:{int(time.time() * 1000)}"
             _allow_lightweight_fast_reply = not endpoint_override
 
+            # 决定 fast-path 是否启用思考链：
+            # - thinking_mode == "on"：用户显式开启 → 同步开思维链
+            # - 其它（off/auto/None）：fast-path 仍优先轻量速回，不开思考
+            _fast_enable_think = _thinking_mode == "on"
+
+            async def _run_fast_reply_stream(
+                _system: str,
+                *,
+                log_prefix: str,
+                fallback_text: str | None,
+                result_holder: dict,
+            ):
+                """统一的 fast-reply 流式执行器。
+
+                优先 ``brain.think_lightweight_stream`` 走真流式 token；流式失败或空回
+                时回退到非流式 ``think_lightweight``，确保用户始终能收到回复。
+                由于 async generator 无法 ``return`` 值，最终的 ``text/usage/ok``
+                通过 ``result_holder`` 字典回传给调用方。
+                """
+                _stream_text = ""
+                _stream_failed = False
+                # —— 路径 A：尝试真流式 ——
+                try:
+                    async for _evt in self.brain.think_lightweight_stream(
+                        prompt=message,
+                        system=_system,
+                        enable_thinking=_fast_enable_think,
+                    ):
+                        _et = _evt.get("type")
+                        if _et == "text_delta":
+                            _piece = _evt.get("content", "")
+                            if _piece:
+                                _stream_text += _piece
+                                yield _evt
+                        elif _et in ("thinking_delta", "thinking_end"):
+                            yield _evt
+                        elif _et == "error":
+                            _stream_failed = True
+                            logger.warning(
+                                f"[{log_prefix}] streaming reported error: "
+                                f"{_evt.get('message', '')}"
+                            )
+                        elif _et == "done":
+                            break
+                except Exception as exc:
+                    _stream_failed = True
+                    logger.warning(f"[{log_prefix}] streaming path failed: {exc}")
+
+                _cleaned = clean_llm_response(_stream_text) if _stream_text else ""
+                if _cleaned and not _stream_failed:
+                    result_holder["text"] = _cleaned
+                    result_holder["usage"] = None
+                    result_holder["ok"] = True
+                    return
+
+                # —— 路径 B：流式失败或为空 → 回退到一次性非流式 ——
+                try:
+                    _resp = await self.brain.think_lightweight(
+                        prompt=message,
+                        system=_system,
+                    )
+                    _fb_text = clean_llm_response(_resp.content if _resp.content else "")
+                    if _fb_text:
+                        # 流式没吐过有效字符时才补发整段，避免内容重复
+                        if not _stream_text.strip():
+                            yield {"type": "text_delta", "content": _fb_text}
+                        result_holder["text"] = _fb_text
+                        result_holder["usage"] = _resp.usage
+                        result_holder["ok"] = True
+                        return
+                except Exception as exc:
+                    logger.error(f"[{log_prefix}] non-stream fallback also failed: {exc}")
+
+                # —— 路径 C：所有路径失败 ——
+                if fallback_text:
+                    if not _stream_text.strip():
+                        yield {"type": "text_delta", "content": fallback_text}
+                    result_holder["text"] = fallback_text
+                    result_holder["usage"] = None
+                    result_holder["ok"] = True
+                    return
+                # QUERY 路径要求 fall through 到完整 agent
+                result_holder["text"] = _cleaned or ""
+                result_holder["usage"] = None
+                result_holder["ok"] = False
+
             if (
                 _allow_lightweight_fast_reply
                 and _intent
                 and _intent.intent == _IT.CHAT
                 and getattr(_intent, "fast_reply", False)
             ):
-                # Ultra-fast path: rule-based greeting only, use lightweight model
-                try:
-                    _identity_snippet = ""
-                    if hasattr(self, "identity") and hasattr(self.identity, "get_system_prompt"):
-                        _identity_snippet = (
-                            self.identity.get_system_prompt(include_active_task=False) or ""
-                        )[:500]
+                # Ultra-fast path: rule-based greeting only, use lightweight model.
+                # 改造为流式：用户开启「流式」/「思维链」开关时，问候也走打字机效果。
+                _identity_snippet = ""
+                if hasattr(self, "identity") and hasattr(self.identity, "get_system_prompt"):
+                    _identity_snippet = (
+                        self.identity.get_system_prompt(include_active_task=False) or ""
+                    )[:500]
 
-                    _fast_system = (
-                        f"{_identity_snippet}\n\n"
-                        "用户发来了一条简短的问候/确认消息。请用你的人设风格简短回复，"
-                        "不要使用任何工具，不要过度展开。保持轻松自然，1-3句话即可。"
-                    ).strip()
+                _fast_system = (
+                    f"{_identity_snippet}\n\n"
+                    "用户发来了一条简短的问候/确认消息。请用你的人设风格简短回复，"
+                    "不要使用任何工具，不要过度展开。保持轻松自然，1-3句话即可。"
+                ).strip()
 
-                    _fast_response = await self.brain.think_lightweight(
-                        prompt=message,
-                        system=_fast_system,
-                    )
-                    _fast_usage = _fast_response.usage
-                    _reply_text = clean_llm_response(
-                        _fast_response.content if _fast_response.content else ""
-                    )
-                    if _reply_text:
-                        yield {"type": "text_delta", "content": _reply_text}
-                    else:
-                        yield {"type": "text_delta", "content": "你好！有什么我可以帮你的吗？"}
-                        _reply_text = "你好！有什么我可以帮你的吗？"
-                except Exception as e:
-                    logger.error(f"[FastReply] Failed: {e}")
-                    yield {"type": "text_delta", "content": "你好！有什么我可以帮你的吗？"}
-                    _reply_text = "你好！有什么我可以帮你的吗？"
+                _holder: dict = {"text": "", "usage": None, "ok": False}
+                async for _evt in _run_fast_reply_stream(
+                    _fast_system,
+                    log_prefix="FastReply",
+                    fallback_text="你好！有什么我可以帮你的吗？",
+                    result_holder=_holder,
+                ):
+                    yield _evt
+                _reply_text = _holder["text"]
+                _fast_usage = _holder["usage"]
+
                 yield {"type": "done"}
 
                 await self._finalize_session(
@@ -6200,46 +6501,40 @@ class Agent:
                 # Fast-path for simple factual queries (math, date, definitions)
                 # No tools passed → LLM answers directly; empty response falls through
                 # to full agent path below.
-                _query_ok = False
+                _runtime_info = ""
                 try:
-                    _runtime_info = ""
-                    try:
-                        from ..prompt.builder import _build_runtime_section
+                    from ..prompt.builder import _build_runtime_section
 
-                        _runtime_info = _build_runtime_section() or ""
-                    except Exception:
-                        pass
+                    _runtime_info = _build_runtime_section() or ""
+                except Exception:
+                    pass
 
-                    _identity_snippet = ""
-                    if hasattr(self, "identity") and hasattr(self.identity, "get_system_prompt"):
-                        _identity_snippet = (
-                            self.identity.get_system_prompt(include_active_task=False) or ""
-                        )[:500]
+                _identity_snippet = ""
+                if hasattr(self, "identity") and hasattr(self.identity, "get_system_prompt"):
+                    _identity_snippet = (
+                        self.identity.get_system_prompt(include_active_task=False) or ""
+                    )[:500]
 
-                    _fast_system = (
-                        f"{_identity_snippet}\n\n"
-                        f"{_runtime_info}\n\n"
-                        "用户提出了一个简单的知识/计算/日期问题。"
-                        "请直接给出准确、简洁的回答。不要使用任何工具。"
-                        "如果涉及日期/时间，请根据上面的运行环境信息回答。"
-                    ).strip()
+                _fast_system = (
+                    f"{_identity_snippet}\n\n"
+                    f"{_runtime_info}\n\n"
+                    "用户提出了一个简单的知识/计算/日期问题。"
+                    "请直接给出准确、简洁的回答。不要使用任何工具。"
+                    "如果涉及日期/时间，请根据上面的运行环境信息回答。"
+                ).strip()
 
-                    logger.info(f"[FastQuery-Stream] Answering '{message}' without tools")
-                    _fast_response = await self.brain.think_lightweight(
-                        prompt=message,
-                        system=_fast_system,
-                    )
-                    _fast_usage = _fast_response.usage
-                    _reply_text = clean_llm_response(
-                        _fast_response.content if _fast_response.content else ""
-                    )
-                    if _reply_text:
-                        yield {"type": "text_delta", "content": _reply_text}
-                        _query_ok = True
-                    else:
-                        logger.warning("[FastQuery-Stream] Empty response, falling back to full agent")
-                except Exception as e:
-                    logger.warning(f"[FastQuery-Stream] Failed ({e}), falling back to full agent")
+                logger.info(f"[FastQuery-Stream] Answering '{message}' without tools")
+                _holder = {"text": "", "usage": None, "ok": False}
+                async for _evt in _run_fast_reply_stream(
+                    _fast_system,
+                    log_prefix="FastQuery-Stream",
+                    fallback_text=None,  # QUERY 失败要 fall through 到完整 agent
+                    result_holder=_holder,
+                ):
+                    yield _evt
+                _reply_text = _holder["text"]
+                _fast_usage = _holder["usage"]
+                _query_ok = _holder["ok"]
 
                 if _query_ok:
                     yield {"type": "done"}
@@ -7301,11 +7596,30 @@ class Agent:
 
         # === Intent-driven ForceToolCall policy ===
         force_tool_retries, tool_evidence_required = _resolve_force_tool_policy(intent_result)
+        if _looks_like_explicit_no_tool_request(task_description):
+            force_tool_retries, tool_evidence_required = 0, False
+
+        # === PR-M1: Intent-driven 工具裁剪。 ===
+        # chat 意图下只挂 5 个核心工具（详见 reasoning_engine._filter_tools_by_intent）。
+        # 这一步在传入 reasoning engine 之前做，避免 system prompt 注入大段无用工具
+        # schema，token 浪费 + LLM 分心同时治本。
+        _engine_tools = self._effective_tools
+        try:
+            from .reasoning_engine import _filter_tools_by_intent
+
+            _engine_tools = _filter_tools_by_intent(
+                _engine_tools,
+                intent_name=getattr(getattr(intent_result, "intent", None), "value", None),
+                intent_tool_hints=list(getattr(intent_result, "tool_hints", []) or []),
+                requires_tools=bool(getattr(intent_result, "requires_tools", False)),
+            )
+        except Exception as _exc:
+            logger.debug(f"[ToolFilter/Intent] skipped: {_exc}")
 
         # === 委托给 ReasoningEngine ===
         return await self.reasoning_engine.run(
             messages,
-            tools=self._effective_tools,
+            tools=_engine_tools,
             system_prompt=system_prompt,
             base_system_prompt=base_system_prompt,
             task_description=task_description,
@@ -8398,7 +8712,9 @@ class Agent:
         duration = time.time() - start_time
 
         # === 桌面通知（仅本地通道：cli/desktop；IM 通道已有自己的通知机制）===
-        if settings.desktop_notify_enabled:
+        if settings.desktop_notify_enabled and not getattr(
+            self, "_suppress_desktop_task_notification", False
+        ):
             _session = getattr(self, "_current_session", None)
             _channel = getattr(_session, "channel", "cli") if _session else "cli"
             if _channel in ("cli", "desktop"):

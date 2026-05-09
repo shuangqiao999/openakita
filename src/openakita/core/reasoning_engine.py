@@ -76,6 +76,18 @@ def _tool_rate_limit_key(tool_name: str, tool_args: Any) -> str:
     return f"{tool_name}:{hashlib.md5(param_str.encode()).hexdigest()}"
 
 
+# 同名工具在单轮任务内的硬上限（防止 LLM 把记忆/搜索工具用成循环）。
+# 这里只覆盖"写多了会污染或浪费 token"的工具；read-only 工具仍由
+# _MAX_SAME_TOOL_PER_TASK（同参数）+ readonly_stagnation_limit 控制。
+# 注意：这个限制是按 *同名工具* 计数，无论参数是否不同——
+# 单轮内 9 次 add_memory 即便每次内容不同也几乎肯定是 LLM 失控。
+_PER_TOOL_NAME_TASK_LIMITS: dict[str, int] = {
+    "add_memory": 5,
+    "consolidate_memories": 1,
+    "memory_delete_by_query": 2,
+}
+
+
 from .token_tracking import TokenTrackingContext, reset_tracking_context, set_tracking_context
 from .tool_executor import ToolExecutor
 
@@ -196,6 +208,8 @@ def _apply_tool_result_budget(
     max_total: int | None = None,
 ) -> list[dict]:
     """Proportionally truncate tool results if total exceeds budget."""
+    from .tool_executor import OVERFLOW_MARKER, save_overflow
+
     if max_total is None:
         max_total = int(getattr(settings, "context_tool_results_total_chars", 80_000) or 80_000)
     total = sum(len(str(r.get("content", ""))) for r in tool_results)
@@ -205,13 +219,18 @@ def _apply_tool_result_budget(
     ratio = max_total / total
     for r in tool_results:
         content = str(r.get("content", ""))
+        if OVERFLOW_MARKER in content:
+            continue
         if len(content) > 1000:
             budget = max(500, int(len(content) * ratio))
             if len(content) > budget:
                 half = budget // 2
+                overflow_path = save_overflow("tool_result_budget", content)
                 r["content"] = (
                     content[:half]
-                    + f"\n\n... [{len(content) - budget} chars truncated] ...\n\n"
+                    + f"\n\n{OVERFLOW_MARKER} 本轮工具结果合计 {total} 字符，"
+                    + f"超过上下文预算 {max_total} 字符；已压缩此结果。"
+                    + f"\n完整内容已保存到: {overflow_path}\n\n"
                     + content[-half:]
                 )
     return tool_results
@@ -276,6 +295,69 @@ def _get_mode_ruleset(mode: str) -> PermissionRuleset:
     elif mode == "coordinator":
         return COORDINATOR_MODE_RULESET
     return DEFAULT_RULESET
+
+
+# PR-M1: chat / 闲聊意图下"工具裁剪到核心 5 个"白名单。
+# 之前 chat 意图也会把 50+ 工具的完整 schema 注入 system prompt，导致：
+# 1) 模型分心，把"今天天气怎么样"误判成需要 search/web/exec 类工具；
+# 2) 输入 token 爆涨 5~8k，便宜的 chat 端点反而比真实任务还贵。
+# 这里只保留：思考、最小问答、查询长期记忆、查询用户档案、ask_user 反问。
+# 任何写文件 / 跑命令 / 调外部服务的能力一律不挂。
+_CHAT_INTENT_CORE_TOOLS: tuple[str, ...] = (
+    "think",
+    "ask_user",
+    "search_memory",
+    "get_user_profile",
+    "get_session_context",
+)
+
+
+def _filter_tools_by_intent(
+    tools: list[dict],
+    *,
+    intent_name: str | None,
+    intent_tool_hints: list[str] | None = None,
+    requires_tools: bool = False,
+) -> list[dict]:
+    """Intent-driven 二次裁剪：闲聊场景只挂少量核心工具。
+
+    传入的 intent_name 应该是 IntentType.value（比如 "chat" / "query"）。
+    requires_tools=True 时跳过裁剪（说明意图分析判断这次确实需要调外部能力）。
+    intent_tool_hints 里显式点名的工具一定保留。
+    """
+    try:
+        from .feature_flags import is_enabled as _ff_enabled
+        if not _ff_enabled("intent_tool_slim_v1"):
+            return tools
+    except Exception:
+        pass
+    if requires_tools or not tools:
+        return tools
+    if (intent_name or "").lower() not in ("chat",):
+        return tools
+    keep_names = set(_CHAT_INTENT_CORE_TOOLS) | set(intent_tool_hints or [])
+    filtered: list[dict] = []
+    for tool in tools:
+        name = tool.get("name", "")
+        if not name:
+            fn = tool.get("function", {})
+            name = fn.get("name", "")
+        if name in keep_names:
+            filtered.append(tool)
+    if filtered and len(filtered) < len(tools):
+        logger.info(
+            f"[ToolFilter/Intent] chat intent slim: {len(tools)} -> {len(filtered)} tools "
+            f"(kept: {sorted({t.get('name') or t.get('function', {}).get('name', '') for t in filtered})})"
+        )
+    # 安全闸：极端情况下 keep 列表都不在 tools 里，至少把 ask_user 留下，
+    # 避免 LLM 在 chat 意图下完全失去与用户对话的反问能力。
+    if not filtered:
+        for tool in tools:
+            name = tool.get("name", "") or tool.get("function", {}).get("name", "")
+            if name == "ask_user":
+                filtered.append(tool)
+                break
+    return filtered or tools
 
 
 def _filter_tools_by_mode(tools: list[dict], mode: str) -> list[dict]:
@@ -542,6 +624,43 @@ def _successful_tool_names(
     return {name for name in executed if name not in seen or name in succeeded}
 
 
+# 历史回溯标记：当声明动词 *附近* 出现这些词，说明 LLM 是在汇总过去动作，
+# 不是在本轮做出新声明，一致性守卫应放行。
+# - 时间戳：`[17:30]` `[2026-05-09 17:30]`
+# - 中文回溯副词：之前 / 刚才 / 历史 / 上文 / 上次 / 早些 / 先前 / 此前
+# - 已在……：已在 17:30 / 已经在历史 / 之前已 ...
+_RECAP_NEAR_RE = __import__("re").compile(
+    r"(?:"
+    r"\[\d{1,2}:\d{2}\]"
+    r"|\[\d{4}-\d{2}-\d{2}[^\]]*\]"
+    r"|(?:之前|刚才|此前|先前|上次|上文|历史(?:记录|中|上)|早些时(?:候)?|早前|前面|"
+    r"过去|本轮之前|前几轮|最近(?:的)?(?:对话|会话|任务)|根据(?:对话|历史)|"
+    r"回顾|总结|复述|汇总|盘点)"
+    r")"
+)
+
+
+def _is_recap_context(text: str, verb_or_tool: str) -> bool:
+    """Return True if the verb/tool mention sits inside a historical-recap window.
+
+    Heuristic: scan a ±48-character window around each occurrence of the verb /
+    tool name. If any window contains a timestamp or recap adverb, treat the
+    whole claim as a historical summary instead of a fresh action.
+    """
+    import re as _re
+
+    if not text or not verb_or_tool:
+        return False
+    half = 48
+    for m in _re.finditer(_re.escape(verb_or_tool), text, _re.IGNORECASE):
+        start = max(0, m.start() - half)
+        end = min(len(text), m.end() + half)
+        window = text[start:end]
+        if _RECAP_NEAR_RE.search(window):
+            return True
+    return False
+
+
 def _extract_unbacked_verbs(
     text: str,
     successful_tools: set[str],
@@ -569,6 +688,10 @@ def _extract_unbacked_verbs(
             continue
         if any(any(frag in t for frag in fragments) for t in successful_tools):
             continue
+        # 历史回溯放行：模型在复述/汇总以前真正发生过的工具调用时
+        # 不应被当成幻觉。
+        if _is_recap_context(text, tool_name):
+            continue
         unbacked.append(f"{tool_name}调用")
 
     for verb, fragments in _VERB_TO_TOOL_FRAGMENTS.items():
@@ -578,6 +701,8 @@ def _extract_unbacked_verbs(
         if not verb_pat.search(text):
             continue
         if any(any(frag in t for frag in fragments) for t in successful_tools):
+            continue
+        if _is_recap_context(text, verb):
             continue
         unbacked.append(verb)
     return unbacked
@@ -604,6 +729,10 @@ def _guard_unbacked_action_claim(
     successful_tools = _successful_tool_names(executed_tool_names, tool_results)
 
     if not executed_tool_names:
+        # 整段回复是历史汇总（含时间戳/回溯副词且无新动作迹象）→ 守卫不应介入，
+        # 否则用户问"复述一下你做了什么"会被替换成"没有凭证"。
+        if _RECAP_NEAR_RE.search(text):
+            return text
         memory_markers = ("记住", "记忆")
         if any(marker in text for marker in memory_markers):
             return (
@@ -1529,6 +1658,9 @@ class ReasoningEngine:
         tools_executed_in_task = False
         _supervisor_intervened = False
         _tool_call_counter: dict[str, int] = {}
+        # 按 *同名工具* 计数（不区分参数），用于阻止单轮内同工具被 LLM
+        # 调用过多次的失控场景（典型：add_memory 在一轮里写 9 条）。
+        _tool_name_counter: dict[str, int] = {}
         # same_tool_call_limit=0（默认）= 不限同工具同参数重复，调用处需先判 > 0
         _MAX_SAME_TOOL_PER_TASK = max(0, int(getattr(settings, "same_tool_call_limit", 0) or 0))
         # 0=不限/禁用对应检测；LoopBudgetGuard 内部已处理 0 短路
@@ -2379,7 +2511,28 @@ class ReasoningEngine:
                     _tc_args = tc.get("input", tc.get("arguments", {}))
                     _tc_key = _tool_rate_limit_key(_tc_name, _tc_args)
                     _tool_call_counter[_tc_key] = _tool_call_counter.get(_tc_key, 0) + 1
+                    _tool_name_counter[_tc_name] = _tool_name_counter.get(_tc_name, 0) + 1
+                    _per_name_limit = _PER_TOOL_NAME_TASK_LIMITS.get(_tc_name, 0)
                     if (
+                        _per_name_limit > 0
+                        and _tool_name_counter[_tc_name] > _per_name_limit
+                    ):
+                        logger.warning(
+                            f"[RateLimit] Tool '{_tc_name}' called "
+                            f"{_tool_name_counter[_tc_name]} times in this task "
+                            f"(per-name limit={_per_name_limit}), skipping execution"
+                        )
+                        _rate_limited_by_id[tc.get("id", "")] = {
+                            "type": "tool_result",
+                            "tool_use_id": tc.get("id", ""),
+                            "content": (
+                                f"[系统] 工具 {_tc_name} 在本任务已调用 "
+                                f"{_tool_name_counter[_tc_name] - 1} 次，"
+                                f"已达单轮上限 {_per_name_limit}。"
+                                f"请把剩余信息合并到现有调用，或推迟到下一轮。"
+                            ),
+                        }
+                    elif (
                         _MAX_SAME_TOOL_PER_TASK > 0
                         and _tool_call_counter[_tc_key] > _MAX_SAME_TOOL_PER_TASK
                     ):
@@ -2588,7 +2741,11 @@ class ReasoningEngine:
                     self._last_exit_reason = "loop_terminated"
                     return msg
                 if _budget_decision.should_warn:
-                    working_messages.append({"role": "user", "content": _budget_decision.message})
+                    logger.info(
+                        "[LoopBudget] warning for model only (%s): %s",
+                        _budget_decision.exit_reason,
+                        _budget_decision.message,
+                    )
                     _iter_trace.setdefault("loop_budget_warnings", []).append(
                         _budget_decision.exit_reason
                     )
@@ -3049,6 +3206,11 @@ class ReasoningEngine:
         - {"type": "context_compressed", "before_tokens": N, "after_tokens": M}
         - {"type": "thinking_start"} / {"type": "thinking_delta"} / {"type": "thinking_end"}
         - {"type": "text_delta", "content": "..."}
+        - {"type": "text_replace", "content": "..."}  # PR-G1: reset 前端 buffer，
+                                                       # 用于 ForceToolCall / Supervisor /
+                                                       # tool_evidence_required 等需要"撤回
+                                                       # 已发出文本，重新生成"的场景。
+                                                       # 前端 ChatView 已支持该 case。
         - {"type": "tool_call_start"} / {"type": "tool_call_end"}
         - {"type": "todo_created"} / {"type": "todo_step_updated"}
         - {"type": "ask_user", "question": "..."}
@@ -3232,6 +3394,7 @@ class ReasoningEngine:
             tools_executed_in_task = False
             _supervisor_intervened = False
             _tool_call_counter: dict[str, int] = {}
+            _tool_name_counter: dict[str, int] = {}
             # same_tool_call_limit=0（默认）= 不限同工具同参数重复，调用处需先判 > 0
             _MAX_SAME_TOOL_PER_TASK = max(0, int(getattr(settings, "same_tool_call_limit", 0) or 0))
             # 0=不限/禁用对应检测；LoopBudgetGuard 内部已处理 0 短路
@@ -3651,6 +3814,11 @@ class ReasoningEngine:
                         continue
                     elif isinstance(retry_result, tuple):
                         current_model, working_messages = retry_result
+                        # PR-G1: 切换模型属于 reasoning restart，前一段 text_delta
+                        # 多半是不完整的报错或被截断的回复——必须清前端 buffer，
+                        # 否则用户会看到「半截错误信息 + 新模型完整回答」拼成的诡异内容。
+                        if _streamed_text:
+                            yield {"type": "text_replace", "content": ""}
                         yield {
                             "type": "chain_text",
                             "content": "当前模型不可用，正在切换到备用模型...",
@@ -4316,7 +4484,25 @@ class ReasoningEngine:
                         # arguments is valid progress, especially for todo step updates.
                         _tool_key = _tool_rate_limit_key(tool_name, tool_args)
                         _tool_call_counter[_tool_key] = _tool_call_counter.get(_tool_key, 0) + 1
+                        _tool_name_counter[tool_name] = _tool_name_counter.get(tool_name, 0) + 1
+                        _per_name_limit = _PER_TOOL_NAME_TASK_LIMITS.get(tool_name, 0)
+                        _rl_msg = ""
                         if (
+                            _per_name_limit > 0
+                            and _tool_name_counter[tool_name] > _per_name_limit
+                        ):
+                            logger.warning(
+                                f"[RateLimit] Tool '{tool_name}' called "
+                                f"{_tool_name_counter[tool_name]} times in this task "
+                                f"(per-name limit={_per_name_limit}), skipping"
+                            )
+                            _rl_msg = (
+                                f"[系统] 工具 {tool_name} 在本任务已调用 "
+                                f"{_tool_name_counter[tool_name] - 1} 次，"
+                                f"已达单轮上限 {_per_name_limit}。"
+                                f"请把剩余信息合并到现有调用，或推迟到下一轮。"
+                            )
+                        elif (
                             _MAX_SAME_TOOL_PER_TASK > 0
                             and _tool_call_counter[_tool_key] > _MAX_SAME_TOOL_PER_TASK
                         ):
@@ -4330,6 +4516,7 @@ class ReasoningEngine:
                                 f"{_tool_call_counter[_tool_key] - 1} 次，已达上限。"
                                 f"请整合操作或继续下一步。"
                             )
+                        if _rl_msg:
                             yield {
                                 "type": "tool_call_start",
                                 "tool": tool_name,
@@ -4930,7 +5117,11 @@ class ReasoningEngine:
                         yield {"type": "done"}
                         return
                     if _budget_decision.should_warn:
-                        working_messages.append({"role": "user", "content": _budget_decision.message})
+                        logger.info(
+                            "[LoopBudget] warning for model only (%s): %s",
+                            _budget_decision.exit_reason,
+                            _budget_decision.message,
+                        )
                         _iter_trace.setdefault("loop_budget_warnings", []).append(
                             _budget_decision.exit_reason
                         )
@@ -5344,6 +5535,14 @@ class ReasoningEngine:
                                     f"(iter={_iteration}, pattern={intervention.pattern.value})"
                                 )
                             max_no_tool_retries = 0
+                            # PR-G1: supervisor 注入新 prompt 后下一轮 LLM 会重新生成，
+                            # 已发的 text_delta 多半是被 supervisor 判定有问题的输出，
+                            # 必须先 reset 前端 buffer，避免新旧文字拼在一起。
+                            try:
+                                if _streamed_text:
+                                    yield {"type": "text_replace", "content": ""}
+                            except NameError:
+                                pass
 
                     continue  # Next iteration
 
@@ -5494,7 +5693,16 @@ class ReasoningEngine:
                     budget.record(tokens)
                     warning = budget.get_warning_message()
                     if warning:
-                        yield {"type": "budget_warning", "message": warning}
+                        yield {
+                            "type": "budget_warning",
+                            "dimension": "tokens",
+                            "level": "warning",
+                            "usage_ratio": budget.used / budget.total_limit
+                            if budget.total_limit
+                            else 0,
+                            "renewed": False,
+                            "message": warning,
+                        }
                     if budget.is_exceeded:
                         yield {
                             "type": "budget_exceeded",
@@ -6385,6 +6593,56 @@ class ReasoningEngine:
             assistant_content=assistant_content,
         )
 
+    def _collect_inbound_artifact_receipts(self) -> list[dict]:
+        """从当前 session 的 sub_agent_records 合成"父节点已收到子节点交付物"的回执列表。
+
+        coordinator 多智能体场景下，子 agent 完成后由 orchestrator 调
+        ``_persist_sub_agent_record`` 把 ``output_files`` 写到
+        ``ctx.sub_agent_records[*].output_files``。此处在父节点 ReAct 收尾
+        verify_task_completion 之前把这些已落盘的文件合成 receipt 抄入
+        ``delivery_receipts``，让 trust-but-verify 能：
+          1. 通过 ``_has_produced_files`` 信号触发"方案/策划/计划/报告"等弱
+             关键词的 expects_artifact=True 升级；
+          2. 在父节点真没调 ``deliver_artifacts`` 的情况下让 LLM 复核能看到
+             "上下文已有附件、但本节点没转发给用户"，更准确地判 INCOMPLETE
+             并触发下一轮 deliver_artifacts。
+
+        如果 session 不可用 / 没有 sub_agent_records，安全返回空列表。
+        """
+        try:
+            session = getattr(self._state, "current_session", None)
+            ctx = getattr(session, "context", None) if session is not None else None
+            records = getattr(ctx, "sub_agent_records", None) if ctx is not None else None
+            if not records:
+                return []
+            seen_paths: set[str] = set()
+            receipts: list[dict] = []
+            for rec in records:
+                if not isinstance(rec, dict):
+                    continue
+                files = rec.get("output_files") or []
+                if not isinstance(files, list):
+                    continue
+                for fp in files:
+                    if not isinstance(fp, str) or not fp:
+                        continue
+                    if fp in seen_paths:
+                        continue
+                    seen_paths.add(fp)
+                    receipts.append(
+                        {
+                            "status": "delivered",
+                            "from_sub_agent": rec.get("agent_name") or rec.get("agent_id") or "",
+                            "file_path": fp,
+                            "filename": fp.rsplit("/", 1)[-1].rsplit("\\", 1)[-1],
+                            "summary": f"子节点已交付文件: {fp}",
+                            "source": "sub_agent_record",
+                        }
+                    )
+            return receipts
+        except Exception:
+            return []
+
     @staticmethod
     def _build_fallback_summary(
         executed_tool_names: list[str],
@@ -6511,11 +6769,20 @@ class ReasoningEngine:
                 )
                 # 同时拼装组织级 verify 上下文（B4 由 ValidationContext 消费）
                 org_validation_kwargs = self._build_org_validation_kwargs()
+                # 把子节点已落盘的文件合成回执并入 delivery_receipts，
+                # 避免 coordinator 节点没显式调 deliver_artifacts 时
+                # trust-but-verify 看不到任何"已交付证据"而 INSUFFICIENT。
+                inbound_receipts = self._collect_inbound_artifact_receipts()
+                _verify_receipts = (
+                    list(delivery_receipts) + inbound_receipts
+                    if inbound_receipts
+                    else delivery_receipts
+                )
                 is_completed = await self._response_handler.verify_task_completion(
                     user_request=last_user_request,
                     assistant_response=cleaned_text,
                     executed_tools=executed_tool_names,
-                    delivery_receipts=delivery_receipts,
+                    delivery_receipts=_verify_receipts,
                     tool_results=all_tool_results,
                     conversation_id=conversation_id,
                     bypass=supervisor_intervened or is_summary_round,
@@ -6607,7 +6874,22 @@ class ReasoningEngine:
                     #   而不是再来一段纯文字"我已经做好了"。
                     # - expects_artifact=False：温和复核提示，避免对纯对话场景喷
                     #   "你必须交付文件"的噪音误导。
-                    expects_artifact = request_expects_artifact(last_user_request)
+                    # 子节点已经产出过文件 → "方案/策划/计划/报告"等弱信号
+                    # 词也升级成 expects_artifact=True，提示 LLM 走附件交付。
+                    _has_produced_files_re = (
+                        bool(delivery_receipts)
+                        or bool(self._collect_inbound_artifact_receipts())
+                        or any(
+                            (tr.get("tool_name") or tr.get("name") or "") in {
+                                "write_file", "auto_persist_node_final_answer"
+                            }
+                            for tr in (all_tool_results or [])
+                            if isinstance(tr, dict) and not tr.get("is_error")
+                        )
+                    )
+                    expects_artifact = request_expects_artifact(
+                        last_user_request, has_produced_files=_has_produced_files_re
+                    )
                     if expects_artifact:
                         retry_msg = (
                             "[系统] ⚠️ 用户请求里明确提到附件/文件类交付物，"

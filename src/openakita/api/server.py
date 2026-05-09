@@ -310,12 +310,22 @@ def create_app(
     app.state.gateway = gateway
     app.state.orchestrator = orchestrator
     app.state.agent_pool = agent_pool
+    app.state.startup_phase = "http_ready" if gateway is None else "running"
+    app.state.readiness = {
+        "phase": app.state.startup_phase,
+        "http_ready": True,
+        "im_ready": gateway is not None,
+        "ready": gateway is not None,
+    }
 
     if agent is not None:
         pm = getattr(agent, "_plugin_manager", None)
         if pm is not None:
-            pm._host_refs["api_app"] = app
-            pending = pm._host_refs.pop("_pending_plugin_routers", [])
+            # Writes go to the shared backing dict; ``_host_refs`` is a filtered
+            # read-only view for plugins (no ``__setitem__`` / ``pop``).
+            ext = pm._external_host_refs
+            ext["api_app"] = app
+            pending = ext.pop("_pending_plugin_routers", [])
             for plugin_id, router in pending:
                 try:
                     app.include_router(router, prefix=f"/api/plugins/{plugin_id}")
@@ -325,7 +335,7 @@ def create_app(
                         "Failed to mount pending routes for plugin '%s': %s", plugin_id, e
                     )
 
-            pending_ui = pm._host_refs.pop("_pending_plugin_ui_mounts", [])
+            pending_ui = ext.pop("_pending_plugin_ui_mounts", [])
             for plugin_id, ui_dist_dir in pending_ui:
                 try:
                     pm._do_mount_plugin_ui(app, plugin_id, ui_dist_dir)
@@ -733,6 +743,8 @@ def update_runtime_refs(
     gateway: Any = None,
     orchestrator: Any = None,
     agent_pool: Any = None,
+    startup_phase: str | None = None,
+    readiness: dict[str, Any] | None = None,
 ) -> bool:
     """Update runtime references on an API server started by start_api_server().
 
@@ -753,4 +765,8 @@ def update_runtime_refs(
         app.state.orchestrator = orchestrator
     if agent_pool is not None:
         app.state.agent_pool = agent_pool
+    if startup_phase is not None:
+        app.state.startup_phase = startup_phase
+    if readiness is not None:
+        app.state.readiness = readiness
     return True

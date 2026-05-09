@@ -1240,9 +1240,9 @@ export function LLMView(props: LLMViewProps) {
     <>
       {/* ── Main endpoint list ── */}
       <div className="card">
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div className="mb-2 flex items-start justify-between gap-3">
           <div>
-            <div className="cardTitle" style={{ marginBottom: 2 }}>{t("llm.title")}</div>
+            <div className="cardTitle">{t("llm.title")}</div>
             <div className="cardHint">{t("llm.subtitle")}</div>
           </div>
           <Button size="sm" onClick={openAddEpDialog} disabled={endpointConfigDisabled} title={!endpointConfigApiReady ? endpointConfigUnavailableMessage : undefined}>
@@ -1257,9 +1257,35 @@ export function LLMView(props: LLMViewProps) {
           </div>
         )}
 
+        {/* PR-H1: 强校验启用端点 ≥ 2。
+            单一端点崩了任务无法继续（dashscope CONTENT LOST → 无 fallback），
+            这是 0419 报告里 P1-5 的根因；这里只在无可用备份时给一条非阻塞提示，
+            点击 "+ 添加端点" 后即可消失。
+            判定口径：enabled !== false 且 .env 里有非空 api_key_env。 */}
+        {(() => {
+          if (savedEndpoints.length === 0) return null;
+          const enabledWithKey = savedEndpoints.filter(
+            (e) => e.enabled !== false && (envDraft[e.api_key_env] || "").trim().length > 0,
+          );
+          if (enabledWithKey.length >= 2) return null;
+          const reason =
+            enabledWithKey.length === 0
+              ? "当前没有任何已启用且填好 API Key 的聊天端点，新对话会立刻报错。"
+              : "当前只有 1 个可用端点，单点故障会导致整个任务卡住或回退到错误。";
+          return (
+            <div className="mb-3 flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50/70 px-3 py-2 text-[12px] text-amber-900 dark:border-amber-500/40 dark:bg-amber-950/30 dark:text-amber-100">
+              <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+              <div className="flex-1">
+                <div className="font-semibold">建议至少保留 2 个聊天端点（主 + 备）</div>
+                <div className="mt-0.5 opacity-90">{reason} 请点右上角「+ 添加端点」补一个不同提供商的备份端点。</div>
+              </div>
+            </div>
+          );
+        })()}
+
         {savedEndpoints.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-10 text-muted-foreground">
-            <Inbox size={32} strokeWidth={1.5} className="mb-2 opacity-40" />
+          <div className="flex flex-col items-center justify-center py-7 text-muted-foreground">
+            <Inbox size={28} strokeWidth={1.5} className="mb-2 opacity-35" />
             <p className="text-sm">{t("llm.noEndpoints")}</p>
           </div>
         ) : (
@@ -1309,10 +1335,10 @@ export function LLMView(props: LLMViewProps) {
       </div>
 
       {/* ── Compiler endpoints ── */}
-      <div className="card" style={{ marginTop: 12 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+      <div className="card" style={{ marginTop: 10 }}>
+        <div className="mb-2 flex items-start justify-between gap-3">
           <div>
-            <div className="cardTitle" style={{ marginBottom: 2 }}>{t("llm.compiler")}</div>
+            <div className="cardTitle">{t("llm.compiler")}</div>
             <div className="cardHint">{t("llm.compilerHint")}</div>
           </div>
           <Button variant="outline" size="sm" className="bg-primary/5 border-primary/30 text-primary hover:bg-primary/10 hover:text-primary" onClick={() => { if (providers.length === 0) doLoadProviders(); setCompilerProviderSlug(""); setCompilerApiType("openai"); setCompilerBaseUrl(""); setCompilerApiKeyValue(""); setCompilerModel(""); setCompilerEndpointName(""); setCompilerCodingPlan(false); setCompilerModels([]); setAddCompDialogOpen(true); }} disabled={endpointConfigDisabled} title={!endpointConfigApiReady ? endpointConfigUnavailableMessage : undefined}>
@@ -1320,8 +1346,8 @@ export function LLMView(props: LLMViewProps) {
           </Button>
         </div>
         {savedCompilerEndpoints.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-10 text-muted-foreground">
-            <Inbox size={32} strokeWidth={1.5} className="mb-2 opacity-40" />
+          <div className="flex flex-col items-center justify-center py-7 text-muted-foreground">
+            <Inbox size={28} strokeWidth={1.5} className="mb-2 opacity-35" />
             <p className="text-sm">{t("llm.noEndpoints")}</p>
           </div>
         ) : (
@@ -1357,10 +1383,10 @@ export function LLMView(props: LLMViewProps) {
       </div>
 
       {/* ── STT endpoints ── */}
-      <div className="card" style={{ marginTop: 12 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+      <div className="card" style={{ marginTop: 10 }}>
+        <div className="mb-2 flex items-start justify-between gap-3">
           <div>
-            <div className="cardTitle" style={{ marginBottom: 2 }}>{t("llm.stt")}</div>
+            <div className="cardTitle">{t("llm.stt")}</div>
             <div className="cardHint">{t("llm.sttHint")}</div>
           </div>
           <Button variant="outline" size="sm" className="bg-primary/5 border-primary/30 text-primary hover:bg-primary/10 hover:text-primary" onClick={() => { if (providers.length === 0) doLoadProviders(); setSttProviderSlug(""); setSttApiType("openai"); setSttBaseUrl(""); setSttApiKeyValue(""); setSttModel(""); setSttEndpointName(""); setSttModels([]); setAddSttDialogOpen(true); }} disabled={endpointConfigDisabled} title={!endpointConfigApiReady ? endpointConfigUnavailableMessage : undefined}>
@@ -1368,8 +1394,8 @@ export function LLMView(props: LLMViewProps) {
           </Button>
         </div>
         {savedSttEndpoints.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-10 text-muted-foreground">
-            <Inbox size={32} strokeWidth={1.5} className="mb-2 opacity-40" />
+          <div className="flex flex-col items-center justify-center py-7 text-muted-foreground">
+            <Inbox size={28} strokeWidth={1.5} className="mb-2 opacity-35" />
             <p className="text-sm">{t("llm.noEndpoints")}</p>
           </div>
         ) : (

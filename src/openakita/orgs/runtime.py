@@ -1505,14 +1505,18 @@ class OrgRuntime:
             #      只会污染 workspace。
             # 任何异常仅 warning，不影响主流程。
             persisted_attachment: dict | None = None
+            files_registered = self._node_files_registered_in_task.get(cache_key, 0)
             try:
-                expects_artifact = request_expects_artifact(prompt)
+                # files_registered>0 时把"方案/策划/计划/报告"等弱信号升级为强：
+                # 子节点已经写过文件，coordinator 必须走 deliver_artifacts 转发。
+                expects_artifact = request_expects_artifact(
+                    prompt, has_produced_files=files_registered > 0
+                )
             except Exception:
                 expects_artifact = False
             auto_persist_enabled = bool(
                 getattr(org, "auto_persist_final_answer", True)
             )
-            files_registered = self._node_files_registered_in_task.get(cache_key, 0)
             if (
                 auto_persist_enabled
                 and expects_artifact
@@ -2161,6 +2165,16 @@ class OrgRuntime:
         agent.shell_tool.default_cwd = str(org_workspace)
 
         is_root = (node.level == 0 or not org.get_parent(node.id))
+        # A node is an "org coordinator" iff it has direct subordinates —
+        # ``build_org_node_tools`` already drops ``org_delegate_task`` for
+        # leaf nodes, so this aligns the runtime contract: only nodes that
+        # *can* delegate are forced into coordinator semantics (must use
+        # tools / coordinator-mode prompt). This is the structural identity
+        # we use later in ``orchestrator._run_agent_session`` and
+        # ``Agent._prepare_session_context`` to keep the editor-in-chief /
+        # CEO / tech-lead style nodes from "doing the work themselves"
+        # instead of delegating.
+        is_coordinator = bool(org.get_children(node.id))
         self._override_system_prompt_for_org(agent, org_context_prompt, org_workspace, is_root=is_root)
 
         agent._org_context = {
@@ -2168,7 +2182,10 @@ class OrgRuntime:
             "node_id": node.id,
             "tool_handler": self._tool_handler,
             "workspace": org_workspace,
+            "is_root": is_root,
+            "is_coordinator": is_coordinator,
         }
+        agent._is_org_coordinator = is_coordinator
 
         if hasattr(agent, "brain") and hasattr(agent.brain, "set_trace_context"):
             agent.brain.set_trace_context({
@@ -3730,6 +3747,15 @@ class OrgRuntime:
         re-wake the root.
         """
         if tracker.summary_pushed_at > 0:
+            return False
+        # If the root never opened a delegation chain we have nothing to
+        # summarise — re-activating it with "[用户指令最终汇总]" would only
+        # invite the LLM to hallucinate a recap of work that never happened
+        # (see regression: trace 2 in 0939300e0183 where the editor-in-chief
+        # fabricated subordinate deliveries because no children were ever
+        # delegated). Bail early so ``_maybe_finalize_tracker`` falls back to
+        # ``completed_no_summary`` and the user gets the root's first answer.
+        if not tracker.root_chain_id:
             return False
         org = self.get_org(tracker.org_id)
         if not org:

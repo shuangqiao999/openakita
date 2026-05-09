@@ -659,7 +659,27 @@ function MainApp() {
   const [autostartEnabled, setAutostartEnabled] = useState<boolean | null>(null);
   const [autoUpdateEnabled, setAutoUpdateEnabled] = useState<boolean | null>(null);
   // autoStartBackend 已合并到"开机自启"：--background 模式自动拉起后端，无需独立开关
-  const [serviceStatus, setServiceStatus] = useState<{ running: boolean; pid: number | null; pidFile: string; port?: number } | null>(null);
+  const [serviceStatus, setServiceStatus] = useState<{
+    running: boolean;
+    pid: number | null;
+    pidFile: string;
+    port?: number;
+    heartbeatPhase?: string;
+    heartbeatHttpReady?: boolean;
+    heartbeatImReady?: boolean;
+    heartbeatReady?: boolean;
+  } | null>(null);
+  // ── 后端启动阶段（独立于 serviceStatus）──
+  // serviceStatus 只能表达 "running:true|false"，无法区分"未启动"和"正在启动中"。
+  // 老 UI 在自动启动期间一旦 invoke is_backend_auto_starting 偶发返回 false 或失败，
+  // 立刻把 serviceStatus 写成 {running:false} → StatusView 那条红色"后端服务未启动"
+  // banner 立刻闪一下，等几秒后端起来又变回 running:true → 用户体验上就是
+  // "启动中→未启动→运行中" 的诡异闪烁。
+  // 用 backendBootPhase 显式表达"启动中"语义，让 StatusView 在 starting 期间
+  // 显示蓝色"正在启动"而不是红色"未启动"。
+  const [backendBootPhase, setBackendBootPhase] = useState<"unknown" | "starting" | "running" | "stopped" | "error">(
+    IS_TAURI ? "starting" : "running",
+  );
   // 心跳状态机: "alive" | "suspect" | "degraded" | "dead"
   const [heartbeatState, setHeartbeatState] = useState<"alive" | "suspect" | "degraded" | "dead">("dead");
   const heartbeatStateRef = useRef<"alive" | "suspect" | "degraded" | "dead">("dead");
@@ -837,6 +857,7 @@ function MainApp() {
               const svcVersion = healthData.version || "";
               setApiBaseUrl(url);
               setServiceStatus({ running: true, pid: healthData.pid || null, pidFile: "" });
+              setBackendBootPhase("running");
               if (svcVersion) setBackendVersion(svcVersion);
               notifyPluginAppsReady();
               try { await refreshStatus("local", url, true); } catch { /* ignore */ }
@@ -851,6 +872,7 @@ function MainApp() {
             } catch { /* 服务未运行 */ }
 
             if (!alreadyConnected && !cancelled) {
+              setBackendBootPhase("starting");
               let handled = false;
               try {
                 const autoStarting = await invoke<boolean>("is_backend_auto_starting");
@@ -897,13 +919,36 @@ function MainApp() {
                       notifySuccess(t("topbar.autoStartSuccess"));
                     } else {
                       setServiceStatus({ running: false, pid: null, pidFile: "" });
+                      setBackendBootPhase("error");
                       notifyError(t("topbar.autoStartFail"));
                     }
                   }
                 }
               } catch { /* is_backend_auto_starting 不可用，忽略 */ }
               if (!handled && !cancelled) {
-                setServiceStatus({ running: false, pid: null, pidFile: "" });
+                // 兜底：is_backend_auto_starting 返回 false 或 invoke 不可用。
+                // 不要立即把 serviceStatus 写成 false（那样 StatusView 会立刻
+                // 闪一下红色"未启动"banner），而是再做一次 grace-window 健康
+                // 探测：1.5s 内连续 3 次 fetch /api/health 都失败才算真没启动。
+                // 这是为了对付 Tauri setup 完成与前端 mount 的时序竞争——
+                // 此时后端可能正在 spawn，HTTP 端口随时会起来。
+                let confirmed = false;
+                for (let i = 0; i < 3 && !cancelled && !confirmed; i++) {
+                  await new Promise((r) => setTimeout(r, 500));
+                  try {
+                    confirmed = await connectToRunningService(localUrl);
+                    if (confirmed) break;
+                  } catch { /* still down */ }
+                }
+                if (!confirmed && !cancelled) {
+                  // 1.5s grace 没能拨通 HTTP，但**不要直接判 stopped 闪一下红条**。
+                  // 真正的状态由 5s 心跳轮询收敛——心跳分支会先问 Rust
+                  // backend_in_boot_grace_cmd / is_backend_auto_starting，
+                  // 若仍在 boot grace 就保持 "starting"；若真的死了再降级 dead。
+                  // 这里保留 unknown，避免 mount 与 spawn 竞态时刺出一个 stopped 帧。
+                  setServiceStatus({ running: false, pid: null, pidFile: "" });
+                  // backendBootPhase 保持 unknown / 上一帧；不强制写 stopped
+                }
               }
             }
           }
@@ -994,12 +1039,18 @@ function MainApp() {
             setHeartbeatState("alive");
             if (IS_TAURI) try { await invoke("set_tray_backend_status", { status: "alive" }); } catch { /* ignore */ }
           }
-          setServiceStatus(prev => prev ? { ...prev, running: true } : { running: true, pid: null, pidFile: "" });
-          // 提取后端版本
+          // /api/health 200 只代表 HTTP API 可达，不再等同于业务完全启动完成。
+          // 新后端会返回 readiness，旧后端没有该字段时按 ready=true 兼容。
+          let readinessReady = true;
+          // 提取后端版本与 readiness
           try {
             const data = await res.json();
             if (data.version) setBackendVersion(data.version);
+            const readiness = data?.readiness || {};
+            readinessReady = readiness.ready !== false;
           } catch { /* ignore */ }
+          setServiceStatus(prev => prev ? { ...prev, running: true } : { running: true, pid: null, pidFile: "" });
+          setBackendBootPhase(readinessReady ? "running" : "starting");
           notifyPluginAppsReady();
         } else {
           throw new Error("non-ok");
@@ -1007,6 +1058,33 @@ function MainApp() {
       } catch {
         // 宽限期内不计入
         if (visibilityGraceRef.current) return;
+
+        // ── 启动宽限：后端 dual-venv hack cold start 实测要 90~120 秒 ──
+        // 这段时间内 fetch /api/health 必然失败，但后端正在加载 122 个 skills、
+        // 初始化 Memory/IM 通道、启动 uvicorn。如果走老逻辑（5 次失败 = 25s 转 dead），
+        // UI 会在启动期闪一下"未启动"红条。
+        // 改成：先问 Rust 后端是否仍在 boot grace。
+        //   1) backend_in_boot_grace_cmd —— 基于 PID 文件 started_at 判定（含 PID 死亡 30s 容忍窗）
+        //   2) 退化到 is_backend_auto_starting —— 兼容旧 Rust 端
+        // 命中任一就保持 "starting"，重置 failCount，不进入 suspect/degraded/dead。
+        if (IS_TAURI && dataMode !== "remote") {
+          let stillStarting = false;
+          try {
+            stillStarting = await invoke<boolean>("backend_in_boot_grace_cmd", {
+              workspaceId: currentWorkspaceId,
+            });
+          } catch {
+            // 老版本 Rust 后端没有 backend_in_boot_grace_cmd，退化路径
+            try {
+              stillStarting = await invoke<boolean>("is_backend_auto_starting");
+            } catch { /* invoke 不可用 — 走原有降级逻辑 */ }
+          }
+          if (stillStarting) {
+            heartbeatFailCount.current = 0;
+            if (backendBootPhase !== "starting") setBackendBootPhase("starting");
+            return;
+          }
+        }
 
         heartbeatAliveSuccessCountRef.current = 0;
         heartbeatFailCount.current += 1;
@@ -1045,6 +1123,7 @@ function MainApp() {
           if (IS_TAURI) try { await invoke("set_tray_backend_status", { status: "dead" }); } catch { /* ignore */ }
         }
         setServiceStatus(prev => prev ? { ...prev, running: false } : { running: false, pid: null, pidFile: "" });
+        setBackendBootPhase("stopped");
         setBackendVersion(null);
         // 注意：不要在 dead 状态下重置 heartbeatFailCount！
         // 否则下轮心跳 failCount 从 0 开始 → 进入 suspect → 再次变为 dead → 重复发送系统通知。
@@ -1148,9 +1227,14 @@ function MainApp() {
     };
   }, []);
 
-  // ── Web mode: subscribe to WebSocket events (replaces Tauri listen() for real-time updates) ──
+  // ── Backend WebSocket events: keep derived status fresh across Web/Tauri ──
+  // IM channels intentionally start after the HTTP API so the desktop can connect early.
+  // On Tauri, relying only on the first /api/im/channels fetch leaves the StatusView stuck
+  // at "configured/unknown" until another user action refreshes it. Subscribe here too so
+  // the backend's im:channel_status event reconciles the UI as soon as adapters finish.
   useEffect(() => {
-    if ((!IS_WEB && !IS_CAPACITOR) || !webAuthed) return;
+    if (!IS_TAURI && !IS_WEB && !IS_CAPACITOR) return;
+    if ((IS_WEB || IS_CAPACITOR) && !webAuthed) return;
     const unsub = onWsEvent((event, data) => {
       const p = data as any;
       if (!p) return;
@@ -2256,6 +2340,9 @@ function MainApp() {
             try {
               const healthData = await ping.json();
               if (healthData.version) setBackendVersion(healthData.version);
+              const readiness = healthData?.readiness || {};
+              const ready = readiness.ready !== false;
+              setBackendBootPhase(ready ? "running" : "starting");
             } catch { /* ignore parse error */ }
             setServiceStatus((prev) =>
               prev ? { ...prev, running: true } : { running: true, pid: null, pidFile: "" }
@@ -2418,12 +2505,27 @@ function MainApp() {
         // was started externally (not via this app).
         if (effectiveDataMode !== "remote" && currentWorkspaceId) {
           try {
-            const ss = await invoke<{ running: boolean; pid: number | null; pidFile: string }>("openakita_service_status", { workspaceId: currentWorkspaceId });
+            const ss = await invoke<{
+              running: boolean;
+              pid: number | null;
+              pidFile: string;
+              heartbeatPhase?: string;
+              heartbeatHttpReady?: boolean;
+              heartbeatImReady?: boolean;
+              heartbeatReady?: boolean;
+            }>("openakita_service_status", { workspaceId: currentWorkspaceId });
             setServiceStatus((prev) => ({
               running: prev?.running ?? serviceAlive,
               pid: ss.pid ?? prev?.pid ?? null,
               pidFile: ss.pidFile ?? prev?.pidFile ?? "",
+              heartbeatPhase: ss.heartbeatPhase ?? prev?.heartbeatPhase,
+              heartbeatHttpReady: ss.heartbeatHttpReady ?? prev?.heartbeatHttpReady,
+              heartbeatImReady: ss.heartbeatImReady ?? prev?.heartbeatImReady,
+              heartbeatReady: ss.heartbeatReady ?? prev?.heartbeatReady,
             }));
+            if (ss.heartbeatReady === false && ss.heartbeatPhase) {
+              setBackendBootPhase("starting");
+            }
           } catch { /* keep existing status */ }
         }
         // IM channels (HTTP API mode)
@@ -2506,10 +2608,21 @@ function MainApp() {
       // This is the fallback when the HTTP API is not alive.
       if (effectiveDataMode !== "remote") {
         try {
-          const ss = await invoke<{ running: boolean; pid: number | null; pidFile: string }>("openakita_service_status", {
+          const ss = await invoke<{
+            running: boolean;
+            pid: number | null;
+            pidFile: string;
+            heartbeatPhase?: string;
+            heartbeatHttpReady?: boolean;
+            heartbeatImReady?: boolean;
+            heartbeatReady?: boolean;
+          }>("openakita_service_status", {
             workspaceId: currentWorkspaceId,
           });
           setServiceStatus(ss);
+          if (ss.running && ss.heartbeatReady === false && ss.heartbeatPhase) {
+            setBackendBootPhase("starting");
+          }
         } catch {
           // keep existing status rather than wiping it
         }
@@ -2663,6 +2776,7 @@ function MainApp() {
    */
   async function doStartLocalService(effectiveWsId: string) {
     let _busyId = notifyLoading(t("topbar.starting"));
+    setBackendBootPhase("starting");
     try {
       setDataMode("local");
       setApiBaseUrl("http://127.0.0.1:18900");
@@ -2677,6 +2791,7 @@ function MainApp() {
       });
       setServiceStatus(real);
       if (ready && real.running) {
+        setBackendBootPhase("running");
         notifySuccess(t("connect.success"));
         // forceAliveCheck=true to bypass stale serviceStatus closure
         await refreshStatus("local", "http://127.0.0.1:18900", true);
@@ -2696,6 +2811,7 @@ function MainApp() {
         _busyId = notifyLoading(t("topbar.starting") + "…");
         const bgReady = await waitForServiceReady("http://127.0.0.1:18900", LOCAL_SERVICE_READY_TIMEOUT_MS);
         if (bgReady) {
+          setBackendBootPhase("running");
           notifySuccess(t("connect.success"));
           await refreshStatus("local", "http://127.0.0.1:18900", true);
           autoCheckEndpoints("http://127.0.0.1:18900");
@@ -2707,13 +2823,16 @@ function MainApp() {
             }
           } catch { /* ignore */ }
         } else {
+          setBackendBootPhase("error");
           notifyError(t("topbar.startFail") + " (HTTP API not reachable)");
           await refreshStatus("local", "http://127.0.0.1:18900", true);
         }
       } else {
+        setBackendBootPhase("error");
         notifyError(t("topbar.startFail"));
       }
     } catch (e) {
+      setBackendBootPhase("error");
       notifyError(String(e));
     } finally {
       dismissLoading(_busyId);
@@ -2806,6 +2925,7 @@ function MainApp() {
     try {
       const final_ss = await invoke<{ running: boolean; pid: number | null; pidFile: string }>("openakita_service_status", { workspaceId: id });
       setServiceStatus(final_ss);
+      if (!final_ss.running) setBackendBootPhase("stopped");
     } catch { /* ignore */ }
   }
 
@@ -2977,6 +3097,7 @@ function MainApp() {
           workspaces={workspaces}
           envDraft={envDraft}
           serviceStatus={serviceStatus}
+          backendBootPhase={backendBootPhase}
           heartbeatState={heartbeatState}
           busy={busy}
           autostartEnabled={autostartEnabled}
@@ -3011,14 +3132,43 @@ function MainApp() {
   }
 
   function renderRuntimeBootstrapPanel() {
-    const stage = installProgress?.stage || (serviceStatus?.running ? "运行环境已就绪" : "等待启动后端");
-    const percent = installProgress?.percent ?? (serviceStatus?.running ? 100 : 0);
+    const backendReady = serviceStatus?.running && backendBootPhase === "running" && serviceStatus?.heartbeatReady !== false;
+    const stage = installProgress?.stage
+      || (backendBootPhase === "starting" ? t("status.backendStarting")
+        : backendReady ? "运行环境已就绪"
+        : serviceStatus?.running ? "后端正在完成初始化"
+        : backendBootPhase === "error" ? t("status.backendStartFailed")
+        : "等待启动后端");
+    const percent = installProgress?.percent
+      ?? (backendBootPhase === "starting" ? 60
+        : backendReady ? 100
+        : serviceStatus?.running ? 85
+        : 0);
     const runtimeRoot = info?.openakitaRootDir
       ? joinPath(info.openakitaRootDir, "runtime")
       : "~/.openakita/runtime";
     const appVenvHint = joinPath(runtimeRoot, "app-venv");
     const agentVenvHint = joinPath(runtimeRoot, "agent-venv");
     const runtimeLogHint = joinPath(joinPath(runtimeRoot, "logs"), "bootstrap.log");
+
+    // "修复" 真正干活：调 Tauri repair_runtime_env 把 app-venv/agent-venv/manifest 删掉重建，
+    // 否则 ensure_venv 的早期健康检查会被残骸 launcher 蒙混通过，怎么点都修不好。
+    const onRepair = async () => {
+      if (!currentWorkspaceId) return;
+      const _b = notifyLoading(t("status.runtimeRepairing"));
+      try {
+        // 先停掉 fallback 的 bundled 后端，避免新 venv 创建过程中 import 冲突。
+        try { await doStopService(currentWorkspaceId); } catch { /* ignore */ }
+        const report = await invoke<string>("repair_runtime_env");
+        notifySuccess(report.split("\n").slice(0, 3).join("\n"));
+        await doStartLocalService(currentWorkspaceId);
+      } catch (e) {
+        notifyError(t("status.runtimeRepairFailed", { err: String(e) }));
+      } finally {
+        dismissLoading(_b);
+      }
+    };
+
     return (
       <div className="mx-auto w-full max-w-6xl px-6 pt-5">
         <div className="card border border-blue-200/70 bg-blue-50/50 dark:border-blue-500/30 dark:bg-blue-950/20">
@@ -3029,14 +3179,25 @@ function MainApp() {
                 桌面端会优先创建 app runtime venv 和 agent tools venv；失败时回退到 legacy PyInstaller 兼容模式。
               </p>
             </div>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={!!busy || !currentWorkspaceId}
-              onClick={() => currentWorkspaceId && doStartLocalService(currentWorkspaceId)}
-            >
-              重试启动/修复
-            </Button>
+            <div className="flex gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={!!busy || !currentWorkspaceId || backendBootPhase === "starting"}
+                onClick={() => currentWorkspaceId && doStartLocalService(currentWorkspaceId)}
+              >
+                重试启动
+              </Button>
+              <Button
+                size="sm"
+                variant="destructive"
+                disabled={!!busy || !currentWorkspaceId}
+                onClick={onRepair}
+                title={t("status.runtimeRepairHint")}
+              >
+                {t("status.runtimeRepairTitle")}
+              </Button>
+            </div>
           </div>
           <div className="mt-4 h-2 rounded-full bg-blue-100 dark:bg-blue-950 overflow-hidden">
             <div
@@ -3050,7 +3211,7 @@ function MainApp() {
             <div>App venv：<span className="font-mono text-xs">{appVenvHint}</span></div>
             <div>Agent venv：<span className="font-mono text-xs">{agentVenvHint}</span></div>
             <div>日志路径：<span className="font-mono text-xs">{runtimeLogHint}</span></div>
-            <div>状态：<span className="font-medium">{venvStatus || (serviceStatus?.running ? "后端运行中" : "尚未启动")}</span></div>
+            <div>状态：<span className="font-medium">{venvStatus || (backendReady ? "后端运行中" : serviceStatus?.running ? "后端初始化中" : "尚未启动")}</span></div>
           </div>
           {installLiveLog && (
             <pre className="mt-3 max-h-40 overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-200">
@@ -3316,7 +3477,7 @@ function MainApp() {
                   <div className="grid3">
                     {FT({ k: "DESKTOP_COMPRESSION_QUALITY", label: t("config.toolsCompression"), placeholder: "85" })}
                     {FT({ k: "DESKTOP_CACHE_TTL", label: "Cache TTL", placeholder: "1.0" })}
-                    {FB({ k: "DESKTOP_FAILSAFE", label: "Failsafe" })}
+                    {FB({ k: "DESKTOP_FAILSAFE", label: "安全角保护", help: "鼠标移到屏幕角落时自动停止桌面操作，避免误点或误操作。" })}
                   </div>
                   {FB({ k: "DESKTOP_VISION_ENABLED", label: t("config.toolsVision"), help: t("config.toolsVisionHelp") })}
                   <div className="grid3">
@@ -3561,7 +3722,7 @@ function MainApp() {
           <div className="divider" />
 
           <div className="card" style={{ marginTop: 0 }}>
-            <div className="cardTitle" style={{ fontSize: 14, marginBottom: 6 }}>
+            <div className="cardTitle">
               LLM（不在这里重复填）
             </div>
             <div className="cardHint">
@@ -3572,7 +3733,7 @@ function MainApp() {
           </div>
 
           <div className="card" style={{ marginTop: 0 }}>
-            <div className="cardTitle" style={{ fontSize: 14, marginBottom: 6 }}>
+            <div className="cardTitle">
               网络代理与并行
             </div>
             <div className="grid3">
@@ -3588,7 +3749,7 @@ function MainApp() {
           </div>
 
           <div className="card">
-            <div className="cardTitle" style={{ fontSize: 14, marginBottom: 6 }}>
+            <div className="cardTitle">
               IM 通道
             </div>
             <div className="cardHint">
@@ -3794,7 +3955,7 @@ function MainApp() {
           </div>
 
           <div className="card">
-            <div className="cardTitle" style={{ fontSize: 14, marginBottom: 6 }}>
+            <div className="cardTitle">
               MCP / 桌面自动化 / 语音与 GitHub
             </div>
             <div className="grid2">
@@ -3856,7 +4017,7 @@ function MainApp() {
                 <div className="grid3" style={{ marginTop: 10 }}>
                   {FT({ k: "DESKTOP_COMPRESSION_QUALITY", label: "压缩质量", placeholder: "85" })}
                   {FT({ k: "DESKTOP_CACHE_TTL", label: "截图缓存秒", placeholder: "1.0" })}
-                  {FB({ k: "DESKTOP_FAILSAFE", label: "failsafe", help: "鼠标移到角落中止（PyAutoGUI 风格）" })}
+                  {FB({ k: "DESKTOP_FAILSAFE", label: "安全角保护", help: "鼠标移到屏幕角落时自动停止桌面操作，避免误点或误操作。" })}
                 </div>
                 <div className="divider" />
                 {FB({ k: "DESKTOP_VISION_ENABLED", label: "启用视觉", help: "用于屏幕理解/定位" })}
@@ -3876,7 +4037,7 @@ function MainApp() {
           </div>
 
           <div className="card">
-            <div className="cardTitle" style={{ fontSize: 14, marginBottom: 6 }}>
+            <div className="cardTitle">
               灵魂与意志（核心配置）
             </div>
             <div className="cardHint">
@@ -5103,8 +5264,8 @@ function MainApp() {
 
     if (view === "skills") {
       return disabledViews.includes("skills") ? (
-        <div className="card" style={{ opacity: 0.5, textAlign: "center", padding: 40 }}>
-          <p style={{ color: "#94a3b8", fontSize: 15 }}>此模块已禁用，请在「工具与技能」配置中启用</p>
+        <div className="card" style={{ opacity: 0.65, textAlign: "center", padding: 28 }}>
+          <p style={{ color: "#94a3b8", fontSize: 13 }}>此模块已禁用，请在「工具与技能」配置中启用</p>
         </div>
       ) : (
         <SkillManager
@@ -5123,8 +5284,8 @@ function MainApp() {
     }
     if (view === "im") {
       return disabledViews.includes("im") ? (
-        <div className="card" style={{ opacity: 0.5, textAlign: "center", padding: 40 }}>
-          <p style={{ color: "#94a3b8", fontSize: 15 }}>此模块已禁用，请在「配置 → IM 通道」中启用</p>
+        <div className="card" style={{ opacity: 0.65, textAlign: "center", padding: 28 }}>
+          <p style={{ color: "#94a3b8", fontSize: 13 }}>此模块已禁用，请在「配置 → IM 通道」中启用</p>
         </div>
       ) : (
         <IMView serviceRunning={serviceStatus?.running ?? false} apiBaseUrl={apiBaseUrl} />
@@ -5142,8 +5303,8 @@ function MainApp() {
     }
     if (view === "mcp") {
       return disabledViews.includes("mcp") ? (
-        <div className="card" style={{ opacity: 0.5, textAlign: "center", padding: 40 }}>
-          <p style={{ color: "#94a3b8", fontSize: 15 }}>此模块已禁用，请在「工具与技能」配置中启用</p>
+        <div className="card" style={{ opacity: 0.65, textAlign: "center", padding: 28 }}>
+          <p style={{ color: "#94a3b8", fontSize: 13 }}>此模块已禁用，请在「工具与技能」配置中启用</p>
         </div>
       ) : (
             <MCPView
@@ -5160,8 +5321,8 @@ function MainApp() {
     }
     if (view === "scheduler") {
       return disabledViews.includes("scheduler") ? (
-        <div className="card" style={{ opacity: 0.5, textAlign: "center", padding: 40 }}>
-          <p style={{ color: "#94a3b8", fontSize: 15 }}>此模块已禁用，请在「灵魂与意志」配置中启用</p>
+        <div className="card" style={{ opacity: 0.65, textAlign: "center", padding: 28 }}>
+          <p style={{ color: "#94a3b8", fontSize: 13 }}>此模块已禁用，请在「灵魂与意志」配置中启用</p>
         </div>
       ) : (
         <SchedulerView serviceRunning={serviceStatus?.running ?? false} apiBaseUrl={apiBaseUrl} />
@@ -5169,8 +5330,8 @@ function MainApp() {
     }
     if (view === "memory") {
       return disabledViews.includes("memory") ? (
-        <div className="card" style={{ opacity: 0.5, textAlign: "center", padding: 40 }}>
-          <p style={{ color: "#94a3b8", fontSize: 15 }}>此模块已禁用，请在「灵魂与意志」配置中启用</p>
+        <div className="card" style={{ opacity: 0.65, textAlign: "center", padding: 28 }}>
+          <p style={{ color: "#94a3b8", fontSize: 13 }}>此模块已禁用，请在「灵魂与意志」配置中启用</p>
         </div>
       ) : (
         <MemoryView serviceRunning={serviceStatus?.running ?? false} apiBaseUrl={apiBaseUrl} />
