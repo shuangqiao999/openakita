@@ -11,7 +11,13 @@ from pathlib import Path
 from typing import Any
 
 import aiosqlite
-from media_models import DEFAULT_SETTINGS, PACKAGE_DEFS, SOURCE_DEFS
+from media_models import (
+    DEFAULT_SETTINGS,
+    DEPRECATED_SOURCE_IDS,
+    PACKAGE_DEFS,
+    RESTORED_SOURCE_IDS,
+    SOURCE_DEFS,
+)
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS config (
@@ -234,6 +240,8 @@ class MediaTaskManager:
         await self._migrate_sources_schema()
         await self._seed_defaults()
         await self.sync_builtin_sources()
+        await self._enable_restored_sources()
+        await self._disable_deprecated_sources()
         await self._db.commit()
 
     async def _migrate_sources_schema(self) -> None:
@@ -392,8 +400,31 @@ class MediaTaskManager:
                     ),
                 )
                 updated += 1
+        await self._enable_restored_sources()
+        await self._disable_deprecated_sources()
         await db.commit()
         return {"inserted": inserted, "updated": updated}
+
+    async def _enable_restored_sources(self) -> None:
+        restored = sorted(RESTORED_SOURCE_IDS - DEPRECATED_SOURCE_IDS)
+        if not restored:
+            return
+        db = self._require()
+        placeholders = ",".join("?" for _ in restored)
+        await db.execute(
+            f"UPDATE sources SET enabled=1, last_status=NULL, last_error=NULL, updated_at=? WHERE custom=0 AND id IN ({placeholders})",
+            (time.time(), *restored),
+        )
+
+    async def _disable_deprecated_sources(self) -> None:
+        if not DEPRECATED_SOURCE_IDS:
+            return
+        db = self._require()
+        placeholders = ",".join("?" for _ in DEPRECATED_SOURCE_IDS)
+        await db.execute(
+            f"UPDATE sources SET enabled=0, updated_at=? WHERE custom=0 AND id IN ({placeholders})",
+            (time.time(), *sorted(DEPRECATED_SOURCE_IDS)),
+        )
 
     async def get_settings(self) -> dict[str, Any]:
         db = self._require()
@@ -589,12 +620,21 @@ class MediaTaskManager:
         row = await _fetchone(db, "SELECT * FROM sources WHERE id=?", (source_id,))
         return _row_to_dict(row) or {}
 
-    async def list_sources(self, *, enabled_only: bool = False) -> list[dict[str, Any]]:
+    async def list_sources(
+        self, *, enabled_only: bool = False, include_deprecated: bool = False
+    ) -> list[dict[str, Any]]:
         db = self._require()
         sql = "SELECT * FROM sources"
         params: list[Any] = []
+        clauses: list[str] = []
         if enabled_only:
-            sql += " WHERE enabled=1"
+            clauses.append("enabled=1")
+        if not include_deprecated and DEPRECATED_SOURCE_IDS:
+            placeholders = ",".join("?" for _ in DEPRECATED_SOURCE_IDS)
+            clauses.append(f"(custom=1 OR id NOT IN ({placeholders}))")
+            params.extend(sorted(DEPRECATED_SOURCE_IDS))
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
         sql += " ORDER BY custom ASC, enabled DESC, authority DESC, id ASC"
         rows = await db.execute_fetchall(sql, params)
         return [_row_to_dict(row) or {} for row in rows]
@@ -866,12 +906,12 @@ class MediaTaskManager:
             time.time() - max(1, since_hours) * 3600,
             tz=_dt.UTC,
         ).strftime("%Y-%m-%dT%H:%M:%SZ")
-        sql = "SELECT * FROM articles WHERE fetched_at >= ?"
+        sql = "SELECT * FROM articles WHERE published_at IS NOT NULL AND published_at >= ?"
         params: list[Any] = [cutoff]
         if package_id:
             sql += " AND package_ids_json LIKE ?"
             params.append(f'%"{package_id}"%')
-        sql += " ORDER BY hot_score DESC, COALESCE(published_at, fetched_at) DESC LIMIT ?"
+        sql += " ORDER BY hot_score DESC, published_at DESC LIMIT ?"
         params.append(max(1, min(int(limit), 500)))
         rows = await db.execute_fetchall(sql, params)
         return [_row_to_dict(row) or {} for row in rows]

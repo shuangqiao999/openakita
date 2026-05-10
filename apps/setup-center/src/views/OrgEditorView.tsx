@@ -798,7 +798,7 @@ export function OrgEditorView({
     try {
       const res = await safeFetch(`${apiBaseUrl}/api/orgs/templates`);
       const data = await res.json();
-      setTemplates(data);
+      setTemplates(Array.isArray(data) ? data : []);
     } catch (e) {
       console.error("Failed to fetch templates:", e);
     }
@@ -1248,7 +1248,7 @@ export function OrgEditorView({
       orgCreateBusyRef.current = false;
       setCreatingOrg(false);
     }
-  }, [apiBaseUrl, fetchOrgList, showToast]);
+  }, [apiBaseUrl, fetchOrgList, showToast, t]);
 
   const [confirmDeleteOrgId, setConfirmDeleteOrgId] = useState<string | null>(null);
 
@@ -1792,6 +1792,9 @@ export function OrgEditorView({
               <div style={{ padding: "0 8px 8px" }}>
                 <div className="card" style={{ padding: 8, fontSize: 12 }}>
                   <div style={{ fontWeight: 600, marginBottom: 6 }}>{t("org.editor.createFromTemplateLong")}</div>
+                  {templates.length === 0 && (
+                    <div style={{ color: "var(--muted)", padding: "6px 8px" }}>{t("org.editor.emptyOrgHint")}</div>
+                  )}
                   {templates.map((tpl) => (
                     <div key={tpl.id} onClick={() => handleCreateFromTemplate(tpl.id)}
                       style={{ padding: "6px 8px", borderRadius: "var(--radius-sm)", cursor: "pointer", display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}
@@ -1944,6 +1947,9 @@ export function OrgEditorView({
           <div style={{ padding: "0 8px 8px" }}>
             <div className="card" style={{ padding: 8, fontSize: 12 }}>
               <div style={{ fontWeight: 600, marginBottom: 6 }}>{t("org.editor.createFromTemplateLong")}</div>
+              {templates.length === 0 && (
+                <div style={{ color: "var(--muted)", padding: "6px 8px" }}>{t("org.editor.emptyOrgHint")}</div>
+              )}
               {templates.map((tpl) => (
                 <div
                   key={tpl.id}

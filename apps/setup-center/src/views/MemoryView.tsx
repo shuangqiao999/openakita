@@ -55,6 +55,8 @@ type MigrationStatus = {
   current_owner: { user_id: string; workspace_id: string };
   current_visible: number;
   legacy_quarantine: number;
+  legacy_pending?: number;
+  legacy_reviewed?: number;
   semantic: {
     total: number;
     by_scope: Record<string, number>;
@@ -312,7 +314,13 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
         body: JSON.stringify({ include_inactive: true, include_default_graph_nodes: true }),
       });
       const data = await res.json();
-      toast.success(t("memory.legacyClaimSuccess", { count: data.claimed ?? 0, graph: data.graph_nodes_updated ?? 0 }));
+      toast.success(t("memory.legacyClaimSuccess", {
+        promoted: data.promoted ?? data.claimed ?? 0,
+        reviewed: data.reviewed ?? 0,
+        rejected: data.rejected ?? 0,
+        conflicts: data.conflict_skipped ?? 0,
+        graph: data.graph_nodes_updated ?? 0,
+      }));
       await Promise.all([loadMemories(), loadStats(), loadMigrationStatus()]);
       setGraphRefreshKey((v) => v + 1);
     } catch (e: any) {
@@ -480,10 +488,8 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
   const defaultGraphNodes = migrationStatus?.graph.by_owner.find(
     (o) => o.user_id === "default" && o.workspace_id === "default"
   )?.count ?? 0;
-  const showLegacyRecovery = !!migrationStatus && (
-    migrationStatus.legacy_quarantine > 0 ||
-    (stats?.total === 0 && defaultGraphNodes > 0)
-  );
+  const pendingLegacy = migrationStatus?.legacy_pending ?? migrationStatus?.legacy_quarantine ?? 0;
+  const showLegacyRecovery = !!migrationStatus && migrationStatus.has_recoverable_legacy && pendingLegacy > 0;
 
   return (
     <TooltipProvider delayDuration={300}>
@@ -526,7 +532,7 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
               </div>
               <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
                 {t("memory.legacyRecoveryDesc", {
-                  legacy: migrationStatus.legacy_quarantine,
+                  legacy: pendingLegacy,
                   graph: defaultGraphNodes,
                   user: currentOwner?.user_id || "default",
                   workspace: currentOwner?.workspace_id || "default",

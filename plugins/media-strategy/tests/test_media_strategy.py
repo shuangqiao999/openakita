@@ -43,10 +43,16 @@ def test_ui_assets_and_iconify_tokens_exist() -> None:
         "/packages/subscribe",
         "/ai/analyze-top",
         "/reports",
+        "/external/open-url",
         "/storage/stats",
         "/storage/open-folder",
         "/storage/list-dir",
         "/storage/mkdir",
+        "customTargetFormat",
+        "planFeedback",
+        "reportModalAnnotate",
+        "annotationList",
+        "按批注重新处理",
     ):
         assert token in html
     assert "[hidden] { display:none !important; }" in html
@@ -54,6 +60,16 @@ def test_ui_assets_and_iconify_tokens_exist() -> None:
     for icon in (PLUGIN_DIR / "icon.svg", ui / "icon.svg", ui / "media-strategy-brand.svg"):
         blob = icon.read_text("utf-8")
         assert "<svg" in blob and "Iconify source: game-icons:newspaper" in blob
+
+
+def test_brief_workbench_presets_match_session_cards() -> None:
+    html = (PLUGIN_DIR / "ui" / "dist" / "index.html").read_text("utf-8")
+
+    assert '<option value="12" selected>12 小时</option>' in html
+    assert "noon:{label:'每日午报', time:'12:30', since_hours:6, limit:15}" in html
+    assert "scope:'preset'" in html
+    assert "data-brief-role=\"scheduleStatus\"" in html
+    assert "saveCustomSchedule" in html
 
 
 def test_builtin_source_catalog_is_rich() -> None:
@@ -92,10 +108,9 @@ def test_builtin_source_catalog_is_rich() -> None:
 
 
 def test_taiwan_package_includes_new_sources() -> None:
-    from media_models import SOURCE_DEFS
+    from media_models import DEPRECATED_SOURCE_IDS, SOURCE_DEFS
 
     taiwan_sources = {sid for sid, meta in SOURCE_DEFS.items() if "taiwan" in meta["packages"]}
-    # All Taiwan-strait sources default to enabled per editorial policy.
     for required in (
         "xinhua-taiwan",
         "people-taiwan",
@@ -111,7 +126,18 @@ def test_taiwan_package_includes_new_sources() -> None:
         "taihainet-twxw",
     ):
         assert required in taiwan_sources, required
-        assert SOURCE_DEFS[required]["default_enabled"] is True, required
+    assert SOURCE_DEFS["fjsen-taihai"]["default_enabled"] is True
+    assert SOURCE_DEFS["xinhua-taiwan"]["default_enabled"] is True
+    assert SOURCE_DEFS["xinhua-taiwan"]["kind"] == "html"
+    for stale_or_broken in (
+        "udn-cross-strait",
+        "nownews-politics",
+    ):
+        assert stale_or_broken in DEPRECATED_SOURCE_IDS
+    assert "people-taiwan" not in DEPRECATED_SOURCE_IDS
+    assert "taihainet-twxw" not in DEPRECATED_SOURCE_IDS
+    assert SOURCE_DEFS["people-taiwan"]["kind"] == "html"
+    assert SOURCE_DEFS["taihainet-twxw"]["url"] == "https://tw.taihainet.com/"
 
 
 def test_html_sources_declare_selectors() -> None:
@@ -125,14 +151,57 @@ def test_html_sources_declare_selectors() -> None:
 
 
 def test_default_enabled_strategy_favors_domestic() -> None:
-    from media_models import SOURCE_DEFS
+    from media_models import DEPRECATED_SOURCE_IDS, RESTORED_SOURCE_IDS, SOURCE_DEFS
 
-    # Domestic sources are enabled by default; overseas Western outlets are not.
+    # Default-enabled sources must be currently fetchable and timestamp-safe.
+    enabled_ids = {
+        sid
+        for sid, meta in SOURCE_DEFS.items()
+        if meta.get("default_enabled") and sid not in DEPRECATED_SOURCE_IDS
+    }
+    assert len(enabled_ids) >= 20
+    assert SOURCE_DEFS["cctv-domestic"]["default_enabled"] is True
     assert SOURCE_DEFS["people-politics"]["default_enabled"] is True
-    assert SOURCE_DEFS["yicai-news"]["default_enabled"] is True
-    assert SOURCE_DEFS["rsshub-weibo-hot"]["default_enabled"] is True
-    assert SOURCE_DEFS["bbc-zh"]["default_enabled"] is False
-    assert SOURCE_DEFS["dw-zh"]["default_enabled"] is False
+    assert SOURCE_DEFS["people-world"]["default_enabled"] is True
+    assert SOURCE_DEFS["caixin-latest"]["default_enabled"] is True
+    assert SOURCE_DEFS["ithome"]["default_enabled"] is True
+    assert SOURCE_DEFS["qbitai"]["default_enabled"] is True
+    assert SOURCE_DEFS["fjsen-taihai"]["default_enabled"] is True
+    for expanded_source in (
+        "bbc-zh",
+        "bbc-world",
+        "rfi-cn",
+        "zaobao-china",
+        "zaobao-world",
+        "diplomat-main",
+        "diplomat-china-power",
+        "idaily-today",
+        "sspai",
+        "ifanr",
+        "solidot",
+        "geekpark",
+        "appinn",
+        "meituan-tech",
+        "xinhua-politics",
+        "xinhua-taiwan",
+        "xinhua-world",
+        "cctv-xinwenlianbo",
+        "dw-zh",
+        "taihainet-twxw",
+        "thepaper-featured",
+        "kr36",
+        "huxiu",
+        "rsshub-douyin-hot",
+        "rsshub-bilibili-weekly",
+        "rsshub-weibo-hot",
+        "rsshub-zhihu-hot",
+        "newsnow-baidu-hot",
+        "newsnow-toutiao-hot",
+    ):
+        assert SOURCE_DEFS[expanded_source]["default_enabled"] is True
+        assert expanded_source in RESTORED_SOURCE_IDS
+    assert RESTORED_SOURCE_IDS.isdisjoint(DEPRECATED_SOURCE_IDS)
+    assert "yicai-news" in DEPRECATED_SOURCE_IDS
     assert SOURCE_DEFS["reuters-world"]["default_enabled"] is False
 
 
@@ -155,6 +224,241 @@ def test_feed_parser_stdlib_fallback() -> None:
     assert items[0].summary == "摘要"
 
 
+def test_feed_parser_infers_date_from_url_when_feed_date_missing() -> None:
+    from media_fetchers import rss
+
+    body = """<?xml version="1.0"?>
+    <rss version="2.0"><channel><title>x</title>
+      <item><title>国台办：两岸文博交流</title>
+      <link>https://www.xinhuanet.com/tw/2013-10/16/c_125546161.htm</link>
+      <description>摘要</description></item>
+    </channel></rss>"""
+    old = rss.FEEDPARSER_AVAILABLE
+    rss.FEEDPARSER_AVAILABLE = False
+    try:
+        items = rss.parse_feed("demo", body)
+    finally:
+        rss.FEEDPARSER_AVAILABLE = old
+    assert len(items) == 1
+    assert items[0].published_at == "2013-10-16T00:00:00Z"
+
+
+def test_newsnow_parser_and_rate_limit() -> None:
+    from media_fetchers.newsnow import _parse_envelope, newsnow_rate_limit_remaining
+
+    payload = {
+        "status": "cache",
+        "updatedTime": 1778404729489,
+        "items": [
+            {
+                "title": "平台热点样例",
+                "url": "https://example.com/hot",
+                "extra": {"hover": "热榜摘要"},
+            }
+        ],
+    }
+    items = _parse_envelope(payload, source_id="rsshub-weibo-hot", platform_id="weibo")
+
+    assert len(items) == 1
+    assert items[0].published_at == "2026-05-10T09:18:49Z"
+    assert items[0].summary == "热榜摘要"
+    assert items[0].raw["parser"] == "newsnow"
+    assert (
+        newsnow_rate_limit_remaining(
+            {
+                "newsnow.mode": "public",
+                "newsnow.min_interval_s": 300,
+                "newsnow.last_fetch_ts": "1000",
+            },
+            now_ts=1100,
+        )
+        == 200
+    )
+    assert (
+        newsnow_rate_limit_remaining(
+            {
+                "newsnow.mode": "self_host",
+                "newsnow.min_interval_s": 300,
+                "newsnow.last_fetch_ts": "1000",
+            },
+            now_ts=1100,
+        )
+        == 0
+    )
+
+
+def test_feed_parser_skips_items_without_reliable_time() -> None:
+    from media_fetchers import rss
+
+    body = """<?xml version="1.0"?>
+    <rss version="2.0"><channel><title>x</title>
+      <item><title>没有发布时间的新闻</title>
+      <link>https://example.com/news/latest.html</link>
+      <description>摘要</description></item>
+    </channel></rss>"""
+    old = rss.FEEDPARSER_AVAILABLE
+    rss.FEEDPARSER_AVAILABLE = False
+    try:
+        items = rss.parse_feed("demo", body)
+    finally:
+        rss.FEEDPARSER_AVAILABLE = old
+    assert items == []
+
+
+def test_replicate_prompt_accepts_user_revision_context() -> None:
+    from media_ai.prompts import replicate_prompt
+
+    prompt = replicate_prompt(
+        [{"title": "台海政策新动态", "source_id": "demo", "url": "https://example.com"}],
+        topic="台海最新动态",
+        target_format="三分钟口播 + 图卡拆条",
+        tone="本地融媒体口吻",
+        revision_instructions="标题太硬，采访计划要更可执行。",
+        annotations="保留第二部分，重写拍摄计划。",
+        current_draft="## 选题判断\n原有判断保留。\n\n## 拍摄计划\n这里需要调整。",
+    )
+
+    assert "三分钟口播 + 图卡拆条" in prompt
+    assert "标题太硬" in prompt
+    assert "保留第二部分" in prompt
+    assert "当前已有采编计划草稿" in prompt
+    assert "优先只改对应位置" in prompt
+    assert "不要因为局部批注而重写整篇" in prompt
+
+
+def test_replicate_report_uses_dedicated_theme() -> None:
+    from media_pipeline import _styled_report_html
+
+    html = _styled_report_html(
+        title="贸易策研采编计划",
+        kind="replicate_plan",
+        markdown="# 贸易策研采编计划\n\n## 选题判断\n\n内容",
+        meta={"source": "brain"},
+    )
+
+    assert "采编执行" in html
+    assert "迭代计划" in html
+    assert "晨间速览" not in html
+    assert ">晨<" not in html
+
+
+def test_report_markdown_renderer_handles_llm_report_format() -> None:
+    from media_ai.analyzer import markdown_to_html
+
+    html = markdown_to_html(
+        "\n".join(
+            [
+                "---",
+                "### 📋 已有信源档案",
+                "| 来源媒体 | 发布时间 (UTC) | 链接状态 |",
+                "|---|---|---|",
+                "| 联合早报 | 2026-05-09 14:08 | [查看链接](https://example.com) |",
+                "### ⚖️ 交叉印证与真实性判断",
+                "**多源情况**：**强交叉**。整合了多方信源。",
+                "1. **极高敏感性**：必须标注“据外电报道”。",
+                "2. **动态变化**：停火协议极其脆弱。",
+            ]
+        )
+    )
+
+    assert "<hr>" in html
+    assert "<h3>📋 已有信源档案</h3>" in html
+    assert "<table>" in html
+    assert "<strong>多源情况</strong>" in html
+    assert "<ol>" in html and "<li><strong>极高敏感性</strong>" in html
+    assert "**" not in html
+    assert "|---|" not in html
+
+
+def test_report_markdown_renderer_drops_alignment_rows() -> None:
+    from media_ai.analyzer import markdown_to_html
+
+    html = markdown_to_html(
+        "\n".join(
+            [
+                "| 序号 | 核心事件 | 来源媒体 |",
+                "| :--- | :--- | :--- |",
+                "| - | - | - |",
+                "| :— | —: | :–: |",
+                "| 01 | 测试事件 | 联合早报 |",
+            ]
+        )
+    )
+
+    assert "<tbody><tr><td>01</td><td>测试事件</td><td>联合早报</td></tr></tbody>" in html
+    assert ":---" not in html
+    assert "<td>-</td>" not in html
+
+
+@pytest.mark.asyncio
+async def test_report_push_renders_pdf_before_im_file_send(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import plugin as media_plugin
+
+    async def fake_render(html: str, out_path: Path) -> None:
+        assert "<html" in html
+        out_path.write_bytes(b"%PDF-1.4 stub\n")
+
+    class StubAdapter:
+        def __init__(self) -> None:
+            self.file_calls: list[dict[str, str]] = []
+            self.text_calls: list[tuple[str, str]] = []
+
+        def has_capability(self, name: str) -> bool:
+            return name == "send_file"
+
+        async def send_file(self, chat_id: str, file_path: str, caption: str = "") -> str:
+            self.file_calls.append({"chat_id": chat_id, "file_path": file_path, "caption": caption})
+            return "file-1"
+
+        async def send_text(self, chat_id: str, text: str) -> str:
+            self.text_calls.append((chat_id, text))
+            return "text-1"
+
+    class StubGateway:
+        def __init__(self, adapter: StubAdapter) -> None:
+            self.adapter = adapter
+
+        def get_adapter(self, channel: str) -> StubAdapter | None:
+            return self.adapter if channel == "wechat" else None
+
+    class StubAPI:
+        def __init__(self, adapter: StubAdapter) -> None:
+            self._host = {"gateway": StubGateway(adapter)}
+            self.logs: list[tuple[str, str]] = []
+
+        def log(self, message: str, level: str = "info") -> None:
+            self.logs.append((level, message))
+
+    monkeypatch.setattr(media_plugin, "_render_report_html_to_pdf", fake_render)
+    adapter = StubAdapter()
+    p = media_plugin.Plugin()
+    p._api = StubAPI(adapter)
+    p._data_dir = tmp_path
+
+    result = await p._push_report_to_channel(
+        {
+            "id": "r1",
+            "title": "融媒智策晚报",
+            "kind": "daily_brief",
+            "markdown": "# 融媒智策晚报\n\n- 台海与 AI 重点动态",
+            "html": "<html><body><h1>融媒智策晚报</h1></body></html>",
+            "meta": {},
+        },
+        channel="wechat",
+        chat_id="chat-1",
+    )
+
+    assert result["ok"] is True
+    assert result["mode"] == "file"
+    assert result["format"] == "pdf"
+    assert adapter.file_calls[0]["file_path"].endswith(".pdf")
+    assert adapter.file_calls[0]["caption"] == ""
+    assert Path(adapter.file_calls[0]["file_path"]).read_bytes().startswith(b"%PDF")
+    assert "已发送 PDF 报表附件" in adapter.text_calls[0][1]
+
+
 def test_validate_feed_url_rejects_localhost() -> None:
     from media_fetchers.rss import UnsafeFeedUrl, validate_feed_url
 
@@ -164,6 +468,7 @@ def test_validate_feed_url_rejects_localhost() -> None:
 
 @pytest.mark.asyncio
 async def test_task_manager_seeds_and_upserts_article(tmp_path: Path) -> None:
+    from media_models import DEPRECATED_SOURCE_IDS, RESTORED_SOURCE_IDS
     from media_task_manager import MediaTaskManager
 
     tm = MediaTaskManager(tmp_path / "media.sqlite")
@@ -172,8 +477,22 @@ async def test_task_manager_seeds_and_upserts_article(tmp_path: Path) -> None:
         packages = await tm.list_packages()
         assert packages["taiwan"]["enabled"] is True
         sources = await tm.list_sources()
-        assert len(sources) >= 18
-        toggled = await tm.set_source_enabled("cctv-domestic", False)
+        source_ids = {source["id"] for source in sources}
+        assert {"ithome", "qbitai", "fjsen-taihai"}.issubset(source_ids)
+        assert {"xinhua-taiwan", "people-taiwan"}.issubset(source_ids)
+        assert source_ids.isdisjoint(DEPRECATED_SOURCE_IDS)
+        all_source_ids = {
+            source["id"] for source in await tm.list_sources(include_deprecated=True)
+        }
+        assert "yicai-news" in all_source_ids - source_ids
+        enabled_source_ids = {source["id"] for source in await tm.list_sources(enabled_only=True)}
+        assert enabled_source_ids.isdisjoint(DEPRECATED_SOURCE_IDS)
+        assert RESTORED_SOURCE_IDS.issubset(enabled_source_ids)
+        await tm.set_source_enabled("people-politics", False)
+        await tm.sync_builtin_sources()
+        enabled_after_sync = {source["id"] for source in await tm.list_sources(enabled_only=True)}
+        assert "people-politics" in enabled_after_sync
+        toggled = await tm.set_source_enabled("ithome", False)
         assert toggled["enabled"] is False
         source = await tm.add_custom_source(
             name="Demo",
@@ -204,6 +523,20 @@ async def test_task_manager_seeds_and_upserts_article(tmp_path: Path) -> None:
         )
         assert inserted2 is False
         assert article2["duplicate_count"] == 2
+
+        await tm.upsert_article(
+            {
+                "source_id": source["id"],
+                "package_ids": ["taiwan"],
+                "url": "https://example.com/old",
+                "title": "十年前旧闻",
+                "published_at": "2013-10-16T00:00:00Z",
+                "fetched_at": "2026-05-10T00:00:00Z",
+                "hot_score": 9.9,
+            }
+        )
+        recent = await tm.recent_articles(since_hours=24, package_id="taiwan", limit=20)
+        assert all(item["title"] != "十年前旧闻" for item in recent)
     finally:
         await tm.close()
 
@@ -274,6 +607,41 @@ async def test_package_crud_and_source_editing(tmp_path: Path) -> None:
         survivors = await tm.list_sources()
         my_src = next(s for s in survivors if s["id"] == src["id"])
         assert custom["id"] not in (my_src.get("package_ids") or [])
+    finally:
+        await tm.close()
+
+
+@pytest.mark.asyncio
+async def test_disabled_package_does_not_show_historical_radar_items(tmp_path: Path) -> None:
+    from media_pipeline import MediaPipeline
+    from media_task_manager import MediaTaskManager
+
+    class DummyApi:
+        def get_brain(self) -> None:
+            return None
+
+    tm = MediaTaskManager(tmp_path / "ms.sqlite")
+    await tm.init()
+    try:
+        await tm.set_package_enabled("taiwan", False)
+        await tm.upsert_article(
+            {
+                "source_id": "demo",
+                "package_ids": ["taiwan"],
+                "url": "https://example.com/taiwan",
+                "title": "台海历史数据",
+                "summary": "应被停用套餐过滤",
+                "published_at": "2026-05-10T00:00:00Z",
+                "fetched_at": "2026-05-10T00:01:00Z",
+                "hot_score": 9.0,
+            }
+        )
+        pipeline = MediaPipeline(tm, DummyApi(), output_dir=tmp_path)
+        radar = await pipeline.hot_radar(
+            {"package_id": "taiwan", "since_hours": 24, "limit": 20}
+        )
+        assert radar["items"] == []
+        assert radar["stats"]["package_disabled"] is True
     finally:
         await tm.close()
 
