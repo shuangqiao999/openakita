@@ -701,6 +701,20 @@ _VERB_TO_TOOL_FRAGMENTS: dict[str, tuple[str, ...]] = {
     "读取": ("read_file", "run_shell", "run_powershell"),
 }
 
+# ── _extract_unbacked_verbs 预编译正则表（消除每调用 ~46 次 re.compile）──
+_PREFIX_PAT = re.compile(r"(?:已[经]?|成功|顺利|我已经|我已)(?:帮你?|为你|给你)?")
+
+_CLAIMED_TOOL_PATS: dict[str, tuple[re.Pattern, re.Pattern]] = {}
+for _tn in _CLAIMED_TOOL_TO_FRAGMENTS:
+    _CLAIMED_TOOL_PATS[_tn] = (
+        re.compile(rf"{re.escape(_tn)}.{{0,40}}(?:已调用|已执行|已验证|验证完成|实际调用|执行完成|✅)", re.IGNORECASE),
+        re.compile(r"(?:已通过|通过|验证|读取|检查|调用|执行).{0,40}" + re.escape(_tn), re.IGNORECASE),
+    )
+
+_VERB_PATS: dict[str, re.Pattern] = {}
+for _vb in _VERB_TO_TOOL_FRAGMENTS:
+    _VERB_PATS[_vb] = re.compile(_PREFIX_PAT.pattern + re.escape(_vb))
+
 
 def _successful_tool_names(
     executed_tool_names: list[str],
@@ -746,18 +760,11 @@ _RECAP_NEAR_RE = __import__("re").compile(
 
 
 def _is_recap_context(text: str, verb_or_tool: str) -> bool:
-    """Return True if the verb/tool mention sits inside a historical-recap window.
-
-    Heuristic: scan a ±48-character window around each occurrence of the verb /
-    tool name. If any window contains a timestamp or recap adverb, treat the
-    whole claim as a historical summary instead of a fresh action.
-    """
-    import re as _re
-
+    """Return True if the verb/tool mention sits inside a historical-recap window."""
     if not text or not verb_or_tool:
         return False
     half = 48
-    for m in _re.finditer(_re.escape(verb_or_tool), text, _re.IGNORECASE):
+    for m in re.finditer(re.escape(verb_or_tool), text, re.IGNORECASE):
         start = max(0, m.start() - half)
         end = min(len(text), m.end() + half)
         window = text[start:end]
@@ -771,24 +778,10 @@ def _extract_unbacked_verbs(
     successful_tools: set[str],
 ) -> list[str]:
     """Return action verbs whose claim is not backed by any successful tool call."""
-    import re as _re
-
-    prefix_pat = _re.compile(r"(?:已[经]?|成功|顺利|我已经|我已)(?:帮你?|为你|给你)?")
     unbacked: list[str] = []
 
     for tool_name, fragments in _CLAIMED_TOOL_TO_FRAGMENTS.items():
-        # Detect the issue #424 shape: the model writes a Markdown table saying
-        # "write_file/read_file 已调用" even though no matching tool receipt exists.
-        tool_claim_pat = _re.compile(
-            rf"{_re.escape(tool_name)}.{{0,40}}"
-            r"(?:已调用|已执行|已验证|验证完成|实际调用|执行完成|✅)",
-            _re.IGNORECASE,
-        )
-        reverse_claim_pat = _re.compile(
-            r"(?:已通过|通过|验证|读取|检查|调用|执行).{0,40}"
-            rf"{_re.escape(tool_name)}",
-            _re.IGNORECASE,
-        )
+        tool_claim_pat, reverse_claim_pat = _CLAIMED_TOOL_PATS[tool_name]
         if not (tool_claim_pat.search(text) or reverse_claim_pat.search(text)):
             continue
         if any(any(frag in t for frag in fragments) for t in successful_tools):
@@ -800,9 +793,7 @@ def _extract_unbacked_verbs(
         unbacked.append(f"{tool_name}调用")
 
     for verb, fragments in _VERB_TO_TOOL_FRAGMENTS.items():
-        # Must appear right after an action-claim prefix to count as a real claim
-        # (avoids matching plain narrative like "我会创建..." or "需要修改...").
-        verb_pat = _re.compile(rf"{prefix_pat.pattern}{_re.escape(verb)}")
+        verb_pat = _VERB_PATS[verb]
         if not verb_pat.search(text):
             continue
         if any(any(frag in t for frag in fragments) for t in successful_tools):

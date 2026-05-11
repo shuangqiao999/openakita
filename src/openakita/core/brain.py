@@ -8,6 +8,7 @@ Brain 是 LLMClient 的薄包装，提供向后兼容的接口。
 import asyncio
 import json
 import logging
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -1008,9 +1009,7 @@ class Brain:
                             image_url = part.get("image_url", {})
                             url = image_url.get("url", "")
                             if url:
-                                import re as _re
-
-                                m = _re.match(r"data:([^;]+);base64,(.+)", url)
+                                m = re.match(r"data:([^;]+);base64,(.+)", url)
                                 if m:
                                     blocks.append(
                                         ImageBlock(
@@ -1030,9 +1029,7 @@ class Brain:
                             video_url = part.get("video_url", {})
                             url = video_url.get("url", "")
                             if url:
-                                import re as _re
-
-                                m = _re.match(r"data:([^;]+);base64,(.+)", url)
+                                m = re.match(r"data:([^;]+);base64,(.+)", url)
                                 if m:
                                     blocks.append(
                                         VideoBlock(

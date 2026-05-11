@@ -509,6 +509,21 @@ _DATA_URI_RE = re.compile(
     re.DOTALL,
 )
 
+# ── _prepare_session_context 热路径常量 ──
+_STRIP_MARKERS = [
+    "\n\n<<DELEGATION_TRACE>>",
+    "\n\n<<TOOL_TRACE>>",
+    "\n\n[子Agent工作总结]",
+    "\n\n[执行摘要]",
+]
+_RE_TIME_PREFIX = re.compile(r"^\[\d{1,2}:\d{2}\]\s")
+_MEDIA_EXTENSIONS: set[str] = {
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg",
+    ".mp4", ".webm", ".mov", ".avi",
+    ".mp3", ".wav", ".ogg", ".flac",
+    ".pdf", ".docx", ".xlsx", ".pptx", ".csv",
+}
+
 
 def _maybe_inline_local_image(att_url: str, att_mime: str) -> str | None:
     """If *att_url* points to a locally served upload, return a base64 data URL.
@@ -3805,27 +3820,6 @@ class Agent:
         """从 assistant 工具调用中提取生成的文件"""
         attachments: list[dict] = []
         _FILE_TOOLS = {"write_file", "save_file", "create_file", "download_file"}
-        _MEDIA_EXTENSIONS = {
-            ".png",
-            ".jpg",
-            ".jpeg",
-            ".gif",
-            ".webp",
-            ".svg",
-            ".mp4",
-            ".webm",
-            ".mov",
-            ".avi",
-            ".mp3",
-            ".wav",
-            ".ogg",
-            ".flac",
-            ".pdf",
-            ".docx",
-            ".xlsx",
-            ".pptx",
-            ".csv",
-        }
         import mimetypes as _mt
 
         for tc in tool_calls:
@@ -3853,17 +3847,21 @@ class Agent:
         for tr in tool_results:
             result_str = str(tr.get("result", tr.get("content", "")))
             for token in result_str.split():
+                if not token or '.' not in token or len(token) >= 500:
+                    continue
+                ext = token.rsplit('.', 1)[-1].lower()
+                if f".{ext}" not in _MEDIA_EXTENSIONS:
+                    continue
                 p = Path(token)
-                if p.suffix.lower() in _MEDIA_EXTENSIONS and len(token) < 500:
-                    mime = _mt.guess_type(token)[0] or "application/octet-stream"
-                    attachments.append(
-                        {
-                            "filename": p.name,
-                            "local_path": token,
-                            "mime_type": mime,
-                            "direction": "outbound",
-                        }
-                    )
+                mime = _mt.guess_type(token)[0] or "application/octet-stream"
+                attachments.append(
+                    {
+                        "filename": p.name,
+                        "local_path": token,
+                        "mime_type": mime,
+                        "direction": "outbound",
+                    }
+                )
 
         seen = set()
         unique = []
@@ -4910,24 +4908,15 @@ class Agent:
                 )
             history_messages = deduped
 
-        # 同时识别新 marker (<<TOOL_TRACE>> / <<DELEGATION_TRACE>>) 与旧 marker
-        # ([执行摘要] / [子Agent工作总结])，向后兼容已存档的会话历史。
-        _STRIP_MARKERS = [
-            "\n\n<<DELEGATION_TRACE>>",
-            "\n\n<<TOOL_TRACE>>",
-            "\n\n[子Agent工作总结]",
-            "\n\n[执行摘要]",
-        ]
-        _RE_TIME_PREFIX = re.compile(r"^\[\d{1,2}:\d{2}\]\s")
-
+        # 「仅 UI 展示，不喂 LLM」的消息（例如风险确认/取消的系统回执），
+        # 跳过以避免污染上下文，导致下一轮 LLM 模仿"已确认高危..."口吻。
+        # UI 端依然能正常显示——history 物理上没删，只是不进 LLM messages。
         messages: list[dict] = []
+        _fallback_now = datetime.now()
         for msg in history_messages:
             role = msg.get("role", "user")
             content = coerce_text(msg.get("content", ""))
             ts = msg.get("timestamp", "")
-            # 标记为「仅 UI 展示，不喂 LLM」的消息（例如风险确认/取消的系统回执），
-            # 跳过以避免污染上下文，导致下一轮 LLM 模仿"已确认高危..."口吻。
-            # UI 端依然能正常显示——history 物理上没删，只是不进 LLM messages。
             if msg.get("transient_for_llm") or msg.get("transient"):
                 continue
             if role == "assistant":
@@ -4968,7 +4957,7 @@ class Agent:
                         except Exception:
                             t_obj = None
                     if t_obj is None:
-                        t_obj = datetime.now()
+                        t_obj = _fallback_now
                     content = f"[{t_obj.strftime('%H:%M')}] " + content
                 if messages and messages[-1]["role"] == role:
                     messages[-1]["content"] += "\n" + content

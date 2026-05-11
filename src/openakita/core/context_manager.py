@@ -30,6 +30,8 @@ CHARS_PER_TOKEN = 2  # JSON 序列化后约 2 字符 = 1 token
 CHUNK_MAX_TOKENS = 30000  # 每次发给 LLM 压缩的单块上限
 CONTEXT_BOUNDARY_MARKER = "[上下文边界]"  # 话题切换边界标记
 
+_URL_RE = re.compile(r"https?://[^\s<>'\"，。；、)）\]}]+", re.IGNORECASE)
+
 
 @dataclass(frozen=True)
 class ContextPressure:
@@ -1148,10 +1150,9 @@ class ContextManager:
         """Extract exact URLs before LLM compression so summaries cannot rewrite them."""
         facts: list[dict[str, str]] = []
         seen: set[str] = set()
-        url_re = re.compile(r"https?://[^\s<>'\"，。；、)）\]}]+", re.IGNORECASE)
         for index, msg in enumerate(messages):
             text = ContextManager._flatten_message_text(msg)
-            for match in url_re.finditer(text):
+            for match in _URL_RE.finditer(text):
                 url = match.group(0).rstrip(".,;:")
                 if url in seen:
                     continue

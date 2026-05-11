@@ -202,6 +202,20 @@ _MEDIUM_RISK_SHELL_PATTERNS: list[str] = [
     r"pkill\s+",
     r"nohup\s+",
 ]
+_CRITICAL_SHELL_RE: list[re.Pattern] = [re.compile(p, re.IGNORECASE) for p in _CRITICAL_SHELL_PATTERNS]
+_HIGH_RISK_SHELL_RE: list[re.Pattern] = [re.compile(p, re.IGNORECASE) for p in _HIGH_RISK_SHELL_PATTERNS]
+_MEDIUM_RISK_SHELL_RE: list[re.Pattern] = [re.compile(p, re.IGNORECASE) for p in _MEDIUM_RISK_SHELL_PATTERNS]
+
+_DESTRUCTIVE_CMD_RE = re.compile(
+    r"\b(rm|del|erase|rd|rmdir|remove-item|clear-content|clear-item|"
+    r"set-content|move-item|mv|move|unlink|truncate)\b",
+    re.IGNORECASE,
+)
+_FILE_OP_CMD_RE = re.compile(
+    r"\b(rm|del|rd|rmdir|remove-item|move|mv|copy|cp|"
+    r"set-content|add-content|new-item)\b",
+    re.IGNORECASE,
+)
 
 # Default blocked shell commands (direct DENY)
 _DEFAULT_BLOCKED_COMMANDS: list[str] = [
@@ -1116,26 +1130,12 @@ class PolicyEngine:
     @staticmethod
     def _is_destructive_shell_command(command: str) -> bool:
         """Detect shell commands that can remove, clear, overwrite, or move user data."""
-        return bool(
-            re.search(
-                r"\b("
-                r"rm|del|erase|rd|rmdir|remove-item|clear-content|clear-item|"
-                r"set-content|move-item|mv|move|unlink|truncate"
-                r")\b",
-                command,
-                re.IGNORECASE,
-            )
-        )
+        return bool(_DESTRUCTIVE_CMD_RE.search(command))
 
     def _command_touches_sensitive_area(self, command: str) -> bool:
         """Detect shell commands that operate on protected/forbidden paths in trust mode."""
         command_norm = command.replace("\\", "/").lower()
-        destructive = re.search(
-            r"\b(rm|del|rd|rmdir|remove-item|move|mv|copy|cp|set-content|add-content|new-item)\b",
-            command,
-            re.IGNORECASE,
-        )
-        if not destructive:
+        if not _FILE_OP_CMD_RE.search(command):
             return False
         for pattern in [*self._config.zones.forbidden, *self._config.zones.protected]:
             probe = _normalise(pattern).rstrip("*").rstrip("/").lower()
@@ -1148,12 +1148,7 @@ class PolicyEngine:
         if not self._config.self_protection.enabled:
             return False
         command_norm = command.replace("\\", "/").lower()
-        destructive = re.search(
-            r"\b(rm|del|rd|rmdir|remove-item|move|mv|copy|cp|set-content|add-content|new-item)\b",
-            command,
-            re.IGNORECASE,
-        )
-        if not destructive:
+        if not _FILE_OP_CMD_RE.search(command):
             return False
         for pdir in self._config.self_protection.protected_dirs:
             probes = {
@@ -1302,8 +1297,12 @@ class PolicyEngine:
 
         excluded = set(self._config.command_patterns.excluded_patterns)
 
-        all_critical = _CRITICAL_SHELL_PATTERNS + self._config.command_patterns.custom_critical
-        for pattern in all_critical:
+        for pat in _CRITICAL_SHELL_RE:
+            if pat.pattern in excluded:
+                continue
+            if pat.search(command):
+                return RiskLevel.CRITICAL
+        for pattern in self._config.command_patterns.custom_critical:
             if pattern in excluded:
                 continue
             try:
@@ -1312,8 +1311,12 @@ class PolicyEngine:
             except re.error:
                 pass
 
-        all_high = _HIGH_RISK_SHELL_PATTERNS + self._config.command_patterns.custom_high
-        for pattern in all_high:
+        for pat in _HIGH_RISK_SHELL_RE:
+            if pat.pattern in excluded:
+                continue
+            if pat.search(command):
+                return RiskLevel.HIGH
+        for pattern in self._config.command_patterns.custom_high:
             if pattern in excluded:
                 continue
             try:
@@ -1322,14 +1325,11 @@ class PolicyEngine:
             except re.error:
                 pass
 
-        for pattern in _MEDIUM_RISK_SHELL_PATTERNS:
-            if pattern in excluded:
+        for pat in _MEDIUM_RISK_SHELL_RE:
+            if pat.pattern in excluded:
                 continue
-            try:
-                if re.search(pattern, command, re.IGNORECASE):
-                    return RiskLevel.MEDIUM
-            except re.error:
-                pass
+            if pat.search(command):
+                return RiskLevel.MEDIUM
 
         return RiskLevel.LOW
 
