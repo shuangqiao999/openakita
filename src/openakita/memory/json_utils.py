@@ -11,6 +11,11 @@ _CONTROL_CHARS_EXCEPT_JSON_WHITESPACE = dict.fromkeys(
     i for i in range(32) if i not in (9, 10, 13)
 )
 
+_RE_FENCE_START = re.compile(r"^```(?:json)?\s*", re.IGNORECASE)
+_RE_FENCE_END = re.compile(r"\s*```$")
+_RE_TRAILING_COMMA = re.compile(r",(\s*[}\]])")
+_RE_EXTRACT_FENCED = re.compile(r"```(?:json)?\s*([\s\S]*?)```", re.IGNORECASE)
+
 
 def coerce_text(value: Any) -> str:
     """Convert message/LLM content into readable text before string operations."""
@@ -163,15 +168,15 @@ def _format_plugin_event(value_type: str, data: Any) -> str:
 
 def _clean_llm_json_text(text: str) -> str:
     cleaned = coerce_text(text).strip()
-    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\s*```$", "", cleaned)
-    cleaned = re.sub(r",(\s*[}\]])", r"\1", cleaned)
+    cleaned = _RE_FENCE_START.sub("", cleaned)
+    cleaned = _RE_FENCE_END.sub("", cleaned)
+    cleaned = _RE_TRAILING_COMMA.sub(r"\1", cleaned)
     return cleaned
 
 
 def _extract_json_block(text: str, opener: str, closer: str) -> str | None:
     cleaned = coerce_text(text).strip()
-    fenced = re.search(r"```(?:json)?\s*([\s\S]*?)```", cleaned, flags=re.IGNORECASE)
+    fenced = _RE_EXTRACT_FENCED.search(cleaned)
     if fenced:
         fenced_text = fenced.group(1).strip()
         if fenced_text.startswith(opener):

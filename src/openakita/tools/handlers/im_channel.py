@@ -15,6 +15,7 @@ IM 通道处理器
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -28,6 +29,8 @@ _CHANNEL_ALIASES: dict[str, list[str]] = {
     "wework": ["wework_ws"],
     "wework_ws": ["wework"],
 }
+_MESSAGE_ID_RE = re.compile(r"message_id=([^)]+)\)")
+_SAFE_ID_RE = re.compile(r'[/\\+=%?*<>|"\x00-\x1f]')
 
 
 class IMChannelHandler:
@@ -413,7 +416,6 @@ class IMChannelHandler:
         """
         import hashlib
         import json
-        import re
 
         adapter, chat_id = self._resolve_target_channel(
             target_channel, prefer_chat_type=prefer_chat_type
@@ -476,7 +478,7 @@ class IMChannelHandler:
                     msg = await self._send_voice(adapter, chat_id, path, caption, target_channel)
                     receipt["status"] = "delivered" if msg.startswith("✅") else "failed"
                     receipt["message"] = msg
-                    m = re.search(r"message_id=([^)]+)\)", msg)
+                    m = _MESSAGE_ID_RE.search(msg)
                     if m:
                         receipt["message_id"] = m.group(1)
                     if receipt["status"] != "delivered":
@@ -491,7 +493,7 @@ class IMChannelHandler:
                     )
                     receipt["status"] = "delivered" if msg.startswith("✅") else "failed"
                     receipt["message"] = msg
-                    m = re.search(r"message_id=([^)]+)\)", msg)
+                    m = _MESSAGE_ID_RE.search(msg)
                     if m:
                         receipt["message_id"] = m.group(1)
                     if receipt["status"] != "delivered":
@@ -500,7 +502,7 @@ class IMChannelHandler:
                     msg = await self._send_file(adapter, chat_id, path, caption, target_channel)
                     receipt["status"] = "delivered" if msg.startswith("✅") else "failed"
                     receipt["message"] = msg
-                    m = re.search(r"message_id=([^)]+)\)", msg)
+                    m = _MESSAGE_ID_RE.search(msg)
                     if m:
                         receipt["message_id"] = m.group(1)
                     if receipt["status"] != "delivered":
@@ -633,7 +635,6 @@ class IMChannelHandler:
         """
         import hashlib
         import json
-        import re
 
         adapter, chat_id, channel, reply_to, channel_user_id = self._get_adapter_and_chat_id()
         if not adapter:
@@ -721,7 +722,7 @@ class IMChannelHandler:
                     msg = await self._send_voice(adapter, chat_id, path, caption, channel)
                     receipt["status"] = "delivered" if msg.startswith("✅") else "failed"
                     receipt["message"] = msg
-                    m = re.search(r"message_id=([^)]+)\)", msg)
+                    m = _MESSAGE_ID_RE.search(msg)
                     if m:
                         receipt["message_id"] = m.group(1)
                     if receipt["status"] != "delivered":
@@ -738,7 +739,7 @@ class IMChannelHandler:
                     )
                     receipt["status"] = "delivered" if msg.startswith("✅") else "failed"
                     receipt["message"] = msg
-                    m = re.search(r"message_id=([^)]+)\)", msg)
+                    m = _MESSAGE_ID_RE.search(msg)
                     if m:
                         receipt["message_id"] = m.group(1)
                     if receipt["status"] != "delivered":
@@ -747,7 +748,7 @@ class IMChannelHandler:
                     msg = await self._send_file(adapter, chat_id, path, caption, channel)
                     receipt["status"] = "delivered" if msg.startswith("✅") else "failed"
                     receipt["message"] = msg
-                    m = re.search(r"message_id=([^)]+)\)", msg)
+                    m = _MESSAGE_ID_RE.search(msg)
                     if m:
                         receipt["message_id"] = m.group(1)
                     if receipt["status"] != "delivered":
@@ -971,7 +972,6 @@ class IMChannelHandler:
     def _fallback_history_from_sqlite(self, session, limit: int) -> str | None:
         """从 SQLite conversation_turns 兜底加载历史（进程崩溃恢复场景）"""
         import logging
-        import re
 
         _logger = logging.getLogger(__name__)
 
@@ -986,7 +986,7 @@ class IMChannelHandler:
         if not safe_id:
             _logger.debug("[getChatHistory] fallback skipped: no safe_id resolved")
             return None
-        safe_id = re.sub(r'[/\\+=%?*<>|"\x00-\x1f]', "_", safe_id)
+        safe_id = _SAFE_ID_RE.sub("_", safe_id)
         _logger.info(
             f"[getChatHistory] Session context empty, falling back to SQLite (safe_id={safe_id})"
         )

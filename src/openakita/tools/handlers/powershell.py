@@ -12,6 +12,7 @@ import asyncio
 import base64
 import logging
 import os
+import re
 import shutil
 import subprocess
 from typing import TYPE_CHECKING, Any
@@ -22,6 +23,10 @@ if TYPE_CHECKING:
     from ...core.agent import Agent
 
 logger = logging.getLogger(__name__)
+
+_CLIXML_OBJS_RE = re.compile(r"#< CLIXML\s*<Objs[\s\S]*?</Objs>")
+_CLIXML_FRAG_RE = re.compile(r"#< CLIXML[\s\S]*?(?=\r?\n(?!<)|$)")
+_CLIXML_OBJ_RE = re.compile(r"<Obj[^>]*>\s*<TN[^>]*>[\s\S]*?</Obj>")
 
 # PS 版本检测结果缓存
 _ps_version_cache: dict[str, Any] | None = None
@@ -331,11 +336,10 @@ class PowerShellHandler:
         """Remove PowerShell progress CLIXML fragments from captured streams."""
         if not text or "#< CLIXML" not in text:
             return text
-        import re
 
-        cleaned = re.sub(r"#< CLIXML\s*<Objs[\s\S]*?</Objs>", "", text)
-        cleaned = re.sub(r"#< CLIXML[\s\S]*?(?=\r?\n(?!<)|$)", "", cleaned)
-        cleaned = re.sub(r"<Obj[^>]*>\s*<TN[^>]*>[\s\S]*?</Obj>", "", cleaned)
+        cleaned = _CLIXML_OBJS_RE.sub("", text)
+        cleaned = _CLIXML_FRAG_RE.sub("", cleaned)
+        cleaned = _CLIXML_OBJ_RE.sub("", cleaned)
         return "\n".join(
             line for line in cleaned.splitlines()
             if line.strip() and not line.lstrip().startswith(("#< CLIXML", "<Objs", "</Objs>"))

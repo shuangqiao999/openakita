@@ -1537,15 +1537,17 @@ def _cleanup_sub_agent_resources(agent: Any, session: Any) -> None:
     logger.debug("[Orchestrator] Sub-agent resource cleanup done for session %s", sid)
 
 
+_FILE_PATH_PATTERNS = [
+    re.compile(r"[A-Za-z]:[/\\][\w./\\_\u4e00-\u9fff -]+\.\w{2,5}"),
+    re.compile(r"/(?:home|tmp|var|opt|usr)/[\w./_ -]+\.\w{2,5}"),
+]
+
+
 def _extract_file_paths_from_text(text: str) -> list[str]:
     """Extract file paths from plain text using regex (Windows & Unix)."""
-    patterns = [
-        r"[A-Za-z]:[/\\][\w./\\_\u4e00-\u9fff -]+\.\w{2,5}",
-        r"/(?:home|tmp|var|opt|usr)/[\w./_ -]+\.\w{2,5}",
-    ]
     results: list[str] = []
-    for pat in patterns:
-        results.extend(re.findall(pat, text))
+    for pat in _FILE_PATH_PATTERNS:
+        results.extend(pat.findall(text))
     return results
 
 

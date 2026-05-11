@@ -279,24 +279,31 @@ class _TextToolFormat:
 
 # ── 共享: <invoke> 块解析器 ────────────────────────────
 
+_INVOKE_PATTERN = re.compile(
+    r'<invoke\s+name=["\']?([^"\'>\s]+)["\']?\s*>(.*?)</invoke>',
+    re.DOTALL | re.IGNORECASE,
+)
+_INVOKE_PATTERN_INCOMPLETE = re.compile(
+    r'<invoke\s+name=["\']?([^"\'>\s]+)["\']?\s*>(.*?)(?:</invoke>|$)',
+    re.DOTALL | re.IGNORECASE,
+)
+_PARAM_PATTERN = re.compile(
+    r'<parameter\s+name=["\']?([^"\'>\s]+)["\']?\s*>(.*?)</parameter>',
+    re.DOTALL | re.IGNORECASE,
+)
+
 
 def _parse_invoke_blocks(content: str) -> list[ToolUseBlock]:
     """解析 <invoke> 块中的工具调用（被多种 XML 包装格式共享）。"""
     tool_calls = []
 
-    invoke_pattern = r'<invoke\s+name=["\']?([^"\'>\s]+)["\']?\s*>(.*?)</invoke>'
-    invokes = re.findall(invoke_pattern, content, re.DOTALL | re.IGNORECASE)
-
+    invokes = _INVOKE_PATTERN.findall(content)
     if not invokes:
-        invoke_pattern_incomplete = (
-            r'<invoke\s+name=["\']?([^"\'>\s]+)["\']?\s*>(.*?)(?:</invoke>|$)'
-        )
-        invokes = re.findall(invoke_pattern_incomplete, content, re.DOTALL | re.IGNORECASE)
+        invokes = _INVOKE_PATTERN_INCOMPLETE.findall(content)
 
     for tool_name, invoke_content in invokes:
         params = {}
-        param_pattern = r'<parameter\s+name=["\']?([^"\'>\s]+)["\']?\s*>(.*?)</parameter>'
-        param_matches = re.findall(param_pattern, invoke_content, re.DOTALL | re.IGNORECASE)
+        param_matches = _PARAM_PATTERN.findall(invoke_content)
 
         for param_name, param_value in param_matches:
             param_value = param_value.strip()
@@ -429,6 +436,21 @@ def _parse_minimax_tool_call(text: str) -> tuple[str, list[ToolUseBlock]]:
 
 # ── Kimi K2 格式 ──────────────────────────────────────
 
+_KIMI_SECTION_DETECT = "<<|tool_calls_section_begin|>>"
+_KIMI_SECTION_RE = re.compile(
+    r"<<\|tool_calls_section_begin\|>>(.*?)<<\|tool_calls_section_end\|>>",
+    re.DOTALL,
+)
+_KIMI_SECTION_INCOMPLETE_RE = re.compile(
+    r"<<\|tool_calls_section_begin\|>>(.*?)$",
+    re.DOTALL,
+)
+_KIMI_CALL_RE = re.compile(
+    r"<<\|tool_call_begin\|>>\s*(?P<tool_id>[\w\.]+:\d+)\s*"
+    r"<<\|tool_call_argument_begin\|>>\s*(?P<arguments>.*?)\s*<<\|tool_call_end\|>>",
+    re.DOTALL,
+)
+
 
 def _parse_kimi_k2(text: str) -> tuple[str, list[ToolUseBlock]]:
     """解析 Kimi K2 格式的工具调用。
@@ -439,24 +461,16 @@ def _parse_kimi_k2(text: str) -> tuple[str, list[ToolUseBlock]]:
     <<|tool_call_argument_begin|>>{"city": "Beijing"}<<|tool_call_end|>>
     <<|tool_calls_section_end|>>
     """
-    if "<<|tool_calls_section_begin|>>" not in text:
+    if _KIMI_SECTION_DETECT not in text:
         return text, []
 
-    section_pattern = r"<<\|tool_calls_section_begin\|>>(.*?)<<\|tool_calls_section_end\|>>"
-    section_matches = re.findall(section_pattern, text, re.DOTALL)
-
+    section_matches = _KIMI_SECTION_RE.findall(text)
     if not section_matches:
-        section_pattern_incomplete = r"<<\|tool_calls_section_begin\|>>(.*?)$"
-        section_matches = re.findall(section_pattern_incomplete, text, re.DOTALL)
+        section_matches = _KIMI_SECTION_INCOMPLETE_RE.findall(text)
 
     tool_calls: list[ToolUseBlock] = []
     for section in section_matches:
-        call_pattern = (
-            r"<<\|tool_call_begin\|>>\s*(?P<tool_id>[\w\.]+:\d+)\s*"
-            r"<<\|tool_call_argument_begin\|>>\s*(?P<arguments>.*?)\s*<<\|tool_call_end\|>>"
-        )
-
-        for match in re.finditer(call_pattern, section, re.DOTALL):
+        for match in _KIMI_CALL_RE.finditer(section):
             tool_id = match.group("tool_id")
             arguments_str = match.group("arguments").strip()
 
@@ -485,19 +499,19 @@ def _parse_kimi_k2(text: str) -> tuple[str, list[ToolUseBlock]]:
     if not tool_calls:
         return text, []
 
-    clean = re.sub(
-        r"<<\|tool_calls_section_begin\|>>.*?<<\|tool_calls_section_end\|>>",
-        "",
-        text,
-        flags=re.DOTALL,
-    ).strip()
-    clean = re.sub(
-        r"<<\|tool_calls_section_begin\|>>.*$",
-        "",
-        clean,
-        flags=re.DOTALL,
-    ).strip()
+    clean = _KIMI_SECTION_CLEANUP_RE.sub("", text).strip()
+    clean = _KIMI_SECTION_CLEANUP_INCOMPLETE_RE.sub("", clean).strip()
     return clean, tool_calls
+
+
+_KIMI_SECTION_CLEANUP_RE = re.compile(
+    r"<<\|tool_calls_section_begin\|>>.*?<<\|tool_calls_section_end\|>>",
+    re.DOTALL,
+)
+_KIMI_SECTION_CLEANUP_INCOMPLETE_RE = re.compile(
+    r"<<\|tool_calls_section_begin\|>>.*$",
+    re.DOTALL,
+)
 
 
 # ── <tool_call><function=...> 格式 ─────────────────────────
@@ -831,12 +845,17 @@ def _extract_tool_from_obj(obj: dict) -> tuple[str, dict] | None:
     return name, {}
 
 
+_TAG_NORMALIZE_ARROW_RE = re.compile(r"(\w+)\s*=>\s*")
+_TAG_NORMALIZE_EQUALS_RE = re.compile(r"""(\w+)\s*=\s*(?=["'{[\d])""")
+_TAG_NORMALIZE_DASH_RE = re.compile(r"--(\w+)\s+")
+
+
 def _normalize_tag_body(body: str) -> str:
     """将 arrow/equals/--key 语法标准化为 JSON 兼容格式。"""
     s = body
-    s = re.sub(r"(\w+)\s*=>\s*", r'"\1": ', s)
-    s = re.sub(r"(\w+)\s*=\s*(?=[\"'{[\d])", r'"\1": ', s)
-    s = re.sub(r"--(\w+)\s+", r'"\1": ', s)
+    s = _TAG_NORMALIZE_ARROW_RE.sub(r'"\1": ', s)
+    s = _TAG_NORMALIZE_EQUALS_RE.sub(r'"\1": ', s)
+    s = _TAG_NORMALIZE_DASH_RE.sub(r'"\1": ', s)
     return s
 
 
@@ -927,7 +946,8 @@ def _parse_tool_call_tags(text: str) -> tuple[str, list[ToolUseBlock]]:
     parts.append(text[prev:])
     clean = "".join(parts).strip()
 
-    clean = re.sub(r"\[/?TOOL_CALL\]", "", clean, flags=re.IGNORECASE).strip()
+    clean = clean.replace("[TOOL_CALL]", "").replace("[/TOOL_CALL]", "").strip()
+    clean = clean.replace("[tool_call]", "").replace("[/tool_call]", "").strip()
     return clean, tool_calls
 
 
@@ -1059,13 +1079,16 @@ def _parse_json_tool_calls(text: str) -> tuple[str, list[ToolUseBlock]]:
             prev = e
         parts.append(text[prev:])
         clean_text = "".join(parts).strip()
-        clean_text = re.sub(r"(?im)(?:(?<=^)|(?<=\s))json(?=\s|$)", " ", clean_text)
-        clean_text = re.sub(r"[ \t]{2,}", " ", clean_text).strip()
+        clean_text = _JSON_CLEANUP_WORD_RE.sub(" ", clean_text)
+        clean_text = _JSON_CLEANUP_SPACES_RE.sub(" ", clean_text).strip()
     else:
         clean_text = text
 
     return clean_text, tool_calls
 
+
+_JSON_CLEANUP_WORD_RE = re.compile(r"(?im)(?:(?<=^)|(?<=\s))json(?=\s|$)")
+_JSON_CLEANUP_SPACES_RE = re.compile(r"[ \t]{2,}")
 
 # ── Dot-style 格式 (.tool_name(kwargs)) ──────────────────
 

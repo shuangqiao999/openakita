@@ -6,7 +6,7 @@ Web Fetch 处理器
 
 import logging
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urljoin, urlparse
@@ -19,6 +19,16 @@ logger = logging.getLogger(__name__)
 _MAX_REDIRECTS = 10
 _REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 _BINARY_CONTENT_MARKERS = ("image/", "audio/", "video/", "application/pdf")
+
+_RE_SCRIPT_TAG = re.compile(r"<script[^>]*>.*?</script>", re.DOTALL | re.IGNORECASE)
+_RE_STYLE_TAG = re.compile(r"<style[^>]*>.*?</style>", re.DOTALL | re.IGNORECASE)
+_RE_HTML_TAG = re.compile(r"<[^>]+>")
+_RE_NBSP = re.compile(r"&nbsp;")
+_RE_AMP = re.compile(r"&amp;")
+_RE_LT = re.compile(r"&lt;")
+_RE_GT = re.compile(r"&gt;")
+_RE_NUM_ENTITY = re.compile(r"&#\d+;")
+_RE_MULTI_SPACE = re.compile(r"\s+")
 
 
 @dataclass(slots=True)
@@ -353,22 +363,22 @@ class WebFetchHandler:
             doc = Document(html)
             title = doc.title()
             content_html = doc.summary()
-            text = re.sub(r"<[^>]+>", " ", content_html)
-            text = re.sub(r"\s+", " ", text).strip()
+            text = _RE_HTML_TAG.sub(" ", content_html)
+            text = _RE_MULTI_SPACE.sub(" ", text).strip()
             if text:
                 return f"# {title}\n\n{text}" if title else text
         except ImportError:
             pass
 
-        text = re.sub(r"<script[^>]*>.*?</script>", "", html, flags=re.DOTALL | re.IGNORECASE)
-        text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL | re.IGNORECASE)
-        text = re.sub(r"<[^>]+>", " ", text)
-        text = re.sub(r"&nbsp;", " ", text)
-        text = re.sub(r"&amp;", "&", text)
-        text = re.sub(r"&lt;", "<", text)
-        text = re.sub(r"&gt;", ">", text)
-        text = re.sub(r"&#\d+;", "", text)
-        text = re.sub(r"\s+", " ", text).strip()
+        text = _RE_SCRIPT_TAG.sub("", html)
+        text = _RE_STYLE_TAG.sub("", text)
+        text = _RE_HTML_TAG.sub(" ", text)
+        text = _RE_NBSP.sub(" ", text)
+        text = _RE_AMP.sub("&", text)
+        text = _RE_LT.sub("<", text)
+        text = _RE_GT.sub(">", text)
+        text = _RE_NUM_ENTITY.sub("", text)
+        text = _RE_MULTI_SPACE.sub(" ", text).strip()
         return text
 
 
