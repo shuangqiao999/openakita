@@ -12,11 +12,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::fs::OpenOptions;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::time::Instant;
 use tauri::Emitter;
 use tauri::Manager;
@@ -158,6 +159,23 @@ fn try_self_heal_relaunch(panic_msg: &str) {
 static ROOT_CONFIG_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 static STATE_FILE_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
+// ── 性能缓存：避免重复 I/O 和路径解析 ──
+static CACHED_ROOT_DIR: Lazy<Mutex<Option<PathBuf>>> = Lazy::new(|| Mutex::new(None));
+static CACHED_ROOT_CONFIG: Lazy<Mutex<Option<RootConfig>>> = Lazy::new(|| Mutex::new(None));
+static CACHED_BUNDLED_BACKEND_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+static BLOCKING_HTTP_CLIENT: Lazy<reqwest::blocking::Client> = Lazy::new(|| {
+    reqwest::blocking::Client::builder()
+        .no_proxy()
+        .pool_max_idle_per_host(4)
+        .build()
+        .expect("build blocking HTTP client")
+});
+static CACHED_HOME_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+static CACHED_EXE_PATH: OnceLock<String> = OnceLock::new();
+static CACHED_CWD: OnceLock<String> = OnceLock::new();
+static LOG_BUF: Lazy<Mutex<Option<BufWriter<std::fs::File>>>> = Lazy::new(|| Mutex::new(None));
+static BOOT_GRACE_CACHE: Lazy<Mutex<HashMap<String, (u32, u64)>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PlatformInfo {
@@ -209,7 +227,7 @@ struct WorkspaceSummary {
     is_current: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
 #[serde(rename_all = "camelCase")]
 struct AppStateFile {
     #[serde(default = "default_config_version")]
@@ -308,7 +326,7 @@ fn write_root_marker(root: &Path) -> Result<(), String> {
     .map_err(|e| format!("write root marker failed: {e}"))
 }
 
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
 struct RootConfig {
     #[serde(default)]
     custom_root: Option<String>,
@@ -319,20 +337,30 @@ fn root_config_path() -> PathBuf {
 }
 
 fn read_root_config() -> RootConfig {
-    let p = root_config_path();
-    let Ok(content) = fs::read_to_string(&p) else {
-        return RootConfig::default();
-    };
-    match serde_json::from_str(&content) {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            eprintln!(
-                "warning: failed to parse {}: {e}, using defaults",
-                p.display()
-            );
-            RootConfig::default()
+    {
+        let cache = CACHED_ROOT_CONFIG.lock().unwrap();
+        if let Some(ref cfg) = *cache {
+            return cfg.clone();
         }
     }
+    let p = root_config_path();
+    let cfg = if let Ok(content) = fs::read_to_string(&p) {
+        match serde_json::from_str(&content) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                eprintln!(
+                    "warning: failed to parse {}: {e}, using defaults",
+                    p.display()
+                );
+                RootConfig::default()
+            }
+        }
+    } else {
+        RootConfig::default()
+    };
+    let mut cache = CACHED_ROOT_CONFIG.lock().unwrap();
+    *cache = Some(cfg.clone());
+    cfg
 }
 
 fn write_root_config(config: &RootConfig) -> Result<(), String> {
@@ -368,6 +396,19 @@ fn write_root_config(config: &RootConfig) -> Result<(), String> {
 }
 
 fn openakita_root_dir() -> PathBuf {
+    {
+        let cache = CACHED_ROOT_DIR.lock().unwrap();
+        if let Some(ref p) = *cache {
+            return p.clone();
+        }
+    }
+    let result = compute_openakita_root_dir();
+    let mut cache = CACHED_ROOT_DIR.lock().unwrap();
+    *cache = Some(result.clone());
+    result
+}
+
+fn compute_openakita_root_dir() -> PathBuf {
     if let Ok(val) = std::env::var("OPENAKITA_ROOT") {
         if !val.is_empty() {
             return PathBuf::from(val);
@@ -384,7 +425,6 @@ fn openakita_root_dir() -> PathBuf {
                 );
                 return default_root_dir();
             }
-            // 如果自定义路径所在的父目录都不可访问（如磁盘断开），回退到默认路径
             if p.exists() || p.parent().map(|parent| parent.exists()).unwrap_or(false) {
                 return p;
             }
@@ -395,6 +435,31 @@ fn openakita_root_dir() -> PathBuf {
         }
     }
     default_root_dir()
+}
+
+fn invalidate_root_cache() {
+    *CACHED_ROOT_DIR.lock().unwrap() = None;
+    *CACHED_ROOT_CONFIG.lock().unwrap() = None;
+}
+
+fn cached_home_dir() -> &'static Option<PathBuf> {
+    CACHED_HOME_DIR.get_or_init(|| home_dir())
+}
+
+fn cached_exe_str() -> &'static str {
+    CACHED_EXE_PATH.get_or_init(|| {
+        std::env::current_exe()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| "<unknown>".into())
+    })
+}
+
+fn cached_cwd_str() -> &'static str {
+    CACHED_CWD.get_or_init(|| {
+        std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| "<unknown>".into())
+    })
 }
 
 fn run_dir() -> PathBuf {
@@ -408,19 +473,28 @@ fn setup_logs_dir() -> PathBuf {
 
 /// Append a diagnostic line to `~/.openakita/logs/autostart.log`.
 fn log_to_file(msg: &str) {
-    let log_dir = setup_logs_dir();
-    let _ = fs::create_dir_all(&log_dir);
-    let path = log_dir.join("autostart.log");
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let line = format!("[{}] {}\n", secs, msg);
-    let _ = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .and_then(|mut f| std::io::Write::write_all(&mut f, line.as_bytes()));
+    let mut guard = LOG_BUF.lock().unwrap();
+    if guard.is_none() {
+        let log_dir = setup_logs_dir();
+        let _ = fs::create_dir_all(&log_dir);
+        let path = log_dir.join("autostart.log");
+        if let Ok(f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            *guard = Some(BufWriter::new(f));
+        }
+    }
+    if let Some(ref mut writer) = *guard {
+        let _ = writer.write_all(line.as_bytes());
+        let _ = writer.flush();
+    }
 }
 
 /// 开始写入安装配置日志，创建带日期的日志文件。返回完整路径供前端展示。
@@ -578,6 +652,17 @@ fn modules_dir() -> PathBuf {
 
 /// 获取内嵌 PyInstaller 打包后端的目录
 fn bundled_backend_dir() -> PathBuf {
+    if let Some(cached) = CACHED_BUNDLED_BACKEND_DIR.get() {
+        if let Some(ref p) = cached {
+            return p.clone();
+        }
+    }
+    let result = compute_bundled_backend_dir();
+    CACHED_BUNDLED_BACKEND_DIR.get_or_init(|| Some(result.clone()));
+    result
+}
+
+fn compute_bundled_backend_dir() -> PathBuf {
     let exe_path = std::env::current_exe().ok();
     let exe_dir = exe_path
         .as_ref()
@@ -1655,6 +1740,7 @@ fn set_custom_root_dir(path: Option<String>, migrate: bool) -> Result<RootDirInf
         custom_root: clean_path,
     };
     write_root_config(&config)?;
+    invalidate_root_cache();
 
     // Config updated successfully — clean up migrated entries from old root
     if let Some(ref old_root) = migrate_old_root {
@@ -2261,14 +2347,16 @@ fn now_epoch_secs() -> u64 {
 }
 
 fn write_pid_file(workspace_id: &str, pid: u32, started_by: &str) -> Result<(), String> {
+    let started_at = now_epoch_secs();
     let data = PidFileData {
         pid,
         started_by: started_by.to_string(),
-        started_at: now_epoch_secs(),
+        started_at,
     };
     let json = serde_json::to_string_pretty(&data).map_err(|e| format!("serialize pid: {e}"))?;
     let path = service_pid_file(workspace_id);
     fs::write(&path, json).map_err(|e| format!("write pid file: {e}"))?;
+    BOOT_GRACE_CACHE.lock().unwrap().insert(workspace_id.to_string(), (pid, started_at));
     Ok(())
 }
 
@@ -2286,6 +2374,21 @@ fn write_pid_file(workspace_id: &str, pid: u32, started_by: &str) -> Result<(), 
 /// 用于压制 startup 期间的"backend down"误报和无意义的 auto-spawn，
 /// 同时让前端 UI 在这段时间内持续显示"正在启动"而非"未启动"。
 fn backend_in_boot_grace(workspace_id: &str) -> bool {
+    let cache = BOOT_GRACE_CACHE.lock().unwrap();
+    if let Some(&(cached_pid, started_at)) = cache.get(workspace_id) {
+        if started_at == 0 {
+            return false;
+        }
+        let age = now_epoch_secs().saturating_sub(started_at);
+        if age >= BACKEND_BOOT_GRACE_SEC {
+            return false;
+        }
+        if is_pid_running(cached_pid) {
+            return true;
+        }
+        return age < BACKEND_BOOT_GRACE_PID_DEAD_SEC;
+    }
+    drop(cache);
     let Some(data) = read_pid_file(workspace_id) else {
         return false;
     };
@@ -2299,8 +2402,6 @@ fn backend_in_boot_grace(workspace_id: &str) -> bool {
     if is_pid_running(data.pid) {
         return true;
     }
-    // PID 已死，但还在 spawn-死亡-重 spawn 自愈窗口内 → 仍视作宽限，
-    // 避免心跳跳过 boot-grace 直接报 lost。
     age < BACKEND_BOOT_GRACE_PID_DEAD_SEC
 }
 
@@ -2444,17 +2545,11 @@ fn wait_for_port_free(port: u16, timeout_ms: u64) -> bool {
 
 fn is_backend_http_healthy(port: Option<u16>) -> bool {
     let effective_port = port.unwrap_or(18900);
-    reqwest::blocking::Client::builder()
+    BLOCKING_HTTP_CLIENT
+        .get(format!("http://127.0.0.1:{}/api/health", effective_port))
         .timeout(std::time::Duration::from_secs(2))
-        .no_proxy()
-        .build()
+        .send()
         .ok()
-        .and_then(|client| {
-            client
-                .get(format!("http://127.0.0.1:{}/api/health", effective_port))
-                .send()
-                .ok()
-        })
         .map(|r| r.status().is_success())
         .unwrap_or(false)
 }
@@ -2473,17 +2568,11 @@ fn graceful_stop_pid(pid: u32, port: Option<u16>) -> Result<(), String> {
 
     let effective_port = port.unwrap_or(18900);
     // 第一步：尝试通过 HTTP API 触发优雅关闭
-    let api_ok = reqwest::blocking::Client::builder()
+    let api_ok = BLOCKING_HTTP_CLIENT
+        .post(format!("http://127.0.0.1:{}/api/shutdown", effective_port))
         .timeout(std::time::Duration::from_secs(3))
-        .no_proxy()
-        .build()
+        .send()
         .ok()
-        .and_then(|client| {
-            client
-                .post(format!("http://127.0.0.1:{}/api/shutdown", effective_port))
-                .send()
-                .ok()
-        })
         .map(|r| r.status().is_success())
         .unwrap_or(false);
 
@@ -3169,6 +3258,22 @@ fn read_state_file() -> AppStateFile {
     recovered
 }
 
+fn read_state_file_cached(cache: &mut (Option<u64>, Option<AppStateFile>)) -> AppStateFile {
+    let p = state_file_path();
+    let current_mtime = p.metadata().ok().and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs());
+    if let (Some(cached_mtime), Some(ref cached_state)) = (cache.0, &cache.1) {
+        if current_mtime == Some(cached_mtime) {
+            return cached_state.clone();
+        }
+    }
+    let state = read_state_file();
+    cache.0 = current_mtime;
+    cache.1 = Some(state.clone());
+    state
+}
+
 /// Scan workspaces/ directory to rebuild state when state.json is missing or corrupted.
 /// A subdirectory is considered a valid workspace only if it contains a `data/` child.
 fn rebuild_state_from_disk(partial: Option<AppStateFile>) -> AppStateFile {
@@ -3211,7 +3316,7 @@ fn write_state_file(state: &AppStateFile) -> Result<(), String> {
     if let Some(parent) = p.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("create_dir_all failed: {e}"))?;
     }
-    let data = serde_json::to_string_pretty(state).map_err(|e| format!("serialize failed: {e}"))?;
+    let data = serde_json::to_string(state).map_err(|e| format!("serialize failed: {e}"))?;
     atomic_write_with_backup(&p, data.as_bytes())
 }
 
@@ -3583,13 +3688,9 @@ fn stop_backend_for_restart(pid: u32, port: u16) -> VersionCheckResult {
 }
 
 fn healthy_backend_pid(port: u16) -> Option<u32> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(3))
-        .no_proxy()
-        .build()
-        .ok()?;
-    let resp = client
+    let resp = BLOCKING_HTTP_CLIENT
         .get(format!("http://127.0.0.1:{}/api/health", port))
+        .timeout(std::time::Duration::from_secs(3))
         .send()
         .ok()?;
     if !resp.status().is_success() {
@@ -3613,20 +3714,11 @@ fn healthy_backend_pid(port: u16) -> Option<u32> {
 /// 此函数合并了「是否有后端在运行」和「版本是否匹配」两个检查，
 /// 只发一次 HTTP 请求，避免 setup 阶段重复探测。
 fn startup_version_check(app_version: &str, port: u16) -> VersionCheckResult {
-    let client = match reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(3))
-        .no_proxy()
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            log_to_file(&format!("[version_check] client build failed: {e}"));
-            return VersionCheckResult::NotRunning;
-        }
-    };
+    let client = &*BLOCKING_HTTP_CLIENT;
 
     let resp = match client
         .get(format!("http://127.0.0.1:{}/api/health", port))
+        .timeout(std::time::Duration::from_secs(3))
         .send()
     {
         Ok(r) if r.status().is_success() => r,
@@ -3779,13 +3871,10 @@ fn write_crash_log(message: &str, show_dialog: bool) -> PathBuf {
             .unwrap_or_default();
         dur.as_secs()
     };
-    let exe = std::env::current_exe()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| "<unknown>".to_string());
-    let cwd = std::env::current_dir()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| "<unknown>".to_string());
-    let home = home_dir()
+    let exe = cached_exe_str();
+    let cwd = cached_cwd_str();
+    let home = cached_home_dir()
+        .as_ref()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|| "<None>".to_string());
     let entry = format!("[{timestamp}] exe={exe} cwd={cwd} home={home}\n{message}\n---\n");
@@ -4083,9 +4172,10 @@ fn main() {
                     let mut consecutive_failures: u32 = 0;
                     let mut last_status_was_healthy: Option<bool> = None;
                     let mut last_starting_log_at: u64 = 0;
+                    let mut state_cache: (Option<u64>, Option<AppStateFile>) = (None, None);
                     loop {
                         std::thread::sleep(std::time::Duration::from_secs(5));
-                        let state_snap = read_state_file();
+                        let state_snap = read_state_file_cached(&mut state_cache);
                         let ws_id = match state_snap.current_workspace_id {
                             Some(s) => s,
                             None => continue,
@@ -6382,11 +6472,7 @@ fn diagnose_via_backend_api(port: u16) -> Option<PythonDiagnostic> {
         }
     }
 
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(6))
-        .no_proxy()
-        .build()
-        .ok()?;
+    let client = &*BLOCKING_HTTP_CLIENT;
 
     let url = format!("http://127.0.0.1:{}/api/diagnostics", port);
     let max_attempts: u8 = 2;
@@ -6396,7 +6482,7 @@ fn diagnose_via_backend_api(port: u16) -> Option<PythonDiagnostic> {
         if attempt > 0 {
             std::thread::sleep(std::time::Duration::from_millis(1500));
         }
-        match client.get(&url).send() {
+        match client.get(&url).timeout(std::time::Duration::from_secs(6)).send() {
             Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>() {
                 Ok(json) => return parse_diagnostics_json(&json),
                 Err(e) => {
@@ -6877,14 +6963,19 @@ fn run_python_module_json(
         .output()
         .map_err(|e| format!("failed to run python: {e}"))?;
     if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        let stderr = String::from_utf8(out.stderr).unwrap_or_else(|e| String::from_utf8_lossy(&e.into_bytes()).into_owned());
+        let stdout = String::from_utf8(out.stdout).unwrap_or_else(|e| String::from_utf8_lossy(&e.into_bytes()).into_owned());
         return Err(format!(
             "python failed: {}\nstdout:\n{}\nstderr:\n{}",
             out.status, stdout, stderr
         ));
     }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    let stdout = out.stdout;
+    let trimmed = match String::from_utf8(stdout) {
+        Ok(s) => s.trim().to_string(),
+        Err(e) => String::from_utf8_lossy(&e.into_bytes()).trim().to_string(),
+    };
+    Ok(trimmed)
 }
 
 #[tauri::command]
