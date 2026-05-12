@@ -90,6 +90,9 @@ class TaskQueue:
         self._meta: dict[str, tuple[str, str]] = {}          # task_id -> (org_id, node_id)
         self._index: dict[tuple[str, str], set[str]] = {}    # (org_id,node_id) -> {task_ids}
         self._track_lock = asyncio.Lock()
+        self._node_semaphores: dict[tuple[str, str], asyncio.Semaphore] = {}
+        self._node_futures: dict[str, asyncio.Future] = {}  # task_id -> Future (for enqueue_task)
+        self._node_max_concurrent: dict[tuple[str, str], int] = {}  # (org_id,node_id) -> max
 
     def set_handler(self, handler: Callable[[QueuedTask], Awaitable[Any]]) -> None:
         self._handler = handler
@@ -138,6 +141,9 @@ class TaskQueue:
         self._registered.clear()
         self._meta.clear()
         self._index.clear()
+        self._node_semaphores.clear()
+        self._node_futures.clear()
+        self._node_max_concurrent.clear()
         logger.info("[TaskQueue] Stopped")
 
     # ── enqueue ───────────────────────────────────────────────────
@@ -337,6 +343,62 @@ class TaskQueue:
 
     # ── Org / Node task tracking ──────────────────────────────────
 
+    async def enqueue_task(
+        self,
+        factory,
+        org_id: str,
+        node_id: str,
+        max_concurrent: int = 2,
+    ) -> asyncio.Future:
+        """Submit an org node task with per-node concurrency control.
+
+        The factory should be an async callable (or awaitable) that returns
+        the task result.  Returns an asyncio.Future that callers can await.
+
+        Tasks are tracked in ``_registered`` for org/node cancellation.
+        """
+        key = (org_id, node_id)
+        if key not in self._node_semaphores:
+            self._node_semaphores[key] = asyncio.Semaphore(max_concurrent)
+            self._node_max_concurrent[key] = max_concurrent
+        sem = self._node_semaphores[key]
+
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future = loop.create_future()
+        task_id = f"org:{org_id}:{node_id}:{uuid.uuid4().hex[:8]}"
+
+        async def _runner() -> None:
+            await sem.acquire()
+            try:
+                result = await factory()
+                if not future.done():
+                    future.set_result(result)
+            except asyncio.CancelledError:
+                if not future.done():
+                    future.cancel()
+                raise
+            except Exception as e:
+                if not future.done():
+                    future.set_exception(e)
+            finally:
+                sem.release()
+
+        task = asyncio.create_task(_runner(), name=task_id)
+        self.register_task(task_id, org_id, node_id, task)
+        self._node_futures[task_id] = future
+        task.add_done_callback(lambda _t, tid=task_id: self._deregister_node_task(tid))
+
+        logger.debug(
+            "[TaskQueue] enqueue_task %s node=%s:%s max=%d",
+            task_id[:16], org_id[:16], node_id[:16], max_concurrent,
+        )
+        return future
+
+    def _deregister_node_task(self, task_id: str) -> None:
+        """Cleanup after a node task completes (done-callback)."""
+        self.deregister_task(task_id)
+        self._node_futures.pop(task_id, None)
+
     def register_task(
         self,
         task_id: str,
@@ -386,11 +448,19 @@ class TaskQueue:
         key = (org_id, node_id)
         ids = list(self._index.get(key, set()))
         cancelled: list[asyncio.Task] = []
+        # Cancel running asyncio Tasks
         for tid in ids:
             t = self._registered.get(tid)
             if t is not None and not t.done():
                 t.cancel()
                 cancelled.append(t)
+        # Cancel any pending Futures (factory waits on semaphore)
+        for tid in ids:
+            fut = self._node_futures.get(tid)
+            if fut is not None and not fut.done():
+                fut.cancel()
+                if fut not in cancelled:
+                    cancelled.append(fut)  # type: ignore[arg-type]
         return cancelled
 
     async def cancel_org_tasks(self, org_id: str) -> list[asyncio.Task]:
@@ -404,6 +474,11 @@ class TaskQueue:
                 if t is not None and not t.done():
                     t.cancel()
                     cancelled.append(t)
+                fut = self._node_futures.get(tid)
+                if fut is not None and not fut.done():
+                    fut.cancel()
+                    if fut not in cancelled:
+                        cancelled.append(fut)  # type: ignore[arg-type]
         return cancelled
 
     def _prune_registered(self) -> None:

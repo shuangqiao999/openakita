@@ -1386,6 +1386,9 @@ class OrgRuntime:
     ) -> dict:
         """Activate a node agent and run a task (with org-level concurrency limit).
 
+        Uses the global TaskQueue for per-node concurrency control and unified
+        scheduling.  Falls back to direct execution when TaskQueue is unavailable.
+
         ``activation_origin`` tags *this* activation's source for root-node
         result filtering. See :pyattr:`_FINAL_RESULT_ORIGINS`. When ``None``
         (default) the tag stored in ``_root_activation_origin`` is consumed
@@ -1398,10 +1401,36 @@ class OrgRuntime:
 
         sem = self._get_org_semaphore(org.id)
         async with sem:
-            return await self._activate_and_run_inner(
-                org, node, prompt, chain_id,
-                activation_origin=activation_origin,
-            )
+            tq = await self._get_task_queue()
+            if tq is None:
+                return await self._activate_and_run_inner(
+                    org, node, prompt, chain_id,
+                    activation_origin=activation_origin,
+                )
+
+            # Submit through global TaskQueue for per-node concurrency control
+            async def _runner() -> dict:
+                """Captures org/node/prompt in closure; runs inside TaskQueue."""
+                return await self._activate_and_run_inner(
+                    org, node, prompt, chain_id,
+                    activation_origin=activation_origin,
+                )
+
+            try:
+                future = await tq.enqueue_task(
+                    factory=_runner,
+                    org_id=org.id,
+                    node_id=node.id,
+                    max_concurrent=self.max_concurrent_per_node,
+                )
+                result = await future
+                return result
+            except asyncio.CancelledError:
+                logger.info(
+                    "[OrgRuntime] Task cancelled via TaskQueue: %s:%s",
+                    org.id, node.id,
+                )
+                return {"ok": False, "cancelled": True, "reason": "task_cancelled"}
 
     async def _activate_and_run_inner(
         self, org: Organization, node: OrgNode, prompt: str,
