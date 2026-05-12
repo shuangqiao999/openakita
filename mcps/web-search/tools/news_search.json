@@ -1,12 +1,12 @@
 {
     "name": "news_search",
-    "description": "Search news using Bing + DuckDuckGo dual engines (Bing first, DDG as fallback). Returns recent news articles with title, source, date, URL and excerpt. Use for current events and news queries.",
+    "description": "Search news using 6 parallel engines (Bing/Baidu/360/Sogou/Shenma/Toutiao) with DDG fallback. Returns recent news articles with title, source, date, URL and excerpt. Use for current events and news queries.\n\nFIELD NAME: The only required parameter is 'query' (NOT 'topic', NOT 'keywords').",
     "inputSchema": {
         "type": "object",
         "properties": {
             "query": {
                 "type": "string",
-                "description": "Search query string"
+                "description": "Search query string (required). Do NOT use 'topic' or 'keywords' as field name."
             },
             "max_results": {
                 "type": "integer",
@@ -27,4 +27,3 @@
         "required": ["query"]
     }
 }
-

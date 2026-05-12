@@ -116,129 +116,115 @@ class SearchEngine:
     ua_override: str | None = None
 
 
-def _make_standard_parser(
-    block_re: re.Pattern, title_re: re.Pattern, snippet_re: re.Pattern,
-    *, url_group: int = 1, title_group: int = 2, snippet_group: int = 1,
+def _bs4_parse(
+    html: str,
+    row_selector: str,
+    title_selector: str,
+    snippet_selectors: list[str],
+    *,
+    max_results: int = 10,
+    url_attr: str = "href",
     url_formatter: Callable[[str], str] | None = None,
-) -> Callable[[str, int], list[dict[str, Any]]]:
-    def parse(html: str, max_results: int) -> list[dict[str, Any]]:
-        results: list[dict[str, Any]] = []
-        blocks = block_re.findall(html)
-        for block in blocks[:max_results]:
-            tm = title_re.search(block)
-            if not tm:
-                continue
-            url = tm.group(url_group)
-            if url_formatter:
-                url = url_formatter(url)
-            title = _strip_html(tm.group(title_group))
-            snippet = ""
-            sm = snippet_re.search(block)
-            if sm:
-                snippet = _strip_html(sm.group(snippet_group))
-            if title:
-                results.append({"title": title, "href": url, "body": snippet})
-        return results
-    return parse
+) -> list[dict[str, Any]]:
+    """BeautifulSoup-based generic search result parser."""
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        return []
 
+    try:
+        __import__("lxml")
+        parser = "lxml"
+    except ImportError:
+        parser = "html.parser"
 
-# Bing
-_BING_BLOCK_RE = re.compile(r'<li\s+class="b_algo"[^>]*>(.*?)</li>', re.DOTALL)
-_BING_TITLE_RE = re.compile(r'<h2[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>(.+?)</a>\s*</h2>', re.DOTALL)
-_BING_SNIPPET_RE = re.compile(r'<p[^>]*>(.*?)</p>', re.DOTALL)
-ENGINE_BING = SearchEngine("bing", "Bing", "https://cn.bing.com/search",
-    lambda q, n: {"q": q, "count": n},
-    _make_standard_parser(_BING_BLOCK_RE, _BING_TITLE_RE, _BING_SNIPPET_RE))
-
-# 百度
-_BAIDU_BLOCK_RE = re.compile(r'<div[^>]*class="(?:result|c-container)[^"]*"[^>]*cachable[^>]*>(.+?)</div>\s*(?:</div>)?', re.DOTALL)
-_BAIDU_BLOCK_ALT_RE = re.compile(r'<div[^>]*class="(?:result|c-container)[^"]*"[^>]*>(.+?)(?:</div>\s*</div>|</div>\s*$|<div[^>]*class="(?:result|c-container))', re.DOTALL)
-_BAIDU_TITLE_RE = re.compile(r'<h3[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>(.+?)</a>\s*</h3>', re.DOTALL)
-_BAIDU_SNIPPET_RE = re.compile(r'<(?:span[^>]*class="[^"]*content-right[^"]*"|div[^>]*class="c-abstract"[^>]*|span[^>]*class="c-color"[^>]*)>(.+?)</(?:span|div)>', re.DOTALL)
-_BAIDU_SNIPPET_ALT_RE = re.compile(r'<(?:span|div|p)[^>]*class="[^"]*abstract[^"]*"[^>]*>(.*?)</(?:span|div|p)>', re.DOTALL)
-
-def _parse_baidu(html: str, max_results: int) -> list[dict[str, Any]]:
+    soup = BeautifulSoup(html, parser)
     results: list[dict[str, Any]] = []
-    blocks = _BAIDU_BLOCK_RE.findall(html) or _BAIDU_BLOCK_ALT_RE.findall(html)
-    for block in blocks[:max_results]:
-        tm = _BAIDU_TITLE_RE.search(block)
-        if not tm:
+    rows = soup.select(row_selector)
+
+    for row in rows[:max_results]:
+        title_el = row.select_one(title_selector)
+        if not title_el:
             continue
-        url = _extract_url_from_baidu_redirect(tm.group(1))
-        title = _strip_html(tm.group(2))
+        url = title_el.get(url_attr, "")
+        if url_formatter:
+            url = url_formatter(url)
+        title = title_el.get_text(strip=True)
+        if not title or len(title) < 2:
+            continue
         snippet = ""
-        sm = _BAIDU_SNIPPET_RE.search(block) or _BAIDU_SNIPPET_ALT_RE.search(block)
-        if sm:
-            snippet = _strip_html(sm.group(1))
+        for sel in snippet_selectors:
+            snip_el = row.select_one(sel)
+            if snip_el:
+                snippet = snip_el.get_text(" ", strip=True)[:300]
+                break
         if title:
             results.append({"title": title, "href": url, "body": snippet})
     return results
 
+
+# ── Bing ─────────────────────────────────────────────────
+
+def _parse_bing(html: str, max_results: int) -> list[dict[str, Any]]:
+    return _bs4_parse(html, row_selector="li.b_algo", title_selector="h2 a",
+                      snippet_selectors=["p", ".b_caption p", ".b_snippet"], max_results=max_results)
+
+ENGINE_BING = SearchEngine("bing", "Bing", "https://cn.bing.com/search",
+    lambda q, n: {"q": q, "count": n}, _parse_bing)
+
+# ── 百度 ─────────────────────────────────────────────────
+
+def _parse_baidu(html: str, max_results: int) -> list[dict[str, Any]]:
+    return _bs4_parse(html, row_selector="div.c-container, div.result, div#content_left > div.result",
+                      title_selector="h3 a",
+                      snippet_selectors=[".c-abstract", ".c-span-last p", ".content-right_8Zs40"],
+                      max_results=max_results, url_formatter=_extract_url_from_baidu_redirect)
+
 ENGINE_BAIDU = SearchEngine("baidu", "百度", "https://www.baidu.com/s",
     lambda q, n: {"wd": q, "rn": str(n)}, _parse_baidu, extra_headers={"Referer": "https://www.baidu.com/"})
 
-# 360
-_SO360_BLOCK_RE = re.compile(r'<li\s+class="res-list"[^>]*>(.*?)</li>', re.DOTALL)
-_SO360_TITLE_RE = re.compile(r'<h3[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>(.+?)</a>\s*</h3>', re.DOTALL)
-_SO360_SNIPPET_RE = re.compile(r'<p\s+class="res-desc"[^>]*>(.*?)</p>', re.DOTALL)
+# ── 360 ──────────────────────────────────────────────────
+
+def _parse_360(html: str, max_results: int) -> list[dict[str, Any]]:
+    return _bs4_parse(html, row_selector="li.res-list", title_selector="h3 a",
+                      snippet_selectors=[".res-desc", "p"], max_results=max_results)
+
 ENGINE_360 = SearchEngine("360", "360搜索", "https://www.so.com/s",
-    lambda q, n: {"q": q}, _make_standard_parser(_SO360_BLOCK_RE, _SO360_TITLE_RE, _SO360_SNIPPET_RE))
+    lambda q, n: {"q": q}, _parse_360)
 
-# 搜狗
-_SOGOU_BLOCK_RE = re.compile(r'<div\s+class="rb"[^>]*>(.*?)</div>\s*</div>', re.DOTALL)
-_SOGOU_TITLE_RE = re.compile(r'<h3[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>(.+?)</a>\s*</h3>', re.DOTALL)
-_SOGOU_SNIPPET_RE = re.compile(r'<(?:div\s+class="ft"|p\s+class="str_info"[^>]*|div[^>]*class="space"[^>]*)>(.*?)</(?:div|p)>', re.DOTALL)
+# ── 搜狗 ─────────────────────────────────────────────────
+
+def _parse_sogou(html: str, max_results: int) -> list[dict[str, Any]]:
+    return _bs4_parse(html, row_selector="div.rb, div.vrwrap, div.vr-title",
+                      title_selector="h3 a, .vr-title a",
+                      snippet_selectors=[".str_info", ".space", ".ft", "p"], max_results=max_results)
+
 ENGINE_SOGOU = SearchEngine("sogou", "搜狗", "https://www.sogou.com/web",
-    lambda q, n: {"query": q}, _make_standard_parser(_SOGOU_BLOCK_RE, _SOGOU_TITLE_RE, _SOGOU_SNIPPET_RE))
+    lambda q, n: {"query": q}, _parse_sogou)
 
-# 神马
-_SHENMA_BLOCK_RE = re.compile(r'<div\s+class="card-wrap"[^>]*>(.*?)</div>\s*</div>', re.DOTALL)
-_SHENMA_TITLE_RE = re.compile(r'<a[^>]*href="([^"]+)"[^>]*class="[^"]*title[^"]*"[^>]*>(.+?)</a>', re.DOTALL)
-_SHENMA_TITLE_ALT_RE = re.compile(r'<a[^>]*href="([^"]+)"[^>]*>(.+?)</a>', re.DOTALL)
-_SHENMA_SNIPPET_RE = re.compile(r'<(?:div|p|span)[^>]*class="[^"]*(?:abstract|summary|desc|info)[^"]*"[^>]*>(.+?)</(?:div|p|span)>', re.DOTALL)
+# ── 神马 ─────────────────────────────────────────────────
 
 def _parse_shenma(html: str, max_results: int) -> list[dict[str, Any]]:
-    results: list[dict[str, Any]] = []
-    blocks = _SHENMA_BLOCK_RE.findall(html)
-    if not blocks:
-        blocks = re.compile(r'<div\s+class="card"[^>]*>(.*?)</div>', re.DOTALL).findall(html)
-    for block in blocks[:max_results]:
-        tm = _SHENMA_TITLE_RE.search(block) or _SHENMA_TITLE_ALT_RE.search(block)
-        if not tm:
-            continue
-        title = _strip_html(tm.group(2))
-        snippet = ""
-        sm = _SHENMA_SNIPPET_RE.search(block)
-        if sm:
-            snippet = _strip_html(sm.group(1))
-        if title:
-            results.append({"title": title, "href": tm.group(1), "body": snippet})
+    results = _bs4_parse(html, row_selector="div.card-wrap, div.card",
+                         title_selector="a.title, a[class*='title']",
+                         snippet_selectors=[".abstract", ".summary", ".desc", ".info", "p"],
+                         max_results=max_results)
+    if not results:
+        results = _bs4_parse(html, row_selector="div.card-wrap, div.card, a.title",
+                             title_selector="a",
+                             snippet_selectors=["p", "span"], max_results=max_results)
     return results
 
 ENGINE_SHENMA = SearchEngine("shenma", "神马", "https://m.sm.cn/s",
     lambda q, n: {"q": q}, _parse_shenma, ua_override=_UA_MOBILE)
 
-# 头条
-_TOUTIAO_BLOCK_RE = re.compile(r'<(?:div|li)[^>]*class="[^"]*(?:result|item|article)[^"]*"[^>]*>(.+?)</(?:div|li)>', re.DOTALL)
-_TOUTIAO_TITLE_RE = re.compile(r'<a[^>]*href="([^"]+)"[^>]*>(.+?)</a>', re.DOTALL)
-_TOUTIAO_SNIPPET_RE = re.compile(r'<(?:p|span|div)[^>]*class="[^"]*(?:abstract|desc|snippet|content)[^"]*"[^>]*>(.+?)</(?:p|span|div)>', re.DOTALL)
+# ── 头条 ─────────────────────────────────────────────────
 
 def _parse_toutiao(html: str, max_results: int) -> list[dict[str, Any]]:
-    results: list[dict[str, Any]] = []
-    blocks = _TOUTIAO_BLOCK_RE.findall(html)
-    for block in blocks[:max_results]:
-        tm = _TOUTIAO_TITLE_RE.search(block)
-        if not tm:
-            continue
-        title = _strip_html(tm.group(2))
-        if len(title) < 3:
-            continue
-        snippet = ""
-        sm = _TOUTIAO_SNIPPET_RE.search(block)
-        if sm:
-            snippet = _strip_html(sm.group(1))
-        results.append({"title": title, "href": tm.group(1), "body": snippet})
-    return results
+    return _bs4_parse(html, row_selector="div.result-item, div.result, li.result, .search-result-item",
+                      title_selector="a[class*='title'], a",
+                      snippet_selectors=[".abstract", ".desc", ".snippet", ".content", "p"],
+                      max_results=max_results)
 
 ENGINE_TOUTIAO = SearchEngine("toutiao", "头条", "https://so.toutiao.com/search",
     lambda q, n: {"keyword": q}, _parse_toutiao)

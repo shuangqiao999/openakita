@@ -1,12 +1,12 @@
 {
     "name": "web_search",
-    "description": "Search the web using Bing + DuckDuckGo dual engines (Bing first, DDG as fallback). Returns webpage results with title, URL and snippet. Use for general information queries.",
+    "description": "Search the web using 6 parallel engines (Bing/Baidu/360/Sogou/Shenma/Toutiao) with DDG fallback. Returns webpage results with title, URL and snippet. Use for general information queries.\n\nFIELD NAME: The only required parameter is 'query' (NOT 'topic', NOT 'keywords').",
     "inputSchema": {
         "type": "object",
         "properties": {
             "query": {
                 "type": "string",
-                "description": "Search query string"
+                "description": "Search query string (required). Do NOT use 'topic' or 'keywords' as field name."
             },
             "max_results": {
                 "type": "integer",
@@ -28,4 +28,3 @@
         "required": ["query"]
     }
 }
-
