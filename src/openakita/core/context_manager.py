@@ -313,7 +313,7 @@ class ContextManager:
         tools_tokens = self.estimate_tools_tokens(effective_tools)
         messages_tokens = self.estimate_messages_tokens(messages)
         hard_limit = resolved_max - system_tokens - tools_tokens - 500
-        min_hard_limit = max(min(1024, int(resolved_max * 0.3)), 256)
+        min_hard_limit = max(min(16384, int(resolved_max * 0.5)), 1024)
         if hard_limit < min_hard_limit:
             logger.warning(
                 f"[Compress] hard_limit too small ({hard_limit}), "

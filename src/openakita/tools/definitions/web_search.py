@@ -80,7 +80,12 @@ WEB_SEARCH_TOOLS = [
     {
         "name": "news_search",
         "category": "Web Search",
-        "description": "Search news using 6 engines in parallel (Bing/Baidu/360/Sogou/Shenma/Toutiao). Use when you need to find recent news articles, current events, or breaking news. Returns titles, sources, dates, URLs, and excerpts.",
+        "description": (
+            "Search news using 6 engines in parallel (Bing/Baidu/360/Sogou/Shenma/Toutiao). "
+            "Use when you need to find recent news articles, current events, or breaking news. "
+            "Returns titles, sources, dates, URLs, and excerpts.\n\n"
+            "FIELD NAME: The only required parameter is 'query' (NOT 'topic', NOT 'keywords')."
+        ),
         "detail": """六引擎并行搜索新闻 (Bing/百度/360/搜狗/神马/头条)，合并去重取前8条。
 
 **适用场景**：

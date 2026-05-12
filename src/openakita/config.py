@@ -686,6 +686,11 @@ class Settings(BaseSettings):
         default=0.85,
         description="触发压缩的软限比例——上下文 token 数超过硬上限的该比例时开始压缩 (0.5~0.95，越大越晚触发)",
     )
+    context_hard_limit_min: int = Field(
+        default=16384,
+        ge=1024,
+        description="上下文硬截断的最小保障下限（token 数），防止极端情况下可用窗口过小",
+    )
     context_boundary_compression_ratio: float = Field(
         default=0.25,
         description="跨话题边界压缩比例，旧话题压缩到该百分比 (0.05~0.5)",
