@@ -104,7 +104,7 @@ _CATEGORY_RULES: list[tuple[tuple[str, ...], str]] = [
     (("thinking_",), "Agent/思考模式"),
     (("llm_rate_limit", "llm_max_concurrent"), "Agent/LLM 限流"),
     (("delegate_max_parallel",), "Agent/多 Agent"),
-    (("agent_state_ttl", "task_queue_cleanup_"), "Agent/多 Agent"),
+    (("agent_state_ttl", "task_queue_cleanup_", "enable_work_stealing"), "Agent/多 Agent"),
     (("enable_adaptive_concurrency",), "Agent/自适应"),
     (("im_chain_push",), "IM/思维链推送"),
     (("progress_timeout", "hard_timeout"), "Agent/超时"),

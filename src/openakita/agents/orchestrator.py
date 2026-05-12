@@ -275,10 +275,11 @@ class AgentOrchestrator:
 
         _max_concurrent = int(getattr(settings, "llm_max_concurrent", 8) or 8)
         _cleanup_interval = int(getattr(settings, "task_queue_cleanup_interval", 60) or 60)
+        _work_stealing = bool(getattr(settings, "enable_work_stealing", True))
         self._task_queue = TaskQueue(
             max_concurrent=_max_concurrent,
             cleanup_interval=_cleanup_interval,
-            enable_work_stealing=False,
+            enable_work_stealing=_work_stealing,
         )
 
         # Lazy-initialised dependencies
@@ -305,6 +306,11 @@ class AgentOrchestrator:
 
         # Ephemeral agent tracking for cleanup
         self._ephemeral_agents: dict[str, float] = {}
+
+        # Pending session references for TaskQueue handler resolution
+        # Key: task_id, Value: session object reference
+        self._pending_sessions: dict[str, Any] = {}
+        self._pending_sessions_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
     # External wiring
@@ -1355,15 +1361,44 @@ class AgentOrchestrator:
                 session.context.handoff_events = session.context.handoff_events[
                     -_MAX_HANDOFF_EVENTS:
                 ]
-        return await self._dispatch(
-            session,
-            message,
-            to_agent,
-            depth + 1,
-            from_agent=from_agent,
-            isolated_browser=isolated_browser,
-            pre_state_key=state_key,
-        )
+        # Route through TaskQueue when the worker is running (production path);
+        # fall back to direct dispatch for tests / lightweight mode.
+        if self._task_queue._running:
+            from openakita.agents.task_queue import Priority
+
+            _priority = Priority.NORMAL
+            task_id = await self._task_queue.enqueue(
+                session_key=session.id,
+                agent_profile_id=to_agent,
+                payload={
+                    "message": message,
+                    "from_agent": from_agent,
+                    "depth": depth + 1,
+                    "reason": reason,
+                    "isolated_browser": isolated_browser,
+                    "pre_state_key": state_key,
+                },
+                priority=_priority,
+            )
+            async with self._pending_sessions_lock:
+                self._pending_sessions[task_id] = session
+
+            try:
+                result = await self._task_queue.wait_for(task_id)
+                return str(result)
+            finally:
+                async with self._pending_sessions_lock:
+                    self._pending_sessions.pop(task_id, None)
+        else:
+            return await self._dispatch(
+                session,
+                message,
+                to_agent,
+                depth + 1,
+                from_agent=from_agent,
+                isolated_browser=isolated_browser,
+                pre_state_key=state_key,
+            )
 
     # ------------------------------------------------------------------
     # Multi-agent collaboration
@@ -1529,24 +1564,30 @@ class AgentOrchestrator:
     # ------------------------------------------------------------------
 
     async def _handle_queued_task(self, qt: QueuedTask) -> str:
-        _session = getattr(self._gateway, "agent_handler", None)
-        if _session and hasattr(_session, "_current_session"):
-            _session = _session._current_session
-        else:
-            return f"[TaskQueue] No session available for {qt.task_id}"
+        """TaskQueue handler — looks up session from _pending_sessions and dispatches."""
+        async with self._pending_sessions_lock:
+            session = self._pending_sessions.get(qt.task_id)
+        if session is None:
+            return (
+                f"❌ [TaskQueue] No session available for task {qt.task_id[:8]} "
+                f"(session_key={qt.session_key})"
+            )
 
         message = qt.payload.get("message", "")
         from_agent = qt.payload.get("from_agent", "orchestrator")
         depth = qt.payload.get("depth", 0)
+        isolated_browser = qt.payload.get("isolated_browser")
+        pre_state_key = qt.payload.get("pre_state_key")
 
-        await self._dispatch(
-            session=_session,
+        return await self._dispatch(
+            session=session,
             message=message,
             agent_profile_id=qt.agent_profile_id,
             depth=depth,
             from_agent=from_agent,
+            isolated_browser=isolated_browser,
+            pre_state_key=pre_state_key,
         )
-        return f"Task {qt.task_id} completed"
 
     # ------------------------------------------------------------------
     # Background cleanup
@@ -1625,6 +1666,21 @@ class AgentOrchestrator:
 
             # 6. Clean ephemeral agents
             await self._cleanup_ephemeral_agents(now, ttl * 2)
+
+            # 7. Clean stale pending_sessions (sessions for completed/cancelled tasks)
+            async with self._pending_sessions_lock:
+                stale_tids = [
+                    tid
+                    for tid in list(self._pending_sessions.keys())
+                    if tid not in self._task_queue._results
+                    and tid not in self._task_queue._active
+                ]
+                for tid in stale_tids:
+                    self._pending_sessions.pop(tid, None)
+            if stale_tids:
+                logger.debug(
+                    "[Orchestrator] Cleaned up %d stale pending_sessions", len(stale_tids)
+                )
 
     async def _cleanup_ephemeral_agents(self, now: float, ttl: float) -> None:
         stale = [eid for eid, atime in list(self._ephemeral_agents.items()) if now - atime > ttl]

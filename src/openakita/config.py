@@ -172,6 +172,10 @@ class Settings(BaseSettings):
         ge=10,
         description="任务队列和状态清理间隔（秒）",
     )
+    enable_work_stealing: bool = Field(
+        default=True,
+        description="是否启用工作窃取调度（空闲 Agent 可跨会话窃取任务）",
+    )
 
     # === 工具并行执行 ===
     # 单轮模型返回多个 tool_use/tool_calls 时，Agent 可选择并行执行工具以提升吞吐。
@@ -753,8 +757,8 @@ class Settings(BaseSettings):
 
     # === 自适应并发控制 ===
     enable_adaptive_concurrency: bool = Field(
-        default=False,
-        description="是否启用自适应并发控制（根据 API 延迟和错误率自动调整并行度）",
+        default=True,
+        description="是否启用自适应并发控制（根据 API 延迟和错误率自动调整并行度，默认开启）",
     )
 
     # === Harness 配置 ===
