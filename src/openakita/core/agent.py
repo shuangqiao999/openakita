@@ -4673,9 +4673,69 @@ class Agent:
         #    Sub-agents skip the full analyzer for latency, but they are not
         #    automatically forced into tools: many delegated jobs are pure writing
         #    or analysis tasks where a direct text answer is the correct output.
-        from .intent_analyzer import IntentAnalyzer, IntentResult, IntentType
+        from .intent_analyzer import (
+            IntentAnalyzer,
+            IntentResult,
+            IntentType,
+            MemoryScope,
+            PromptDepth,
+        )
 
-        if self._is_sub_agent_call:
+        # 6.5 确认等待状态检查：如果上一轮 agent 发出了 ask_user（等待用户确认），
+        #     本轮用户回复了确认词（"确认"/"好的"等），则跳过意图分析，直接进入
+        #     全量 Agent 推理流程（避免被 CHAT 快速路径忽略待执行任务）。
+        _intent_pre_set = False
+        if session and hasattr(session, "context") and session.context.get_variable(
+            "awaiting_confirmation", False
+        ):
+            from .confirmation_state import _CANCEL_WORDS, _CONFIRM_WORDS
+
+            _normalized = message.strip().lower()
+            if _normalized in _CONFIRM_WORDS:
+                logger.info(
+                    f"[Session:{session_id}] User confirmed pending ask_user, "
+                    f"forcing TASK intent (skip analyzer)"
+                )
+                session.context.set_variable("awaiting_confirmation", False)
+                intent_result = IntentResult(
+                    intent=IntentType.TASK,
+                    confidence=1.0,
+                    task_definition=getattr(self, "_current_task_query", "") or message[:600],
+                    task_type="action",
+                    tool_hints=[],
+                    memory_keywords=[],
+                    force_tool=False,
+                    requires_tools=False,
+                    evidence_required=False,
+                    todo_required=False,
+                    raw_output="[confirmation-resume]",
+                )
+                _intent_pre_set = True
+            elif _normalized in _CANCEL_WORDS:
+                logger.info(
+                    f"[Session:{session_id}] User cancelled pending ask_user"
+                )
+                session.context.set_variable("awaiting_confirmation", False)
+                intent_result = IntentResult(
+                    intent=IntentType.CHAT,
+                    confidence=1.0,
+                    task_definition="",
+                    task_type="other",
+                    tool_hints=[],
+                    memory_keywords=[],
+                    force_tool=False,
+                    todo_required=False,
+                    raw_output="[confirmation-cancel]",
+                    fast_reply=True,
+                    prompt_depth=PromptDepth.FAST,
+                    memory_scope=MemoryScope.PINNED_ONLY,
+                )
+                _intent_pre_set = True
+            # 如果是其他消息（不是确认也不是取消），由后续正常意图分析处理
+
+        if _intent_pre_set:
+            pass
+        elif self._is_sub_agent_call:
             _profile_hints = self._derive_tool_hints_from_profile()
             _requires_tools = _looks_like_external_tool_request(message)
 
@@ -5918,6 +5978,13 @@ class Agent:
                 _fast_handled = True
 
             if (
+                _intent
+                and getattr(_intent, "raw_output", "") == "[confirmation-cancel]"
+            ):
+                response_text = "任务已取消。有什么其他需要帮助的吗？"
+                _fast_handled = True
+
+            if (
                 _allow_lightweight_fast_reply
                 and _intent
                 and _intent.intent == _IT.CHAT
@@ -6014,6 +6081,16 @@ class Agent:
                     intent_result=_intent,
                     mode=mode,
                 )
+                # 如果本轮推理因 ask_user 退出，设置 session 的 awaiting_confirmation 标记
+                if (
+                    session
+                    and getattr(self.reasoning_engine, "_last_exit_reason", "") == "ask_user"
+                ):
+                    session.context.set_variable("awaiting_confirmation", True)
+                    logger.info(
+                        f"[Session:{session_id}] Set awaiting_confirmation flag "
+                        f"after ask_user exit (non-stream)"
+                    )
 
             # === flush 残留的 IM 进度消息，确保思维链先于回答到达 ===
             if gateway and session:
@@ -6474,6 +6551,21 @@ class Agent:
                 result_holder["ok"] = False
 
             if (
+                _intent
+                and getattr(_intent, "raw_output", "") == "[confirmation-cancel]"
+            ):
+                _reply_text = "任务已取消。有什么其他需要帮助的吗？"
+                yield {"type": "text_delta", "content": _reply_text}
+                yield {"type": "done"}
+                await self._finalize_session(
+                    response_text=_reply_text,
+                    session=session,
+                    session_id=session_id,
+                    task_monitor=task_monitor,
+                )
+                return
+
+            if (
                 _allow_lightweight_fast_reply
                 and _intent
                 and _intent.intent == _IT.CHAT
@@ -6646,6 +6738,17 @@ class Agent:
                 elif event.get("type") == "ask_user" and not _reply_text:
                     _reply_text = event.get("question", "")
                 yield event
+
+            # 如果本轮推理因 ask_user 退出，设置 session 的 awaiting_confirmation 标记，
+            # 使下一轮用户回复时 agent 能识别出"正在等待确认"状态，避免被 CHAT 快速路径忽略。
+            if (
+                session
+                and getattr(self.reasoning_engine, "_last_exit_reason", "") == "ask_user"
+            ):
+                session.context.set_variable("awaiting_confirmation", True)
+                logger.info(
+                    f"[Session:{session_id}] Set awaiting_confirmation flag after ask_user exit"
+                )
 
             # === 共享收尾（始终执行，即使回复文本为空也要记录 memory/trace） ===
             await self._finalize_session(
