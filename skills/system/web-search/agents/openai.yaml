@@ -1,9 +1,9 @@
 interface:
   display_name: Web Search
-  short_description: Search the web using DuckDuckGo
+  short_description: Search the web using Bing + DuckDuckGo
   default_prompt: Use $web-search
 i18n:
   zh:
     name: 网页搜索
-    description: 使用 DuckDuckGo 搜索网页，查找最新信息、验证事实或查阅文档。
+    description: Bing + DuckDuckGo 双引擎搜索网页（Bing 优先，DDG 兜底），查找最新信息、验证事实或查阅文档。
 

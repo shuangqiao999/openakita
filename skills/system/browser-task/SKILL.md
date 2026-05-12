@@ -68,7 +68,7 @@ browser_task(task="打开百度搜索福建福州，截图保存")
 | 目标网站有 opencli adapter | `opencli_run`（最可靠） | 确定性命令 + JSON 输出，复用 Chrome 登录态 |
 | 需要登录但无 adapter | `browser_task` → 手动组合 | 先尝试 browser_task，失败则用 click/type 手动操作 |
 | 仅需读取网页内容 | `web_fetch` | 最快最省资源，无需浏览器 |
-| 仅需搜索 | `web_search` | DuckDuckGo 直接搜索 |
+| 仅需搜索 | `web_search` | Bing + DDG 双引擎搜索 |
 | 复杂多步浏览器交互 | `browser_task` | 适合登录、填表、筛选等 |
 | 单步浏览器操作 | `browser_navigate`/`browser_click` 等 | 精确控制单个操作 |
 | 操作用户已登录的 Chrome | `call_mcp_tool("chrome-devtools", ...)` | 需用户 Chrome 开启调试端口 |

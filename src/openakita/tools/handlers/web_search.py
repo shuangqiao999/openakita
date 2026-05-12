@@ -1,7 +1,8 @@
 """
 Web Search 处理器
 
-直接使用 ddgs 库执行网络搜索，无需通过 MCP。
+搜索引擎优先级：Bing（中国可访问）> DuckDuckGo（兜底）
+使用 httpx 直接抓取 Bing / DDGS lib 访问 DuckDuckGo。
 """
 
 import asyncio
@@ -14,6 +15,32 @@ from ...config import settings
 
 logger = logging.getLogger(__name__)
 
+# ── Bing HTML 搜索 ────────────────────────────────────────
+# 中国网络环境下 Bing (cn.bing.com) 可直接访问，DDG 经常超时
+# Bing 作为主搜索引擎，DDG 作为最低优先级兜底
+
+_BING_SEARCH_URL = "https://cn.bing.com/search"
+_BING_NEWS_URL = "https://cn.bing.com/news/search"
+_BING_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0.0.0 Safari/537.36"
+)
+_BING_ALGO_RE = re.compile(
+    r'<li\s+class="b_algo"[^>]*>(.*?)</li>',
+    re.DOTALL,
+)
+_BING_TITLE_RE = re.compile(r'<h2[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>(.+?)</a>\s*</h2>', re.DOTALL)
+_BING_SNIPPET_RE = re.compile(r'<p[^>]*>(.*?)</p>', re.DOTALL)
+_BING_CAPTION_RE = re.compile(r'class="b_caption"[^>]*>(.*?)</div>', re.DOTALL)
+_BING_STRIP_RE = re.compile(r"<[^>]+>")
+_BING_ENTITY_RE = re.compile(r"&[a-z]+;")
+_BING_WS_RE = re.compile(r"\s+")
+
+# ── 安全过滤 ──────────────────────────────────────────────
+
+
+# ── 安全过滤 ──────────────────────────────────────────────
 
 _UNSAFE_SEARCH_KEYWORDS = (
     "色情",
@@ -43,13 +70,113 @@ _UNSAFE_DOMAIN_RE = re.compile(
 )
 
 
-def _sync_web_search(
+def _strip_html(text: str) -> str:
+    """去除 HTML 标签和实体，压缩空白。"""
+    text = _BING_STRIP_RE.sub(" ", text)
+    text = _BING_ENTITY_RE.sub(" ", text)
+    return _BING_WS_RE.sub(" ", text).strip()
+
+
+def _fetch_bing_html(url: str, params: dict) -> str | None:
+    """同步获取 Bing 搜索结果 HTML。"""
+    import httpx
+
+    try:
+        with httpx.Client(timeout=15, follow_redirects=True) as client:
+            resp = client.get(
+                url,
+                params=params,
+                headers={
+                    "User-Agent": _BING_UA,
+                    "Accept": "text/html,application/xhtml+xml",
+                    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                },
+            )
+            resp.raise_for_status()
+            return resp.text
+    except Exception as exc:
+        logger.warning(f"Bing search HTTP failed: {type(exc).__name__}: {exc}")
+        return None
+
+
+def _parse_bing_web_results(html: str, max_results: int) -> list[dict[str, Any]]:
+    """从 Bing 网页搜索 HTML 中提取结果。"""
+    results: list[dict[str, Any]] = []
+    blocks = _BING_ALGO_RE.findall(html)
+    if not blocks:
+        # 备用：匹配其他可能的 Bing 页面结构
+        alt_re = re.compile(
+            r'<li[^>]*class="b_algo[^"]*"[^>]*>(.+?)</li>', re.DOTALL
+        )
+        blocks = alt_re.findall(html)
+
+    for block in blocks[:max_results]:
+        title_match = _BING_TITLE_RE.search(block)
+        if not title_match:
+            continue
+        url = title_match.group(1)
+        title = _strip_html(title_match.group(2))
+
+        snippet = ""
+        snippet_match = _BING_SNIPPET_RE.search(block)
+        if snippet_match:
+            snippet = _strip_html(snippet_match.group(1))
+        if not snippet:
+            cap_match = _BING_CAPTION_RE.search(block)
+            if cap_match:
+                snippet = _strip_html(cap_match.group(1))
+
+        results.append({
+            "title": title,
+            "href": url,
+            "body": snippet,
+        })
+
+    return results
+
+
+def _sync_bing_web_search(
+    query: str,
+    max_results: int,
+) -> list[dict[str, Any]]:
+    """同步执行 Bing 网页搜索（在独立线程中调用）。"""
+    html = _fetch_bing_html(_BING_SEARCH_URL, {"q": query, "count": max_results})
+    if not html:
+        return []
+    return _parse_bing_web_results(html, max_results)
+
+
+def _sync_bing_news_search(
+    query: str,
+    max_results: int,
+) -> list[dict[str, Any]]:
+    """同步执行 Bing 新闻搜索（在独立线程中调用）。"""
+    html = _fetch_bing_html(_BING_NEWS_URL, {"q": query, "count": max_results})
+    if not html:
+        return []
+    # Bing 新闻搜索结果结构与普通搜索类似
+    results = _parse_bing_web_results(html, max_results)
+    for r in results:
+        if "date" not in r:
+            r["date"] = ""
+        if "source" not in r:
+            r["source"] = ""
+    return results
+
+
+# ── DDG 搜索（兜底）───────────────────────────────────────
+
+
+# ── DDG 搜索（兜底）───────────────────────────────────────
+
+
+def _sync_ddg_web_search(
     query: str,
     max_results: int,
     region: str,
     safesearch: str,
 ) -> list[dict[str, Any]]:
-    """在独立线程中执行同步的 ddgs 搜索（避免事件循环冲突）"""
+    """在独立线程中执行同步的 ddgs 搜索（兜底方案）"""
     from ddgs import DDGS
 
     with DDGS() as ddgs:
@@ -61,14 +188,14 @@ def _sync_web_search(
         )
 
 
-def _sync_news_search(
+def _sync_ddg_news_search(
     query: str,
     max_results: int,
     region: str,
     safesearch: str,
     timelimit: str | None,
 ) -> list[dict[str, Any]]:
-    """在独立线程中执行同步的 ddgs 新闻搜索"""
+    """在独立线程中执行同步的 ddgs 新闻搜索（兜底方案）"""
     from ddgs import DDGS
 
     with DDGS() as ddgs:
@@ -156,7 +283,7 @@ class WebSearchHandler:
             return f"Unknown web search tool: {tool_name}"
 
     async def _web_search(self, params: dict[str, Any]) -> str:
-        """搜索网页"""
+        """搜索网页 — 优先 Bing，兜底 DuckDuckGo"""
         query = params.get("query", "")
         if not query:
             return "错误：query 参数不能为空"
@@ -164,7 +291,25 @@ class WebSearchHandler:
         max_results = min(max(1, params.get("max_results", 5)), 20)
         region = params.get("region", "wt-wt")
         safesearch = params.get("safesearch", "moderate")
+        timeout_seconds = _resolve_attempt_timeout(params)
 
+        # ① 优先尝试 Bing（中国网络可直接访问）
+        try:
+            results = await _run_search_attempt(
+                _sync_bing_web_search,
+                timeout_seconds=timeout_seconds,
+                query=query,
+                max_results=max_results,
+            )
+            if results:
+                logger.info("Bing web search returned %d results for: %s", len(results), query)
+                return self._format_web_results(results)
+        except TimeoutError:
+            logger.info("Bing web search timed out, falling back to DDG")
+        except Exception as e:
+            logger.warning("Bing web search failed (%s), falling back to DDG", type(e).__name__)
+
+        # ② 兜底：DuckDuckGo
         try:
             from ddgs import DDGS  # noqa: F401
         except ImportError:
@@ -173,9 +318,8 @@ class WebSearchHandler:
             return f"错误：{import_or_hint('ddgs')}"
 
         try:
-            timeout_seconds = _resolve_attempt_timeout(params)
             results = await _run_search_attempt(
-                _sync_web_search,
+                _sync_ddg_web_search,
                 timeout_seconds=timeout_seconds,
                 query=query,
                 max_results=max_results,
@@ -184,19 +328,19 @@ class WebSearchHandler:
             )
             return self._format_web_results(results)
         except TimeoutError:
-            logger.warning("Web search attempt timed out after %ss: %s", timeout_seconds, query)
+            logger.warning("DDG web search timed out after %ss: %s", timeout_seconds, query)
             return _format_search_timeout("web", timeout_seconds)
         except Exception as e:
             tb = traceback.format_exc()
-            logger.error(f"Web search failed: {type(e).__name__}: {e}\n{tb}")
+            logger.error(f"All web search engines failed: {type(e).__name__}: {e}\n{tb}")
             return (
-                "搜索暂时不可用（网络无法访问 DuckDuckGo）。"
+                "搜索暂时不可用（Bing 和 DuckDuckGo 均无法访问）。"
                 "请直接告知用户\"当前无法联网搜索\"，建议稍后重试或改用其他工具，"
                 "不要反复重试，也不要伪造搜索结果。"
             )
 
     async def _news_search(self, params: dict[str, Any]) -> str:
-        """搜索新闻"""
+        """搜索新闻 — 优先 Bing，兜底 DuckDuckGo"""
         query = params.get("query", "")
         if not query:
             return "错误：query 参数不能为空"
@@ -205,7 +349,25 @@ class WebSearchHandler:
         region = params.get("region", "wt-wt")
         safesearch = params.get("safesearch", "moderate")
         timelimit = params.get("timelimit")
+        timeout_seconds = _resolve_attempt_timeout(params)
 
+        # ① 优先尝试 Bing（中国网络可直接访问）
+        try:
+            results = await _run_search_attempt(
+                _sync_bing_news_search,
+                timeout_seconds=timeout_seconds,
+                query=query,
+                max_results=max_results,
+            )
+            if results:
+                logger.info("Bing news search returned %d results for: %s", len(results), query)
+                return self._format_news_results(results)
+        except TimeoutError:
+            logger.info("Bing news search timed out, falling back to DDG")
+        except Exception as e:
+            logger.warning("Bing news search failed (%s), falling back to DDG", type(e).__name__)
+
+        # ② 兜底：DuckDuckGo
         try:
             from ddgs import DDGS  # noqa: F401
         except ImportError:
@@ -214,9 +376,8 @@ class WebSearchHandler:
             return f"错误：{import_or_hint('ddgs')}"
 
         try:
-            timeout_seconds = _resolve_attempt_timeout(params)
             results = await _run_search_attempt(
-                _sync_news_search,
+                _sync_ddg_news_search,
                 timeout_seconds=timeout_seconds,
                 query=query,
                 max_results=max_results,
@@ -226,13 +387,13 @@ class WebSearchHandler:
             )
             return self._format_news_results(results)
         except TimeoutError:
-            logger.warning("News search attempt timed out after %ss: %s", timeout_seconds, query)
+            logger.warning("DDG news search timed out after %ss: %s", timeout_seconds, query)
             return _format_search_timeout("news", timeout_seconds)
         except Exception as e:
             tb = traceback.format_exc()
-            logger.error(f"News search failed: {type(e).__name__}: {e}\n{tb}")
+            logger.error(f"All news search engines failed: {type(e).__name__}: {e}\n{tb}")
             return (
-                "新闻搜索暂时不可用（网络无法访问 DuckDuckGo）。"
+                "新闻搜索暂时不可用（Bing 和 DuckDuckGo 均无法访问）。"
                 "请直接告知用户\"当前无法联网搜索\"，建议稍后重试或改用其他工具，"
                 "不要反复重试，也不要伪造搜索结果。"
             )

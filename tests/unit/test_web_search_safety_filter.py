@@ -83,12 +83,24 @@ async def test_web_search_attempt_timeout_is_soft_guidance(monkeypatch):
         time.sleep(0.05)
         return [{"title": "late", "href": "https://example.com", "body": "late"}]
 
-    monkeypatch.setattr(web_search_module, "_sync_web_search", slow_search)
+    def empty_bing(**kwargs):
+        return []
 
-    result = await WebSearchHandler()._web_search(
-        {"query": "slow source", "timeout_seconds": 0.01}
-    )
+    monkeypatch.setattr(web_search_module, "_sync_bing_web_search", empty_bing)
+    monkeypatch.setattr(web_search_module, "_sync_ddg_web_search", slow_search)
 
-    assert "不代表任务失败" in result
-    assert "基于已获得的信息继续" in result
-    assert "不要反复用完全相同的查询空转" in result
+    import sys
+    from unittest.mock import MagicMock
+    mock_ddgs = MagicMock()
+    mock_ddgs.DDGS = MagicMock
+    sys.modules["ddgs"] = mock_ddgs
+
+    try:
+        result = await WebSearchHandler()._web_search(
+            {"query": "slow source", "timeout_seconds": 0.01}
+        )
+        assert "不代表任务失败" in result
+        assert "基于已获得的信息继续" in result
+        assert "不要反复用完全相同的查询空转" in result
+    finally:
+        sys.modules.pop("ddgs", None)

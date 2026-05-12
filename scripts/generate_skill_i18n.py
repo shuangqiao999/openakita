@@ -318,7 +318,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
     },
     "news-search": {
         "name": "新闻搜索",
-        "description": "使用 DuckDuckGo 搜索新闻，查找最新新闻、时事动态或突发事件。",
+        "description": "Bing + DuckDuckGo 双引擎搜索新闻（Bing 优先，DDG 兜底），查找最新新闻、时事动态或突发事件。",
     },
     "read-file": {
         "name": "读取文件",
@@ -382,7 +382,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
     },
     "web-search": {
         "name": "网页搜索",
-        "description": "使用 DuckDuckGo 搜索网页，查找最新信息、验证事实或查阅文档。",
+        "description": "Bing + DuckDuckGo 双引擎搜索网页（Bing 优先，DDG 兜底），查找最新信息、验证事实或查阅文档。",
     },
     "write-file": {
         "name": "写入文件",

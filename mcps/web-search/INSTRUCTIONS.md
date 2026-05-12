@@ -1,6 +1,6 @@
 # Web Search MCP Server
 
-基于 DuckDuckGo 的网络搜索服务，无需 API Key。
+Bing + DuckDuckGo 双引擎搜索服务（Bing 优先，DDG 兜底），无需 API Key。
 
 ## 可用工具
 

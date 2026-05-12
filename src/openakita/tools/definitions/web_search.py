@@ -32,7 +32,7 @@ WEB_SEARCH_TOOLS = [
             },
             {"name": "news_search", "relation": "专门搜索新闻时改用 news_search"},
         ],
-        "detail": """使用 DuckDuckGo 搜索网页。
+        "detail": """Bing + DuckDuckGo 双引擎搜索网页（Bing 优先，DDG 兜底）。
 
 **适用场景**：
 - 查找最新信息
@@ -80,8 +80,8 @@ WEB_SEARCH_TOOLS = [
     {
         "name": "news_search",
         "category": "Web Search",
-        "description": "Search news using DuckDuckGo. Use when you need to find recent news articles, current events, or breaking news. Returns titles, sources, dates, URLs, and excerpts.",
-        "detail": """使用 DuckDuckGo 搜索新闻。
+        "description": "Search news using Bing + DuckDuckGo dual engines. Use when you need to find recent news articles, current events, or breaking news. Returns titles, sources, dates, URLs, and excerpts.",
+        "detail": """Bing + DuckDuckGo 双引擎搜索新闻。
 
 **适用场景**：
 - 查找最新新闻

@@ -1,6 +1,6 @@
 {
     "name": "news_search",
-    "description": "Search news using DuckDuckGo. Returns recent news articles with title, source, date, URL and excerpt. Use for current events and news queries.",
+    "description": "Search news using Bing + DuckDuckGo dual engines (Bing first, DDG as fallback). Returns recent news articles with title, source, date, URL and excerpt. Use for current events and news queries.",
     "inputSchema": {
         "type": "object",
         "properties": {

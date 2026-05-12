@@ -1,6 +1,6 @@
 {
     "name": "web_search",
-    "description": "Search the web using DuckDuckGo. Returns webpage results with title, URL and snippet. Use for general information queries.",
+    "description": "Search the web using Bing + DuckDuckGo dual engines (Bing first, DDG as fallback). Returns webpage results with title, URL and snippet. Use for general information queries.",
     "inputSchema": {
         "type": "object",
         "properties": {

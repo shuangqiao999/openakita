@@ -1,6 +1,6 @@
 ---
 name: news-search
-description: Search news using DuckDuckGo. Use when you need to find recent news articles, current events, or breaking news. Returns titles, sources, dates, URLs, and excerpts.
+description: Search news using Bing + DuckDuckGo dual engines (Bing first, DDG as fallback). Use when you need to find recent news articles, current events, or breaking news. Returns titles, sources, dates, URLs, and excerpts.
 system: true
 handler: web_search
 tool-name: news_search
@@ -9,7 +9,7 @@ category: Web Search
 
 # News Search
 
-使用 DuckDuckGo 搜索新闻，获取最新资讯。
+Bing + DuckDuckGo 双引擎搜索新闻（Bing 优先，DDG 兜底），获取最新资讯。
 
 ## Parameters
 
