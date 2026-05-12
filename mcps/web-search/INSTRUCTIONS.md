@@ -1,6 +1,6 @@
 # Web Search MCP Server
 
-Bing + DuckDuckGo 双引擎搜索服务（Bing 优先，DDG 兜底），无需 API Key。
+六引擎并行搜索服务 (Bing/百度/360/搜狗/神马/头条)，DDG 兜底，无需 API Key。
 
 ## 可用工具
 

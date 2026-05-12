@@ -1,6 +1,6 @@
 ---
 name: web-search
-description: Search the web using Bing + DuckDuckGo dual engines (Bing first, DDG as fallback). Use when you need to find current information, verify facts, look up documentation, or answer questions requiring up-to-date knowledge. Returns titles, URLs, and snippets.
+description: Search the web using 6 engines in parallel (Bing/Baidu/360/Sogou/Shenma/Toutiao), merged & deduped to top 8 results. Use when you need to find current information, verify facts, look up documentation, or answer questions requiring up-to-date knowledge.
 system: true
 handler: web_search
 tool-name: web_search
@@ -9,7 +9,7 @@ category: Web Search
 
 # Web Search
 
-Bing + DuckDuckGo 双引擎搜索网页（Bing 优先，DDG 兜底），获取最新信息。
+六引擎并行搜索网页 (Bing/百度/360/搜狗/神马/头条)，合并去重取前8条，获取最新信息。
 
 ## Parameters
 

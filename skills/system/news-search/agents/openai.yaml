@@ -1,9 +1,9 @@
 interface:
   display_name: News Search
-  short_description: Search news using Bing + DuckDuckGo
+  short_description: Search news using 6 engines parallel
   default_prompt: Use $news-search
 i18n:
   zh:
     name: 新闻搜索
-    description: Bing + DuckDuckGo 双引擎搜索新闻（Bing 优先，DDG 兜底），查找最新新闻、时事动态或突发事件。
+    description: 六引擎并行搜索新闻 (Bing/百度/360/搜狗/神马/头条)，合并去重取前8条，查找最新新闻、时事动态或突发事件。
 
