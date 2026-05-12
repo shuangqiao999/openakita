@@ -254,6 +254,13 @@ class Settings(BaseSettings):
             "超时只跳过本次搜索等待并把结果交给模型继续决策，不判定整个任务失败"
         ),
     )
+    web_search_proxy: str = Field(
+        default="",
+        description=(
+            "web_search 使用的 HTTP/HTTPS 代理地址，如 http://127.0.0.1:7890。"
+            "留空则自动读取 HTTP_PROXY/HTTPS_PROXY 环境变量。"
+        ),
+    )
 
     allow_parallel_tools_with_interrupt_checks: bool = Field(
         default=False,

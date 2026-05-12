@@ -12,7 +12,9 @@ Web Search 处理器
 import asyncio
 import json
 import logging
+import os
 import re
+import socket
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -29,6 +31,9 @@ _ENGINE_TIMEOUT = 10.0       # 单引擎 HTTP 请求超时（秒）
 _RETRY_DELAY = 0.5            # 重试间隔（秒）
 _MAX_RETRIES = 1              # 最大重试次数
 _MERGE_LIMIT = 8              # 合并去重后取前 N 条
+
+# 设置 DNS 解析超时，避免在某些网络环境下 socket.gethostbyname 无限阻塞
+socket.setdefaulttimeout(5.0)
 
 _UA_DESKTOP = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -74,7 +79,7 @@ def _is_valid_result(r: dict[str, Any]) -> bool:
 
 
 def _fetch_html(url: str, params: dict, *, headers: dict | None = None, timeout: float = _ENGINE_TIMEOUT) -> str | None:
-    """同步 HTTP GET，含超时控制。"""
+    """同步 HTTP GET，含超时控制、代理支持、DNS 超时。"""
     import httpx
 
     default_headers = {
@@ -85,12 +90,30 @@ def _fetch_html(url: str, params: dict, *, headers: dict | None = None, timeout:
     if headers:
         default_headers.update(headers)
 
+    # 读取代理配置：优先环境变量，其次 settings 配置
+    proxies = None
+    http_proxy = os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
+    https_proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+    if not http_proxy:
+        _cfg_proxy = getattr(settings, "web_search_proxy", None)
+        if _cfg_proxy:
+            http_proxy = https_proxy = str(_cfg_proxy).strip()
+    if http_proxy or https_proxy:
+        proxies = {}
+        if http_proxy:
+            proxies["http://"] = http_proxy
+        if https_proxy:
+            proxies["https://"] = https_proxy
+
     try:
-        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        with httpx.Client(
+            timeout=timeout, follow_redirects=True, proxies=proxies,
+        ) as client:
             resp = client.get(url, params=params, headers=default_headers)
             resp.raise_for_status()
             return resp.text
-    except Exception:
+    except Exception as exc:
+        logger.debug(f"[HTTP] {url.split('?')[0]}: {type(exc).__name__}: {exc}")
         return None
 
 
@@ -497,11 +520,15 @@ async def _run_search_attempt(func, *, timeout_seconds: float, **kwargs) -> list
 
 def _all_failed_response(kind: str) -> str:
     label = "新闻" if kind == "news" else "网页"
+    proxy_hint = ""
+    if os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy"):
+        proxy_hint = " 当前已配置代理，若代理不可用请检查代理设置。"
     return json.dumps({
         "success": False,
         "message": (
             f"所有{label}搜索引擎（Bing/百度/360/搜狗/神马/头条 + DuckDuckGo）"
-            f"均无法获取结果。请检查网络连接或稍后再试。"
+            f"均无法获取结果。请检查网络连接（设置 HTTP_PROXY 环境变量）或稍后再试。"
+            f"{proxy_hint}"
         ),
         "results": [],
     }, ensure_ascii=False)
@@ -514,8 +541,29 @@ class WebSearchHandler:
 
     TOOLS = ["web_search", "news_search"]
 
+    CHECK_HOSTS = ["cn.bing.com", "www.baidu.com"]  # 预检目标
+
     def __init__(self, agent: Any = None):
         self.agent = agent
+
+    @staticmethod
+    def check_network() -> tuple[bool, str]:
+        """网络预检：尝试解析域名并建立 TCP 连接，返回 (可达, 详情)。"""
+        import socket as _sock
+
+        for host in WebSearchHandler.CHECK_HOSTS:
+            try:
+                addr = _sock.getaddrinfo(host, 443, _sock.AF_INET, _sock.SOCK_STREAM)
+                if addr:
+                    return True, f"{host} 可达"
+            except Exception as exc:
+                logger.debug(f"[NetworkCheck] {host}: {type(exc).__name__}: {exc}")
+        # 如果 DNS 解析全部失败，检查代理
+        http_proxy = os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
+        https_proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+        if http_proxy or https_proxy:
+            return False, "DNS 解析失败，但检测到代理仍在。请确认代理可用。"
+        return False, "DNS 解析失败，请检查网络连接或设置 HTTP_PROXY 环境变量。"
 
     async def handle(self, tool_name: str, params: dict[str, Any]) -> str:
         if tool_name == "web_search":
@@ -540,6 +588,15 @@ class WebSearchHandler:
         safesearch = params.get("safesearch", "moderate")
         timelimit = params.get("timelimit")
         overall_timeout = _resolve_timeout(params)
+
+        # 网络预检（首次搜索时）
+        if not getattr(WebSearchHandler, "_net_checked", False):
+            WebSearchHandler._net_checked = True
+            ok, msg = WebSearchHandler.check_network()
+            if not ok:
+                logger.warning(f"[WebSearch] Network pre-check failed: {msg}")
+            else:
+                logger.info(f"[WebSearch] Network pre-check OK: {msg}")
 
         search_t0 = time.perf_counter()
 

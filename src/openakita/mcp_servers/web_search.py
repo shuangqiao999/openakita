@@ -13,7 +13,9 @@ Web Search MCP 服务器
 
 import json
 import logging
+import os
 import re
+import socket
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -30,6 +32,9 @@ _ENGINE_TIMEOUT = 10.0
 _RETRY_DELAY = 0.5
 _MAX_RETRIES = 1
 _MERGE_LIMIT = 8
+
+# 设置 DNS 解析超时，避免在某些网络环境下 socket.gethostbyname 无限阻塞
+socket.setdefaulttimeout(5.0)
 
 _UA_DESKTOP = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -71,6 +76,7 @@ def _is_valid_result(r: dict[str, Any]) -> bool:
 
 
 def _fetch_html(url: str, params: dict, *, headers: dict | None = None, timeout: float = _ENGINE_TIMEOUT) -> str | None:
+    """同步 HTTP GET，含超时控制、代理支持、DNS 超时。"""
     import httpx
     default_headers = {
         "User-Agent": _UA_DESKTOP,
@@ -79,12 +85,27 @@ def _fetch_html(url: str, params: dict, *, headers: dict | None = None, timeout:
     }
     if headers:
         default_headers.update(headers)
+
+    # 读取代理配置：优先环境变量
+    proxies = None
+    http_proxy = os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
+    https_proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+    if http_proxy or https_proxy:
+        proxies = {}
+        if http_proxy:
+            proxies["http://"] = http_proxy
+        if https_proxy:
+            proxies["https://"] = https_proxy
+
     try:
-        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        with httpx.Client(
+            timeout=timeout, follow_redirects=True, proxies=proxies,
+        ) as client:
             resp = client.get(url, params=params, headers=default_headers)
             resp.raise_for_status()
             return resp.text
-    except Exception:
+    except Exception as exc:
+        logger.debug(f"[HTTP] {url.split('?')[0]}: {type(exc).__name__}: {exc}")
         return None
 
 
@@ -444,17 +465,43 @@ def _format_news_results(results: list) -> str:
 
 def _all_failed_json(kind: str) -> str:
     label = "新闻" if kind == "news" else "网页"
+    proxy_hint = ""
+    if os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy"):
+        proxy_hint = " 当前已配置代理，若代理不可用请检查代理设置。"
     return json.dumps({
         "success": False,
-        "message": f"所有{label}搜索引擎（Bing/百度/360/搜狗/神马/头条 + DDG）均无结果。请检查网络后重试。",
+        "message": (
+            f"所有{label}搜索引擎（Bing/百度/360/搜狗/神马/头条 + DDG）均无结果。"
+            f"请检查网络连接（设置 HTTP_PROXY 环境变量）或稍后再试。{proxy_hint}"
+        ),
         "results": [],
     }, ensure_ascii=False)
+
+
+_CHECKED_NETWORK = False
+
+
+def _check_network() -> None:
+    """网络预检：尝试解析外网域名，仅首次调用时执行。"""
+    global _CHECKED_NETWORK
+    if _CHECKED_NETWORK:
+        return
+    _CHECKED_NETWORK = True
+    for host in ("cn.bing.com", "www.baidu.com"):
+        try:
+            socket.getaddrinfo(host, 443, socket.AF_INET, socket.SOCK_STREAM)
+            logger.info(f"[NetworkCheck] {host} 可达")
+            return
+        except Exception as exc:
+            logger.debug(f"[NetworkCheck] {host}: {type(exc).__name__}: {exc}")
+    logger.warning("[NetworkCheck] DNS 解析外网域名失败，搜索可能无法返回结果。请检查网络或设置 HTTP_PROXY。")
 
 
 @mcp.tool()
 def web_search(query: str, max_results: int = 5, region: str = "wt-wt", safesearch: str = "moderate") -> str:
     """Search the web — 6 engines parallel with retry, DDG fallback."""
     max_results = min(max(1, max_results), 20)
+    _check_network()
 
     try:
         results = _parallel_search(query, max_results)
@@ -485,6 +532,7 @@ def web_search(query: str, max_results: int = 5, region: str = "wt-wt", safesear
 def news_search(query: str, max_results: int = 5, region: str = "wt-wt", safesearch: str = "moderate", timelimit: str | None = None) -> str:
     """Search news — 6 engines parallel with retry, DDG fallback."""
     max_results = min(max(1, max_results), 20)
+    _check_network()
 
     try:
         results = _parallel_search(query, max_results)
