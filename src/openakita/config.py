@@ -139,6 +139,10 @@ class Settings(BaseSettings):
         default=1,
         description="工具执行后无可见文本时的最大追问次数（0=禁用）",
     )
+    confirmation_timeout_seconds: int = Field(
+        default=300,
+        description="ask_user 等待用户确认的超时时间（秒），超时后自动清除等待状态",
+    )
 
     # === LLM 全局限流 ===
     # 所有 Agent（主子 Agent 所有层级）共享的请求限流机制。

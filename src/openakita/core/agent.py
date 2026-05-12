@@ -4684,6 +4684,7 @@ class Agent:
         # 6.5 确认等待状态检查：如果上一轮 agent 发出了 ask_user（等待用户确认），
         #     本轮用户回复了确认词（"确认"/"好的"等），则跳过意图分析，直接进入
         #     全量 Agent 推理流程（避免被 CHAT 快速路径忽略待执行任务）。
+        #     同时处理：超时自动清除、任务快照恢复、系统引导提示注入。
         _intent_pre_set = False
         if session and hasattr(session, "context") and session.context.get_variable(
             "awaiting_confirmation", False
@@ -4691,12 +4692,79 @@ class Agent:
             from .confirmation_state import _CANCEL_WORDS, _CONFIRM_WORDS
 
             _normalized = message.strip().lower()
-            if _normalized in _CONFIRM_WORDS:
+
+            # 超时检查：如果标志存在超过 confirmation_timeout_seconds，自动清除
+            _since = session.context.get_variable("awaiting_confirmation_since", 0.0)
+            _timeout = getattr(settings, "confirmation_timeout_seconds", 300)
+            _timed_out = _since and (time.time() - float(_since)) > _timeout
+
+            if _timed_out:
+                logger.info(
+                    f"[Session:{session_id}] User confirmation request timed out "
+                    f"(age={time.time() - float(_since):.0f}s > {_timeout}s), "
+                    f"clearing pending state"
+                )
+                session.context.set_variable("awaiting_confirmation", False)
+                session.context.set_variable("awaiting_confirmation_since", None)
+                session.context.set_variable("pending_task_snapshot", None)
+                # 超时后继续正常意图分析
+
+            elif _normalized in _CONFIRM_WORDS:
                 logger.info(
                     f"[Session:{session_id}] User confirmed pending ask_user, "
                     f"forcing TASK intent (skip analyzer)"
                 )
+                # 清除等待状态
                 session.context.set_variable("awaiting_confirmation", False)
+                session.context.set_variable("awaiting_confirmation_since", None)
+                # 恢复任务快照：将之前保存的上下文注入到 session_messages
+                _snapshot = session.context.get_variable("pending_task_snapshot", None)
+                session.context.set_variable("pending_task_snapshot", None)
+                if isinstance(_snapshot, dict):
+                    _prev_assist = _snapshot.get("assistant_message", "")
+                    if _prev_assist:
+                        # 将上轮助手确认消息重新追加（仅追加最关键的一条，避免重复）
+                        session_messages = list(session_messages)
+                        # 检查最后一条助手消息是否已是确认消息，避免重复
+                        _last_has_ask = False
+                        for _m in reversed(session_messages):
+                            if _m.get("role") == "assistant":
+                                _last_has_ask = (
+                                    "确认" in str(_m.get("content", ""))[:200]
+                                )
+                                break
+                        if not _last_has_ask:
+                            session_messages.append(
+                                {
+                                    "role": "assistant",
+                                    "content": _prev_assist,
+                                    "timestamp": datetime.now().isoformat(),
+                                }
+                            )
+                            logger.info(
+                                f"[Session:{session_id}] Restored assistant "
+                                f"confirmation message from snapshot"
+                            )
+                    # 注入系统引导提示
+                    _inject_msg = {
+                        "role": "system",
+                        "content": (
+                            "用户已确认你的请求。请继续执行之前的任务，"
+                            "不要重复确认，不要重新介绍自己，"
+                            "直接基于已有的上下文完成工作。"
+                        ),
+                        "timestamp": datetime.now().isoformat(),
+                    }
+                    session_messages = list(session_messages)
+                    # 插入到倒数第二条（当前用户消息之前，assistant 之后）
+                    if len(session_messages) >= 2:
+                        session_messages.insert(-1, _inject_msg)
+                    else:
+                        session_messages.append(_inject_msg)
+                    logger.info(
+                        f"[Session:{session_id}] Injected resume system prompt "
+                        f"after confirmation"
+                    )
                 intent_result = IntentResult(
                     intent=IntentType.TASK,
                     confidence=1.0,
@@ -4711,11 +4779,15 @@ class Agent:
                     raw_output="[confirmation-resume]",
                 )
                 _intent_pre_set = True
+
             elif _normalized in _CANCEL_WORDS:
                 logger.info(
                     f"[Session:{session_id}] User cancelled pending ask_user"
                 )
+                # 清除所有等待状态和快照
                 session.context.set_variable("awaiting_confirmation", False)
+                session.context.set_variable("awaiting_confirmation_since", None)
+                session.context.set_variable("pending_task_snapshot", None)
                 intent_result = IntentResult(
                     intent=IntentType.CHAT,
                     confidence=1.0,
@@ -4732,6 +4804,7 @@ class Agent:
                 )
                 _intent_pre_set = True
             # 如果是其他消息（不是确认也不是取消），由后续正常意图分析处理
+            # 注意：不清除 awaiting_confirmation，允许用户稍后回复确认
 
         if _intent_pre_set:
             pass
@@ -6086,10 +6159,40 @@ class Agent:
                     session
                     and getattr(self.reasoning_engine, "_last_exit_reason", "") == "ask_user"
                 ):
+                    _now = time.time()
                     session.context.set_variable("awaiting_confirmation", True)
+                    session.context.set_variable("awaiting_confirmation_since", _now)
+                    # 保存任务上下文快照：最后一条 assistant 消息 + ReAct trace 摘要
+                    _last_assist = ""
+                    _msgs = session.context.messages
+                    for _m in reversed(_msgs):
+                        if _m.get("role") == "assistant":
+                            _last_assist = str(_m.get("content", ""))[:2000]
+                            break
+                    _trace = list(
+                        getattr(self.reasoning_engine, "_last_react_trace", None) or []
+                    )
+                    _tool_summary: list[dict] = []
+                    for _it in _trace[-3:]:
+                        for _tc in _it.get("tool_calls", [])[-5:]:
+                            _tool_summary.append(
+                                {
+                                    "name": _tc.get("name", ""),
+                                    "args": _tc.get("args", {}),
+                                    "result_preview": str(
+                                        _tc.get("result", "")
+                                    )[:500],
+                                }
+                            )
+                    snapshot = {
+                        "assistant_message": _last_assist,
+                        "tool_calls": _tool_summary,
+                        "timestamp": _now,
+                    }
+                    session.context.set_variable("pending_task_snapshot", snapshot)
                     logger.info(
                         f"[Session:{session_id}] Set awaiting_confirmation flag "
-                        f"after ask_user exit (non-stream)"
+                        f"with snapshot (non-stream), tool_count={len(_tool_summary)}"
                     )
 
             # === flush 残留的 IM 进度消息，确保思维链先于回答到达 ===
@@ -6745,9 +6848,40 @@ class Agent:
                 session
                 and getattr(self.reasoning_engine, "_last_exit_reason", "") == "ask_user"
             ):
+                _now = time.time()
                 session.context.set_variable("awaiting_confirmation", True)
+                session.context.set_variable("awaiting_confirmation_since", _now)
+                # 保存任务上下文快照：最后一条 assistant 消息 + ReAct trace 摘要
+                _last_assist = ""
+                _msgs = session.context.messages
+                for _m in reversed(_msgs):
+                    if _m.get("role") == "assistant":
+                        _last_assist = str(_m.get("content", ""))[:2000]
+                        break
+                _trace = list(
+                    getattr(self.reasoning_engine, "_last_react_trace", None) or []
+                )
+                _tool_summary: list[dict] = []
+                for _it in _trace[-3:]:
+                    for _tc in _it.get("tool_calls", [])[-5:]:
+                        _tool_summary.append(
+                            {
+                                "name": _tc.get("name", ""),
+                                "args": _tc.get("args", {}),
+                                "result_preview": str(
+                                    _tc.get("result", "")
+                                )[:500],
+                            }
+                        )
+                snapshot = {
+                    "assistant_message": _last_assist,
+                    "tool_calls": _tool_summary,
+                    "timestamp": _now,
+                }
+                session.context.set_variable("pending_task_snapshot", snapshot)
                 logger.info(
-                    f"[Session:{session_id}] Set awaiting_confirmation flag after ask_user exit"
+                    f"[Session:{session_id}] Set awaiting_confirmation flag "
+                    f"with snapshot (stream), tool_count={len(_tool_summary)}"
                 )
 
             # === 共享收尾（始终执行，即使回复文本为空也要记录 memory/trace） ===
