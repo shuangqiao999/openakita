@@ -19,7 +19,7 @@ priority: high
 │   └─ web_fetch（最快，无需浏览器）
 │
 ├─ 只需搜索信息
-│   └─ web_search（Bing + DDG 双引擎搜索）
+│   └─ web_search（六引擎并行搜索）
 │
 ├─ 需要交互（点击、填表、登录）
 │   │

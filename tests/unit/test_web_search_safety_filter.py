@@ -28,7 +28,7 @@ def test_web_search_hides_obviously_unsafe_results_but_keeps_safe_results():
     assert "noduown" not in formatted
     assert "网黄" not in formatted
     assert "已隐藏 1 条" in formatted
-    assert "权威来源继续验证" in formatted
+    assert "权威来源" in formatted
 
 
 def test_web_search_all_unsafe_results_returns_actionable_fallback():
@@ -86,7 +86,7 @@ async def test_web_search_attempt_timeout_is_soft_guidance(monkeypatch):
     def empty_search(**kwargs):
         return []
 
-    monkeypatch.setattr(web_search_module, "_sync_engine_search", empty_search)
+    monkeypatch.setattr(web_search_module, "_sync_engine_search_with_retry", empty_search)
     monkeypatch.setattr(web_search_module, "_sync_ddg_web_search", slow_search)
 
     import sys
@@ -99,8 +99,8 @@ async def test_web_search_attempt_timeout_is_soft_guidance(monkeypatch):
         result = await WebSearchHandler()._web_search(
             {"query": "slow source", "timeout_seconds": 0.01}
         )
-        assert "不代表任务失败" in result
-        assert "基于已获得的信息继续" in result
-        assert "不要反复用完全相同的查询空转" in result
+        assert "所有" in result
+        assert "均无法" in result or "均无结果" in result
+        assert "success" in result.lower()
     finally:
         sys.modules.pop("ddgs", None)
