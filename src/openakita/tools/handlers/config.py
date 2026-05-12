@@ -102,6 +102,10 @@ _CATEGORY_RULES: list[tuple[tuple[str, ...], str]] = [
         "Agent",
     ),
     (("thinking_",), "Agent/思考模式"),
+    (("llm_rate_limit", "llm_max_concurrent"), "Agent/LLM 限流"),
+    (("delegate_max_parallel",), "Agent/多 Agent"),
+    (("agent_state_ttl", "task_queue_cleanup_"), "Agent/多 Agent"),
+    (("enable_adaptive_concurrency",), "Agent/自适应"),
     (("im_chain_push",), "IM/思维链推送"),
     (("progress_timeout", "hard_timeout"), "Agent/超时"),
     (("log_",), "日志"),
@@ -572,6 +576,11 @@ class ConfigHandler:
         "max_iterations": (15, 10000, "最大迭代次数范围 15~10000，推荐 100~300"),
         "progress_timeout_seconds": (0, None, "无进展超时可设 0=禁用；非 0 时建议至少 60 秒"),
         "tool_max_parallel": (1, 32, "并行工具数范围 1~32"),
+        "llm_rate_limit_rpm": (0, 100000, "0=不限制，建议按 API 限额的 80% 设置"),
+        "llm_max_concurrent": (1, 64, "最大并发 LLM 请求数 1~64"),
+        "delegate_max_parallel": (1, 20, "并行委派子任务数 1~20"),
+        "agent_state_ttl": (5, 600, "子 Agent 状态保留时间 5~600 秒"),
+        "task_queue_cleanup_interval": (10, 600, "清理间隔 10~600 秒"),
     }
 
     def _check_int_constraints(self, field_name: str, value: int) -> str | None:

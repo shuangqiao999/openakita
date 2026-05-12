@@ -1,7 +1,12 @@
 """
 Priority TaskQueue for multi-agent task management.
 
-Provides async priority-based task scheduling with cancellation support.
+Supports:
+- Priority-based scheduling (URGENT > HIGH > NORMAL > LOW > BACKGROUND)
+- DAG dependency resolution via TaskGraph
+- Work-stealing: idle slots can pull from other queues
+- Cancellation support
+- Auto-cleanup of stale entries
 """
 
 import asyncio
@@ -18,8 +23,6 @@ logger = logging.getLogger(__name__)
 
 
 class Priority(IntEnum):
-    """Task priority levels. Lower value = higher priority."""
-
     URGENT = 0
     HIGH = 1
     NORMAL = 2
@@ -29,30 +32,33 @@ class Priority(IntEnum):
 
 @dataclass(order=True)
 class QueuedTask:
-    """A task in the priority queue."""
-
     priority: int
     created_at: float = field(compare=True)
     task_id: str = field(default_factory=lambda: f"qt_{uuid.uuid4().hex[:10]}", compare=False)
     agent_profile_id: str = field(default="default", compare=False)
     session_key: str = field(default="", compare=False)
     payload: dict = field(default_factory=dict, compare=False)
+    depends_on: list[str] = field(default_factory=list, compare=False)
     cancelled: bool = field(default=False, compare=False)
 
 
 class TaskQueue:
-    """
-    Async priority task queue with cancellation and metrics.
+    """Async priority task queue with DAG support, work-stealing, and metrics.
 
     Usage:
-        queue = TaskQueue(max_concurrent=3)
+        queue = TaskQueue(max_concurrent=3, cleanup_interval=60)
         await queue.start()
-        task_id = await queue.enqueue("session_key", "agent_id", payload, Priority.NORMAL)
-        result = await queue.wait_for(task_id)
+        tid = await queue.enqueue("sess", "agent", payload, Priority.NORMAL, depends_on=[])
+        result = await queue.wait_for(tid)
         await queue.stop()
     """
 
-    def __init__(self, max_concurrent: int = 5):
+    def __init__(
+        self,
+        max_concurrent: int = 5,
+        cleanup_interval: int = 60,
+        enable_work_stealing: bool = False,
+    ):
         self._heap: list[QueuedTask] = []
         self._lock = asyncio.Lock()
         self._not_empty = asyncio.Event()
@@ -62,53 +68,67 @@ class TaskQueue:
         self._handler: Callable[[QueuedTask], Awaitable[Any]] | None = None
         self._running = False
         self._worker_task: asyncio.Task | None = None
+        self._cleanup_task: asyncio.Task | None = None
         self._total_enqueued = 0
         self._total_completed = 0
         self._total_failed = 0
         self._total_cancelled = 0
+        self._total_stolen = 0
+
+        self._completed_ids: set[str] = set()
+        self._dependency_map: dict[str, list[str]] = {}
+
+        self._cleanup_interval = cleanup_interval
+
+        self._steal_from: list[TaskQueue] = []
+        self._enable_work_stealing = enable_work_stealing
 
     def set_handler(self, handler: Callable[[QueuedTask], Awaitable[Any]]) -> None:
-        """Set the function that processes each task."""
         self._handler = handler
 
+    def add_steal_target(self, other: "TaskQueue") -> None:
+        if other is not self and other not in self._steal_from:
+            self._steal_from.append(other)
+
+    # ── lifecycle ─────────────────────────────────────────────────
+
     async def start(self) -> None:
-        """Start the queue worker."""
         if self._running:
             return
         self._running = True
-        self._worker_task = asyncio.create_task(self._worker_loop())
-        logger.info("[TaskQueue] Started")
+        self._worker_task = asyncio.create_task(self._worker_loop(), name="taskqueue_worker")
+        if self._cleanup_interval > 0:
+            self._cleanup_task = asyncio.create_task(self._cleanup_loop(), name="taskqueue_cleanup")
+        logger.info("[TaskQueue] Started (max_concurrent=%d)", self._max_concurrent)
 
     async def stop(self) -> None:
-        """Stop the queue worker, cancel active tasks, and resolve pending futures."""
         self._running = False
         self._not_empty.set()
-        if self._worker_task:
-            self._worker_task.cancel()
-            try:
-                await self._worker_task
-            except (asyncio.CancelledError, Exception):
-                pass
-
-        for _task_id, task in self._active.items():
-            if not task.done():
+        for task in [self._worker_task, self._cleanup_task]:
+            if task and not task.done():
                 task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        for _tid, t in self._active.items():
+            if not t.done():
+                t.cancel()
         self._active.clear()
-
-        # 清理堆中未执行的 Future，防止泄漏
         for qt in self._heap:
             fut = self._results.pop(qt.task_id, None)
             if fut and not fut.done():
                 fut.cancel()
         self._heap.clear()
-
-        # 清理任何残留的 Future
         for _tid, fut in list(self._results.items()):
             if not fut.done():
                 fut.cancel()
         self._results.clear()
-
+        self._completed_ids.clear()
+        self._dependency_map.clear()
         logger.info("[TaskQueue] Stopped")
+
+    # ── enqueue ───────────────────────────────────────────────────
 
     async def enqueue(
         self,
@@ -116,25 +136,79 @@ class TaskQueue:
         agent_profile_id: str,
         payload: dict,
         priority: Priority = Priority.NORMAL,
+        depends_on: list[str] | None = None,
     ) -> str:
-        """Add a task to the queue. Returns the task_id."""
+        """Add a task. Returns task_id. Tasks with unmet deps stay pending."""
         task = QueuedTask(
             priority=priority.value,
             created_at=time.time(),
             agent_profile_id=agent_profile_id,
             session_key=session_key,
             payload=payload,
+            depends_on=list(depends_on or []),
         )
         async with self._lock:
-            heapq.heappush(self._heap, task)
             self._results[task.task_id] = asyncio.get_running_loop().create_future()
             self._total_enqueued += 1
+            if task.depends_on:
+                self._dependency_map[task.task_id] = list(task.depends_on)
+                if not all(dep in self._completed_ids for dep in task.depends_on):
+                    logger.debug(
+                        "[TaskQueue] Task %s waiting for deps: %s",
+                        task.task_id[:8],
+                        task.depends_on,
+                    )
+                    return task.task_id
+            heapq.heappush(self._heap, task)
         self._not_empty.set()
-        logger.debug(f"[TaskQueue] Enqueued {task.task_id} (priority={priority.name})")
+        logger.debug("[TaskQueue] Enqueued %s (priority=%s)", task.task_id[:8], priority.name)
         return task.task_id
 
+    def _release_dependants(self, completed_id: str) -> None:
+        newly_ready: list[QueuedTask] = []
+        for tid, deps in list(self._dependency_map.items()):
+            if completed_id in deps:
+                deps.remove(completed_id)
+                if not deps:
+                    self._dependency_map.pop(tid, None)
+                    fut_entry = self._results.get(tid)
+                    if fut_entry is None:
+                        tsk = QueuedTask(
+                            priority=Priority.NORMAL.value,
+                            created_at=time.time(),
+                            task_id=tid,
+                            session_key="",
+                            payload={},
+                        )
+                        self._results[tid] = asyncio.get_running_loop().create_future()
+                    else:
+                        tsk = None
+                    heapq.heappush(
+                        self._heap,
+                        tsk or QueuedTask(
+                            priority=Priority.NORMAL.value,
+                            created_at=time.time(),
+                            task_id=tid,
+                            session_key="",
+                            payload={},
+                        ),
+                    )
+                    newly_ready.append(
+                        tsk or QueuedTask(
+                            priority=Priority.NORMAL.value,
+                            created_at=time.time(),
+                            task_id=tid,
+                        )
+                    )
+        if newly_ready:
+            self._not_empty.set()
+            logger.debug(
+                "[TaskQueue] Released %d dependant(s) after %s",
+                len(newly_ready),
+                completed_id[:8],
+            )
+
     async def cancel(self, task_id: str) -> bool:
-        """Cancel a queued or active task."""
         async with self._lock:
             for t in self._heap:
                 if t.task_id == task_id and not t.cancelled:
@@ -144,7 +218,6 @@ class TaskQueue:
                     if fut and not fut.done():
                         fut.cancel()
                     return True
-        # Check active tasks
         active = self._active.get(task_id)
         if active and not active.done():
             active.cancel()
@@ -153,7 +226,6 @@ class TaskQueue:
         return False
 
     async def wait_for(self, task_id: str, timeout: float = 120.0) -> Any:
-        """Wait for a task result."""
         fut = self._results.get(task_id)
         if fut is None:
             raise KeyError(f"Unknown task: {task_id}")
@@ -162,26 +234,48 @@ class TaskQueue:
         finally:
             self._results.pop(task_id, None)
 
+    # ── work-stealing ─────────────────────────────────────────────
+
+    async def steal_task(self) -> QueuedTask | None:
+        if not self._enable_work_stealing or not self._steal_from:
+            return None
+        for other in self._steal_from:
+            async with other._lock:
+                if other._heap:
+                    task = other._heap.pop()
+                    heapq.heapify(other._heap)
+                    self._total_stolen += 1
+                    logger.debug(
+                        "[TaskQueue] Stolen task %s from queue %s",
+                        task.task_id[:8],
+                        id(other),
+                    )
+                    return task
+        return None
+
+    # ── worker + cleanup ──────────────────────────────────────────
+
     async def _worker_loop(self) -> None:
-        """Main worker loop: picks tasks from queue and executes them."""
         while self._running:
             async with self._lock:
                 task = heapq.heappop(self._heap) if self._heap else None
 
             if task is None:
-                self._not_empty.clear()
-                await self._not_empty.wait()
-                if not self._running:
-                    break
-                continue  # Go back and check heap under lock
+                if self._enable_work_stealing:
+                    stolen = await self.steal_task()
+                    if stolen:
+                        task = stolen
+                if task is None:
+                    self._not_empty.clear()
+                    await self._not_empty.wait()
+                    if not self._running:
+                        break
+                    continue
 
             if task.cancelled:
-                fut = self._results.pop(task.task_id, None)
-                if fut and not fut.done():
-                    fut.cancel()
+                self._results.pop(task.task_id, None)
                 continue
 
-            # Wait for concurrency slot
             while len(self._active) >= self._max_concurrent and self._active:
                 tasks = list(self._active.values())
                 if not tasks:
@@ -191,18 +285,22 @@ class TaskQueue:
                 for tid in finished_ids:
                     self._active.pop(tid, None)
 
-            self._active[task.task_id] = asyncio.create_task(self._execute_task(task))
+            self._active[task.task_id] = asyncio.create_task(
+                self._execute_task(task), name=f"qt_{task.task_id[:8]}"
+            )
 
     async def _execute_task(self, task: QueuedTask) -> None:
-        """Execute a single task and resolve its future."""
         fut = self._results.get(task.task_id)
         try:
             if self._handler is None:
-                raise RuntimeError("No handler set")
+                raise RuntimeError("No handler set for TaskQueue")
             result = await self._handler(task)
             if fut and not fut.done():
                 fut.set_result(result)
             self._total_completed += 1
+            async with self._lock:
+                self._completed_ids.add(task.task_id)
+            self._release_dependants(task.task_id)
         except asyncio.CancelledError:
             if fut and not fut.done():
                 fut.cancel()
@@ -211,16 +309,42 @@ class TaskQueue:
             if fut and not fut.done():
                 fut.set_exception(e)
             self._total_failed += 1
-            logger.error(f"[TaskQueue] Task {task.task_id} failed: {e}")
+            logger.error("[TaskQueue] Task %s failed: %s", task.task_id[:8], e)
+
+    async def _cleanup_loop(self) -> None:
+        while self._running:
+            try:
+                await asyncio.sleep(self._cleanup_interval)
+                await self._purge_stale_futures()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.debug("[TaskQueue] Cleanup error: %s", e)
+
+    async def _purge_stale_futures(self) -> None:
+        async with self._lock:
+            stale_futs = [
+                tid
+                for tid, fut in self._results.items()
+                if fut.done() and tid not in self._active
+            ]
+            for tid in stale_futs:
+                self._results.pop(tid, None)
+            stale_deps = [
+                tid for tid in self._dependency_map if tid not in self._results
+            ]
+            for tid in stale_deps:
+                self._dependency_map.pop(tid, None)
 
     def get_stats(self) -> dict:
-        """Get queue statistics."""
         return {
             "pending": len(self._heap),
+            "blocked_by_deps": len(self._dependency_map),
             "active": len(self._active),
             "total_enqueued": self._total_enqueued,
             "total_completed": self._total_completed,
             "total_failed": self._total_failed,
             "total_cancelled": self._total_cancelled,
+            "total_stolen": self._total_stolen,
             "max_concurrent": self._max_concurrent,
         }

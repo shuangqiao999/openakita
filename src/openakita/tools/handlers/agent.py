@@ -10,6 +10,7 @@ import hashlib
 import logging
 import re
 import time
+import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -117,18 +118,15 @@ class AgentToolHandler:
     async def _delegate_parallel(self, params: dict[str, Any]) -> str:
         import asyncio
         import json as _json
-        from collections import Counter
 
         tasks_param = params.get("tasks")
 
-        # LLM 有时把 tasks 序列化为 JSON 字符串而非原生 list
         if isinstance(tasks_param, str):
             try:
                 tasks_param = _json.loads(tasks_param)
             except (ValueError, TypeError):
                 pass
 
-        # 单个 dict → 包装成 list（LLM 偶尔只传一个 task 对象）
         if isinstance(tasks_param, dict):
             tasks_param = [tasks_param]
 
@@ -138,17 +136,20 @@ class AgentToolHandler:
                 f"Received type: {type(tasks_param).__name__}"
             )
 
-        # LLM 有时用 "task" 代替 "message"，做 key 映射
         for t in tasks_param:
             if isinstance(t, dict) and "message" not in t and "task" in t:
                 t["message"] = t.pop("task")
+
+        from ...config import settings
+
+        _max_parallel = int(getattr(settings, "delegate_max_parallel", 5) or 5)
 
         if len(tasks_param) < 2:
             return (
                 "❌ delegate_parallel requires at least 2 tasks (use delegate_to_agent for single)"
             )
-        if len(tasks_param) > 5:
-            return "❌ Maximum 5 parallel delegations allowed"
+        if len(tasks_param) > _max_parallel:
+            return f"❌ Maximum {_max_parallel} parallel delegations allowed"
 
         orchestrator = self._get_orchestrator()
         if orchestrator is None:
@@ -162,155 +163,140 @@ class AgentToolHandler:
             getattr(getattr(session, "context", None), "agent_profile_id", "default") or "default"
         )
 
-        # Detect duplicate agent_ids — auto-spawn ephemeral clones
-        # to avoid two coroutines sharing the same Agent instance.
-        agent_ids = [(t.get("agent_id") or "").strip() for t in tasks_param]
-        id_counts = Counter(agent_ids)
-        duplicated_ids = {aid for aid, cnt in id_counts.items() if cnt > 1}
+        from ...agents.task_graph import TaskGraph
 
-        ephemeral_ids: list[str] = []  # track for cleanup on error
+        task_graph = TaskGraph.from_tasks_list(tasks_param)
+        validation_errors = task_graph.validate()
+        if validation_errors:
+            return "❌ Task graph validation failed:\n" + "\n".join(f"  - {e}" for e in validation_errors)
 
-        resolved_tasks: list[dict] = []
-        seen_counter: dict[str, int] = {}
-        store = self._get_profile_store() if duplicated_ids else None
+        layers = task_graph.topological_layers()
 
+        store = self._get_profile_store()
         global_context = (params.get("context") or "").strip()
-
-        for task in tasks_param:
-            agent_id = (task.get("agent_id") or "").strip()
-            message = (task.get("message") or "").strip()
-            reason = (task.get("reason") or "").strip()
-            per_task_ctx = (task.get("context") or "").strip()
-            task_context = "\n\n".join(filter(None, [global_context, per_task_ctx]))
-
-            if agent_id in duplicated_ids:
-                seen_counter[agent_id] = seen_counter.get(agent_id, 0) + 1
-                if store:
-                    # ALL occurrences (including the first) get ephemeral clones
-                    # to avoid sharing a pool instance with previous delegations
-                    from ...agents.profile import AgentType
-
-                    base = store.get(agent_id)
-                    if base:
-                        ts = int(time.time() * 1000)
-                        idx = seen_counter[agent_id]
-                        eph_id = f"ephemeral_{agent_id}_{ts}_{idx}"
-                        clone = base.derive(
-                            id=eph_id,
-                            name=f"{base.name} (分身{idx})",
-                            type=AgentType.DYNAMIC,
-                            created_by="ai_parallel_clone",
-                            ephemeral=True,
-                            inherit_from=agent_id,
-                        )
-                        store.save(clone)
-                        ephemeral_ids.append(eph_id)
-                        logger.info(
-                            f"[AgentToolHandler] Auto-spawned clone {eph_id} "
-                            f"for parallel task (base={agent_id})"
-                        )
-                        resolved_tasks.append(
-                            {
-                                "agent_id": eph_id,
-                                "display_id": agent_id,
-                                "message": message,
-                                "reason": reason,
-                                "context": task_context,
-                            }
-                        )
-                        continue
-
-            resolved_tasks.append(
-                {
-                    "agent_id": agent_id,
-                    "display_id": agent_id,
-                    "message": message,
-                    "reason": reason,
-                    "context": task_context,
-                }
-            )
-
         parent_browser = getattr(self.agent, "browser_manager", None)
 
-        async def _run_one(task: dict) -> tuple[str, str]:
-            aid = task["agent_id"]
-            display = task["display_id"]
-            msg = task["message"]
-            rsn = task["reason"]
-            ctx = task.get("context", "")
-            if not aid or not msg:
-                return display or "?", "❌ agent_id and message are required"
+        ephemeral_ids: list[str] = []
+        all_results: list[tuple[str, str]] = []
 
-            isolated_msg = ""
-            if ctx:
-                isolated_msg += f"[任务背景]\n{ctx}\n\n"
-            isolated_msg += f"[任务指令]\n{msg}"
-            if rsn:
-                isolated_msg += f"\n[委派原因] {rsn}"
+        completed_ids: set[str] = set()
 
-            logger.info(
-                f"[AgentToolHandler] Parallel delegation: {current_agent} -> {aid} | reason={rsn}"
-            )
+        for layer in layers:
+            layer_coros = []
+            layer_tasks: list[dict] = []
 
-            isolated_ctx = None
-            try:
-                if parent_browser and parent_browser.is_ready:
-                    try:
-                        isolated_ctx = await parent_browser.create_isolated_context()
-                    except Exception as iso_err:
-                        logger.debug(f"[AgentToolHandler] Browser isolation failed: {iso_err}")
+            for tid in layer:
+                node = task_graph.get_node(tid)
+                if node is None:
+                    continue
+                aid = node.agent_id
+                msg = node.message
+                rsn = node.reason
+                ctx = node.context
+                tid_str = node.task_id
 
-                result = await orchestrator.delegate(
-                    session=session,
-                    from_agent=current_agent,
-                    to_agent=aid,
-                    message=isolated_msg,
-                    reason=rsn,
-                    isolated_browser=isolated_ctx,
+                if not aid or not msg:
+                    continue
+
+                if global_context and not ctx:
+                    ctx = global_context
+                elif global_context:
+                    ctx = f"{global_context}\n\n{ctx}"
+
+                base_profile = store.get(aid) if store else None
+                if base_profile is None:
+                    layer_tasks.append({"display": aid, "result": f"❌ Agent '{aid}' not found"})
+                    completed_ids.add(tid_str)
+                    task_graph.mark_complete(tid_str, f"❌ Agent '{aid}' not found")
+                    continue
+
+                from ...agents.profile import AgentType
+
+                ts = int(time.time() * 1000)
+                eph_id = f"ephemeral_{aid}_{ts}_{uuid.uuid4().hex[:8]}"
+                clone = base_profile.derive(
+                    id=eph_id,
+                    name=f"{base_profile.name} (并行)",
+                    type=AgentType.DYNAMIC,
+                    created_by="ai_parallel",
+                    ephemeral=True,
+                    inherit_from=aid,
                 )
-                return display, str(result)
-            except BaseException as e:
-                logger.error(f"[AgentToolHandler] Parallel delegation to {aid} failed: {e}")
-                return display, f"❌ Failed: {e}"
-            finally:
-                if isolated_ctx and isolated_ctx is not parent_browser:
+                store.save(clone)
+                ephemeral_ids.append(eph_id)
+
+                isolated_msg = ""
+                if ctx:
+                    isolated_msg += f"[任务背景]\n{ctx}\n\n"
+                isolated_msg += f"[任务指令]\n{msg}"
+                if rsn:
+                    isolated_msg += f"\n[委派原因] {rsn}"
+
+                async def _run_one(_aid: str, _display: str, _msg: str, _rsn: str) -> tuple[str, str]:
+                    logger.info(
+                        f"[AgentToolHandler] Parallel delegation: {current_agent} -> {_aid}"
+                    )
+                    isolated_ctx_br = None
                     try:
-                        await isolated_ctx.stop()
-                    except Exception:
-                        pass
+                        if parent_browser and parent_browser.is_ready:
+                            try:
+                                isolated_ctx_br = await parent_browser.create_isolated_context()
+                            except Exception:
+                                pass
+                        result = await orchestrator.delegate(
+                            session=session,
+                            from_agent=current_agent,
+                            to_agent=_aid,
+                            message=_msg,
+                            reason=_rsn,
+                            isolated_browser=isolated_ctx_br,
+                        )
+                        return _display, str(result)
+                    except BaseException as e:
+                        logger.error(f"[AgentToolHandler] Parallel delegation to {_aid} failed: {e}")
+                        return _display, f"❌ Failed: {e}"
+                    finally:
+                        if isolated_ctx_br and isolated_ctx_br is not parent_browser:
+                            try:
+                                await isolated_ctx_br.stop()
+                            except Exception:
+                                pass
 
-        coros = [_run_one(t) for t in resolved_tasks]
-        try:
-            raw_results = await asyncio.gather(*coros, return_exceptions=True)
-        except BaseException:
-            # On unexpected failure, clean up any ephemeral clones we created
-            self._cleanup_ephemeral_ids(ephemeral_ids, store)
-            raise
+                layer_coros.append(_run_one(eph_id, aid, isolated_msg, rsn))
+                layer_tasks.append({"display": aid, "tid": tid_str, "eph_id": eph_id})
 
-        # Clean up ephemeral clones that the orchestrator didn't already clean
+            if layer_coros:
+                raw_results = await asyncio.gather(*layer_coros, return_exceptions=True)
+                for i, res in enumerate(raw_results):
+                    if i < len(layer_tasks):
+                        tin = layer_tasks[i]
+                        if isinstance(res, BaseException):
+                            all_results.append((tin["display"], f"❌ Failed: {res}"))
+                            task_graph.mark_complete(tin["tid"], f"❌ Failed: {res}")
+                        else:
+                            display_id, result = res
+                            all_results.append((display_id, result))
+                            task_graph.mark_complete(tin["tid"], result)
+                        completed_ids.add(tin["tid"])
+            else:
+                for tin in layer_tasks:
+                    completed_ids.add(tin["tid"])
+
         self._cleanup_ephemeral_ids(ephemeral_ids, store)
 
         _art_marker = "\n\n__ARTIFACT_RECEIPTS__\n"
         all_receipt_blocks: list[str] = []
         parts = []
-        for i, res in enumerate(raw_results):
-            if isinstance(res, BaseException):
-                display = resolved_tasks[i]["display_id"]
-                parts.append(f"## Agent: {display}\n❌ Failed: {res}")
-            else:
-                display_id, result = res
-                # Extract __ARTIFACT_RECEIPTS__ from each sub-agent result
-                # so they survive _guard_truncate on the combined string.
-                while _art_marker in result:
-                    idx = result.index(_art_marker)
-                    block_start = idx + len(_art_marker)
-                    eol = result.find("\n", block_start)
-                    block = result[block_start:] if eol < 0 else result[block_start:eol]
-                    all_receipt_blocks.append(block)
-                    result = result[:idx] + (result[block_start + len(block) :] if eol >= 0 else "")
-                parts.append(f"## Agent: {display_id}\n{result}")
+        for display_id, result in all_results:
+            while _art_marker in result:
+                idx = result.index(_art_marker)
+                block_start = idx + len(_art_marker)
+                eol = result.find("\n", block_start)
+                block = result[block_start:] if eol < 0 else result[block_start:eol]
+                all_receipt_blocks.append(block)
+                result = result[:idx] + (result[block_start + len(block) :] if eol >= 0 else "")
+            parts.append(f"## Agent: {display_id}\n{result}")
         combined = "\n\n---\n\n".join(parts)
-        # Re-append all receipt blocks as a single merged JSON array at the end
         if all_receipt_blocks:
             import json as _json
 

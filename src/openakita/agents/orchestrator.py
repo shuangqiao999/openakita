@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from openakita.agents.task_queue import TaskQueue
+from openakita.agents.task_queue import QueuedTask, TaskQueue
 
 if TYPE_CHECKING:
     from openakita.channels import MessageGateway
@@ -260,14 +260,26 @@ class AgentOrchestrator:
 
     _DEFAULT_MAX_CONCURRENT_AGENTS = 5
 
+    # Capacity limits for internal dictionaries
+    _MAX_MAILBOXES = 500
+    _MAX_HEALTH_ENTRIES = 500
+    _MAX_SUB_STATES = 500
+
     def __init__(self) -> None:
         self._mailboxes: dict[str, AgentMailbox] = {}
         self._health: dict[str, AgentHealth] = {}
         self._active_tasks: dict[str, list[asyncio.Task]] = {}
         self._cancelled_sessions: set[str] = set()
 
-        # Priority task queue for future delegate-via-queue migration
-        self._task_queue = TaskQueue(max_concurrent=self._DEFAULT_MAX_CONCURRENT_AGENTS)
+        from ..config import settings
+
+        _max_concurrent = int(getattr(settings, "llm_max_concurrent", 8) or 8)
+        _cleanup_interval = int(getattr(settings, "task_queue_cleanup_interval", 60) or 60)
+        self._task_queue = TaskQueue(
+            max_concurrent=_max_concurrent,
+            cleanup_interval=_cleanup_interval,
+            enable_work_stealing=False,
+        )
 
         # Lazy-initialised dependencies
         self._profile_store = None  # ProfileStore
@@ -282,9 +294,17 @@ class AgentOrchestrator:
         self._session_semaphores: dict[str, asyncio.Semaphore] = {}
 
         # Live sub-agent states for frontend polling
-        # Key: "{session_id}:{agent_profile_id}", Value: state dict
         self._sub_agent_states: dict[str, dict] = {}
         self._sub_cleanup_tasks: dict[str, asyncio.Task] = {}
+
+        # Background cleanup task
+        self._bg_cleanup_task: asyncio.Task | None = None
+
+        # Adaptive concurrency controller
+        self._adaptive_concurrency = None
+
+        # Ephemeral agent tracking for cleanup
+        self._ephemeral_agents: dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # External wiring
@@ -859,7 +879,10 @@ class AgentOrchestrator:
         # Schedule delayed removal so the frontend can still display
         # the terminal state briefly before the entry disappears.
         async def _delayed_cleanup() -> None:
-            await asyncio.sleep(120)
+            from ..config import settings
+
+            ttl = int(getattr(settings, "agent_state_ttl", 30) or 30)
+            await asyncio.sleep(ttl)
             self._sub_agent_states.pop(key, None)
             self._sub_cleanup_tasks.pop(key, None)
 
@@ -1448,11 +1471,27 @@ class AgentOrchestrator:
     # ------------------------------------------------------------------
 
     async def start(self) -> None:
-        """Start background tasks (pool reaper, task queue, etc.)."""
+        """Start background tasks (pool reaper, task queue, cleanup, adaptive concurrency)."""
         self._ensure_deps()
         self._load_sub_states()
+
+        from ..config import settings
+
+        if getattr(settings, "enable_adaptive_concurrency", False):
+            from ..core.adaptive_concurrency import AdaptiveConcurrencyController
+
+            self._adaptive_concurrency = AdaptiveConcurrencyController(
+                initial_concurrency=int(getattr(settings, "llm_max_concurrent", 8) or 8),
+            )
+            await self._adaptive_concurrency.start()
+            logger.info("[Orchestrator] Adaptive concurrency controller started")
+
         await self._pool.start()
+        self._task_queue.set_handler(self._handle_queued_task)
         await self._task_queue.start()
+
+        self._bg_cleanup_task = asyncio.create_task(self._bg_cleanup_loop(), name="orch_bg_cleanup")
+
         logger.info(
             "[Orchestrator] Started (task_queue max_concurrent=%d)",
             self._task_queue._max_concurrent,
@@ -1468,12 +1507,179 @@ class AgentOrchestrator:
 
         self._persist_sub_states()
 
+        if self._bg_cleanup_task and not self._bg_cleanup_task.done():
+            self._bg_cleanup_task.cancel()
+            try:
+                await self._bg_cleanup_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
         await self._task_queue.stop()
+
+        if self._adaptive_concurrency:
+            await self._adaptive_concurrency.stop()
 
         if self._pool:
             await self._pool.stop()
 
         logger.info("[Orchestrator] Shutdown complete")
+
+    # ------------------------------------------------------------------
+    # TaskQueue handler
+    # ------------------------------------------------------------------
+
+    async def _handle_queued_task(self, qt: QueuedTask) -> str:
+        _session = getattr(self._gateway, "agent_handler", None)
+        if _session and hasattr(_session, "_current_session"):
+            _session = _session._current_session
+        else:
+            return f"[TaskQueue] No session available for {qt.task_id}"
+
+        message = qt.payload.get("message", "")
+        from_agent = qt.payload.get("from_agent", "orchestrator")
+        depth = qt.payload.get("depth", 0)
+
+        await self._dispatch(
+            session=_session,
+            message=message,
+            agent_profile_id=qt.agent_profile_id,
+            depth=depth,
+            from_agent=from_agent,
+        )
+        return f"Task {qt.task_id} completed"
+
+    # ------------------------------------------------------------------
+    # Background cleanup
+    # ------------------------------------------------------------------
+
+    async def _bg_cleanup_loop(self) -> None:
+        from ..config import settings
+
+        while True:
+            try:
+                interval = int(getattr(settings, "task_queue_cleanup_interval", 60) or 60)
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                break
+
+            ttl = int(getattr(settings, "agent_state_ttl", 30) or 30)
+            now = time.time()
+
+            # 1. Clean sub_agent_states (terminal states past TTL)
+            to_remove = []
+            for key, state in list(self._sub_agent_states.items()):
+                status = state.get("status", "")
+                if status in ("completed", "cancelled", "timeout", "error", "interrupted"):
+                    started = state.get("started_at", 0)
+                    elapsed = state.get("elapsed_s", 0)
+                    age = now - (started + elapsed) if started else now - started
+                    if age > ttl:
+                        to_remove.append(key)
+            for key in to_remove:
+                self._sub_agent_states.pop(key, None)
+                cleanup_task = self._sub_cleanup_tasks.pop(key, None)
+                if cleanup_task and not cleanup_task.done():
+                    cleanup_task.cancel()
+            if to_remove:
+                logger.debug(
+                    "[Orchestrator] Cleaned up %d stale sub-agent states (TTL=%ds)",
+                    len(to_remove),
+                    ttl,
+                )
+                self._persist_sub_states()
+
+            # 2. Enforce capacity on _sub_agent_states
+            if len(self._sub_agent_states) > self._MAX_SUB_STATES:
+                sorted_keys = sorted(
+                    self._sub_agent_states.keys(),
+                    key=lambda k: self._sub_agent_states[k].get("started_at", 0),
+                )
+                evict_count = len(self._sub_agent_states) - self._MAX_SUB_STATES
+                for key in sorted_keys[:evict_count]:
+                    self._sub_agent_states.pop(key, None)
+
+            # 3. Clean mailboxes (empty queues with no pending messages)
+            for agent_id in list(self._mailboxes.keys()):
+                if agent_id not in self._health and self._mailboxes[agent_id].size == 0:
+                    self._mailboxes.pop(agent_id, None)
+
+            # 4. Enforce capacity on mailboxes
+            if len(self._mailboxes) > self._MAX_MAILBOXES:
+                stale = sorted(
+                    self._mailboxes.keys(),
+                    key=lambda aid: self._mailboxes[aid].size,
+                )
+                evict = len(self._mailboxes) - self._MAX_MAILBOXES
+                for aid in stale[:evict]:
+                    self._mailboxes.pop(aid, None)
+
+            # 5. Enforce capacity on health
+            if len(self._health) > self._MAX_HEALTH_ENTRIES:
+                stale = sorted(
+                    self._health.keys(),
+                    key=lambda aid: self._health[aid].last_active,
+                )
+                evict = len(self._health) - self._MAX_HEALTH_ENTRIES
+                for aid in stale[:evict]:
+                    self._health.pop(aid, None)
+
+            # 6. Clean ephemeral agents
+            await self._cleanup_ephemeral_agents(now, ttl * 2)
+
+    async def _cleanup_ephemeral_agents(self, now: float, ttl: float) -> None:
+        stale = [eid for eid, atime in list(self._ephemeral_agents.items()) if now - atime > ttl]
+        for eid in stale:
+            self._ephemeral_agents.pop(eid, None)
+            try:
+                if self._profile_store:
+                    self._profile_store.remove_ephemeral(eid)
+            except Exception:
+                pass
+        for eid in stale:
+            for key in list(self._sub_agent_states.keys()):
+                if eid in key:
+                    self._sub_agent_states.pop(key, None)
+
+    # ------------------------------------------------------------------
+    # Ephemeral agent creation
+    # ------------------------------------------------------------------
+
+    async def create_ephemeral_agent(
+        self,
+        profile_id: str,
+        session_id: str,
+        extra_context: str = "",
+    ) -> Any:
+        """Create a new ephemeral Agent instance *not* pooled — one-shot use.
+
+        Used by delegate_parallel to ensure true concurrency by giving
+        each sub-task its own Agent with its own _execution_lock.
+        """
+        self._ensure_deps()
+        if self._profile_store is None or self._pool is None:
+            return None
+        profile = self._profile_store.get(profile_id)
+        if profile is None:
+            profile = self._profile_store.get("default")
+        if profile is None:
+            return None
+
+        from ..agents.profile import AgentType  # noqa: F821
+
+        ts = int(time.time() * 1000)
+        eph_id = f"ephemeral_{profile_id}_{ts}_{uuid.uuid4().hex[:8]}"
+        clone = profile.derive(
+            id=eph_id,
+            name=f"{profile.name} (并行子任务)",
+            type=AgentType.DYNAMIC,
+            created_by="parallel_delegation",
+            ephemeral=True,
+            inherit_from=profile_id,
+        )
+        self._profile_store.save(clone)
+        agent = await self._pool._factory.create(clone)
+        self._ephemeral_agents[eph_id] = time.time()
+        return agent
 
 
 def _cleanup_sub_agent_resources(agent: Any, session: Any) -> None:

@@ -140,9 +140,42 @@ class Settings(BaseSettings):
         description="工具执行后无可见文本时的最大追问次数（0=禁用）",
     )
 
+    # === LLM 全局限流 ===
+    # 所有 Agent（主子 Agent 所有层级）共享的请求限流机制。
+    # - llm_rate_limit_rpm: 每分钟最大 LLM 请求数，0=不限制。
+    # - llm_max_concurrent: 同时进行中的 LLM 调用上限。
+    llm_rate_limit_rpm: int = Field(
+        default=0,
+        ge=0,
+        description="全局 LLM RPM 限制，0=不限制。建议按 API 限额的 80% 设置",
+    )
+    llm_max_concurrent: int = Field(
+        default=8,
+        ge=1,
+        le=64,
+        description="全局最大并发 LLM 请求数",
+    )
+
+    # === 多 Agent 调度 ===
+    delegate_max_parallel: int = Field(
+        default=5,
+        ge=1,
+        description="delegate_parallel 最大并行子任务数",
+    )
+    agent_state_ttl: int = Field(
+        default=30,
+        ge=5,
+        description="子 Agent 状态保留时间（秒），超时后自动清理",
+    )
+    task_queue_cleanup_interval: int = Field(
+        default=60,
+        ge=10,
+        description="任务队列和状态清理间隔（秒）",
+    )
+
     # === 工具并行执行 ===
     # 单轮模型返回多个 tool_use/tool_calls 时，Agent 可选择并行执行工具以提升吞吐。
-    # 默认 1：保持现有串行语义（最安全，尤其是带“思维链连续性”的工具链）。
+    # 默认 1：保持现有串行语义（最安全，尤其是带"思维链连续性"的工具链）。
     tool_max_parallel: int = Field(
         default=1,
         description="单轮并行工具调用最大并发数（默认 1=串行；>1 启用并行）",
@@ -716,6 +749,12 @@ class Settings(BaseSettings):
         default=0,
         ge=0,
         description="只读探索连续无新信息的硬终止轮数，0=禁用（默认）。建议值 10~15",
+    )
+
+    # === 自适应并发控制 ===
+    enable_adaptive_concurrency: bool = Field(
+        default=False,
+        description="是否启用自适应并发控制（根据 API 延迟和错误率自动调整并行度）",
     )
 
     # === Harness 配置 ===

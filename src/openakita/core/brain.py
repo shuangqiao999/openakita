@@ -731,6 +731,12 @@ class Brain:
 
         extra_params = kwargs.get("extra_params")
 
+        from .llm_rate_limiter import GlobalLLMRateLimiter
+
+        limiter = GlobalLLMRateLimiter()
+        limiter.refresh_config()
+        await limiter.acquire()
+        _start_time = asyncio.get_event_loop().time()
         try:
             response = await self._llm_client.chat(
                 messages=llm_messages,
@@ -743,6 +749,12 @@ class Brain:
                 cancel_event=cancel_event,
                 extra_params=extra_params,
             )
+            _elapsed = asyncio.get_event_loop().time() - _start_time
+            try:
+                from .adaptive_concurrency import AdaptiveConcurrencyController
+                AdaptiveConcurrencyController().record_latency(_elapsed)
+            except Exception:
+                pass
             _choices = getattr(response, "choices", None) or []
             _content = getattr(response, "content", None) or []
             _out_tokens = response.usage.output_tokens if hasattr(response, "usage") else 0
@@ -761,8 +773,18 @@ class Brain:
                     f"stop_reason={getattr(response, 'stop_reason', '?')}"
                 )
         except Exception as e:
+            _err_msg = str(e).lower()
+            if "429" in _err_msg or "rate" in _err_msg and "limit" in _err_msg:
+                limiter.report_rate_limited()
+                try:
+                    from .adaptive_concurrency import AdaptiveConcurrencyController
+                    AdaptiveConcurrencyController().record_rate_limited()
+                except Exception:
+                    pass
             logger.error(f"[Brain] messages_create_async FAILED: {type(e).__name__}: {e}")
             raise
+        finally:
+            limiter.release()
 
         self._dump_llm_response(response, caller="messages_create_async", request_id=req_id)
 
@@ -801,6 +823,13 @@ class Brain:
 
         self._dump_llm_request(system, llm_messages, llm_tools, caller="messages_create_stream")
 
+        from .llm_rate_limiter import GlobalLLMRateLimiter
+
+        limiter = GlobalLLMRateLimiter()
+        limiter.refresh_config()
+        await limiter.acquire()
+        _start_time = asyncio.get_event_loop().time()
+
         _tt = set_tracking_context(
             TokenTrackingContext(
                 session_id=kwargs.get("conversation_id", ""),
@@ -822,7 +851,24 @@ class Brain:
                 extra_params=extra_params,
             ):
                 yield event
+            _elapsed = asyncio.get_event_loop().time() - _start_time
+            try:
+                from .adaptive_concurrency import AdaptiveConcurrencyController
+                AdaptiveConcurrencyController().record_latency(_elapsed)
+            except Exception:
+                pass
+        except Exception as e:
+            _err_msg = str(e).lower()
+            if "429" in _err_msg or "rate" in _err_msg and "limit" in _err_msg:
+                limiter.report_rate_limited()
+                try:
+                    from .adaptive_concurrency import AdaptiveConcurrencyController
+                    AdaptiveConcurrencyController().record_rate_limited()
+                except Exception:
+                    pass
+            raise
         finally:
+            limiter.release()
             reset_tracking_context(_tt)
 
     # ========================================================================
