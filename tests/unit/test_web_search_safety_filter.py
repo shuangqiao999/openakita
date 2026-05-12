@@ -83,10 +83,10 @@ async def test_web_search_attempt_timeout_is_soft_guidance(monkeypatch):
         time.sleep(0.05)
         return [{"title": "late", "href": "https://example.com", "body": "late"}]
 
-    def empty_bing(**kwargs):
+    def empty_search(**kwargs):
         return []
 
-    monkeypatch.setattr(web_search_module, "_sync_bing_web_search", empty_bing)
+    monkeypatch.setattr(web_search_module, "_sync_engine_search", empty_search)
     monkeypatch.setattr(web_search_module, "_sync_ddg_web_search", slow_search)
 
     import sys
