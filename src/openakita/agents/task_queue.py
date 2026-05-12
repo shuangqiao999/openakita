@@ -77,6 +77,7 @@ class TaskQueue:
 
         self._completed_ids: set[str] = set()
         self._dependency_map: dict[str, list[str]] = {}
+        self._deferred_tasks: dict[str, QueuedTask] = {}
 
         self._cleanup_interval = cleanup_interval
 
@@ -126,6 +127,7 @@ class TaskQueue:
         self._results.clear()
         self._completed_ids.clear()
         self._dependency_map.clear()
+        self._deferred_tasks.clear()
         logger.info("[TaskQueue] Stopped")
 
     # ── enqueue ───────────────────────────────────────────────────
@@ -153,6 +155,7 @@ class TaskQueue:
             if task.depends_on:
                 self._dependency_map[task.task_id] = list(task.depends_on)
                 if not all(dep in self._completed_ids for dep in task.depends_on):
+                    self._deferred_tasks[task.task_id] = task
                     logger.debug(
                         "[TaskQueue] Task %s waiting for deps: %s",
                         task.task_id[:8],
@@ -171,8 +174,11 @@ class TaskQueue:
                 deps.remove(completed_id)
                 if not deps:
                     self._dependency_map.pop(tid, None)
-                    fut_entry = self._results.get(tid)
-                    if fut_entry is None:
+                    deferred = self._deferred_tasks.pop(tid, None)
+                    if deferred is not None:
+                        heapq.heappush(self._heap, deferred)
+                        newly_ready.append(deferred)
+                    else:
                         tsk = QueuedTask(
                             priority=Priority.NORMAL.value,
                             created_at=time.time(),
@@ -180,26 +186,8 @@ class TaskQueue:
                             session_key="",
                             payload={},
                         )
-                        self._results[tid] = asyncio.get_running_loop().create_future()
-                    else:
-                        tsk = None
-                    heapq.heappush(
-                        self._heap,
-                        tsk or QueuedTask(
-                            priority=Priority.NORMAL.value,
-                            created_at=time.time(),
-                            task_id=tid,
-                            session_key="",
-                            payload={},
-                        ),
-                    )
-                    newly_ready.append(
-                        tsk or QueuedTask(
-                            priority=Priority.NORMAL.value,
-                            created_at=time.time(),
-                            task_id=tid,
-                        )
-                    )
+                        self._results[tid] = self._results.get(tid) or asyncio.get_running_loop().create_future()
+                        heapq.heappush(self._heap, tsk)
         if newly_ready:
             self._not_empty.set()
             logger.debug(
