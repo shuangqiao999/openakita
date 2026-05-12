@@ -220,8 +220,6 @@ class OrgRuntime:
         self._node_busy_since: dict[str, float] = {}
         self._node_last_activity: dict[str, float] = {}
 
-        self._running_tasks: dict[str, dict[str, asyncio.Task]] = {}
-
         self._active_orgs: dict[str, Organization] = {}
 
         self._chain_delegation_depth: dict[str, int] = {}  # chain_id -> delegation depth
@@ -441,13 +439,6 @@ class OrgRuntime:
                 watchdog_task.cancel()
         self._watchdog_tasks.clear()
 
-        for _org_id, tasks in list(self._running_tasks.items()):
-            for _node_id, task in tasks.items():
-                if not task.done():
-                    task.cancel()
-            tasks.clear()
-        self._running_tasks.clear()
-
         for _key, cached in list(self._agent_cache.items()):
             try:
                 if hasattr(cached.agent, "shutdown"):
@@ -599,15 +590,13 @@ class OrgRuntime:
             except (asyncio.CancelledError, Exception):
                 pass
 
-        org_tasks = self._running_tasks.pop(org_id, {})
-        for _node_id, task in org_tasks.items():
-            if not task.done():
-                task.cancel()
-        for _node_id, task in org_tasks.items():
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):
-                pass
+        # Cancel all org tasks via global TaskQueue
+        try:
+            tq = await self._get_task_queue()
+            if tq is not None:
+                await tq.cancel_org_tasks(org_id)
+        except Exception:
+            pass
 
     def mark_org_stopped(self, org_id: str) -> None:
         """把组织标记为"刚被停止"，让 in-flight 工具调用返回更友好的错误。
@@ -773,10 +762,13 @@ class OrgRuntime:
         except Exception:
             pass
 
-        org_tasks = self._running_tasks.pop(org_id, {})
-        for task in org_tasks.values():
-            if not task.done():
-                task.cancel()
+        # Cancel any remaining org tasks via global TaskQueue
+        try:
+            tq = await self._get_task_queue()
+            if tq is not None:
+                await tq.cancel_org_tasks(org_id)
+        except Exception:
+            pass
 
         idle_task = self._idle_tasks.pop(org_id, None)
         if idle_task and not idle_task.done():
@@ -1042,7 +1034,7 @@ class OrgRuntime:
         """Cancel the running task on a specific node.
 
         1. Cancel the Agent's internal TaskState so the ReAct loop stops
-        2. Cancel the asyncio.Task wrapper in _running_tasks
+        2. Cancel the asyncio.Task via global TaskQueue
         3. Reset node status to IDLE
         4. Broadcast status change events
         """
@@ -1070,18 +1062,21 @@ class OrgRuntime:
             except Exception as e:
                 logger.warning(f"[OrgRuntime] Agent cancel_current_task failed: {e}")
 
-        # (b) Cancel the asyncio.Task so CancelledError propagates
-        org_tasks = self._running_tasks.get(org_id, {})
-        for task_key, task in list(org_tasks.items()):
-            if task_key.startswith(f"{node_id}:") and not task.done():
-                task.cancel()
-                cancelled = True
+        # (b) Cancel via global TaskQueue
+        tq = await self._get_task_queue()
+        if tq is not None:
+            cancelled_tasks = await tq.cancel_node_tasks(org_id, node_id)
+            for task in cancelled_tasks:
                 try:
                     await task
                 except (asyncio.CancelledError, Exception):
                     pass
-                org_tasks.pop(task_key, None)
-                logger.info(f"[OrgRuntime] Cancelled asyncio task {task_key}")
+            if cancelled_tasks:
+                cancelled = True
+                logger.info(
+                    f"[OrgRuntime] Cancelled %d asyncio tasks via TaskQueue for {cache_key}",
+                    len(cancelled_tasks),
+                )
 
         # (c) Reset node status
         try:
@@ -2673,11 +2668,26 @@ class OrgRuntime:
         async def _handler(msg: OrgMessage, _nid=node_id, _oid=org_id):
             task_key = f"{_nid}:{msg.id}"
             task = asyncio.create_task(self._on_node_message(_oid, _nid, msg))
-            self._running_tasks.setdefault(_oid, {})[task_key] = task
+            # Register with global TaskQueue for unified tracking and cancellation
+            try:
+                tq = await self._get_task_queue()
+            except Exception:
+                tq = None
+            if tq is not None:
+                tq.register_task(task_key, _oid, _nid, task)
             task.add_done_callback(
-                lambda _t, _o=_oid, _k=task_key: self._running_tasks.get(_o, {}).pop(_k, None)
+                lambda _t, _o=_oid, _k=task_key: self._done_callback(_o, _k)
             )
         return _handler
+
+    def _done_callback(self, org_id: str, task_key: str) -> None:
+        """Cleanup callback for completed org tasks."""
+        try:
+            from openakita.main import _orchestrator
+            if _orchestrator and hasattr(_orchestrator, "_task_queue"):
+                _orchestrator._task_queue.deregister_task(task_key)
+        except (ImportError, AttributeError):
+            pass
 
     def _register_clone_in_messenger(self, org_id: str, clone: OrgNode) -> None:
         """Register a newly created clone in the messenger system."""
@@ -3214,13 +3224,31 @@ class OrgRuntime:
     # Task completion hook & idle probe
     # ------------------------------------------------------------------
 
+    async def _get_task_queue(self):
+        """Get the global TaskQueue for org/node task tracking."""
+        try:
+            from openakita.main import _orchestrator
+            if _orchestrator and hasattr(_orchestrator, "_task_queue"):
+                return _orchestrator._task_queue
+        except (ImportError, AttributeError):
+            pass
+        from openakita.agents.task_queue import TaskQueue
+        return TaskQueue(max_concurrent=5)
+
     def _node_active_count(self, org_id: str, node_id: str) -> int:
-        """Count running (not-done) tasks for a node."""
-        running = self._running_tasks.get(org_id, {})
-        return sum(
-            1 for k, t in running.items()
-            if k.startswith(f"{node_id}:") and not t.done()
-        )
+        """Count running (not-done) tasks for a node via global TaskQueue."""
+        try:
+            from openakita.main import _orchestrator
+            if _orchestrator and hasattr(_orchestrator, "_task_queue"):
+                tq_obj = _orchestrator._task_queue
+                ids = tq_obj._index.get((org_id, node_id), set())
+                return sum(
+                    1 for tid in ids
+                    if tid in tq_obj._registered and not tq_obj._registered[tid].done()
+                )
+        except (ImportError, AttributeError):
+            pass
+        return 0
 
     async def _drain_node_pending(
         self, org: Organization, node: OrgNode, *, max_msgs: int = 0,
@@ -4346,15 +4374,15 @@ class OrgRuntime:
                     if node.status == NodeStatus.BUSY:
                         busy_since = self._node_busy_since.get(key, now)
                         if (now - busy_since) >= stuck_threshold:
-                            org_tasks = self._running_tasks.get(org_id, {})
-                            for task_key, task in list(org_tasks.items()):
-                                if task_key.startswith(f"{node.id}:") and not task.done():
-                                    task.cancel()
+                            # Cancel via global TaskQueue
+                            tq = await self._get_task_queue()
+                            if tq is not None:
+                                cancelled_tasks = await tq.cancel_node_tasks(org_id, node.id)
+                                for task in cancelled_tasks:
                                     try:
                                         await task
                                     except (asyncio.CancelledError, Exception):
                                         pass
-                                    org_tasks.pop(task_key, None)
                             self._agent_cache.pop(key, None)
                             self._set_node_status(org, node, NodeStatus.IDLE, "watchdog_recovery")
                             stuck_secs = int(now - busy_since)

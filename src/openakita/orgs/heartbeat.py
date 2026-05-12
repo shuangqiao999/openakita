@@ -152,13 +152,21 @@ class OrgHeartbeat:
             logger.debug(f"[Heartbeat] Skipping: root {root.id} is BUSY")
             return {"skipped": True, "reason": "root_busy"}
 
-        running = self._runtime._running_tasks.get(org.id, {})
-        root_busy_tasks = {
-            k: t for k, t in running.items()
-            if k.startswith(f"{root.id}:") and not t.done()
-        }
-        if root_busy_tasks:
-            logger.debug(f"[Heartbeat] Skipping: root {root.id} has {len(root_busy_tasks)} running task(s)")
+        try:
+            from openakita.main import _orchestrator
+            tq = _orchestrator._task_queue if _orchestrator else None
+        except (ImportError, AttributeError):
+            tq = None
+        if tq is not None:
+            try:
+                root_count = await tq.get_node_active_count(org.id, root.id)
+            except Exception:
+                root_count = 0
+        else:
+            root_count = 0
+
+        if root_count > 0:
+            logger.debug(f"[Heartbeat] Skipping: root {root.id} has {root_count} running task(s)")
             return {"skipped": True, "reason": "root_has_task"}
 
         await self._recover_error_nodes(org)

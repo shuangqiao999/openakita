@@ -84,6 +84,13 @@ class TaskQueue:
         self._steal_from: list[TaskQueue] = []
         self._enable_work_stealing = enable_work_stealing
 
+        # ── Org / Node tracking (for orgs.runtime migration) ──
+        # Externally-registered asyncio.Task objects with org/node metadata.
+        self._registered: dict[str, asyncio.Task] = {}       # task_id -> Task
+        self._meta: dict[str, tuple[str, str]] = {}          # task_id -> (org_id, node_id)
+        self._index: dict[tuple[str, str], set[str]] = {}    # (org_id,node_id) -> {task_ids}
+        self._track_lock = asyncio.Lock()
+
     def set_handler(self, handler: Callable[[QueuedTask], Awaitable[Any]]) -> None:
         self._handler = handler
 
@@ -128,6 +135,9 @@ class TaskQueue:
         self._completed_ids.clear()
         self._dependency_map.clear()
         self._deferred_tasks.clear()
+        self._registered.clear()
+        self._meta.clear()
+        self._index.clear()
         logger.info("[TaskQueue] Stopped")
 
     # ── enqueue ───────────────────────────────────────────────────
@@ -323,6 +333,84 @@ class TaskQueue:
             ]
             for tid in stale_deps:
                 self._dependency_map.pop(tid, None)
+            self._prune_registered()
+
+    # ── Org / Node task tracking ──────────────────────────────────
+
+    def register_task(
+        self,
+        task_id: str,
+        org_id: str,
+        node_id: str,
+        task: asyncio.Task,
+    ) -> None:
+        """Register an externally-created asyncio.Task with org/node metadata.
+
+        This is a synchronous method (no await) safe for use in done-callbacks.
+        """
+        self._registered[task_id] = task
+        self._meta[task_id] = (org_id, node_id)
+        key = (org_id, node_id)
+        self._index.setdefault(key, set()).add(task_id)
+
+    def deregister_task(self, task_id: str) -> None:
+        """Remove a task from org/node tracking (called from done-callback)."""
+        self._registered.pop(task_id, None)
+        meta = self._meta.pop(task_id, None)
+        if meta is not None:
+            key = (meta[0], meta[1])
+            ids = self._index.get(key)
+            if ids is not None:
+                ids.discard(task_id)
+                if not ids:
+                    self._index.pop(key, None)
+
+    async def get_node_active_count(self, org_id: str, node_id: str) -> int:
+        """Count non-done registered tasks for an org+node."""
+        key = (org_id, node_id)
+        ids = self._index.get(key, set())
+        count = 0
+        for tid in list(ids):
+            t = self._registered.get(tid)
+            if t is not None and not t.done():
+                count += 1
+        return count
+
+    def get_node_task_ids(self, org_id: str, node_id: str) -> list[str]:
+        """Get task_ids of registered tasks for a node (used by watchdog)."""
+        key = (org_id, node_id)
+        return list(self._index.get(key, set()))
+
+    async def cancel_node_tasks(self, org_id: str, node_id: str) -> list[asyncio.Task]:
+        """Cancel all active registered tasks for a node. Returns cancelled tasks."""
+        key = (org_id, node_id)
+        ids = list(self._index.get(key, set()))
+        cancelled: list[asyncio.Task] = []
+        for tid in ids:
+            t = self._registered.get(tid)
+            if t is not None and not t.done():
+                t.cancel()
+                cancelled.append(t)
+        return cancelled
+
+    async def cancel_org_tasks(self, org_id: str) -> list[asyncio.Task]:
+        """Cancel all active registered tasks for an org. Returns cancelled tasks."""
+        cancelled: list[asyncio.Task] = []
+        for (o_id, _n_id), ids in list(self._index.items()):
+            if o_id != org_id:
+                continue
+            for tid in list(ids):
+                t = self._registered.get(tid)
+                if t is not None and not t.done():
+                    t.cancel()
+                    cancelled.append(t)
+        return cancelled
+
+    def _prune_registered(self) -> None:
+        """Remove done/finished tasks from registered tracking."""
+        done_ids = [tid for tid, t in self._registered.items() if t.done()]
+        for tid in done_ids:
+            self.deregister_task(tid)
 
     def get_stats(self) -> dict:
         return {
@@ -335,4 +423,5 @@ class TaskQueue:
             "total_cancelled": self._total_cancelled,
             "total_stolen": self._total_stolen,
             "max_concurrent": self._max_concurrent,
+            "registered": len(self._registered),
         }
