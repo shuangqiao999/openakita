@@ -404,7 +404,12 @@ class LLMClient:
                     max_tokens=1,
                 )
                 response = await asyncio.wait_for(provider.chat(request), timeout=15.0)
-                if response.usage.output_tokens > 0 and not response.content:
+                has_visible = bool(response.content and response.content.strip())
+                has_reasoning = bool(
+                    getattr(response, "reasoning_content", None)
+                    and getattr(response, "reasoning_content", "").strip()
+                )
+                if response.usage.output_tokens > 0 and not has_visible and not has_reasoning:
                     raise RuntimeError(
                         "endpoint returned output tokens but no visible content"
                     )

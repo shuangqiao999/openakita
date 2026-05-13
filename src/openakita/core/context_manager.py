@@ -1157,13 +1157,18 @@ class ContextManager:
                 if url in seen:
                     continue
                 seen.add(url)
-                parsed = urlparse(url)
+                try:
+                    parsed = urlparse(url)
+                    hostname = parsed.hostname or ""
+                except ValueError:
+                    logger.warning(f"Skipping invalid URL in message: {url[:120]}")
+                    continue
                 facts.append(
                     {
                         "message_index": str(index),
                         "role": str(msg.get("role", "")),
                         "url": url,
-                        "hostname": parsed.hostname or "",
+                        "hostname": hostname,
                     }
                 )
         return facts

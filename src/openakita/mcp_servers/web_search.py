@@ -13,7 +13,6 @@ Web Search MCP 服务器
 
 import json
 import logging
-import os
 import re
 import socket
 import time
@@ -76,7 +75,7 @@ def _is_valid_result(r: dict[str, Any]) -> bool:
 
 
 def _fetch_html(url: str, params: dict, *, headers: dict | None = None, timeout: float = _ENGINE_TIMEOUT) -> str | None:
-    """同步 HTTP GET，含超时控制、代理支持、DNS 超时。"""
+    """同步 HTTP GET，含超时控制和 DNS 超时。"""
     import httpx
     default_headers = {
         "User-Agent": _UA_DESKTOP,
@@ -86,21 +85,8 @@ def _fetch_html(url: str, params: dict, *, headers: dict | None = None, timeout:
     if headers:
         default_headers.update(headers)
 
-    # 读取代理配置：优先环境变量
-    proxies = None
-    http_proxy = os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
-    https_proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
-    if http_proxy or https_proxy:
-        proxies = {}
-        if http_proxy:
-            proxies["http://"] = http_proxy
-        if https_proxy:
-            proxies["https://"] = https_proxy
-
     try:
-        with httpx.Client(
-            timeout=timeout, follow_redirects=True, proxies=proxies,
-        ) as client:
+        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
             resp = client.get(url, params=params, headers=default_headers)
             resp.raise_for_status()
             return resp.text
@@ -465,15 +451,9 @@ def _format_news_results(results: list) -> str:
 
 def _all_failed_json(kind: str) -> str:
     label = "新闻" if kind == "news" else "网页"
-    proxy_hint = ""
-    if os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy"):
-        proxy_hint = " 当前已配置代理，若代理不可用请检查代理设置。"
     return json.dumps({
         "success": False,
-        "message": (
-            f"所有{label}搜索引擎（Bing/百度/360/搜狗/神马/头条 + DDG）均无结果。"
-            f"请检查网络连接（设置 HTTP_PROXY 环境变量）或稍后再试。{proxy_hint}"
-        ),
+        "message": f"所有{label}搜索引擎（Bing/百度/360/搜狗/神马/头条 + DDG）均无结果。请检查网络后重试。",
         "results": [],
     }, ensure_ascii=False)
 
@@ -494,7 +474,7 @@ def _check_network() -> None:
             return
         except Exception as exc:
             logger.debug(f"[NetworkCheck] {host}: {type(exc).__name__}: {exc}")
-    logger.warning("[NetworkCheck] DNS 解析外网域名失败，搜索可能无法返回结果。请检查网络或设置 HTTP_PROXY。")
+    logger.warning("[NetworkCheck] DNS 解析外网域名失败，搜索可能无法返回结果。请检查网络。")
 
 
 @mcp.tool()

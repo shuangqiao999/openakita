@@ -12,7 +12,6 @@ Web Search 处理器
 import asyncio
 import json
 import logging
-import os
 import re
 import socket
 import time
@@ -79,7 +78,7 @@ def _is_valid_result(r: dict[str, Any]) -> bool:
 
 
 def _fetch_html(url: str, params: dict, *, headers: dict | None = None, timeout: float = _ENGINE_TIMEOUT) -> str | None:
-    """同步 HTTP GET，含超时控制、代理支持、DNS 超时。"""
+    """同步 HTTP GET，含超时控制和 DNS 超时。"""
     import httpx
 
     default_headers = {
@@ -90,25 +89,8 @@ def _fetch_html(url: str, params: dict, *, headers: dict | None = None, timeout:
     if headers:
         default_headers.update(headers)
 
-    # 读取代理配置：优先环境变量，其次 settings 配置
-    proxies = None
-    http_proxy = os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
-    https_proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
-    if not http_proxy:
-        _cfg_proxy = getattr(settings, "web_search_proxy", None)
-        if _cfg_proxy:
-            http_proxy = https_proxy = str(_cfg_proxy).strip()
-    if http_proxy or https_proxy:
-        proxies = {}
-        if http_proxy:
-            proxies["http://"] = http_proxy
-        if https_proxy:
-            proxies["https://"] = https_proxy
-
     try:
-        with httpx.Client(
-            timeout=timeout, follow_redirects=True, proxies=proxies,
-        ) as client:
+        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
             resp = client.get(url, params=params, headers=default_headers)
             resp.raise_for_status()
             return resp.text
@@ -520,15 +502,11 @@ async def _run_search_attempt(func, *, timeout_seconds: float, **kwargs) -> list
 
 def _all_failed_response(kind: str) -> str:
     label = "新闻" if kind == "news" else "网页"
-    proxy_hint = ""
-    if os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy"):
-        proxy_hint = " 当前已配置代理，若代理不可用请检查代理设置。"
     return json.dumps({
         "success": False,
         "message": (
             f"所有{label}搜索引擎（Bing/百度/360/搜狗/神马/头条 + DuckDuckGo）"
-            f"均无法获取结果。请检查网络连接（设置 HTTP_PROXY 环境变量）或稍后再试。"
-            f"{proxy_hint}"
+            f"均无法获取结果。请检查网络连接或稍后再试。"
         ),
         "results": [],
     }, ensure_ascii=False)
@@ -548,7 +526,7 @@ class WebSearchHandler:
 
     @staticmethod
     def check_network() -> tuple[bool, str]:
-        """网络预检：尝试解析域名并建立 TCP 连接，返回 (可达, 详情)。"""
+        """网络预检：尝试解析外网域名，返回 (可达, 详情)。"""
         import socket as _sock
 
         for host in WebSearchHandler.CHECK_HOSTS:
@@ -558,12 +536,7 @@ class WebSearchHandler:
                     return True, f"{host} 可达"
             except Exception as exc:
                 logger.debug(f"[NetworkCheck] {host}: {type(exc).__name__}: {exc}")
-        # 如果 DNS 解析全部失败，检查代理
-        http_proxy = os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
-        https_proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
-        if http_proxy or https_proxy:
-            return False, "DNS 解析失败，但检测到代理仍在。请确认代理可用。"
-        return False, "DNS 解析失败，请检查网络连接或设置 HTTP_PROXY 环境变量。"
+        return False, "DNS 解析失败，请检查网络连接。"
 
     async def handle(self, tool_name: str, params: dict[str, Any]) -> str:
         if tool_name == "web_search":
