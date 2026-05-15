@@ -51,8 +51,8 @@ class RetrievalEngine:
 
     # 排序权重
     W_RELEVANCE = 0.40
-    W_RECENCY = 0.20
-    W_IMPORTANCE = 0.20
+    W_RECENCY = 0.10    # Reduced from 0.20 — long-term recall benefits
+    W_IMPORTANCE = 0.30 # Increased from 0.20 — prioritize high-value memories
     W_ACCESS = 0.20
 
     MIN_RERANK_SCORE = 0.35
@@ -876,13 +876,17 @@ class RetrievalEngine:
 
     @staticmethod
     def _compute_recency(dt: datetime) -> float:
-        """Compute recency score: 1.0 for now, decays over days."""
+        """Compute recency score: 1.0 for now, gentle decay over long periods.
+
+        Uses exp(-0.03 * days): 1 day→0.97, 7 days→0.81, 30 days→0.41, 90 days→0.07.
+        Previous exp(-0.1 * days) was too aggressive: 7 days→0.50 rendered
+        week-old memories nearly invisible in multi-factor ranking."""
         if not dt:
             return 0.0
         try:
             delta = (datetime.now() - dt).total_seconds()
             days = max(0, delta / 86400)
-            return math.exp(-0.1 * days)
+            return math.exp(-0.03 * days)
         except Exception:
             return 0.0
 

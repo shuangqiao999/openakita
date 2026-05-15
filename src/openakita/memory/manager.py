@@ -385,6 +385,44 @@ class MemoryManager:
         entries.append(("system", "", "system", workspace_id))
         return entries
 
+    def get_recent_conversation_context(
+        self,
+        *,
+        days_back: int = 3,
+        max_turns: int = 20,
+        max_chars: int = 3000,
+    ) -> str | None:
+        """Build a compact context summary of recent conversations.
+
+        Used at session start to give the LLM awareness of what was
+        discussed recently without requiring explicit memory search.
+        """
+        store = self.store
+        if store is None:
+            return None
+        user_id = self._current_user_id or "default"
+        turns = store.summary_recent_turns(
+            user_id=user_id, days_back=days_back, max_turns=max_turns
+        )
+        if not turns:
+            return None
+        lines: list[str] = []
+        total = 0
+        session_ids = list(dict.fromkeys(t["session_id"] for t in turns))[:3]
+        lines.append(f"[最近 {days_back} 天内的对话摘要，共 {len(session_ids)} 个会话]")
+        for t in turns:
+            role_icon = "👤" if t.get("role") == "user" else "🤖"
+            preview = (t.get("content_preview") or "")[:300]
+            if not preview.strip():
+                continue
+            line = f"{role_icon} {preview}"
+            if total + len(line) > max_chars:
+                lines.append("[摘要截断，更多内容可通过 search_memory 查找]")
+                break
+            lines.append(line)
+            total += len(line)
+        return "\n".join(lines) if len(lines) > 1 else None
+
     def _visible_scope_pairs(self) -> list[tuple[str, str]]:
         """Backward-compatible view for callers that only understand scope pairs."""
         return [(scope, owner) for scope, owner, _user, _workspace in self._visible_scope_entries()]

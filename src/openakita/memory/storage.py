@@ -1554,6 +1554,51 @@ class MemoryStorage:
             return []
 
     # ======================================================================
+    # Recent conversation summary (cross-session context injection)
+    # ======================================================================
+
+    def summary_recent_turns(
+        self,
+        user_id: str | None = None,
+        days_back: int = 3,
+        max_turns: int = 30,
+    ) -> list[dict]:
+        """Return recent conversation turns across all sessions for context injection.
+
+        Used when starting a new conversation to give the LLM awareness of
+        what was discussed recently, even across different sessions/devices.
+        """
+        if not self._conn:
+            return []
+        cutoff = (datetime.now() - timedelta(days=days_back)).isoformat()
+        try:
+            if user_id:
+                cur = self._conn.execute(
+                    """SELECT ct.session_id, ct.turn_index, ct.role,
+                              substr(ct.content, 1, 500) as content_preview,
+                              ct.timestamp
+                       FROM conversation_turns ct
+                       INNER JOIN episodes e ON ct.episode_id = e.id
+                       WHERE ct.timestamp >= ? AND e.user_id = ?
+                       ORDER BY ct.timestamp DESC LIMIT ?""",
+                    (cutoff, user_id, max_turns),
+                )
+            else:
+                cur = self._conn.execute(
+                    """SELECT session_id, turn_index, role,
+                              substr(content, 1, 500) as content_preview,
+                              timestamp
+                       FROM conversation_turns
+                       WHERE timestamp >= ?
+                       ORDER BY timestamp DESC LIMIT ?""",
+                    (cutoff, max_turns),
+                )
+            return self._rows_to_dicts(cur, json_fields=[])
+        except Exception as e:
+            logger.warning(f"Failed to summarize recent turns: {e}")
+            return []
+
+    # ======================================================================
     # Extraction Queue
     # ======================================================================
 

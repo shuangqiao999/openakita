@@ -4570,6 +4570,32 @@ class Agent:
         except Exception as e:
             logger.warning(f"[Memory] Failed to align memory session: {e}")
 
+        # 1.6 新会话自动注入最近对话摘要（跨会话上下文连贯性）
+        # 当 session 为空或仅有系统消息时，从 conversation_turns 提取最近 3 天的
+        # 对话摘要并注入，让 LLM 在新对话开始时也能了解近期讨论内容。
+        if len(session_messages) <= 2 and self.memory_manager:
+            try:
+                _recent_ctx = self.memory_manager.get_recent_conversation_context(
+                    days_back=3, max_turns=20, max_chars=3000
+                )
+                if _recent_ctx:
+                    _summary_msg = {
+                        "role": "system",
+                        "content": _recent_ctx,
+                        "timestamp": datetime.now().isoformat(),
+                    }
+                    session_messages = list(session_messages)
+                    session_messages.insert(0, _summary_msg)
+                    logger.info(
+                        f"[Session:{session_id}] Injected recent conversation "
+                        f"summary ({len(_recent_ctx)} chars)"
+                    )
+            except Exception as _e:
+                logger.debug(
+                    f"[Session:{session_id}] Recent summary injection failed "
+                    f"(non-critical): {_e}"
+                )
+
         # 2. IM context setup（协程隔离）
         from .im_context import set_im_context
 

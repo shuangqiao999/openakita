@@ -183,14 +183,21 @@ class DailyConsolidator:
             return False
 
     def _generate_memory_md(self, by_type: dict) -> str:
-        """生成 MEMORY.md 内容"""
+        """生成 MEMORY.md 内容，包含最近对话摘要"""
         lines = [
             "# Core Memory",
             "",
-            "> Agent 核心记忆，每次对话都会加载。每日凌晨自动刷新。",
+            "> Agent 核心记忆，每次对话都会加载。每 4 小时自动刷新。",
             f"> 最后更新: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
             "",
         ]
+
+        # 最近对话摘要（新增章节）
+        recent_summary = self._build_recent_conversation_lines()
+        if recent_summary:
+            lines.append("## 最近对话")
+            lines.extend(recent_summary)
+            lines.append("")
 
         # 用户偏好
         if by_type["preference"]:
@@ -227,6 +234,34 @@ class DailyConsolidator:
             lines.append("")
 
         return "\n".join(lines)
+
+    def _build_recent_conversation_lines(self) -> list[str]:
+        """Build a compact recent-conversation summary for MEMORY.md.
+
+        Uses conversation_turns from all recent sessions to give the LLM
+        awareness of what was recently discussed without consuming large
+        token budgets.
+        """
+        try:
+            store = getattr(self.memory_manager, "store", None) if self.memory_manager else None
+            if store is None:
+                return []
+            turns = store.summary_recent_turns(days_back=3, max_turns=15)
+            if not turns:
+                return []
+            session_ids = list(dict.fromkeys(t["session_id"] for t in turns))[:3]
+            lines = []
+            for t in turns:
+                role_icon = "👤" if t.get("role") == "user" else "🤖"
+                preview = (t.get("content_preview") or "")[:200]
+                if not preview.strip():
+                    continue
+                lines.append(f"  - {role_icon} {preview}")
+                if len(lines) >= 10:
+                    break
+            return lines
+        except Exception:
+            return []
 
     async def _compress_memory_md(self, content: str) -> str:
         """

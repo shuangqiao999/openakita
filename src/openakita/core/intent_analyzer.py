@@ -287,6 +287,27 @@ _SAFE_WITH_HISTORY: frozenset[str] = frozenset(
 
 _FAST_CHAT_MAX_LEN = 12
 
+# 用户消息中出现的回忆/追溯关键词。命中时自动将 memory_scope 设为 FULL，
+# 确保系统提示词中的 Memory 层加载完整的历史记忆和关系图。
+_RECALL_MARKERS: frozenset[str] = frozenset({
+    "上次", "之前", "以前", "上回", "过去", "前面说过",
+    "我说过", "你提过", "记得", "还记得", "回忆", "回想",
+    "那天", "那时", "当时", "之前说", "之前聊",
+    "recall", "remember", "previous", "last time", "earlier",
+    "history", "past conversation", "what did I say",
+})
+
+def _has_recall_markers(message: str) -> bool:
+    """Check if message contains recall/reminiscence markers.
+
+    When detected, the memory_scope should be upgraded to FULL
+    to ensure the LLM has comprehensive access to historical memories.
+    """
+    if not message:
+        return False
+    lower = message.lower()
+    return any(m in lower for m in _RECALL_MARKERS)
+
 # Rule-based patterns for QUERY intent (no tools needed).
 # IMPORTANT: Chinese text has no whitespace, so \S+ greedily matches
 # entire strings.  All patterns must be tightly bounded to avoid
@@ -610,7 +631,18 @@ class IntentAnalyzer:
                 return _make_default(message)
 
             logger.info(f"[IntentAnalyzer] Raw output: {raw_output[:200]}")
-            return _parse_intent_output(raw_output, message)
+            result = _parse_intent_output(raw_output, message)
+            # If user message contains recall markers, upgrade memory scope to FULL
+            # to ensure comprehensive historical memory search.
+            if _has_recall_markers(message) and result.memory_scope in (
+                MemoryScope.PINNED_ONLY, MemoryScope.RELEVANT
+            ):
+                result.memory_scope = MemoryScope.FULL
+                logger.info(
+                    f"[IntentAnalyzer] Recall markers detected, "
+                    f"memory_scope upgraded: {result.memory_scope.value}"
+                )
+            return result
 
         except Exception as e:
             logger.warning(f"[IntentAnalyzer] LLM analysis failed: {e}, using default")
