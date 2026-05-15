@@ -16,6 +16,8 @@ import json
 import logging
 import re
 
+from .decisions import Decision, DecisionType
+
 logger = logging.getLogger(__name__)
 
 
@@ -86,12 +88,7 @@ class StreamAccumulator:
         return []
 
     def build_decision(self):
-        """从累积状态构建 Decision 对象。
-
-        返回 Decision（延迟导入，避免循环依赖）。
-        """
-        from .reasoning_engine import Decision, DecisionType
-
+        """从累积状态构建 Decision 对象。"""
         decision_type = DecisionType.TOOL_CALLS if self.tool_calls else DecisionType.FINAL_ANSWER
         return Decision(
             type=decision_type,
@@ -384,8 +381,6 @@ def post_process_streamed_decision(decision) -> None:
             logger.warning(f"[post_process] Stripped bare tool name '{last}'")
 
     # 5) 更新 decision type
-    from .reasoning_engine import DecisionType
-
     if decision.tool_calls:
         decision.type = DecisionType.TOOL_CALLS
     else:

@@ -36,6 +36,7 @@ from ..tracing.tracer import get_tracer
 from .agent_state import AgentState, TaskState, TaskStatus
 from .context_manager import ContextManager
 from .context_manager import _CancelledError as _CtxCancelledError
+from .decisions import Decision, DecisionType
 from .errors import UserCancelledError
 from .loop_budget_guard import LoopBudgetGuard
 from .resource_budget import BudgetAction, ResourceBudget, create_budget_from_settings
@@ -46,6 +47,7 @@ from .response_handler import (
     request_expects_artifact,
     strip_thinking_tags,
 )
+from .stream_accumulator import StreamAccumulator, post_process_streamed_decision
 from .supervisor import TOKEN_ANOMALY_THRESHOLD, RuntimeSupervisor
 
 # 不产出"最终交付物"的管理类工具集合 —— 用于：
@@ -498,25 +500,9 @@ def _should_block_tool(
     return None
 
 
-class DecisionType(Enum):
-    """LLM 决策类型"""
-
-    FINAL_ANSWER = "final_answer"  # 纯文本响应
-    TOOL_CALLS = "tool_calls"  # 需要工具调用
-
-
-@dataclass
-class Decision:
-    """LLM 推理决策"""
-
-    type: DecisionType
-    text_content: str = ""
-    tool_calls: list[dict] = field(default_factory=list)
-    thinking_content: str = ""
-    raw_response: Any = None
-    stop_reason: str = ""
-    # 完整的 assistant_content（保留 thinking 块等）
-    assistant_content: list[dict] = field(default_factory=list)
+# Deprecated local aliases kept for internal compatibility: DecisionType and Decision
+# are now defined in core/decisions.py and re-exported here.
+# Internal code should import from core.decisions directly.
 
 
 @dataclass
@@ -6360,8 +6346,6 @@ class ReasoningEngine:
             {"type": "decision", "decision": Decision}
         """
         import time as _time
-
-        from .stream_accumulator import StreamAccumulator, post_process_streamed_decision
 
         acc = StreamAccumulator()
         last_yield_time = _time.monotonic()

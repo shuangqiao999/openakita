@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from openakita.api.routes import upload
-from openakita.core.agent import _format_desktop_attachment_reference
+from openakita.core.attachment_processor import format_desktop_attachment_reference
 
 
 def _client(tmp_path, monkeypatch) -> TestClient:
@@ -48,7 +48,7 @@ def test_desktop_uploaded_audio_reference_includes_local_path(tmp_path, monkeypa
     saved = tmp_path / "123_meeting.wav"
     saved.write_bytes(b"voice")
 
-    text = _format_desktop_attachment_reference(
+    text = format_desktop_attachment_reference(
         att_type="voice",
         att_name="meeting.wav",
         att_mime="audio/wav",

@@ -19,6 +19,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from ..tracing.tracer import get_tracer
+from .constants import CHARS_PER_TOKEN, CHUNK_MAX_TOKENS, CONTEXT_BOUNDARY_MARKER
 from .context_utils import DEFAULT_MAX_CONTEXT_TOKENS
 from .context_utils import estimate_tokens as _shared_estimate_tokens
 from .context_utils import get_max_context_tokens as _shared_get_max_context_tokens
@@ -26,9 +27,6 @@ from .token_tracking import TokenTrackingContext, reset_tracking_context, set_tr
 from .tool_executor import OVERFLOW_MARKER
 
 logger = logging.getLogger(__name__)
-CHARS_PER_TOKEN = 2  # JSON 序列化后约 2 字符 = 1 token
-CHUNK_MAX_TOKENS = 30000  # 每次发给 LLM 压缩的单块上限
-CONTEXT_BOUNDARY_MARKER = "[上下文边界]"  # 话题切换边界标记
 
 _URL_RE = re.compile(r"https?://[^\s<>'\"，。；、)）\]}]+", re.IGNORECASE)
 

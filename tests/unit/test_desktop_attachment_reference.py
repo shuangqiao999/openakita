@@ -1,7 +1,7 @@
 import base64
 
 from openakita.api.routes import upload
-from openakita.core.agent import _format_desktop_attachment_reference
+from openakita.core.attachment_processor import format_desktop_attachment_reference
 
 
 def test_non_media_data_uri_attachment_is_saved_not_inlined(monkeypatch, tmp_path):
@@ -9,7 +9,7 @@ def test_non_media_data_uri_attachment_is_saved_not_inlined(monkeypatch, tmp_pat
     raw = b"hello,xlsx"
     encoded = base64.b64encode(raw).decode("ascii")
 
-    text = _format_desktop_attachment_reference(
+    text = format_desktop_attachment_reference(
         att_type="document",
         att_name="report.xlsx",
         att_mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -26,7 +26,7 @@ def test_non_media_data_uri_attachment_is_saved_not_inlined(monkeypatch, tmp_pat
 
 
 def test_uploaded_attachment_url_is_kept_as_short_reference():
-    text = _format_desktop_attachment_reference(
+    text = format_desktop_attachment_reference(
         att_type="document",
         att_name="report.xlsx",
         att_mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
