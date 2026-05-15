@@ -5021,7 +5021,7 @@ class Agent:
             # differentiation — the user's intent is always TASK.
             # Skip the LLM call entirely for agent mode with history.
             _is_desktop_agent = (
-                session_type == "desktop"
+                getattr(session, "channel", "") == "desktop"
                 and mode == "agent"
                 and len(session_messages) > 1
             )
