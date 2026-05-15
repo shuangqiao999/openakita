@@ -1999,32 +1999,10 @@ class Agent:
             self._initialized = True
             return
 
-        # === 启动预热（把昂贵但可复用的初始化提前到启动阶段）===
-        # 目标：避免首条用户消息才加载 embedding/向量库、生成清单等，导致 IM 首响应显著变慢。
-        try:
-            # 1) 预热清单缓存（避免每次 build_system_prompt 都重新生成）
-            # 注意：这些方法内部已有缓存；这里调用一次确保缓存命中。
-            with contextlib.suppress(Exception):
-                self.tool_catalog.get_catalog()
-            with contextlib.suppress(Exception):
-                self.skill_catalog.get_catalog()
-            with contextlib.suppress(Exception):
-                self.mcp_catalog.get_catalog()
-
-            # 2) 预热向量库（embedding 模型 + ChromaDB）
-            # 放到线程中执行，避免阻塞事件循环；初始化完成后后续搜索会明显更快。
-            if self.memory_manager.vector_store is not None:
-                await asyncio.to_thread(lambda: bool(self.memory_manager.vector_store.enabled))
-        except Exception as e:
-            # 预热失败不应影响启动（例如 chromadb 未安装时会自动禁用）
-            logger.debug(f"[Prewarm] skipped/failed: {e}")
-
-        # === 表情包引擎初始化 ===
-        if self.sticker_engine:
-            try:
-                await self.sticker_engine.initialize()
-            except Exception as e:
-                logger.debug(f"[Sticker] initialization skipped/failed: {e}")
+        # === Stage 4-12: Defer heavy prewarm to background ===
+        # Skills/MCP/Plugins already loaded above. Only prewarm (vector store,
+        # catalogs, sticker engine) is deferred to avoid blocking HTTP bind.
+        asyncio.create_task(self._background_prewarm_and_stickers())
 
         # === 从记忆系统加载 PERSONA_TRAIT ===
         try:
@@ -4508,6 +4486,42 @@ class Agent:
         except Exception as e:
             logger.debug(f"[TraitMiner:{session_id}] Mining failed (non-critical): {e}")
 
+    async def _background_prewarm_and_stickers(self) -> None:
+        """Background task: prewarm catalogs, vector store, and sticker engine.
+
+        Stage 4-12: Deferred from initialization to avoid blocking HTTP bind.
+        Catalog pre-generation ensures the first chat request hits cache.
+        """
+        import contextlib
+
+        try:
+            # Catalog pre-generation
+            with contextlib.suppress(Exception):
+                self.tool_catalog.get_catalog()
+            with contextlib.suppress(Exception):
+                self.skill_catalog.get_catalog()
+            with contextlib.suppress(Exception):
+                self.mcp_catalog.get_catalog()
+            logger.debug("[Prewarm] Catalogs pre-generated in background")
+        except Exception as e:
+            logger.debug(f"[Prewarm] Catalog prewarm skipped: {e}")
+
+        try:
+            # Vector store warm-up
+            if self.memory_manager.vector_store is not None:
+                await asyncio.to_thread(lambda: bool(self.memory_manager.vector_store.enabled))
+                logger.debug("[Prewarm] Vector store warmed in background")
+        except Exception as e:
+            logger.debug(f"[Prewarm] Vector store skipped: {e}")
+
+        try:
+            # Sticker engine
+            if self.sticker_engine:
+                await self.sticker_engine.initialize()
+                logger.debug("[Prewarm] Sticker engine initialized in background")
+        except Exception as e:
+            logger.debug(f"[Prewarm] Sticker skipped: {e}")
+
     @staticmethod
     def _extract_to_memory_keywords(message: str) -> list[str]:
         """Extract memory keywords without LLM (fast-path fallback).
@@ -5679,12 +5693,32 @@ class Agent:
             attachments,
         )
 
-        # 11. Context compression
-        messages = await self._compress_context_for_prepare(
-            messages,
-            session_id=session_id,
-            conversation_id=conversation_id,
-        )
+        # 11. Context compression (Stage 2-7: async with 3s timeout)
+        # Large context compression can take 1-15s. Apply a short timeout
+        # and defer full compression to a background task if it takes too long.
+        try:
+            messages = await asyncio.wait_for(
+                self._compress_context_for_prepare(
+                    messages,
+                    session_id=session_id,
+                    conversation_id=conversation_id,
+                ),
+                timeout=3.0,
+            )
+        except (asyncio.TimeoutError, Exception):
+            # Compression timed out — proceed with uncompressed context
+            # and schedule background compression for the next turn
+            logger.info(
+                f"[Session:{session_id}] Context compression deferred "
+                f"to background (timeout). Proceeding with uncompressed context."
+            )
+            asyncio.create_task(
+                self._compress_context_for_prepare(
+                    messages,
+                    session_id=session_id,
+                    conversation_id=conversation_id,
+                )
+            )
 
         # 12. TaskMonitor creation
         task_monitor = TaskMonitor(

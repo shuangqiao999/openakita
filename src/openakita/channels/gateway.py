@@ -2908,8 +2908,23 @@ class MessageGateway:
                         f"[Gateway] Pre-process hook {hook.__qualname__} failed: {hook_err}"
                     )
 
-            # 3. 媒体预处理（下载图片、语音转文字）
-            await self._preprocess_media(message)
+            # 3. Stage 4-11: Media preprocessing with timeout
+            # Download images/videos/voice can take 1-10s. Apply 5s timeout
+            # and defer remaining to background for next-turn context injection.
+            try:
+                await asyncio.wait_for(
+                    self._preprocess_media(message),
+                    timeout=5.0,
+                )
+            except asyncio.TimeoutError:
+                logger.info(
+                    f"[Gateway] Media preprocessing timed out for "
+                    f"{message.channel}:{message.chat_id}, "
+                    f"deferring remaining to background"
+                )
+                asyncio.create_task(self._preprocess_media(message))
+            except Exception as e:
+                logger.debug(f"[Gateway] Media preprocessing skipped: {e}")
 
             # 4. 获取或创建会话
             _msg_sender_name = (message.metadata or {}).get("sender_name", "")
