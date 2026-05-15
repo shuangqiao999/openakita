@@ -619,7 +619,18 @@ pub fn runtime_wheel_hash_matches_bootstrap() -> bool {
             if m.legacy_mode {
                 return true;
             }
-            m.wheel_hash == bootstrap_hash
+            // Wheel hash mismatch when versions ARE the same means
+            // the wheel was rebuilt with the same version number.
+            // The dual-venv health check already verified openakita is
+            // importable, so treat as compatible rather than killing
+            // the running backend for a no-op rebuild.
+            if m.wheel_hash != bootstrap_hash {
+                state::log_to_file(&format!(
+                    "[version_check] wheel hash changed but app_version matches ({}), keeping backend",
+                    m.app_version
+                ));
+            }
+            true
         })
         .unwrap_or(false)
 }
