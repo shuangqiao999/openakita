@@ -211,6 +211,17 @@ def _looks_like_explicit_no_tool_request(message: str) -> bool:
     )
 
 
+# ── 通用「继续」检测（即使没有 formal awaiting_confirmation） ──
+# 用户说这些词且存在对话历史时，应理解为「继续上一轮工作」而非新对话开始
+_CONTINUE_WORDS: frozenset[str] = frozenset({
+    "继续", "接着", "继续吧", "继续执行", "接着说",
+    "继续做", "继续完成", "继续处理", "接着做", "继续下一步",
+    "go on", "continue", "go ahead", "proceed", "keep going",
+})
+
+# ──「继续」场景下需强制加载的最近轮数 ──
+_CONTINUE_MINIMUM_RECENT_TURNS: int = 4
+
 _TASK_RESULT_META_MARKERS = (
     "任务已完成",
     "已完成任务",
@@ -4620,6 +4631,70 @@ class Agent:
                 _intent_pre_set = True
             # 如果是其他消息（不是确认也不是取消），由后续正常意图分析处理
             # 注意：不清除 awaiting_confirmation，允许用户稍后回复确认
+
+        # ── 6.6 通用「继续」检测（即使没有 formal awaiting_confirmation） ──
+        # 用户发送"继续"但 awaiting_confirmation=False 时，
+        # 不依赖 LLM 意图分析（LLM 可能误判为 CHAT），直接注入任务续接上下文
+        if (
+            not _intent_pre_set
+            and len(session_messages) >= 2
+            and message.strip().lower() in _CONTINUE_WORDS
+        ):
+            _last_user = None
+            _last_assistant = None
+            for msg in reversed(session_messages):
+                role = msg.get("role", "")
+                content = str(msg.get("content", ""))
+                if role == "user" and _last_user is None:
+                    _last_user = content[:300]
+                if role == "assistant" and _last_assistant is None:
+                    _last_assistant = content[:300]
+                if _last_user and _last_assistant:
+                    break
+
+            _context_hint = (
+                "用户要求继续之前的工作。"
+                "请回顾对话历史，直接从上次中断处继续，"
+                "不需要重新介绍、打招呼或问候，"
+                "也不要问'有什么可以帮到您'之类的问题。"
+            )
+            if _last_user:
+                _context_hint += (
+                    f" 上一轮用户任务: {_last_user[:150]}"
+                )
+
+            # 注入系统提示到消息列表末尾，让 LLM 理解"继续"语义
+            _inject_msg = {
+                "role": "system",
+                "content": _context_hint,
+                "timestamp": datetime.now().isoformat(),
+            }
+            session_messages = list(session_messages)
+            # 插入到倒数第二条（当前用户消息之前）
+            if len(session_messages) >= 2:
+                session_messages.insert(-1, _inject_msg)
+            else:
+                session_messages.append(_inject_msg)
+
+            # 强制意图为 TASK，确保走完整推理流程（不走 CHAT 快速路径）
+            intent_result = IntentResult(
+                intent=IntentType.TASK,
+                confidence=0.95,
+                task_definition=_last_user or message[:600],
+                task_type="action",
+                tool_hints=[],
+                memory_keywords=[_last_user[:60]] if _last_user else [],
+                force_tool=False,
+                requires_tools=False,
+                evidence_required=False,
+                todo_required=False,
+                raw_output="[generic-continue-resume]",
+            )
+            _intent_pre_set = True
+            logger.info(
+                f"[Session:{session_id}] Generic 'continue' detected, "
+                f"forcing TASK intent (last_user_context={bool(_last_user)})"
+            )
 
         if _intent_pre_set:
             pass
