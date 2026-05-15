@@ -11,8 +11,8 @@ use std::sync::OnceLock;
 use crate::util;
 
 /// === Startup / auto-start constants ===
-pub const AUTO_START_TIMEOUT_MS: u64 = 180_000;
-pub const BACKEND_BOOT_GRACE_SEC: u64 = 150;
+pub const AUTO_START_TIMEOUT_MS: u64 = 300_000;
+pub const BACKEND_BOOT_GRACE_SEC: u64 = 300;
 pub const BACKEND_BOOT_GRACE_PID_DEAD_SEC: u64 = 30;
 pub const SERVICE_START_DEDUPE_MS: u64 = 3_000;
 pub const SELF_HEAL_COOLDOWN_MS: u64 = 30_000;
@@ -579,13 +579,31 @@ pub fn backend_in_boot_grace(workspace_id: &str) -> bool {
 
 pub fn is_backend_http_healthy(port: Option<u16>) -> bool {
     let effective_port = port.unwrap_or(18900);
-    BLOCKING_HTTP_CLIENT
-        .get(format!("http://127.0.0.1:{}/api/health", effective_port))
-        .timeout(std::time::Duration::from_secs(2))
-        .send()
-        .ok()
-        .map(|r| r.status().is_success())
-        .unwrap_or(false)
+    let url = format!("http://127.0.0.1:{}/api/health", effective_port);
+    // Retry up to 3 times to handle transient connection failures
+    for attempt in 0..3u32 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(500 * attempt as u64));
+        }
+        match BLOCKING_HTTP_CLIENT
+            .get(&url)
+            .timeout(std::time::Duration::from_secs(3))
+            .send()
+        {
+            Ok(r) if r.status().is_success() => return true,
+            Ok(r) => {
+                if attempt < 2 {
+                    continue;
+                }
+            }
+            Err(_) => {
+                if attempt < 2 {
+                    continue;
+                }
+            }
+        }
+    }
+    false
 }
 
 pub fn should_cleanup_stale_heartbeat(heartbeat_stale: Option<bool>, http_healthy: bool) -> bool {

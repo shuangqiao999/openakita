@@ -36,84 +36,96 @@ pub fn stop_backend_for_restart(pid: u32, port: u16) -> VersionCheckResult {
 
 pub fn startup_version_check(app_version: &str, port: u16) -> VersionCheckResult {
     let client = &*state::BLOCKING_HTTP_CLIENT;
-    let resp = match client
-        .get(format!("http://127.0.0.1:{port}/api/health"))
-        .timeout(std::time::Duration::from_secs(3))
-        .send()
-    {
-        Ok(r) if r.status().is_success() => r,
-        Ok(r) => {
-            state::log_to_file(&format!(
-                "[version_check] health check non-success: {}",
-                r.status()
-            ));
-            return VersionCheckResult::NotRunning;
+    let url = format!("http://127.0.0.1:{port}/api/health");
+
+    // Retry up to 3 times with 1s backoff for transient failures
+    for attempt in 0..3u32 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(1000 * attempt as u64));
         }
-        Err(e) => {
-            state::log_to_file(&format!("[version_check] health check failed: {e}"));
-            return VersionCheckResult::NotRunning;
-        }
-    };
+        let resp = match client
+            .get(&url)
+            .timeout(std::time::Duration::from_secs(4))
+            .send()
+        {
+            Ok(r) if r.status().is_success() => r,
+            Ok(r) => {
+                state::log_to_file(&format!(
+                    "[version_check] health check non-success: {}",
+                    r.status()
+                ));
+                if attempt < 2 { continue; }
+                return VersionCheckResult::NotRunning;
+            }
+            Err(e) => {
+                if attempt < 2 { continue; }
+                state::log_to_file(&format!("[version_check] health check failed after 3 retries: {e}"));
+                return VersionCheckResult::NotRunning;
+            }
+        };
 
-    let json: serde_json::Value = match resp.json() {
-        Ok(v) => v,
-        Err(_) => return VersionCheckResult::RunningOk,
-    };
+        let json: serde_json::Value = match resp.json() {
+            Ok(v) => v,
+            Err(_) => return VersionCheckResult::RunningOk,
+        };
 
-    let backend_version = json
-        .get("version")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .trim_start_matches('v');
-    let desktop_version = app_version.trim_start_matches('v');
+        let backend_version = json
+            .get("version")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim_start_matches('v');
+        let desktop_version = app_version.trim_start_matches('v');
 
-    if backend_version.is_empty() || backend_version == "0.0.0-dev" {
-        return VersionCheckResult::RunningOk;
-    }
-
-    if backend_version == desktop_version {
-        if crate::runtime::runtime_wheel_hash_matches_bootstrap() {
+        if backend_version.is_empty() || backend_version == "0.0.0-dev" {
             return VersionCheckResult::RunningOk;
         }
+
+        if backend_version == desktop_version {
+            if crate::runtime::runtime_wheel_hash_matches_bootstrap() {
+                return VersionCheckResult::RunningOk;
+            }
+            let pid = match json.get("pid").and_then(|v| v.as_u64()).map(|p| p as u32) {
+                Some(p) => p,
+                None => {
+                    eprintln!("Runtime wheel changed but backend PID is unavailable; keeping current backend.");
+                    return VersionCheckResult::RunningOk;
+                }
+            };
+            eprintln!(
+                "Runtime wheel changed for version {desktop_version}. Stopping backend to refresh app-venv..."
+            );
+            return stop_backend_for_restart(pid, port);
+        }
+
+        let bundled_v = crate::python_env::bundled_backend_version()
+            .unwrap_or_default()
+            .trim_start_matches('v')
+            .to_string();
+        if !bundled_v.is_empty() && bundled_v == backend_version {
+            eprintln!(
+                "Version mismatch: backend={backend_version} desktop={desktop_version}, but bundled backend is also {bundled_v}. \
+                 Restart would not help — keeping current backend.",
+            );
+            return VersionCheckResult::RunningOk;
+        }
+
+        eprintln!(
+            "Version mismatch: running={backend_version} bundled={} desktop={desktop_version}. Stopping old backend for upgrade...",
+            if bundled_v.is_empty() { "?" } else { &bundled_v },
+        );
+
         let pid = match json.get("pid").and_then(|v| v.as_u64()).map(|p| p as u32) {
             Some(p) => p,
             None => {
-                eprintln!("Runtime wheel changed but backend PID is unavailable; keeping current backend.");
+                eprintln!("Cannot determine backend PID from health response; keeping current backend.");
                 return VersionCheckResult::RunningOk;
             }
         };
-        eprintln!(
-            "Runtime wheel changed for version {desktop_version}. Stopping backend to refresh app-venv..."
-        );
+
         return stop_backend_for_restart(pid, port);
     }
 
-    let bundled_v = crate::python_env::bundled_backend_version()
-        .unwrap_or_default()
-        .trim_start_matches('v')
-        .to_string();
-    if !bundled_v.is_empty() && bundled_v == backend_version {
-        eprintln!(
-            "Version mismatch: backend={backend_version} desktop={desktop_version}, but bundled backend is also {bundled_v}. \
-             Restart would not help — keeping current backend.",
-        );
-        return VersionCheckResult::RunningOk;
-    }
-
-    eprintln!(
-        "Version mismatch: running={backend_version} bundled={} desktop={desktop_version}. Stopping old backend for upgrade...",
-        if bundled_v.is_empty() { "?" } else { &bundled_v },
-    );
-
-    let pid = match json.get("pid").and_then(|v| v.as_u64()).map(|p| p as u32) {
-        Some(p) => p,
-        None => {
-            eprintln!("Cannot determine backend PID from health response; keeping current backend.");
-            return VersionCheckResult::RunningOk;
-        }
-    };
-
-    stop_backend_for_restart(pid, port)
+    VersionCheckResult::NotRunning
 }
 
 pub fn startup_reconcile() {
