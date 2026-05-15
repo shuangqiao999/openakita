@@ -4071,8 +4071,8 @@ fn main() {
                     app_version, ws_id, port, need_start
                 ));
                 if need_start {
-                    AUTO_START_IN_PROGRESS.store(true, Ordering::SeqCst);
-                    AUTO_START_STARTED_AT_MS.store(now_ms(), Ordering::SeqCst);
+                    AUTO_START_IN_PROGRESS.store(true, Ordering::Release);
+                    AUTO_START_STARTED_AT_MS.store(now_ms(), Ordering::Release);
                     let venv_dir = openakita_root_dir().join("venv").to_string_lossy().to_string();
                     let ws_clone = ws_id.clone();
                     std::thread::spawn(move || {
@@ -4087,8 +4087,8 @@ fn main() {
                                 log_to_file(&format!("[auto-start] FAILED: {}", e));
                             }
                         }
-                        AUTO_START_IN_PROGRESS.store(false, Ordering::SeqCst);
-                        AUTO_START_STARTED_AT_MS.store(0, Ordering::SeqCst);
+                        AUTO_START_IN_PROGRESS.store(false, Ordering::Release);
+                        AUTO_START_STARTED_AT_MS.store(0, Ordering::Release);
                     });
                 } else if let Some(pid) = healthy_backend_pid(port) {
                     let should_adopt = read_pid_file(ws_id)
@@ -4195,7 +4195,7 @@ fn main() {
                             ));
                             last_status_was_healthy = Some(false);
                         }
-                        if AUTO_START_IN_PROGRESS.load(Ordering::SeqCst) {
+                        if AUTO_START_IN_PROGRESS.load(Ordering::Acquire) {
                             continue;
                         }
                         let check_result = startup_version_check(&app_version_for_hb, port);
@@ -4205,8 +4205,8 @@ fn main() {
                             consecutive_failures = 0;
                             continue;
                         }
-                        AUTO_START_IN_PROGRESS.store(true, Ordering::SeqCst);
-                        AUTO_START_STARTED_AT_MS.store(now_ms(), Ordering::SeqCst);
+                        AUTO_START_IN_PROGRESS.store(true, Ordering::Release);
+                        AUTO_START_STARTED_AT_MS.store(now_ms(), Ordering::Release);
                         let venv_dir = openakita_root_dir()
                             .join("venv")
                             .to_string_lossy()
@@ -4219,8 +4219,8 @@ fn main() {
                             )),
                             Err(e) => log_to_file(&format!("[heartbeat] auto-spawn FAILED: {}", e)),
                         }
-                        AUTO_START_IN_PROGRESS.store(false, Ordering::SeqCst);
-                        AUTO_START_STARTED_AT_MS.store(0, Ordering::SeqCst);
+                        AUTO_START_IN_PROGRESS.store(false, Ordering::Release);
+                        AUTO_START_STARTED_AT_MS.store(0, Ordering::Release);
                         consecutive_failures = 0;
                     }
                 });
@@ -5242,8 +5242,8 @@ fn autostart_set_enabled(app: tauri::AppHandle, enabled: bool) -> Result<(), Str
 #[tauri::command]
 fn is_backend_auto_starting() -> bool {
     // 优先级 1：显式的 AUTO_START_IN_PROGRESS flag
-    if AUTO_START_IN_PROGRESS.load(Ordering::SeqCst) {
-        let started_at = AUTO_START_STARTED_AT_MS.load(Ordering::SeqCst);
+    if AUTO_START_IN_PROGRESS.load(Ordering::Acquire) {
+        let started_at = AUTO_START_STARTED_AT_MS.load(Ordering::Acquire);
         if started_at > 0 {
             let elapsed = now_ms().saturating_sub(started_at);
             if elapsed >= AUTO_START_TIMEOUT_MS {
@@ -5251,8 +5251,8 @@ fn is_backend_auto_starting() -> bool {
                     "[auto-start] is_backend_auto_starting timeout after {}ms, clearing flag",
                     elapsed
                 ));
-                AUTO_START_IN_PROGRESS.store(false, Ordering::SeqCst);
-                AUTO_START_STARTED_AT_MS.store(0, Ordering::SeqCst);
+                AUTO_START_IN_PROGRESS.store(false, Ordering::Release);
+                AUTO_START_STARTED_AT_MS.store(0, Ordering::Release);
             } else {
                 return true;
             }
@@ -8820,8 +8820,7 @@ fn write_cli_config(config: &CliConfig) -> Result<(), String> {
     let path = openakita_root_dir().join("cli.json");
     let content =
         serde_json::to_string_pretty(config).map_err(|e| format!("序列化 CLI 配置失败: {e}"))?;
-    std::fs::write(&path, content).map_err(|e| format!("写入 cli.json 失败: {e}"))?;
-    Ok(())
+    atomic_write_with_backup(&path, content.as_bytes())
 }
 
 /// 生成 wrapper 脚本内容
