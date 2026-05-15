@@ -93,11 +93,70 @@ from ..tools.mcp_catalog import mcp_catalog as _shared_mcp_catalog
 from ..tools.shell import ShellTool
 from ..tools.web import WebTool
 from .agent_state import AgentState
-from .attachment_processor import (
-    format_desktop_attachment_reference,
-    maybe_inline_local_image,
-    _LOCAL_UPLOAD_RE,
-)
+
+try:
+    from .attachment_processor import (
+        format_desktop_attachment_reference,
+        maybe_inline_local_image,
+        _LOCAL_UPLOAD_RE,
+    )
+except ImportError:
+    _LOCAL_UPLOAD_RE = re.compile(
+        r"^(?:https?://(?:127\.0\.0\.1|localhost|0\.0\.0\.0)(?::\d+)?)?/api/uploads/([\w\-.]+)$",
+        re.IGNORECASE,
+    )
+
+    # Stub functions for old-wheel compatibility (attachment_processor is missing)
+    def maybe_inline_local_image(att_url: str, att_mime: str) -> str | None:
+        if not att_url or att_url.startswith("data:"):
+            return None
+        m = _LOCAL_UPLOAD_RE.match(att_url.strip())
+        if not m:
+            return None
+        filename = m.group(1)
+        try:
+            from ..api.routes.upload import get_upload_dir
+
+            upload_dir = get_upload_dir().resolve()
+            filepath = (upload_dir / filename).resolve()
+            filepath.relative_to(upload_dir)
+            if not filepath.is_file():
+                return None
+            _INLINE_IMAGE_MAX_BYTES = 5 * 1024 * 1024
+            size = filepath.stat().st_size
+            if size > _INLINE_IMAGE_MAX_BYTES:
+                return None
+            import mimetypes
+
+            mime = att_mime or mimetypes.guess_type(str(filepath))[0] or "image/png"
+            data = filepath.read_bytes()
+            b64 = base64.b64encode(data).decode("ascii")
+            return f"data:{mime};base64,{b64}"
+        except Exception:
+            return None
+
+    def format_desktop_attachment_reference(
+        *, att_type: str, att_name: str, att_mime: str,
+        att_url: str, att_local_path: str | None = None,
+        att_size: int | None = None,
+    ) -> str:
+        if (att_url or "").strip().startswith("data:"):
+            return f"[附件: {att_name} ({att_mime or att_type}) 是内联 data URI，已隐藏原始内容]"
+        local_path = att_local_path
+        if att_type == "document":
+            label = "文档"
+        elif att_type == "voice" or (att_mime or "").startswith("audio/"):
+            label = "音频"
+        else:
+            label = "附件"
+        size_text = f"，大小: {att_size} bytes" if att_size is not None else ""
+        if local_path:
+            return (
+                f"[{label}: {att_name} ({att_mime or att_type})，"
+                f"已保存到本地路径: {local_path}，URL: {att_url or '无'}{size_text}。"
+            )
+        return f"[{label}: {att_name} ({att_mime or att_type})] URL: {att_url}"
+
 from .brain import Brain, Context
 from .confirmation_state import get_confirmation_store
 from .context_manager import ContextManager
@@ -512,20 +571,96 @@ def _looks_like_external_tool_request(message: str) -> bool:
 # Attachment processing helpers are now in core/attachment_processor.py.
 # Local constants _STRIP_MARKERS / _RE_TIME_PREFIX / _MEDIA_EXTENSIONS
 # remain here for _prepare_session_context.
+_STRIP_MARKERS = [
+    "\n\n<<DELEGATION_TRACE>>",
+    "\n\n<<TOOL_TRACE>>",
+    "\n\n[子Agent工作总结]",
+    "\n\n[执行摘要]",
+]
+_RE_TIME_PREFIX = re.compile(r"^\[\d{1,2}:\d{2}\]\s")
+_MEDIA_EXTENSIONS: set[str] = {
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg",
+    ".mp4", ".webm", ".mov", ".avi",
+    ".mp3", ".wav", ".ogg", ".flac",
+    ".pdf", ".docx", ".xlsx", ".pptx", ".csv",
+}
 
 # 上下文管理常量（部分迁移至 context_manager.py，压缩相关仍需就地定义）
-from .constants import (
-    CHARS_PER_TOKEN,
-    CHUNK_MAX_TOKENS,
-    COMPRESSION_RATIO,
-    LARGE_TOOL_RESULT_THRESHOLD,
-    MIN_RECENT_TURNS,
-    _EXTERNAL_TOOL_MARKERS,
-    _TASK_RESULT_META_MARKERS,
-    _TASK_PROGRESS_ONLY_MARKERS,
-    _REPLAY_REQUEST_MARKERS,
-    _DESTRUCTIVE_VERBS,
-)
+try:
+    from .constants import (
+        CHARS_PER_TOKEN,
+        CHUNK_MAX_TOKENS,
+        COMPRESSION_RATIO,
+        LARGE_TOOL_RESULT_THRESHOLD,
+        MIN_RECENT_TURNS,
+        _EXTERNAL_TOOL_MARKERS,
+        _TASK_RESULT_META_MARKERS,
+        _TASK_PROGRESS_ONLY_MARKERS,
+        _REPLAY_REQUEST_MARKERS,
+        _DESTRUCTIVE_VERBS,
+    )
+except ImportError:
+    CHARS_PER_TOKEN = 2
+    CHUNK_MAX_TOKENS = 30000
+    COMPRESSION_RATIO = 0.15
+    LARGE_TOOL_RESULT_THRESHOLD = 5000
+    MIN_RECENT_TURNS = 4
+    _EXTERNAL_TOOL_MARKERS: tuple[str, ...] = (
+        "打开网页", "搜索网页", "浏览网页", "访问网页",
+        "搜索最新", "搜索新闻", "查询最新",
+        "发送邮件", "发邮件", "写邮件",
+        "安装软件", "安装包", "安装依赖",
+        "部署应用", "部署服务", "部署到",
+        "创建仓库", "fork", "clone",
+        "生成图片", "画图", "作图", "生成图像",
+        "处理视频", "剪辑视频", "视频处理",
+        "访问数据库", "查询数据库", "连接数据库",
+        "Docker", "docker", "容器",
+        "Kubernetes", "k8s", "集群",
+        "调用API", "请求API", "接口调用",
+        "下载文件", "下载数据",
+        "上传文件", "上传到",
+        "扫描端口", "端口扫描",
+        "抓取数据", "爬虫", "数据采集",
+        "语音合成", "文字转语音", "TTS",
+        "语音识别", "ASR", "语音转文字",
+        "翻译文档", "文档翻译",
+        "编译代码", "构建项目",
+        "运行测试", "执行测试",
+        "格式化代码", "代码格式化",
+        "检查代码", "代码检查", "lint",
+    )
+    _TASK_RESULT_META_MARKERS: tuple[str, ...] = (
+        "已完成", "已执行", "已处理", "已更新",
+        "已完成任务", "任务完成", "执行完毕",
+        "操作完成", "处理完成", "更新完成",
+        "已经完成", "已经执行", "已经处理",
+        "已经更新", "已成功", "已经成功",
+        "successfully", "completed",
+        "done", "finished",
+        "全部完成", "所有任务",
+    )
+    _TASK_PROGRESS_ONLY_MARKERS: tuple[str, ...] = (
+        "正在", "开始", "准备",
+        "第一步", "第二步", "第三步",
+        "接下来", "然后",
+        "首先", "其次",
+    )
+    _REPLAY_REQUEST_MARKERS: tuple[str, ...] = (
+        "重新回答", "再回答一次", "再说一遍",
+        "再回答", "重新说", "复述",
+        "重复一遍", "再说一次", "再讲一遍",
+        "重新输出", "再输出一次",
+        "再生成", "再生成一次",
+        "再执行", "重新执行",
+        "重新运行", "再运行一次",
+        "再来一遍", "重来", "redo",
+    )
+    _DESTRUCTIVE_VERBS: tuple[str, ...] = (
+        "删除", "移除", "清空", "格式化",
+        "卸载", "解绑", "注销", "销毁",
+        "覆盖", "替换", "重置",
+    )
 
 # 小上下文窗口模型的核心工具白名单（仅保留最基本的执行能力）
 SMALL_CTX_CORE_TOOLS = {

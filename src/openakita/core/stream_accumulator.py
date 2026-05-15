@@ -16,7 +16,26 @@ import json
 import logging
 import re
 
-from .decisions import Decision, DecisionType
+try:
+    from .decisions import Decision, DecisionType
+except ImportError:
+    from dataclasses import dataclass as _dc, field as _f
+    from enum import Enum as _Enum
+    from typing import Any as _Any
+
+    class DecisionType(_Enum):
+        FINAL_ANSWER = "final_answer"
+        TOOL_CALLS = "tool_calls"
+
+    @_dc
+    class Decision:
+        type: "DecisionType"
+        text_content: str = ""
+        tool_calls: list[dict] = _f(default_factory=list)
+        thinking_content: str = ""
+        raw_response: _Any = None
+        stop_reason: str = ""
+        assistant_content: list[dict] = _f(default_factory=list)
 
 logger = logging.getLogger(__name__)
 

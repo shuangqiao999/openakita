@@ -19,7 +19,13 @@ from typing import Any
 from urllib.parse import urlparse
 
 from ..tracing.tracer import get_tracer
-from .constants import CHARS_PER_TOKEN, CHUNK_MAX_TOKENS, CONTEXT_BOUNDARY_MARKER
+try:
+    from .constants import CHARS_PER_TOKEN, CHUNK_MAX_TOKENS, CONTEXT_BOUNDARY_MARKER
+except ImportError:
+    CHARS_PER_TOKEN = 2
+    CHUNK_MAX_TOKENS = 30000
+    CONTEXT_BOUNDARY_MARKER = "[上下文边界]"
+
 from .context_utils import DEFAULT_MAX_CONTEXT_TOKENS
 from .context_utils import estimate_tokens as _shared_estimate_tokens
 from .context_utils import get_max_context_tokens as _shared_get_max_context_tokens
