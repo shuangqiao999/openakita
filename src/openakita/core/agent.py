@@ -4490,6 +4490,64 @@ class Agent:
 
     # ==================== 会话流水线: 共享准备 / 收尾 / 入口 ====================
 
+    async def _resolve_pending_confirmation(
+        self,
+        session: Any,
+        message: str,
+    ) -> str | None:
+        """Check and resolve persistent pending confirmation actions.
+
+        Returns:
+            None if no pending action or message doesn't match.
+            "cancel" string if user cancelled (caller should return early).
+            "resolved" string if confirmed (awaiting_confirmation was set).
+        """
+        try:
+            store = getattr(self.memory_manager, "store", None) if self.memory_manager else None
+            if store is None:
+                return None
+
+            user_id = getattr(session, "session_key", None) or getattr(session, "user_id", None) or "default"
+            from ..memory.user_state import UserConfirmationState
+
+            ucs = UserConfirmationState(store)
+            result = ucs.resolve(str(user_id), message)
+            if result is None:
+                # No pending or message doesn't match — re-prompt if pending exists
+                pending = ucs.get_pending(str(user_id))
+                if pending:
+                    prompt = pending[0].get("prompt", "请回复「继续」或「取消」。")
+                    logger.info(f"[Session] Re-prompting pending confirmation: {prompt[:80]}")
+                    return prompt
+                return None
+
+            action = result.get("action", {})
+            cancelled = result.get("cancelled", False)
+
+            if cancelled:
+                logger.info("[Session] User cancelled pending confirmation")
+                return "已取消操作。有什么可以帮到您的？"
+
+            # User confirmed: set awaiting_confirmation so step 6.5 handles it
+            if hasattr(session, "context"):
+                session.context.set_variable("awaiting_confirmation", True)
+                session.context.set_variable("awaiting_confirmation_since", time.time())
+                session.context.set_variable(
+                    "pending_task_snapshot",
+                    {
+                        "assistant_message": action.get("prompt", "操作已确认。"),
+                        "tool_name": action.get("tool_name", ""),
+                        "tool_params": json.loads(action.get("params", "{}")),
+                    },
+                )
+            logger.info(
+                f"[Session] Pending confirmation resolved: {action.get('tool_name')}"
+            )
+            return "resolved"
+        except Exception as e:
+            logger.debug(f"[Session] Pending confirmation check failed (non-critical): {e}")
+            return None
+
     async def _prepare_session_context(
         self,
         message: str,
@@ -4534,6 +4592,22 @@ class Agent:
         Returns:
             (messages, session_type, task_monitor, conversation_id, im_tokens)
         """
+        # ── Step 0: Persistent pending confirmation check ──
+        # Check if user has pending confirmation actions in SQLite.
+        # If message resolves a pending action (confirm/cancel), set
+        # awaiting_confirmation flag so existing step 6.5 handles it.
+        if session and len(session_messages) <= 10:
+            _resolved = await self._resolve_pending_confirmation(session, message)
+            if isinstance(_resolved, str):
+                # Short-circuit: user cancelled, return cancel response directly
+                return (
+                    [{"role": "system", "content": _resolved}],
+                    "desktop",
+                    None,
+                    conversation_id,
+                    None,
+                )
+
         # 1. 对齐 MemoryManager 会话
         # memory safe_id 统一用 session.session_key 派生，与 im_channel fallback
         # 和 sessions/manager backfill 的查询逻辑保持一致。

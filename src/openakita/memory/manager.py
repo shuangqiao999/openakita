@@ -31,7 +31,6 @@ import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from ..core.log_health import record_health_event
 from .consolidator import MemoryConsolidator
 from .extractor import MemoryExtractor
 from .json_utils import coerce_text
@@ -814,6 +813,7 @@ class MemoryManager:
             self._session_turns.clear()
             return 0
         except Exception as e:
+            from ..core.log_health import record_health_event  # lazy to avoid circular import
             if record_health_event(
                 "memory",
                 "topic_change_extraction",

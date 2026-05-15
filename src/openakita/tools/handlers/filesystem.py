@@ -106,6 +106,15 @@ class FilesystemHandler:
             return policy
         return None
 
+    def _resolve_user_id(self) -> str:
+        """Resolve a stable user_id for pending confirmation state."""
+        session = getattr(self.agent, "_current_session", None)
+        if session and hasattr(session, "session_key"):
+            return str(session.session_key)
+        if session and hasattr(session, "user_id") and session.user_id:
+            return str(session.user_id)
+        return "default"
+
     @staticmethod
     def _looks_like_truncated_tool_preview(content: str) -> bool:
         """Detect tool preview/pagination markers that should not be written as file content."""
@@ -987,6 +996,31 @@ class FilesystemHandler:
         path = params.get("path", "")
         if not path:
             return "❌ delete_file 缺少必要参数 'path'。"
+
+        # ── P0: 持久化确认状态机 ──
+        # 当 confirmed 参数不存在或为 False 时，不执行删除，
+        # 而是创建待确认记录并返回确认提示。
+        if not params.get("confirmed"):
+            user_id = self._resolve_user_id()
+            prompt = (
+                f"⚠️ 即将删除: {path}\n"
+                f"请回复「继续」确认删除，或「取消」中止操作。"
+            )
+            try:
+                store = getattr(self.agent.memory_manager, "store", None)
+                if store:
+                    from ...memory.user_state import UserConfirmationState
+
+                    ucs = UserConfirmationState(store)
+                    ucs.create_pending(
+                        user_id=user_id,
+                        tool_name="delete_file",
+                        params={"path": path, "confirmed": True},
+                        prompt=prompt,
+                    )
+            except Exception as e:
+                logger.warning(f"[UserState] Failed to create pending action: {e}")
+            return prompt
 
         policy = self._get_fix_policy()
         if policy:

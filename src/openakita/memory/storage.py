@@ -437,6 +437,18 @@ class MemoryStorage:
             )
         """)
 
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS user_pending_actions (
+                action_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                tool_name TEXT NOT NULL,
+                params TEXT NOT NULL DEFAULT '{}',
+                prompt TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                session_id TEXT DEFAULT ''
+            )
+        """)
+
         # ==============================================================
         # Phase 2: CREATE INDEX — all tables already exist at this point
         # ==============================================================
@@ -491,6 +503,10 @@ class MemoryStorage:
         c.execute("CREATE INDEX IF NOT EXISTS idx_attach_mime ON attachments(mime_type)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_attach_direction ON attachments(direction)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_attach_created ON attachments(created_at)")
+
+        # user_pending_actions
+        c.execute("CREATE INDEX IF NOT EXISTS idx_upa_user ON user_pending_actions(user_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_upa_created ON user_pending_actions(created_at)")
 
         # ==============================================================
         # Phase 3: FTS5 virtual tables + sync triggers (best-effort)
@@ -1597,6 +1613,97 @@ class MemoryStorage:
         except Exception as e:
             logger.warning(f"Failed to summarize recent turns: {e}")
             return []
+
+    # ======================================================================
+    # User Pending Actions (persistent confirmation state machine)
+    # ======================================================================
+
+    def upsert_pending_action(
+        self,
+        user_id: str,
+        action_id: str,
+        tool_name: str,
+        params: dict,
+        prompt: str,
+        session_id: str = "",
+    ) -> None:
+        """Insert or replace a pending confirmation action for a user."""
+        if not self._conn:
+            return
+        with self._lock:
+            try:
+                self._conn.execute(
+                    """INSERT OR REPLACE INTO user_pending_actions
+                       (action_id, user_id, tool_name, params, prompt, created_at, session_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        action_id,
+                        user_id,
+                        tool_name,
+                        json.dumps(params, ensure_ascii=False),
+                        prompt,
+                        datetime.now().isoformat(),
+                        session_id,
+                    ),
+                )
+                self._conn.commit()
+            except Exception as e:
+                if _is_db_locked(e):
+                    raise
+                logger.warning(f"Failed to upsert pending action: {e}")
+
+    def get_pending_actions(self, user_id: str) -> list[dict]:
+        """Get all pending confirmation actions for a user, newest first."""
+        if not self._conn:
+            return []
+        try:
+            cur = self._conn.execute(
+                """SELECT action_id, user_id, tool_name, params, prompt, created_at, session_id
+                   FROM user_pending_actions WHERE user_id = ?
+                   ORDER BY created_at DESC""",
+                (user_id,),
+            )
+            rows = self._rows_to_dicts(cur, json_fields=["params"])
+            return rows
+        except Exception as e:
+            logger.warning(f"Failed to get pending actions: {e}")
+            return []
+
+    def delete_pending_action(self, action_id: str) -> bool:
+        """Delete a specific pending action by ID."""
+        if not self._conn:
+            return False
+        with self._lock:
+            try:
+                cur = self._conn.execute(
+                    "DELETE FROM user_pending_actions WHERE action_id = ?",
+                    (action_id,),
+                )
+                self._conn.commit()
+                return cur.rowcount > 0
+            except Exception as e:
+                if _is_db_locked(e):
+                    raise
+                logger.warning(f"Failed to delete pending action: {e}")
+                return False
+
+    def delete_pending_actions_for_user(self, user_id: str) -> int:
+        """Delete all pending actions for a user."""
+        if not self._conn:
+            return 0
+        with self._lock:
+            try:
+                cur = self._conn.execute(
+                    "DELETE FROM user_pending_actions WHERE user_id = ?",
+                    (user_id,),
+                )
+                self._conn.commit()
+                return cur.rowcount
+            except Exception as e:
+                if _is_db_locked(e):
+                    raise
+                logger.warning(f"Failed to delete pending actions: {e}")
+                return 0
 
     # ======================================================================
     # Extraction Queue
