@@ -38,10 +38,11 @@ pub fn startup_version_check(app_version: &str, port: u16) -> VersionCheckResult
     let client = &*state::BLOCKING_HTTP_CLIENT;
     let url = format!("http://127.0.0.1:{port}/api/health");
 
-    // Retry up to 3 times with 1s backoff for transient failures
-    for attempt in 0..3u32 {
+    // Retry up to 5 times with 1.5s backoff for slow cold starts
+    // (dual-venv + 122 skills + IM channels can take 20-30s)
+    for attempt in 0..5u32 {
         if attempt > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(1000 * attempt as u64));
+            std::thread::sleep(std::time::Duration::from_millis(1500 * attempt as u64));
         }
         let resp = match client
             .get(&url)
@@ -54,11 +55,11 @@ pub fn startup_version_check(app_version: &str, port: u16) -> VersionCheckResult
                     "[version_check] health check non-success: {}",
                     r.status()
                 ));
-                if attempt < 2 { continue; }
+                if attempt < 4 { continue; }
                 return VersionCheckResult::NotRunning;
             }
             Err(e) => {
-                if attempt < 2 { continue; }
+                if attempt < 4 { continue; }
                 state::log_to_file(&format!("[version_check] health check failed after 3 retries: {e}"));
                 return VersionCheckResult::NotRunning;
             }

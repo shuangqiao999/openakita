@@ -368,11 +368,41 @@ fn main() {
 
             // Auto-start backend
             let app_version = app.package_info().version.to_string();
+            let is_auto_restarted = std::env::args().any(|a| a == "--auto-restarted");
             let state = state::read_state_file();
             if let Some(ref ws_id) = state.current_workspace_id {
                 let port = process::read_workspace_api_port(ws_id).unwrap_or(18900);
-                let check_result = heartbeat::startup_version_check(&app_version, port);
-                let need_start = !matches!(check_result, heartbeat::VersionCheckResult::RunningOk);
+                // If this is a self-heal restart, do NOT run startup_version_check.
+                // The old backend may still be initializing and the check would
+                // spuriously fail, causing a new spawn that kills the old backend.
+                // Instead, just adopt the existing PID or let the heartbeat resume.
+                let need_start = if is_auto_restarted {
+                    let existing_pid = state::read_pid_file(ws_id).and_then(|d| {
+                        if process::is_pid_running(d.pid) { Some(d.pid) } else { None }
+                    });
+                    if let Some(pid) = existing_pid {
+                        state::log_to_file(&format!(
+                            "[auto-start] self-heal restart: adopting existing pid={}",
+                            pid
+                        ));
+                        false
+                    } else if let Some(pid) = process::healthy_backend_pid(port) {
+                        state::log_to_file(&format!(
+                            "[auto-start] self-heal restart: found healthy backend pid={}",
+                            pid
+                        ));
+                        let _ = state::write_pid_file(ws_id, pid, "external");
+                        false
+                    } else {
+                        state::log_to_file(
+                            "[auto-start] self-heal restart: no backend found, starting new one",
+                        );
+                        true
+                    }
+                } else {
+                    let check_result = heartbeat::startup_version_check(&app_version, port);
+                    !matches!(check_result, heartbeat::VersionCheckResult::RunningOk)
+                };
                 state::log_to_file(&format!(
                     "[auto-start] app_version={}, ws_id={}, port={}, need_start={}",
                     app_version, ws_id, port, need_start

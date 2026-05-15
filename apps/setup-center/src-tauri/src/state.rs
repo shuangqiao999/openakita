@@ -580,8 +580,8 @@ pub fn backend_in_boot_grace(workspace_id: &str) -> bool {
 pub fn is_backend_http_healthy(port: Option<u16>) -> bool {
     let effective_port = port.unwrap_or(18900);
     let url = format!("http://127.0.0.1:{}/api/health", effective_port);
-    // Retry up to 3 times to handle transient connection failures
-    for attempt in 0..3u32 {
+    // Retry up to 5 times to handle transient connection failures
+    for attempt in 0..5u32 {
         if attempt > 0 {
             std::thread::sleep(std::time::Duration::from_millis(500 * attempt as u64));
         }
@@ -592,12 +592,12 @@ pub fn is_backend_http_healthy(port: Option<u16>) -> bool {
         {
             Ok(r) if r.status().is_success() => return true,
             Ok(r) => {
-                if attempt < 2 {
+                if attempt < 4 {
                     continue;
                 }
             }
             Err(_) => {
-                if attempt < 2 {
+                if attempt < 4 {
                     continue;
                 }
             }
