@@ -4490,6 +4490,39 @@ class Agent:
 
     # ==================== 会话流水线: 共享准备 / 收尾 / 入口 ====================
 
+    async def _trait_mining_with_persist(self, message: str, session_id: str) -> None:
+        """Background task: run trait mining without blocking the response path."""
+        try:
+            mined_traits = await asyncio.wait_for(
+                self.trait_miner.mine_from_message(message, role="user"),
+                timeout=10,
+            )
+            from .persona import persist_trait_to_memory
+
+            for trait in mined_traits:
+                persist_trait_to_memory(self.memory_manager, trait)
+            if mined_traits:
+                logger.debug(f"[TraitMiner:{session_id}] Mined {len(mined_traits)} traits")
+        except (asyncio.CancelledError, TimeoutError):
+            pass
+        except Exception as e:
+            logger.debug(f"[TraitMiner:{session_id}] Mining failed (non-critical): {e}")
+
+    @staticmethod
+    def _extract_to_memory_keywords(message: str) -> list[str]:
+        """Extract memory keywords without LLM (fast-path fallback).
+
+        Simple heuristic: pick the longest 1-3 Chinese/English words
+        from the message as approximate search keywords.
+        """
+        if not message:
+            return []
+        import re
+
+        words = re.findall(r"[\u4e00-\u9fff]{2,}|[a-zA-Z]{3,}", message)
+        words.sort(key=len, reverse=True)
+        return words[:3]
+
     async def _resolve_pending_confirmation(
         self,
         session: Any,
@@ -4714,26 +4747,19 @@ class Agent:
             except Exception as exc:
                 logger.debug("[Session:%s] Working facts extraction failed: %s", session_id, exc)
 
-        # 6. Trait mining
+        # 6. Trait mining — deferred to background for latency (Phase 2-5)
+        _mining_task = None
         if hasattr(self, "trait_miner") and self.trait_miner and self.trait_miner.brain:
-            try:
-                mined_traits = await asyncio.wait_for(
-                    self.trait_miner.mine_from_message(message, role="user"),
-                    timeout=10,
-                )
-                from .persona import persist_trait_to_memory
+            _mining_task = asyncio.create_task(
+                self._trait_mining_with_persist(message, session_id)
+            )
+            # Store reference for cleanup on cancellation
+            if not hasattr(self, "_pending_mining_tasks"):
+                self._pending_mining_tasks = []
+            self._pending_mining_tasks.append(_mining_task)
 
-                for trait in mined_traits:
-                    persist_trait_to_memory(self.memory_manager, trait)
-                if mined_traits:
-                    logger.debug(f"[TraitMiner] Mined {len(mined_traits)} traits from user message")
-            except Exception as e:
-                logger.debug(f"[TraitMiner] Mining failed (non-critical): {e}")
-
-        # 7. IntentAnalyzer (unified intent analysis — all messages go through LLM)
-        #    Sub-agents skip the full analyzer for latency, but they are not
-        #    automatically forced into tools: many delegated jobs are pure writing
-        #    or analysis tasks where a direct text answer is the correct output.
+        # 7. IntentAnalyzer (unified intent analysis — with desktop fast-path)
+        #    Sub-agents skip the full analyzer for latency.
         from .intent_analyzer import (
             IntentAnalyzer,
             IntentResult,
@@ -4975,25 +5001,52 @@ class Agent:
                 f"profile_tool_hints={_profile_hints}"
             )
         else:
-            if not hasattr(self, "_intent_analyzer"):
-                self._intent_analyzer = IntentAnalyzer(self.brain)
-
-            # session_messages includes the current user message as the last entry,
-            # so history exists if there are more than 1 message
-            _has_history = len(session_messages) > 1
-
-            try:
-                intent_result = await asyncio.wait_for(
-                    self._intent_analyzer.analyze(
-                        message, session_context=None, has_history=_has_history
-                    ),
-                    timeout=30,
+            # ── Phase 1-1: Desktop-mode fast-path ──
+            # In desktop agent mode, the user explicitly chose "agent" mode.
+            # Intent analysis via LLM adds 500-5000ms but provides no useful
+            # differentiation — the user's intent is always TASK.
+            # Skip the LLM call entirely for agent mode with history.
+            _is_desktop_agent = (
+                session_type == "desktop"
+                and mode == "agent"
+                and len(session_messages) > 1
+            )
+            if _is_desktop_agent:
+                intent_result = IntentResult(
+                    intent=IntentType.TASK,
+                    confidence=0.85,
+                    task_definition=message[:600],
+                    task_type="action",
+                    tool_hints=[],
+                    memory_keywords=self._extract_to_memory_keywords(message),
+                    force_tool=False,
+                    requires_tools=False,
+                    evidence_required=False,
+                    todo_required=False,
+                    raw_output="[desktop-agent-fastpath]",
                 )
-            except (TimeoutError, Exception) as e:
-                logger.warning(f"[Session:{session_id}] Intent analysis failed/timed out: {e}")
-                from .intent_analyzer import _make_default
+                logger.debug(
+                    f"[Session:{session_id}] Desktop agent fast-path: "
+                    f"skipped LLM intent analysis (saved 500-5000ms)"
+                )
+            else:
+                if not hasattr(self, "_intent_analyzer"):
+                    self._intent_analyzer = IntentAnalyzer(self.brain)
 
-                intent_result = _make_default(message)
+                _has_history = len(session_messages) > 1
+
+                try:
+                    intent_result = await asyncio.wait_for(
+                        self._intent_analyzer.analyze(
+                            message, session_context=None, has_history=_has_history
+                        ),
+                        timeout=30,
+                    )
+                except (TimeoutError, Exception) as e:
+                    logger.warning(f"[Session:{session_id}] Intent analysis failed/timed out: {e}")
+                    from .intent_analyzer import _make_default
+
+                    intent_result = _make_default(message)
 
         self._current_intent = intent_result
         self._current_user_message = message

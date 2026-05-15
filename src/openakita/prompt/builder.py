@@ -1246,10 +1246,24 @@ def _build_runtime_section_uncached() -> str:
 
     path_tools = []
     _python_in_path_ok = False
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     from ..utils.path_helper import which_command
 
-    for cmd in ("git", "python", "node", "pip", "npm", "docker", "curl"):
-        found = which_command(cmd)
+    # Phase 1-2: Run all which_command checks in parallel
+    cmds = ("git", "python", "node", "pip", "npm", "docker", "curl")
+    results: dict[str, str | None] = {}
+    with ThreadPoolExecutor(max_workers=7) as pool:
+        futures = {pool.submit(which_command, cmd): cmd for cmd in cmds}
+        for future in as_completed(futures, timeout=4):
+            cmd = futures[future]
+            try:
+                results[cmd] = future.result(timeout=2)
+            except Exception:
+                results[cmd] = None
+
+    for cmd in cmds:
+        found = results.get(cmd)
         if not found:
             continue
         if cmd == "python" and _sys.platform == "win32":

@@ -332,21 +332,51 @@ class ToolExecutor:
         return batches
 
     def _hard_timeout_for_tool(self, tool_name: str) -> int:
-        """Return the user-configured hard timeout for a tool.
+        """Return the hard timeout for a tool (seconds).
 
-        0 means no executor-level hard timeout. This keeps long user tasks from
-        being cut off by built-in short limits; users can still configure a
-        timeout when they want that safety net.
+        Phase 3-9: Sensible defaults per tool category, overrideable via settings.
         """
+        # Per-category defaults (read tools < web tools < long-running tools)
+        _READ_DEFAULTS: frozenset[str] = frozenset({
+            "read_file", "list_directory", "glob", "grep",
+            "get_user_profile", "get_todo_status", "search_memory",
+        })
+        _WEB_DEFAULTS: frozenset[str] = frozenset({
+            "web_search", "web_fetch", "news_search",
+        })
+        _SHELL_DEFAULTS: frozenset[str] = frozenset({
+            "run_shell", "run_powershell", "cli_anything",
+        })
+        _BROWSER_DEFAULTS: frozenset[str] = frozenset({
+            "browser_navigate", "browser_use", "browser_task",
+            "browser_click", "browser_type", "browser_screenshot",
+        })
+
+        default = 0
+        if tool_name in _READ_DEFAULTS:
+            default = 30
+        elif tool_name in _WEB_DEFAULTS:
+            default = 120
+        elif tool_name in _SHELL_DEFAULTS:
+            default = 300
+        elif tool_name in _BROWSER_DEFAULTS:
+            default = 300
+        elif tool_name in self._LONG_RUNNING_TOOLS:
+            default = 600
+
+        # User setting overrides default if explicitly configured
         setting_name = (
             "long_running_tool_timeout_seconds"
             if tool_name in self._LONG_RUNNING_TOOLS
             else "tool_hard_timeout_seconds"
         )
+        user_val = 0
         try:
-            return max(0, int(getattr(settings, setting_name, 0)))
+            user_val = max(0, int(getattr(settings, setting_name, 0)))
         except (TypeError, ValueError):
-            return 0
+            user_val = 0
+
+        return user_val if user_val > 0 else default
 
     async def _execute_with_cancel(
         self,

@@ -94,6 +94,9 @@ class FilesystemHandler:
         """
         self.agent = agent
         self._read_file_cache: dict[tuple[str, int, int], str] = {}
+        # Phase 3-10: TTL-based read cache (avoids re-reading same file in tight loops)
+        self._read_file_ttl_cache: dict[str, tuple[float, str]] = {}
+        self._read_cache_ttl_seconds: float = 5.0
 
     def _get_fix_policy(self) -> dict | None:
         """
@@ -601,6 +604,26 @@ class FilesystemHandler:
         path = params.get("path", "")
         if not path:
             return "❌ read_file 缺少必要参数 'path'。"
+
+        offset = params.get("offset", 1)
+        limit = params.get("limit", getattr(settings, "read_file_default_limit", self.READ_FILE_DEFAULT_LIMIT))
+        try:
+            offset = max(1, int(offset))
+            limit = max(1, int(limit))
+        except (TypeError, ValueError):
+            offset = 1
+            limit = int(getattr(settings, "read_file_default_limit", self.READ_FILE_DEFAULT_LIMIT))
+
+        # Phase 3-10: TTL cache — avoid re-reading same file in tight loops
+        import time as _time
+
+        cache_key = f"{path}:{offset}:{limit}"
+        now = _time.monotonic()
+        if cache_key in self._read_file_ttl_cache:
+            ts, cached = self._read_file_ttl_cache[cache_key]
+            if now - ts < self._read_cache_ttl_seconds:
+                return cached
+
         unc_err = self._check_unc(path)
         if unc_err:
             return f"❌ {unc_err}"
@@ -639,6 +662,7 @@ class FilesystemHandler:
         if total_lines <= limit and offset <= 1:
             result = f"文件内容 ({total_lines} 行):\n{content}"
             self._remember_read_file_cache(cache_key, result)
+            self._read_file_ttl_cache[cache_key] = (_time.monotonic(), result)
             return result
 
         # 分页截取
@@ -666,6 +690,7 @@ class FilesystemHandler:
             )
 
         self._remember_read_file_cache(cache_key, result)
+        self._read_file_ttl_cache[cache_key] = (_time.monotonic(), result)
         return result
 
     def _remember_read_file_cache(self, key: tuple[str, int, int], result: str) -> None:
