@@ -4639,11 +4639,14 @@ class Agent:
         Returns:
             (messages, session_type, task_monitor, conversation_id, im_tokens)
         """
+        # ── session_type 提前检测（后续步骤可能引用）──
+        _channel = getattr(session, "channel", None) if session else None
+        session_type = "im" if _channel and _channel not in ("cli", "desktop") else "cli"
+
         # ── Step 0: Persistent pending confirmation check ──
         # Check if user has pending confirmation actions in SQLite.
         # If message resolves a pending action (confirm/cancel), set
         # awaiting_confirmation flag so existing step 6.5 handles it.
-        session_type = "cli"  # default, overwritten at session_type detection step
         if session and len(session_messages) <= 10:
             _resolved = await self._resolve_pending_confirmation(session, message)
             if isinstance(_resolved, str):
@@ -5734,11 +5737,7 @@ class Agent:
         task_monitor.start(self.brain.model)
         self._current_task_monitor = task_monitor
 
-        # session_type 检测
-        # desktop 聊天面板与 CLI 同属本地交互，应启用 ForceToolCall 验收
-        # 仅真正的 IM 通道（telegram/wechat/feishu 等）使用 im 模式
-        _channel = getattr(session, "channel", None) if session else None
-        session_type = "im" if _channel and _channel not in ("cli", "desktop") else "cli"
+        # session_type 已在函数入口处检测完成
         self._current_session_type = session_type
 
         extra_context = await self._dispatch_agent_run_start(
