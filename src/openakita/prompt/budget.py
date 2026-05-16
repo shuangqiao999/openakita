@@ -1,7 +1,11 @@
+from __future__ import annotations
+
 """
 Prompt Budget - Token 预算裁剪模块
 
 控制各部分的 token 预算，确保系统提示词不超出限制。
+
+核心原则：准确性 > token 节省。不会为了节省 token 而牺牲模型理解能力。
 
 预算分配:
 - identity_budget: 6000 tokens (SOUL.md ~60% + agent.core ~25% + user_policies ~15%)
@@ -15,9 +19,20 @@ Prompt Budget - Token 预算裁剪模块
 
 默认总预算约 ~22000 tokens。
 对于小上下文窗口模型，使用 BudgetConfig.for_context_window(ctx) 自适应缩放。
+
+硬性最低保障（准确性优先）：
+- MIN_IDENTITY_TOKENS = 1200  (确保核心行为规范和 SOUL 完整可见)
+- MIN_CATALOGS_TOKENS = 1500  (确保至少核心工具可见)
+- MIN_USER_TOKENS = 150       (确保用户偏好最低可见)
+- MIN_MEMORY_TOKENS = 300     (确保记忆检索最低可用)
 """
 
-from __future__ import annotations
+# 硬性最低预算保障 — 准确性优先，不为节省 token 牺牲模型理解能力
+MIN_IDENTITY_TOKENS = 1200
+MIN_CATALOGS_TOKENS = 1500
+MIN_USER_TOKENS = 150
+MIN_MEMORY_TOKENS = 300
+MIN_TOTAL_BUDGET = 3000  # 低于此值拒绝执行，提示用户换模型
 
 import logging
 from dataclasses import dataclass, field
@@ -118,6 +133,9 @@ class BudgetConfig:
 
         系统提示词应控制在 context_window 的 40% 以内（剩余留给对话和输出）。
         大于 64K 时使用默认预算（为大模型优化）。
+
+        准确性优先：各分区有硬性最低保障（MIN_IDENTITY_TOKENS=1200 等），
+        宁可拒绝执行也不压缩到影响模型理解的程度。
         """
         if context_window <= 0 or context_window > 64000:
             return cls()
@@ -125,39 +143,50 @@ class BudgetConfig:
         prompt_budget = int(context_window * 0.40)
 
         if context_window > 32000:
-            # sum: 5000+10000+800+2500 = 18300
+            # 32K-64K: 大型模型，中等压缩
             return cls(
-                identity_budget=5000,
-                catalogs_budget=10000,
-                user_budget=800,
-                memory_budget=2500,
+                identity_budget=max(5000, MIN_IDENTITY_TOKENS),
+                catalogs_budget=max(10000, MIN_CATALOGS_TOKENS),
+                user_budget=max(800, MIN_USER_TOKENS),
+                memory_budget=max(2500, MIN_MEMORY_TOKENS),
                 total_budget=min(prompt_budget, 20000),
             )
         elif context_window >= 16000:
-            # sum: 3500+6000+600+1800 = 11900
+            # 16K-32K: 中型模型，适度压缩
             return cls(
-                identity_budget=3500,
-                catalogs_budget=6000,
-                user_budget=600,
-                memory_budget=1800,
+                identity_budget=max(3500, MIN_IDENTITY_TOKENS),
+                catalogs_budget=max(6000, MIN_CATALOGS_TOKENS),
+                user_budget=max(600, MIN_USER_TOKENS),
+                memory_budget=max(1800, MIN_MEMORY_TOKENS),
                 total_budget=min(prompt_budget, 12000),
             )
         elif context_window >= 8000:
-            # sum: 2500+4000+350+1000 = 7850
+            # 8K-16K: 小模型，保障核心行为规范完整
             return cls(
-                identity_budget=2500,
-                catalogs_budget=4000,
-                user_budget=350,
-                memory_budget=1000,
-                total_budget=min(prompt_budget, 8000),
+                identity_budget=max(3000, MIN_IDENTITY_TOKENS),
+                catalogs_budget=max(5000, MIN_CATALOGS_TOKENS),
+                user_budget=max(500, MIN_USER_TOKENS),
+                memory_budget=max(1200, MIN_MEMORY_TOKENS),
+                total_budget=min(prompt_budget, 9500),
+            )
+        elif context_window >= 4096:
+            # 4K-8K: 极小模型，硬性最低保障，不为节省 token 牺牲准确性
+            return cls(
+                identity_budget=MIN_IDENTITY_TOKENS,
+                catalogs_budget=MIN_CATALOGS_TOKENS,
+                user_budget=MIN_USER_TOKENS,
+                memory_budget=MIN_MEMORY_TOKENS,
+                total_budget=min(prompt_budget, 3500),
             )
         else:
+            # <4K: 上下文严重不足，使用硬性最低保障
+            # 注意：上游会检查 total_budget < MIN_TOTAL_BUDGET 并触发安全模式拒执行
             return cls(
-                identity_budget=600,
-                catalogs_budget=800,
-                user_budget=150,
-                memory_budget=300,
-                total_budget=min(prompt_budget, 2000),
+                identity_budget=MIN_IDENTITY_TOKENS,
+                catalogs_budget=MIN_CATALOGS_TOKENS,
+                user_budget=max(MIN_USER_TOKENS, 100),
+                memory_budget=min(300, MIN_MEMORY_TOKENS),
+                total_budget=min(prompt_budget, MIN_TOTAL_BUDGET),
             )
 
     @classmethod
@@ -174,18 +203,18 @@ class BudgetConfig:
 
         if tier == PromptTier.SMALL:
             return cls(
-                identity_budget=600,
-                catalogs_budget=800,
-                user_budget=150,
-                memory_budget=300,
-                total_budget=min(prompt_budget, 2000),
+                identity_budget=MIN_IDENTITY_TOKENS,
+                catalogs_budget=MIN_CATALOGS_TOKENS,
+                user_budget=MIN_USER_TOKENS,
+                memory_budget=MIN_MEMORY_TOKENS,
+                total_budget=min(prompt_budget, 3500),
             )
         elif tier == PromptTier.MEDIUM:
             return cls(
-                identity_budget=3000,
-                catalogs_budget=5000,
-                user_budget=600,
-                memory_budget=1800,
+                identity_budget=max(3000, MIN_IDENTITY_TOKENS),
+                catalogs_budget=max(5000, MIN_CATALOGS_TOKENS),
+                user_budget=max(600, MIN_USER_TOKENS),
+                memory_budget=max(1800, MIN_MEMORY_TOKENS),
                 total_budget=min(prompt_budget, 10000),
             )
         else:
@@ -454,4 +483,102 @@ def apply_budget_to_sections(
         )
 
     return results
+
+
+def check_budget_safety(
+    config: BudgetConfig, context_window: int
+) -> tuple[bool, str | None]:
+    """检查预算是否满足安全运行的最低要求。
+
+    当上下文窗口过小而预算无法保障核心行为规范完整时，拒绝执行，
+    提示用户换用更大的模型。
+
+    Returns:
+        (is_safe, error_message) — True表示安全，True+None表示通过
+    """
+    if context_window <= 0:
+        return True, None
+    if context_window < 4096:
+        return False, (
+            f"当前模型上下文窗口仅 {context_window} tokens，低于最低要求 4096。"
+            f"请换用上下文更大的模型（推荐 ≥16K），或通过环境变量 "
+            f"OPENAKITA_FORCE_MAX_CTX 手动指定实际上下文上限。"
+        )
+    if config.total_budget < MIN_TOTAL_BUDGET:
+        return False, (
+            f"当前总预算 {config.total_budget} tokens 低于安全最低阈值 "
+            f"{MIN_TOTAL_BUDGET} tokens。系统提示词可能无法完整传递。"
+            f"请换用上下文更大的模型。"
+        )
+    if config.identity_budget < MIN_IDENTITY_TOKENS:
+        return False, (
+            f"当前身份预算 {config.identity_budget} tokens 低于最低要求 "
+            f"{MIN_IDENTITY_TOKENS} tokens。核心行为规范可能被截断，"
+            f"请换用上下文更大的模型。"
+        )
+    if config.catalogs_budget < MIN_CATALOGS_TOKENS:
+        logger.warning(
+            "[BudgetSafety] catalogs_budget=%d < MIN_CATALOGS_TOKENS=%d, "
+            "工具描述可能不完整。将使用最低保障值。",
+            config.catalogs_budget,
+            MIN_CATALOGS_TOKENS,
+        )
+    return True, None
+
+
+def apply_tool_priority_truncation(
+    tools_content: str,
+    budget_tokens: int,
+    tool_usage_ranking: dict[str, int] | None = None,
+) -> str:
+    """对工具列表内容进行优先级截断，保留最常用/最重要的工具描述。
+
+    优先保留 usage_count 高的工具。无 usage 数据时，保留名称/描述行首，
+    移除冗长示例和参数说明。
+
+    Args:
+        tools_content: 格式化后的工具列表完整文本
+        budget_tokens: 目标 token 数
+        tool_usage_ranking: {tool_name: usage_count} 使用频率排序
+
+    Returns:
+        截断后的工具列表文本
+    """
+    estimated = estimate_tokens(tools_content)
+    if estimated <= budget_tokens:
+        return tools_content
+
+    if tool_usage_ranking and len(tool_usage_ranking) > 0:
+        # 按使用频率排序，保留高优先级工具完整描述，低优先级仅保留名称
+        sorted_tools = sorted(
+            tool_usage_ranking.items(), key=lambda x: -x[1]
+        )
+        lines = tools_content.split("\n")
+        high_priority_tools: set[str] = {
+            name for name, _ in sorted_tools[: max(5, len(sorted_tools) // 2)]
+        }
+        result_lines: list[str] = []
+        in_target_tool = False
+        for line in lines:
+            # 检测工具名称行（通常是 ### tool_name 或 ## 工具名）
+            if line.strip().startswith("##") or line.strip().startswith("###"):
+                tool_name = line.strip().lstrip("#").strip()
+                in_target_tool = any(t in tool_name for t in high_priority_tools)
+            if in_target_tool:
+                result_lines.append(line)
+            elif line.strip().startswith("##") or line.strip().startswith("###"):
+                result_lines.append(line)  # 保留标题行
+            elif not line.strip():
+                result_lines.append(line)  # 保留空行分隔
+        result_text = "\n".join(result_lines)
+        if estimate_tokens(result_text) <= budget_tokens:
+            return result_text
+
+    # Fallback: 从末尾逐行截断（保留前面的高行号工具 = 更重要的）
+    lines = tools_content.split("\n")
+    target_chars = int(budget_tokens * 4)
+    while len("\n".join(lines)) > target_chars and lines:
+        # 保留最后一个已有的空行作为分隔
+        lines.pop()
+    return "\n".join(lines) + "\n...(部分工具描述已按优先级截断)"
 

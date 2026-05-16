@@ -783,6 +783,14 @@ class ResponseHandler:
   报同样的 PermissionError → 这是**环境**问题，已超出 LLM 可解决范围，应判 COMPLETED 并
   把诊断结果交还用户。
 
+**F. 搜索可靠性判定（准确性优先）**
+- 如果已执行的工具含搜索类（web_search/web_search_news/search_web），但搜索结果
+  均为空/失败/低相关 → 回答中如有具体事实声明（时间、地点、数据、人物言论），
+  标注 INCOMPLETE
+- 如果回答宣称了搜索结果中未出现的具体信息 → INCOMPLETE，即使其他方面符合完成标准
+- 搜索返回的成功结果数量 < 3 且内容与用户查询明显无关 → 回答中如有具体结论，
+  标注 INCOMPLETE 并要求模型标注不确定性
+
 ## 回答要求
 STATUS: COMPLETED 或 INCOMPLETE
 EVIDENCE: 完成的证据

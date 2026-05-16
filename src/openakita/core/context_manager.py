@@ -19,6 +19,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from ..tracing.tracer import get_tracer
+
 try:
     from .constants import CHARS_PER_TOKEN, CHUNK_MAX_TOKENS, CONTEXT_BOUNDARY_MARKER
 except ImportError:
@@ -1497,6 +1498,14 @@ class ContextManager:
         if dropped_messages and memory_manager is not None:
             self._enqueue_dropped_for_extraction(dropped_messages, memory_manager)
 
+        # 从被丢弃的消息中提取用户初始目标（第一条 user 消息的前 100 字符）
+        initial_goal = self._extract_initial_user_goal(dropped_messages)
+
+        # 将被截断的完整对话历史写入磁盘供后续检索
+        saved_path = self._save_truncated_context(
+            dropped_messages, memory_manager=memory_manager
+        )
+
         if self.estimate_messages_tokens(truncated) > hard_limit:
             max_chars_per_msg = (hard_limit * CHARS_PER_TOKEN) // max(len(truncated), 1)
             for i, msg in enumerate(truncated):
@@ -1520,12 +1529,21 @@ class ContextManager:
                     )
                     truncated[i] = {**msg, "content": new_content}
 
+        # 构建 context_note，包含用户初始目标和截断存档路径
+        context_note_parts = ["早期对话已自动整理"]
+        if initial_goal:
+            context_note_parts.append(f"用户初始目标: {initial_goal}")
+        if saved_path:
+            context_note_parts.append(
+                f"完整早期对话已存档: {saved_path}，可通过记忆检索获取"
+            )
         truncated.insert(
             0,
             {
                 "role": "user",
                 "content": (
-                    "[context_note: 早期对话已自动整理] 请正常回复，保持详细程度和输出质量不变。"
+                    f"[context_note: {'，'.join(context_note_parts)}] "
+                    "请正常回复，保持详细程度和输出质量不变。"
                 ),
             },
         )
@@ -1743,3 +1761,84 @@ class ContextManager:
                 )
         except Exception as e:
             logger.warning(f"[HardTruncate] Failed to enqueue dropped messages: {e}")
+
+    @staticmethod
+    def _extract_initial_user_goal(messages: list[dict]) -> str | None:
+        """从被丢弃的消息中提取用户初始目标（第一条 user 消息）。
+
+        保留前 120 字符，确保模型在硬截断后仍记得用户最初的意图。
+        """
+        for msg in messages:
+            if msg.get("role") == "user":
+                content = msg.get("content", "")
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict):
+                            text = block.get("text") or block.get("content") or ""
+                            if isinstance(text, str) and text.strip():
+                                return text.strip()[:120]
+                elif isinstance(content, str) and content.strip():
+                    return content.strip()[:120]
+        return None
+
+    @staticmethod
+    def _save_truncated_context(
+        dropped_messages: list[dict],
+        memory_manager: object | None = None,
+    ) -> str | None:
+        """将被截断的完整对话历史写入磁盘。
+
+        存档到 data/truncated_contexts/ 目录，供后续会话检索或调试使用。
+        """
+        if not dropped_messages:
+            return None
+        try:
+            import json
+            import time
+            from pathlib import Path
+
+            session_id = (
+                getattr(memory_manager, "_current_session_id", None)
+                if memory_manager
+                else None
+            ) or "unknown"
+            ts = int(time.time())
+            save_dir = Path("data") / "truncated_contexts"
+            save_dir.mkdir(parents=True, exist_ok=True)
+            filename = f"{session_id}_{ts}.json"
+            filepath = save_dir / filename
+
+            serializable: list[dict] = []
+            for msg in dropped_messages:
+                content = msg.get("content", "")
+                if isinstance(content, list):
+                    content = [
+                        b if isinstance(b, dict) else {"text": str(b)}
+                        for b in content
+                    ]
+                serializable.append({
+                    "role": msg.get("role", "unknown"),
+                    "content": content,
+                })
+
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "timestamp": ts,
+                        "session_id": session_id,
+                        "message_count": len(serializable),
+                        "messages": serializable,
+                    },
+                    f,
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            logger.info(
+                "[HardTruncate] Saved %d dropped messages to %s",
+                len(serializable),
+                filepath,
+            )
+            return str(filepath)
+        except Exception as e:
+            logger.warning("[HardTruncate] Failed to save context to disk: %s", e)
+            return None

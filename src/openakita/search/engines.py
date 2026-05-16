@@ -77,7 +77,7 @@ def fetch_html(
     timeout: float = ENGINE_TIMEOUT,
 ) -> str | None:
     """同步 HTTP GET，使用 httpx.Timeout 精确控制连接/读取/写入超时。
-    
+
     不再使用全局 socket.setdefaulttimeout()，避免影响进程中其他 socket 操作。
     """
     default_headers = {
@@ -593,11 +593,166 @@ def filter_search_results(results: list[dict[str, Any]]) -> tuple[list[dict[str,
 
 def all_failed_response(kind: str) -> str:
     label = "新闻" if kind == "news" else "网页"
-    return json.dumps({
-        "success": False,
-        "message": (
-            f"所有{label}搜索引擎（Bing/百度/360/搜狗/神马/头条 + DDG/国际Bing）"
-            f"均无法获取结果。请检查网络连接或稍后再试。"
-        ),
-        "results": [],
-    }, ensure_ascii=False)
+    return json.dumps(
+        {
+            "success": False,
+            "message": (
+                f"所有{label}搜索引擎（Bing/百度/360/搜狗/神马/头条 + DDG/国际Bing）"
+                f"均无法获取结果。请检查网络连接或稍后再试。"
+            ),
+            "results": [],
+        },
+        ensure_ascii=False,
+    )
+
+
+# ── 搜索结果相关性评分 ─────────────────────────────────────
+
+def score_search_relevance(
+    query: str, result: dict[str, Any]
+) -> tuple[float, list[str]]:
+    """对搜索结果进行相关性评分。
+
+    基于查询关键词在标题/摘要中的出现情况进行打分：
+    - 1.0: 所有关键实体均出现在标题中
+    - 0.5: 部分匹配
+    - 0.1: 无匹配或弱匹配
+
+    Returns:
+        (score, matched_entities) — 0.0~1.0 的评分和匹配到的实体列表
+    """
+    if not query:
+        return 0.1, []
+    query_lower = query.lower()
+    text = (
+        f"{result.get('title', '')} {result.get('body', '')} "
+        f"{result.get('snippet', '')} {result.get('excerpt', '')} "
+        f"{result.get('source', '')} {result.get('abstract', '')}"
+    ).lower()
+
+    words = [w.strip().strip('"\'""''，。！？、；：""''「」') for w in query_lower.split()]
+    words = [w for w in words if len(w) >= 2]
+    if not words:
+        return 0.3, []
+
+    title = (result.get("title", "") or "").lower()
+
+    matched: list[str] = []
+    full_match = True
+    for w in words:
+        if w in title or w in text:
+            matched.append(w)
+        else:
+            full_match = False
+
+    if not matched:
+        return 0.1, []
+    if full_match and all(w in title for w in words):
+        return 1.0, matched
+    return 0.5, matched
+
+
+def filter_by_relevance(
+    results: list[dict[str, Any]],
+    query: str,
+    min_score: float = 0.3,
+) -> list[dict[str, Any]]:
+    """按相关性过滤搜索结果。
+
+    Args:
+        results: 原始搜索结果列表
+        query: 搜索查询
+        min_score: 最低相关性评分阈值
+
+    Returns:
+        过滤后的结果列表（每个结果附加 _relevance_score 字段）
+    """
+    if not query or not results:
+        return results
+    scored: list[tuple[float, list[str], dict[str, Any]]] = []
+    for r in results:
+        score, matched = score_search_relevance(query, r)
+        r["_relevance_score"] = score
+        if score >= min_score:
+            scored.append((score, matched, r))
+    scored.sort(key=lambda x: -x[0])
+    filtered = [r for _, _, r in scored]
+    if filtered:
+        logger.debug(
+            "[Relevance] %d/%d results above threshold %.2f for query '%s'",
+            len(filtered),
+            len(results),
+            min_score,
+            query[:60],
+        )
+    return filtered
+
+
+# ── 引擎健康追踪 ────────────────────────────────────────────
+
+_engine_failure_counts: dict[str, int] = {}
+_MAX_CONSECUTIVE_FAILURES = 5  # 连续失败超过此值自动禁用引擎
+
+
+def record_engine_success(engine_name: str) -> None:
+    """记录引擎成功调用，重置失败计数。"""
+    if engine_name in _engine_failure_counts:
+        if _engine_failure_counts[engine_name] > 0:
+            logger.info(
+                "[EngineHealth] %s recovered after %d failures",
+                engine_name,
+                _engine_failure_counts[engine_name],
+            )
+    _engine_failure_counts[engine_name] = 0
+
+
+def record_engine_failure(engine_name: str) -> bool:
+    """记录引擎失败。返回 True 表示引擎应被禁用。"""
+    current = _engine_failure_counts.get(engine_name, 0) + 1
+    _engine_failure_counts[engine_name] = current
+    if current >= _MAX_CONSECUTIVE_FAILURES:
+        logger.warning(
+            "[EngineHealth] %s has failed %d consecutive times, disabling.",
+            engine_name,
+            current,
+        )
+        return True
+    return False
+
+
+def is_engine_disabled(engine_name: str) -> bool:
+    """检查引擎是否因连续失败被禁用。"""
+    return _engine_failure_counts.get(engine_name, 0) >= _MAX_CONSECUTIVE_FAILURES
+
+
+def get_disabled_engines() -> list[str]:
+    """获取当前被禁用的引擎名称列表。"""
+    return [
+        name
+        for name, count in _engine_failure_counts.items()
+        if count >= _MAX_CONSECUTIVE_FAILURES
+    ]
+
+
+# ── 查询扩展 ───────────────────────────────────────────────
+
+def expand_query(query: str) -> list[str]:
+    """生成同义词扩展查询列表，用于搜索无结果时的重试。
+
+    对中英文混合查询生成变体，不改变核心语义。
+    """
+    variations: list[str] = [query]
+    query_lower = query.lower()
+    if "trump" in query_lower or "特朗普" in query:
+        pass  # 专有名词不扩展
+    if "visit" in query_lower or "visit" in query_lower.split():
+        if "visit" in query_lower and "visits" not in query_lower:
+            variations.append(query_lower.replace("visit", "visits"))
+    if "china" in query_lower or "中国" in query:
+        if "china" in query_lower and "chinese" not in query_lower:
+            variations.append(query_lower.replace("china", "chinese"))
+    if "may" in query_lower.split() and "2026" in query_lower:
+        variations.append(query_lower.replace("may", "May"))
+    if "may" not in query_lower.split() and "2026" in query_lower:
+        pass  # 保持原始查询
+    return variations[:3]

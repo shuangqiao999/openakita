@@ -495,9 +495,27 @@ class LLMResponse:
 
 
 DEFAULT_CONTEXT_WINDOW = 200000
-LOCAL_ENDPOINT_DEFAULT_CONTEXT_WINDOW = 4096
+LOCAL_ENDPOINT_DEFAULT_CONTEXT_WINDOW = 16384
 _LOCAL_PROVIDER_SLUGS = {"local", "localai", "lmstudio", "ollama"}
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+
+_OPENAKITA_FORCE_MAX_CTX: int | None = None
+
+
+def _get_force_max_ctx() -> int | None:
+    """Read OPENAKITA_FORCE_MAX_CTX env var (cached)."""
+    global _OPENAKITA_FORCE_MAX_CTX
+    if _OPENAKITA_FORCE_MAX_CTX is None:
+        import os
+        val = os.environ.get("OPENAKITA_FORCE_MAX_CTX", "")
+        if val and val.strip():
+            try:
+                _OPENAKITA_FORCE_MAX_CTX = int(val.strip())
+            except ValueError:
+                _OPENAKITA_FORCE_MAX_CTX = 0
+        else:
+            _OPENAKITA_FORCE_MAX_CTX = 0
+    return _OPENAKITA_FORCE_MAX_CTX or None
 
 
 def is_local_endpoint_config(provider: str = "", base_url: str = "") -> bool:
@@ -522,10 +540,20 @@ def normalize_context_window(
 ) -> int:
     """Normalize endpoint context windows.
 
-    Hosted providers keep the broad historical default. Local runtimes often
-    expose 4K/8K GGUF models; treating a missing value as 200K causes the
-    prompt/tool budgeter to overload them before it can recover.
+    Priority:
+    1. OPENAKITA_FORCE_MAX_CTX env var (user override)
+    2. Explicitly configured context_window
+    3. Local endpoints: 16384 (safe default for modern local models,
+       many Ollama/LM Studio 7B+ models support 32K+)
+    4. Cloud endpoints: 200000 (standard fallback)
+
+    NOTE: LOCAL_ENDPOINT_DEFAULT_CONTEXT_WINDOW was raised from 4096 to 16384
+    to prevent extreme budget truncation. Most local models (qwen2.5, llama3,
+    deepseek-r1, etc.) support 32K+ context when configured properly.
     """
+    forced = _get_force_max_ctx()
+    if forced is not None:
+        return forced
     is_local = is_local_endpoint_config(provider, base_url)
     try:
         ctx = int(value) if value is not None and value != "" else 0

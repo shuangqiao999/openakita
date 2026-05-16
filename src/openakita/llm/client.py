@@ -386,6 +386,97 @@ class LLMClient:
             if provider:
                 self._providers[ep.name] = provider
 
+    async def fetch_model_context_limit(
+        self, endpoint_name: str | None = None, timeout: float = 8.0
+    ) -> int | None:
+        """Query model API for actual max context window.
+
+        Tries GET /v1/models (OpenAI compatible) to discover the model's
+        ``max_context_length`` / ``context_window`` field. Falls back to
+        ``/models`` for Anthropic-style endpoints.
+
+        Returns:
+            context_window in tokens, or None if undiscoverable.
+        """
+        target_ep: EndpointConfig | None = None
+        if endpoint_name:
+            for ep in self._endpoints:
+                if ep.name == endpoint_name:
+                    target_ep = ep
+                    break
+        if target_ep is None and self._endpoints:
+            target_ep = self._endpoints[0]
+        if target_ep is None:
+            return None
+
+        import httpx
+        base = target_ep.base_url.rstrip("/")
+        urls = [
+            f"{base}/v1/models",
+            f"{base}/models",
+        ]
+        api_key = target_ep.get_api_key()
+        headers: dict[str, str] = {}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        model_name = target_ep.model
+
+        for url in urls:
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    resp = await client.get(url, headers=headers)
+                    if resp.status_code != 200:
+                        continue
+                    data = resp.json()
+                    models = data.get("data") or data.get("models") or []
+                    if isinstance(data, list):
+                        models = data
+                    for m in models:
+                        m_id = (
+                            m.get("id") or m.get("name") or m.get("model") or ""
+                        )
+                        if m_id == model_name or model_name in m_id:
+                            ctx = (
+                                m.get("max_context_length")
+                                or m.get("context_window")
+                                or m.get("context_length")
+                                or m.get("max_input_tokens")
+                                or 0
+                            )
+                            if ctx > 0:
+                                logger.info(
+                                    "[ModelContext] Discovered context_window=%d "
+                                    "for model '%s' via API",
+                                    ctx,
+                                    model_name,
+                                )
+                                return int(ctx)
+                    if models:
+                        # first match even by partial name
+                        for m in models:
+                            m_id = (
+                                m.get("id") or m.get("name") or m.get("model") or ""
+                            )
+                            if model_name.split("/")[-1] in m_id:
+                                ctx = (
+                                    m.get("max_context_length")
+                                    or m.get("context_window")
+                                    or m.get("context_length")
+                                    or m.get("max_input_tokens")
+                                    or 0
+                                )
+                                if ctx > 0:
+                                    logger.info(
+                                        "[ModelContext] Discovered context_window=%d "
+                                        "for model '%s' via partial match",
+                                        ctx,
+                                        model_name,
+                                    )
+                                    return int(ctx)
+            except Exception:
+                continue
+        return None
+
     async def startup_health_check(self) -> dict[str, str]:
         """启动时对所有端点做轻量健康检查。
 

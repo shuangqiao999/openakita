@@ -744,6 +744,28 @@ class Settings(BaseSettings):
         default=80000,
         description="单轮工具结果进入上下文前的总字符预算（后续会按上下文压力动态调整）",
     )
+    # === 预算分配可配置化（准确性优先，用户可按需调整各分区上限）===
+    budget_identity_override: int = Field(
+        default=0,
+        description="身份层 token 预算覆盖值（0=自动计算）。用于需要更大身份描述的场景",
+    )
+    budget_catalogs_override: int = Field(
+        default=0,
+        description="工具目录层 token 预算覆盖值（0=自动计算）。工具多时建议增大",
+    )
+    budget_user_override: int = Field(
+        default=0,
+        description="用户信息层 token 预算覆盖值（0=自动计算）",
+    )
+    budget_memory_override: int = Field(
+        default=0,
+        description="记忆检索层 token 预算覆盖值（0=自动计算）。对话长时建议增大",
+    )
+    budget_total_override: int = Field(
+        default=0,
+        description="系统提示总 token 预算覆盖值（0=自动计算）。"
+        "如果模型上下文窗口足够大但自动预算偏保守，可手动调大",
+    )
     api_tools_schema_budget_tokens: int = Field(
         default=12000,
         description="发送给 LLM API 的 tools schema 估算 token 预算，超出后动态 defer 非核心工具",

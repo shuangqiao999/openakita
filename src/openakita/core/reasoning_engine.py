@@ -25,7 +25,6 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -42,7 +41,8 @@ from .context_manager import _CancelledError as _CtxCancelledError
 try:
     from .decisions import Decision, DecisionType
 except ImportError:
-    from dataclasses import dataclass as _dc, field as _f
+    from dataclasses import dataclass as _dc
+    from dataclasses import field as _f
     from enum import Enum as _Enum
     from typing import Any as _Any
 
@@ -866,6 +866,65 @@ def _guard_unbacked_action_claim(
         "如需重试请明确告知。"
     )
     return text.rstrip() + warning
+
+
+def _detect_search_unreliable(
+    executed_tool_names: list[str],
+    tool_results: list[dict] | None,
+    assistant_response: str,
+) -> bool:
+    """检测搜索无果时模型是否产生了不可靠回答。
+
+    当 web_search 等搜索工具被调用但返回空结果或全部低相关结果时，
+    检查模型回答是否在未获得可靠搜索结果的情况下生成了具体事实性内容。
+
+    Returns:
+        True 表示搜索不可靠且模型可能产生了幻觉
+    """
+    search_tools = {"web_search", "web_search_news", "search_web", "search_news"}
+    has_searched = any(t in search_tools for t in executed_tool_names)
+    if not has_searched:
+        return False
+
+    # 检查搜索工具返回的结果是否有效
+    all_empty = True
+    has_success = False
+    for result_item in (tool_results or []):
+        result_content = result_item.get("content") or result_item.get("output") or ""
+        if isinstance(result_content, str):
+            try:
+                import json
+                parsed = json.loads(result_content)
+                if parsed.get("success") and parsed.get("results"):
+                    all_empty = False
+                    has_success = True
+                elif parsed.get("results"):
+                    all_empty = False
+            except (json.JSONDecodeError, TypeError):
+                if len(result_content) > 100:
+                    all_empty = False
+                    has_success = True
+
+    # 全部空 / 无成功标志：搜索实际上没返回信息
+    if all_empty or not has_success:
+        # 检查模型回答是否在搜索无果时仍输出了具体事实
+        hallucination_markers = [
+            r"\d{4}年\d{1,2}月\d{1,2}日",
+            r"\d{1,2}月\d{1,2}日",
+            "据.*报道",
+            "据.*消息",
+            ".*表示",
+            ".*宣布",
+            ".*称",
+            "最新消息",
+            "近期",
+            "刚刚",
+        ]
+        import re
+        for marker in hallucination_markers:
+            if re.search(marker, assistant_response):
+                return True
+    return False
 
 
 _USER_BLOCKED_MARKERS = (
@@ -6959,6 +7018,25 @@ class ReasoningEngine:
                 effective_max = max_verify_retries + 1 if has_todo_pending else max_verify_retries
 
                 is_in_progress_promise = self._is_in_progress_promise(cleaned_text)
+
+                # 搜索可靠性检查：检测模型是否在搜索无果时产生了不可靠回答
+                _search_unreliable = _detect_search_unreliable(
+                    executed_tool_names, all_tool_results, cleaned_text
+                )
+                if _search_unreliable and verify_incomplete_count >= effective_max:
+                    logger.warning(
+                        "[TaskVerify] Search results unreliable but model produced "
+                        "potentially hallucinated content. Injecting safety notice."
+                    )
+                    self._last_exit_reason = "verify_incomplete_search_unreliable"
+                    # 追加明确提示而非返回可能含幻觉的原文
+                    return (
+                        cleaned_text
+                        + "\n\n---\n"
+                        + "**[注意] 本次搜索未找到可靠信息。** "
+                        + "以上回答可能基于过时或不准确的训练数据，"
+                        + "建议核实关键事实。如需确切信息，请修改搜索词重试。"
+                    )
 
                 if verify_incomplete_count >= effective_max:
                     if is_in_progress_promise and verify_incomplete_count <= effective_max + 1:

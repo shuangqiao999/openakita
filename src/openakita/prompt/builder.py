@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 from ..skills.catalog import SKILL_INSTRUCTION_ADVISORY
-from .budget import BudgetConfig, apply_budget, estimate_tokens
+from .budget import BudgetConfig, apply_budget, check_budget_safety, estimate_tokens
 from .compiler import check_compiled_outdated, compile_all, get_compiled_content
 from .retriever import retrieve_memory
 
@@ -367,7 +367,18 @@ _INFO_SOURCE_HONESTY_SECTION = """\
 
 ### 一致性自检
 回答前自问：我接下来要说的内容里，有哪些事实性陈述？这些陈述的来源是
-[工具]/[历史]/[常识]/[不确定] 中的哪一个？标签是否准确反映了真实来源？"""
+[工具]/[历史]/[常识]/[不确定] 中的哪一个？标签是否准确反映了真实来源？
+
+### 搜索无果时的行为规范（不可违反）
+当所有搜索引擎返回结果数量 < 3 条，或搜索结果内容与查询关键词明显无关时：
+- 不得编造具体的事件、时间、地点、数据、人物言论或政策细节
+- 必须明确回答"未找到相关信息，请检查搜索词或稍后再试"
+- 对于"最新消息/最近新闻/近期动态"类请求，若搜索返回的最新内容超过7天前，
+  必须提示"搜索结果可能已过时，未找到最新信息"
+- 当搜索工具返回空结果（success=false 或 results=[]），禁止基于训练数据
+  生成看起来像"刚查到"的具体回答——只能使用 [来源:常识] 标签并提示不确定性
+- 若仅部分信息有搜索结果，必须在回答中明确区分：哪些内容有搜索结果支持、
+  哪些仅为推测或常识"""
 
 
 # ---------------------------------------------------------------------------
@@ -538,6 +549,36 @@ def build_system_prompt(
 
     if budget_config is None:
         budget_config = BudgetConfig()
+
+    # 安全性检查：上下文窗口过小时拒绝执行，避免预算截断导致行为规范丢失
+    _safety_ok, _safety_msg = check_budget_safety(budget_config, context_window)
+    if not _safety_ok and _safety_msg:
+        logger.critical("[BudgetSafety] REJECTED: %s", _safety_msg)
+        return (
+            f"❌ **安全模式 - 预算不足**\n\n"
+            f"{_safety_msg}\n\n"
+            f"当前配置: context_window={context_window}, "
+            f"identity_budget={budget_config.identity_budget}, "
+            f"catalogs_budget={budget_config.catalogs_budget}, "
+            f"total_budget={budget_config.total_budget}"
+        )
+
+    # 应用用户自定义的预算覆盖（config.py 中的可配置项）
+    try:
+        from ..config import settings as _s
+
+        if _s.budget_identity_override > 0:
+            budget_config.identity_budget = _s.budget_identity_override
+        if _s.budget_catalogs_override > 0:
+            budget_config.catalogs_budget = _s.budget_catalogs_override
+        if _s.budget_user_override > 0:
+            budget_config.user_budget = _s.budget_user_override
+        if _s.budget_memory_override > 0:
+            budget_config.memory_budget = _s.budget_memory_override
+        if _s.budget_total_override > 0:
+            budget_config.total_budget = _s.budget_total_override
+    except Exception:
+        pass
 
     # 向后兼容 skip_catalogs：映射到 profile 体系
     if skip_catalogs and _profile == PromptProfile.LOCAL_AGENT:

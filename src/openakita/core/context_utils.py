@@ -13,6 +13,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_CONTEXT_TOKENS = 160000
+MIN_SAFE_CONTEXT_TOKENS = 4096  # 低于此值拒绝启动，行为规范无法完整传递
 
 
 def estimate_tokens(text: str) -> int:
@@ -60,6 +61,9 @@ def get_max_context_tokens(
     1. 端点配置的 context_window（本地端点缺失时已在 EndpointConfig 归一化为小窗口）
     2. 减去 max_tokens 输出预留和 5% buffer
     3. 完全无法获取时 fallback 到 DEFAULT_MAX_CONTEXT_TOKENS (160K)
+
+    安全检查: 返回结果 < MIN_SAFE_CONTEXT_TOKENS(4096) 时会记录
+    CRITICAL 警告，提示模型上下文窗口不足以运行 OpenAkita。
     """
     from ..config import settings
     from ..llm.types import DEFAULT_CONTEXT_WINDOW
@@ -78,7 +82,18 @@ def get_max_context_tokens(
                 output_reserve = min(output_reserve, ctx // 3)
                 result = int((ctx - output_reserve) * 0.95)
                 if result < 1024:
-                    return max(int(ctx * 0.5), 1024)
+                    result = max(int(ctx * 0.5), 1024)
+                if result < MIN_SAFE_CONTEXT_TOKENS:
+                    logger.warning(
+                        "[ContextSafety] Effective context tokens=%d is below "
+                        "minimum safe threshold %d. Model context window=%d. "
+                        "Behavioral norms and tool descriptions may be "
+                        "truncated, leading to degraded accuracy. "
+                        "Consider using a model with >=16K context.",
+                        result,
+                        MIN_SAFE_CONTEXT_TOKENS,
+                        ctx,
+                    )
                 return result
         return DEFAULT_MAX_CONTEXT_TOKENS
     except Exception:
