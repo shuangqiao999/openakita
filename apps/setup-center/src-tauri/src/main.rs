@@ -25,15 +25,14 @@ use tauri_plugin_autostart::MacosLauncher;
 #[cfg(desktop)]
 use tauri_plugin_autostart::ManagerExt as AutostartManagerExt;
 
-// ── 全局管理的子进程 handle（仅追踪由 Tauri 自身 spawn 的进程） ──
+// ── 全局管理的子进程 handle（追踪由 Tauri 自身 spawn 的进程，支持多工作区） ──
 struct ManagedProcess {
     child: std::process::Child,
-    workspace_id: String,
     pid: u32,
-    started_at: u64,
 }
 
-static MANAGED_CHILD: Lazy<Mutex<Option<ManagedProcess>>> = Lazy::new(|| Mutex::new(None));
+static MANAGED_CHILDREN: Lazy<Mutex<HashMap<String, ManagedProcess>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 /// Rust 自动启动后端时置 true，启动完成（成功/失败）后置 false。
 /// 前端可查询该标记以显示"正在自动启动服务"并禁用启动/重启按钮。
@@ -44,6 +43,26 @@ static AUTO_START_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 /// 视为后台 spawn 线程已经死掉/卡死，强制返回 false 防止前端 toast 永久卡住。
 static AUTO_START_STARTED_AT_MS: AtomicU64 = AtomicU64::new(0);
 const AUTO_START_TIMEOUT_MS: u64 = 180_000;
+
+const DEFAULT_API_PORT: u16 = 18900;
+
+const HB_HTTP_TIMEOUT_SECS: u64 = 2;
+const GRACEFUL_STOP_MAX_WAIT_ITER: u32 = 25;
+const GRACEFUL_STOP_POLL_MS: u64 = 200;
+const FORCE_STOP_MAX_WAIT_ITER: u32 = 10;
+const LOG_TAIL_DEFAULT_BYTES: u64 = 40_000;
+const LOG_TAIL_MAX_BYTES: u64 = 400_000;
+const ERROR_TAIL_BYTES: usize = 6000;
+const SPAWN_LIVENESS_CHECKS: u32 = 6;
+const WINDOWS_RESERVED_NAMES: &[&str] = &[
+    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6",
+    "com7", "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7",
+    "lpt8", "lpt9",
+];
+const HEARTBEAT_STALE_SECS: u64 = 30;
+const ATOMIC_WRITE_MAX_RETRIES: u64 = 3;
+const VERSION_CHECK_RETRIES: u32 = 5;
+const VERSION_CHECK_BACKOFF_MS: u64 = 1500;
 
 /// 后端启动宽限期（秒）。Backend cold-start 在 dual-venv hack 下：
 ///   * Python 解释器 import 整个生态 ≈ 30s
@@ -407,10 +426,12 @@ fn setup_logs_dir() -> PathBuf {
 }
 
 /// Append a diagnostic line to `~/.openakita/logs/autostart.log`.
+/// Rotates when exceeding 5 MB, keeping the tail 2 MB.
 fn log_to_file(msg: &str) {
     let log_dir = setup_logs_dir();
     let _ = fs::create_dir_all(&log_dir);
     let path = log_dir.join("autostart.log");
+    maybe_rotate_log_file(&path, 5 * 1024 * 1024, 2 * 1024 * 1024);
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -506,21 +527,20 @@ fn frontend_log_path() -> PathBuf {
     setup_logs_dir().join("frontend.log")
 }
 
-/// 自动轮转：当文件超过 FRONTEND_LOG_MAX_BYTES 时，只保留尾部 FRONTEND_LOG_TRUNCATE_TO 字节。
-fn maybe_rotate_frontend_log(path: &Path) {
+/// 通用日志轮转：当文件超过 max_bytes 时，只保留尾部 keep_bytes 字节。
+fn maybe_rotate_log_file(path: &Path, max_bytes: u64, keep_bytes: u64) {
     let meta = match fs::metadata(path) {
         Ok(m) => m,
         Err(_) => return,
     };
-    if meta.len() <= FRONTEND_LOG_MAX_BYTES {
+    if meta.len() <= max_bytes {
         return;
     }
-    // Read tail
     let mut f = match fs::File::open(path) {
         Ok(f) => f,
         Err(_) => return,
     };
-    let start = meta.len().saturating_sub(FRONTEND_LOG_TRUNCATE_TO);
+    let start = meta.len().saturating_sub(keep_bytes);
     if f.seek(SeekFrom::Start(start)).is_err() {
         return;
     }
@@ -529,13 +549,17 @@ fn maybe_rotate_frontend_log(path: &Path) {
         return;
     }
     drop(f);
-    // Skip to next newline to avoid partial line
     let offset = tail
         .iter()
         .position(|&b| b == b'\n')
         .map(|i| i + 1)
         .unwrap_or(0);
     let _ = fs::write(path, &tail[offset..]);
+}
+
+/// 自动轮转：当文件超过 FRONTEND_LOG_MAX_BYTES 时，只保留尾部 FRONTEND_LOG_TRUNCATE_TO 字节。
+fn maybe_rotate_frontend_log(path: &Path) {
+    maybe_rotate_log_file(path, FRONTEND_LOG_MAX_BYTES, FRONTEND_LOG_TRUNCATE_TO);
 }
 
 /// 前端 JS 日志批量追加到 ~/.openakita/logs/frontend.log。
@@ -1420,10 +1444,22 @@ fn bundled_internal_python_path() -> Option<PathBuf> {
     None
 }
 
-/// 获取后端可执行文件及参数
-/// 优先使用 dual app-venv，失败后保留 PyInstaller legacy fallback。
+/// 获取后端可执行文件及参数。
+/// 优先使用打包内置 PyInstaller 后端（零依赖，零等待），
+/// 降级到 dual app-venv，失败则回退到旧 venv python。
 fn get_backend_executable(venv_dir: &str) -> (PathBuf, Vec<String>) {
-    // 1. 优先: dual runtime app venv
+    // 1. 优先: 内嵌的 PyInstaller 打包后端（最快路径，无副作用）
+    let bundled_dir = bundled_backend_dir();
+    let bundled_exe = if cfg!(windows) {
+        bundled_dir.join("openakita-server.exe")
+    } else {
+        bundled_dir.join("openakita-server")
+    };
+    if bundled_exe.exists() {
+        return (bundled_exe, vec!["serve".to_string()]);
+    }
+
+    // 2. 其次: dual runtime app venv（副作用：首次调用会触发 venv bootstrap）
     match ensure_dual_runtime_env() {
         Ok(runtime) => {
             let backend_python = runtime_venv_backend_python_path(&runtime.app_venv);
@@ -1443,25 +1479,9 @@ fn get_backend_executable(venv_dir: &str) -> (PathBuf, Vec<String>) {
         }
     }
 
-    // 2. fallback: 内嵌的 PyInstaller 打包后端
-    let bundled_dir = bundled_backend_dir();
-    let bundled_exe = if cfg!(windows) {
-        bundled_dir.join("openakita-server.exe")
-    } else {
-        bundled_dir.join("openakita-server")
-    };
-    if bundled_exe.exists() {
-        return (bundled_exe, vec!["serve".to_string()]);
-    }
     // 3. 最后降级: 旧 ~/.openakita/venv python（开发模式 / 旧安装）
     eprintln!(
-        "[backend] dual runtime and bundled openakita-server unavailable at: {}\n\
-         [backend] current_exe: {:?}\n\
-         [backend] falling back to venv python in: {}",
-        bundled_exe.display(),
-        std::env::current_exe()
-            .ok()
-            .map(|p| p.display().to_string()),
+        "[backend] all options unavailable; falling back to venv python in: {}",
         venv_dir,
     );
     let py = venv_pythonw_path(venv_dir);
@@ -2220,6 +2240,9 @@ fn factory_reset() -> Result<String, String> {
         msg.push_str(&format!(" (已停止 {} 个进程)", stopped.len()));
     }
 
+    // 清理启动去重窗口记录
+    SERVICE_START_LAST_AT.lock().unwrap_or_else(|e| e.into_inner()).clear();
+
     Ok(msg)
 }
 
@@ -2443,14 +2466,14 @@ fn wait_for_port_free(port: u16, timeout_ms: u64) -> bool {
 }
 
 fn is_backend_http_healthy(port: Option<u16>) -> bool {
-    let effective_port = port.unwrap_or(18900);
+    let effective_port = port.unwrap_or(DEFAULT_API_PORT);
     let url = format!("http://127.0.0.1:{}/api/health", effective_port);
-    for attempt in 0..5u32 {
+    for attempt in 0..2u32 {
         if attempt > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(500 * attempt as u64));
+            std::thread::sleep(std::time::Duration::from_secs(1));
         }
         let ok = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(3))
+            .timeout(std::time::Duration::from_secs(HB_HTTP_TIMEOUT_SECS))
             .no_proxy()
             .build()
             .ok()
@@ -2478,7 +2501,7 @@ fn graceful_stop_pid(pid: u32, port: Option<u16>) -> Result<(), String> {
         return Ok(());
     }
 
-    let effective_port = port.unwrap_or(18900);
+    let effective_port = port.unwrap_or(DEFAULT_API_PORT);
     // 第一步：尝试通过 HTTP API 触发优雅关闭
     let api_ok = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(3))
@@ -2711,6 +2734,30 @@ mod win {
         pub dw_flags: u32,
         pub sz_exe_file: [u16; 260],
     }
+
+    /// Safe wrapper: enumerate all running processes, returning (pid, parent_pid, lowercase_exe_name).
+    pub fn enumerate_processes() -> Vec<(u32, u32, String)> {
+        let mut result = Vec::new();
+        let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+        if snap.is_null() || snap == INVALID_HANDLE_VALUE {
+            return result;
+        }
+        let mut pe: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+        pe.dw_size = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        if unsafe { Process32FirstW(snap, &mut pe) } != 0 {
+            loop {
+                let name_end = pe.sz_exe_file.iter().position(|&c| c == 0).unwrap_or(260);
+                let name = String::from_utf16_lossy(&pe.sz_exe_file[..name_end])
+                    .to_ascii_lowercase();
+                result.push((pe.th32_process_id, pe.th32_parent_process_id, name));
+                if unsafe { Process32NextW(snap, &mut pe) } == 0 {
+                    break;
+                }
+            }
+        }
+        unsafe { CloseHandle(snap); }
+        result
+    }
 }
 
 fn is_pid_running(pid: u32) -> bool {
@@ -2803,40 +2850,18 @@ fn is_openakita_process(pid: u32) -> bool {
     }
     #[cfg(windows)]
     {
-        // Step 1: 用 Toolhelp32 快速检查进程名
-        let snap = unsafe { win::CreateToolhelp32Snapshot(win::TH32CS_SNAPPROCESS, 0) };
-        if snap == win::INVALID_HANDLE_VALUE || snap.is_null() {
-            return false;
-        }
-        let mut pe: win::PROCESSENTRY32W = unsafe { std::mem::zeroed() };
-        pe.dw_size = std::mem::size_of::<win::PROCESSENTRY32W>() as u32;
+        // Step 1: 用枚举快速检查进程名
+        let exe_name = win::enumerate_processes()
+            .into_iter()
+            .find(|(p, _, _)| *p == pid)
+            .map(|(_, _, n)| n)
+            .unwrap_or_default();
 
-        let mut exe_name = String::new();
-        if unsafe { win::Process32FirstW(snap, &mut pe) } != 0 {
-            loop {
-                if pe.th32_process_id == pid {
-                    exe_name = String::from_utf16_lossy(
-                        &pe.sz_exe_file
-                            [..pe.sz_exe_file.iter().position(|&c| c == 0).unwrap_or(260)],
-                    )
-                    .to_ascii_lowercase();
-                    break;
-                }
-                if unsafe { win::Process32NextW(snap, &mut pe) } == 0 {
-                    break;
-                }
-            }
-        }
-        unsafe {
-            win::CloseHandle(snap);
-        }
-
-        // 进程名包含 python 或 openakita-server → 可能是后端
         if exe_name.contains("openakita-server") {
             return true;
         }
         if !exe_name.contains("python") {
-            return false; // 既不是 python 也不是 openakita-server，肯定不是后端
+            return false;
         }
 
         // Step 2: python 进程需进一步检查命令行是否包含 openakita
@@ -2891,37 +2916,17 @@ fn kill_openakita_orphans() -> Vec<u32> {
     let mut killed = Vec::new();
     #[cfg(windows)]
     {
-        // Step 1: 用 Toolhelp32 枚举所有进程，找到进程名含 python 的
-        let snap = unsafe { win::CreateToolhelp32Snapshot(win::TH32CS_SNAPPROCESS, 0) };
-        if snap == win::INVALID_HANDLE_VALUE || snap.is_null() {
-            return killed;
-        }
-        let mut pe: win::PROCESSENTRY32W = unsafe { std::mem::zeroed() };
-        pe.dw_size = std::mem::size_of::<win::PROCESSENTRY32W>() as u32;
-
+        // Step 1: 枚举所有进程，找到进程名含 python 的
+        let procs = win::enumerate_processes();
         let mut python_pids: Vec<u32> = Vec::new();
         let mut bundled_pids: Vec<u32> = Vec::new();
-
-        if unsafe { win::Process32FirstW(snap, &mut pe) } != 0 {
-            loop {
-                let name = String::from_utf16_lossy(
-                    &pe.sz_exe_file[..pe.sz_exe_file.iter().position(|&c| c == 0).unwrap_or(260)],
-                );
-                let name_lower = name.to_ascii_lowercase();
-                if name_lower.contains("python") {
-                    python_pids.push(pe.th32_process_id);
-                }
-                // PyInstaller 打包后端进程名为 openakita-server.exe
-                if name_lower.contains("openakita-server") {
-                    bundled_pids.push(pe.th32_process_id);
-                }
-                if unsafe { win::Process32NextW(snap, &mut pe) } == 0 {
-                    break;
-                }
+        for (pid, _ppid, name) in &procs {
+            if name.contains("python") {
+                python_pids.push(*pid);
             }
-        }
-        unsafe {
-            win::CloseHandle(snap);
+            if name.contains("openakita-server") {
+                bundled_pids.push(*pid);
+            }
         }
 
         // Step 1.5: 直接 kill 孤立的 openakita-server.exe (PyInstaller bundled backend)
@@ -3021,32 +3026,12 @@ fn openakita_list_processes() -> Vec<OpenAkitaProcess> {
     #[cfg(windows)]
     {
         // Step 1: 枚举所有进程，找到进程名含 python 的 PID
-        let snap = unsafe { win::CreateToolhelp32Snapshot(win::TH32CS_SNAPPROCESS, 0) };
-        if snap == win::INVALID_HANDLE_VALUE || snap.is_null() {
-            return out;
-        }
-        let mut pe: win::PROCESSENTRY32W = unsafe { std::mem::zeroed() };
-        pe.dw_size = std::mem::size_of::<win::PROCESSENTRY32W>() as u32;
-
-        let mut python_pids: Vec<(u32, u32)> = Vec::new();
-
-        if unsafe { win::Process32FirstW(snap, &mut pe) } != 0 {
-            loop {
-                let name = String::from_utf16_lossy(
-                    &pe.sz_exe_file[..pe.sz_exe_file.iter().position(|&c| c == 0).unwrap_or(260)],
-                );
-                let name_lower = name.to_ascii_lowercase();
-                if name_lower.contains("python") {
-                    python_pids.push((pe.th32_process_id, pe.th32_parent_process_id));
-                }
-                if unsafe { win::Process32NextW(snap, &mut pe) } == 0 {
-                    break;
-                }
-            }
-        }
-        unsafe {
-            win::CloseHandle(snap);
-        }
+        let procs = win::enumerate_processes();
+        let python_pids: Vec<(u32, u32)> = procs
+            .iter()
+            .filter(|(_, _, name)| name.contains("python"))
+            .map(|(pid, ppid, _)| (*pid, *ppid))
+            .collect();
 
         let mut matched: Vec<(u32, u32, String)> = Vec::new();
 
@@ -3124,7 +3109,7 @@ fn openakita_stop_all_processes() -> Vec<u32> {
     // 第 1 层：按 PID 文件逐一停止
     let entries = list_service_pids();
     for ent in &entries {
-        if is_pid_running(ent.pid) {
+        if is_pid_running(ent.pid) && is_openakita_process(ent.pid) {
             let port = read_workspace_api_port(&ent.workspace_id);
             let _ = stop_service_pid_entry(ent, port);
             stopped.push(ent.pid);
@@ -3435,11 +3420,7 @@ fn validate_workspace_id(id: &str) -> Result<(), String> {
     if !id.chars().any(|c| c.is_ascii_alphanumeric()) {
         return Err("workspace id must contain at least one letter or digit".into());
     }
-    const RESERVED: &[&str] = &[
-        "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
-        "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
-    ];
-    if RESERVED.contains(&id.to_ascii_lowercase().as_str()) {
+    if WINDOWS_RESERVED_NAMES.contains(&id.to_ascii_lowercase().as_str()) {
         return Err("workspace id conflicts with a reserved system name".into());
     }
     Ok(())
@@ -3578,13 +3559,11 @@ fn stop_backend_for_restart(pid: u32, port: u16) -> VersionCheckResult {
         return VersionCheckResult::RunningOk;
     }
 
-    // 清理被终止进程对应的 PID 文件
+    // 只清理目标 PID 对应的文件，不遍历所有 workspace。
     for ent in list_service_pids() {
-        if let Some(data) = read_pid_file(&ent.workspace_id) {
-            if data.pid == pid || !is_pid_running(data.pid) {
-                let _ = fs::remove_file(service_pid_file(&ent.workspace_id));
-                remove_heartbeat_file(&ent.workspace_id);
-            }
+        if ent.pid == pid {
+            let _ = fs::remove_file(service_pid_file(&ent.workspace_id));
+            remove_heartbeat_file(&ent.workspace_id);
         }
     }
 
@@ -3618,20 +3597,15 @@ fn healthy_backend_pid(port: u16) -> Option<u32> {
         .filter(|pid| is_pid_running(*pid))
 }
 
-/// DMG 覆盖安装后版本对账：检查运行中后端的版本，必要时替换。
-///
-/// macOS 上通过 DMG 拖拽覆盖安装后，旧的 openakita-server 进程可能仍在端口上
-/// 服务。新版 app 启动时必须检测版本不匹配并主动替换，否则会一直使用旧后端。
-///
-/// 此函数合并了「是否有后端在运行」和「版本是否匹配」两个检查，
-/// 只发一次 HTTP 请求，避免 setup 阶段重复探测。
-fn startup_version_check(app_version: &str, port: u16) -> VersionCheckResult {
+/// Fetch /api/health from the backend, retrying up to VERSION_CHECK_RETRIES times.
+/// Returns the parsed JSON on success, or None if the backend is unreachable.
+fn fetch_backend_health_json(port: u16) -> Option<serde_json::Value> {
     let url = format!("http://127.0.0.1:{}/api/health", port);
-
-    // Retry up to 5 times for slow cold starts (backend can take 17s+)
-    for attempt in 0..5u32 {
+    for attempt in 0..VERSION_CHECK_RETRIES {
         if attempt > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(1500 * attempt as u64));
+            std::thread::sleep(std::time::Duration::from_millis(
+                VERSION_CHECK_BACKOFF_MS * attempt as u64,
+            ));
         }
         let client = match reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(4))
@@ -3640,29 +3614,44 @@ fn startup_version_check(app_version: &str, port: u16) -> VersionCheckResult {
         {
             Ok(c) => c,
             Err(e) => {
-                if attempt < 4 { continue; }
+                if attempt < VERSION_CHECK_RETRIES - 1 {
+                    continue;
+                }
                 log_to_file(&format!("[version_check] client build failed: {e}"));
-                return VersionCheckResult::NotRunning;
+                return None;
             }
         };
-
         let resp = match client.get(&url).send() {
             Ok(r) if r.status().is_success() => r,
             Ok(r) => {
-                if attempt < 4 { continue; }
-                log_to_file(&format!("[version_check] health check non-success: {}", r.status()));
-                return VersionCheckResult::NotRunning;
+                if attempt < VERSION_CHECK_RETRIES - 1 {
+                    continue;
+                }
+                log_to_file(&format!(
+                    "[version_check] health check non-success: {}",
+                    r.status()
+                ));
+                return None;
             }
             Err(e) => {
-                if attempt < 4 { continue; }
-                log_to_file(&format!("[version_check] health check failed after 5 retries: {e}"));
-                return VersionCheckResult::NotRunning;
+                if attempt < VERSION_CHECK_RETRIES - 1 {
+                    continue;
+                }
+                log_to_file(&format!(
+                    "[version_check] health check failed after {VERSION_CHECK_RETRIES} retries: {e}"
+                ));
+                return None;
             }
         };
+        return resp.json().ok();
+    }
+    None
+}
 
-    let json: serde_json::Value = match resp.json() {
-        Ok(v) => v,
-        Err(_) => return VersionCheckResult::RunningOk, // 响应成功但 JSON 解析失败，保守处理
+/// DMG 覆盖安装后版本对账：检查运行中后端的版本，必要时替换。
+fn startup_version_check(app_version: &str, port: u16) -> VersionCheckResult {
+    let Some(json) = fetch_backend_health_json(port) else {
+        return VersionCheckResult::NotRunning;
     };
 
     let backend_version = json
@@ -3672,32 +3661,15 @@ fn startup_version_check(app_version: &str, port: u16) -> VersionCheckResult {
         .trim_start_matches('v');
     let desktop_version = app_version.trim_start_matches('v');
 
-    // 版本无法判断或 dev 后端 → 保守保持现有后端。
     if backend_version.is_empty() || backend_version == "0.0.0-dev" {
         return VersionCheckResult::RunningOk;
     }
 
     if backend_version == desktop_version {
-        if runtime_wheel_hash_matches_bootstrap() {
-            return VersionCheckResult::RunningOk;
-        }
-        let pid = match json.get("pid").and_then(|v| v.as_u64()).map(|p| p as u32) {
-            Some(p) => p,
-            None => {
-                eprintln!("Runtime wheel changed but backend PID is unavailable; keeping current backend.");
-                return VersionCheckResult::RunningOk;
-            }
-        };
-        eprintln!(
-            "Runtime wheel changed for version {}. Stopping backend to refresh app-venv...",
-            desktop_version
-        );
-        return stop_backend_for_restart(pid, port);
+        return compare_same_version(&json, desktop_version, port);
     }
 
-    // 核心防护：检查安装包内 bundled 后端版本。
-    // 如果 bundled 版本和运行中版本相同，重启只会拉起同样版本的后端，
-    // 杀死毫无意义且可能影响用户正在使用的服务。
+    // Check bundled version to avoid pointless restart
     let bundled_v = bundled_backend_version()
         .unwrap_or_default()
         .trim_start_matches('v')
@@ -3705,7 +3677,7 @@ fn startup_version_check(app_version: &str, port: u16) -> VersionCheckResult {
     if !bundled_v.is_empty() && bundled_v == backend_version {
         eprintln!(
             "Version mismatch: backend={} desktop={}, but bundled backend is also {}. \
-             Restart would not help — keeping current backend.",
+             Restart would not help - keeping current backend.",
             backend_version, desktop_version, bundled_v
         );
         return VersionCheckResult::RunningOk;
@@ -3714,30 +3686,31 @@ fn startup_version_check(app_version: &str, port: u16) -> VersionCheckResult {
     eprintln!(
         "Version mismatch: running={} bundled={} desktop={}. Stopping old backend for upgrade...",
         backend_version,
-        if bundled_v.is_empty() {
-            "?"
-        } else {
-            &bundled_v
-        },
+        if bundled_v.is_empty() { "?" } else { &bundled_v },
         desktop_version
     );
 
-    // graceful_stop_pid 内部已包含：POST /api/shutdown → 等待 5s → force kill → 等待 2s
-    // 无需手动再发 shutdown 或 sleep。
-    let pid = match json.get("pid").and_then(|v| v.as_u64()).map(|p| p as u32) {
-        Some(p) => p,
-        None => {
-            eprintln!(
-                "Cannot determine backend PID from health response; keeping current backend."
-            );
-            return VersionCheckResult::RunningOk;
-        }
+    let Some(pid) = json.get("pid").and_then(|v| v.as_u64()).map(|p| p as u32) else {
+        eprintln!("Cannot determine backend PID from health response; keeping current backend.");
+        return VersionCheckResult::RunningOk;
     };
+    stop_backend_for_restart(pid, port)
+}
 
-        return stop_backend_for_restart(pid, port);
+/// Version matches but wheel hash may differ.
+fn compare_same_version(json: &serde_json::Value, desktop_version: &str, port: u16) -> VersionCheckResult {
+    if runtime_wheel_hash_matches_bootstrap() {
+        return VersionCheckResult::RunningOk;
     }
-
-    VersionCheckResult::NotRunning
+    let Some(pid) = json.get("pid").and_then(|v| v.as_u64()).map(|p| p as u32) else {
+        eprintln!("Runtime wheel changed but backend PID is unavailable; keeping current backend.");
+        return VersionCheckResult::RunningOk;
+    };
+    eprintln!(
+        "Runtime wheel changed for version {}. Stopping backend to refresh app-venv...",
+        desktop_version
+    );
+    stop_backend_for_restart(pid, port)
 }
 
 /// 启动对账：清理残留锁文件和已死的 PID 文件
@@ -3759,25 +3732,33 @@ fn startup_reconcile() {
         }
     }
 
-    // 2. 扫描 PID 文件，清理已死进程的 stale 条目
+    // 2. 扫描 PID 文件，清理已死进程的 stale 条目（同步，无 HTTP）。
+    // 需要 HTTP 的 stale-heartbeat 处理放到后台线程，避免阻塞 UI 启动。
     let entries = list_service_pids();
+    let mut deferred_stales: Vec<(String, u32)> = Vec::new();
     for ent in &entries {
         if let Some(data) = read_pid_file(&ent.workspace_id) {
             if !is_pid_file_valid(&data) {
-                // 进程已死或 PID 被复用，清理 PID 文件和心跳文件
                 let _ = fs::remove_file(service_pid_file(&ent.workspace_id));
                 remove_heartbeat_file(&ent.workspace_id);
             } else if let Some(true) = is_heartbeat_stale(&ent.workspace_id, 60) {
-                // PID 文件有效但心跳超时。先用 HTTP health 复核，避免因心跳文件
-                // 写入异常误杀仍可响应的后端进程。
-                let port = read_workspace_api_port(&ent.workspace_id);
-                if should_cleanup_stale_heartbeat(Some(true), is_backend_http_healthy(port)) {
-                    let _ = graceful_stop_pid(data.pid, port);
-                    let _ = fs::remove_file(service_pid_file(&ent.workspace_id));
-                    remove_heartbeat_file(&ent.workspace_id);
-                }
+                deferred_stales.push((ent.workspace_id.clone(), data.pid));
             }
         }
+    }
+
+    // 3. 心跳过期处理放后台，不阻塞 setup
+    if !deferred_stales.is_empty() {
+        std::thread::spawn(move || {
+            for (ws_id, pid) in deferred_stales {
+                let port = read_workspace_api_port(&ws_id);
+                if should_cleanup_stale_heartbeat(Some(true), is_backend_http_healthy(port)) {
+                    let _ = graceful_stop_pid(pid, port);
+                    let _ = fs::remove_file(service_pid_file(&ws_id));
+                    remove_heartbeat_file(&ws_id);
+                }
+            }
+        });
     }
 }
 
@@ -3817,39 +3798,41 @@ fn write_crash_log(message: &str, show_dialog: bool) -> PathBuf {
         .and_then(|mut f| f.write_all(entry.as_bytes()));
 
     if show_dialog {
-        #[cfg(windows)]
-        {
-            use std::ffi::OsStr;
-            use std::iter::once;
-            use std::os::windows::ffi::OsStrExt;
+        let body = format!(
+            "OpenAkita Desktop 启动失败 (startup failed)\n\n\
+             {message}\n\n\
+             崩溃日志已写入 (crash log): {}\n\
+             请将此日志发送给开发者以帮助诊断问题。",
+            crash_path.display()
+        );
+        // 在独立线程中显示对话框，避免 panic hook 在主线程中
+        // 显示模态对话框导致 Win32 事件循环死锁。
+        std::thread::spawn(move || {
+            #[cfg(windows)]
+            {
+                use std::ffi::OsStr;
+                use std::iter::once;
+                use std::os::windows::ffi::OsStrExt;
 
-            extern "system" {
-                fn MessageBoxW(
-                    hwnd: *mut std::ffi::c_void,
-                    text: *const u16,
-                    caption: *const u16,
-                    typ: u32,
-                ) -> i32;
+                extern "system" {
+                    fn MessageBoxW(
+                        hwnd: *mut std::ffi::c_void,
+                        text: *const u16,
+                        caption: *const u16,
+                        typ: u32,
+                    ) -> i32;
+                }
+                fn to_wide(s: &str) -> Vec<u16> {
+                    OsStr::new(s).encode_wide().chain(once(0)).collect()
+                }
+                let caption = "OpenAkita - Crash";
+                let wb = to_wide(&body);
+                let wc = to_wide(caption);
+                unsafe {
+                    MessageBoxW(std::ptr::null_mut(), wb.as_ptr(), wc.as_ptr(), 0x10);
+                }
             }
-
-            fn to_wide(s: &str) -> Vec<u16> {
-                OsStr::new(s).encode_wide().chain(once(0)).collect()
-            }
-
-            let body = format!(
-                "OpenAkita Desktop 启动失败 (startup failed)\n\n\
-                 {message}\n\n\
-                 崩溃日志已写入 (crash log): {}\n\
-                 请将此日志发送给开发者以帮助诊断问题。",
-                crash_path.display()
-            );
-            let caption = "OpenAkita – Crash";
-            let wb = to_wide(&body);
-            let wc = to_wide(caption);
-            unsafe {
-                MessageBoxW(std::ptr::null_mut(), wb.as_ptr(), wc.as_ptr(), 0x10);
-            }
-        }
+        });
     }
 
     crash_path
@@ -4033,91 +4016,105 @@ fn main() {
             }
 
             // ── 自动拉起后端 ──
-            // 如果有已配置的工作区且后端未在运行，则自动启动后端。
-            // 前端通过 is_backend_auto_starting 查询此状态，
-            // 在启动期间显示提示并禁用启动/重启按钮。
-            //
-            // startup_version_check 合并了「健康检查」和「版本对账」两步：
-            //   - NotRunning  → 端口无响应，需要启动
-            //   - RunningOk   → 后端在运行且版本可接受
-            //   - Upgraded    → 旧版后端已被终止，需要启动新版
+            // 全部逻辑移入后台线程，避免 startup_version_check 的 HTTP 探测阻塞 UI 渲染。
+            // 前端通过 is_backend_auto_starting 查询状态，在启动期间显示提示并禁用按钮。
             let app_version = app.package_info().version.to_string();
-            let is_auto_restarted = std::env::args().any(|a| a == "--auto-restarted");
-            let state = read_state_file();
-            if let Some(ref ws_id) = state.current_workspace_id {
-                let port = read_workspace_api_port(ws_id).unwrap_or(18900);
-                // Self-heal restart (tao#1180): skip version check to avoid
-                // killing the still-initializing old backend.
-                let need_start = if is_auto_restarted {
-                    if let Some(pid) = read_pid_file(ws_id).and_then(|d| {
-                        if is_pid_running(d.pid) { Some(d.pid) } else { None }
-                    }) {
-                        log_to_file(&format!("[auto-start] self-heal: adopting pid={pid}"));
-                        false
-                    } else if let Some(pid) = healthy_backend_pid(port) {
-                        log_to_file(&format!("[auto-start] self-heal: found healthy pid={pid}"));
-                        let _ = write_pid_file(ws_id, pid, "external");
-                        false
-                    } else {
-                        log_to_file("[auto-start] self-heal: no backend, starting new");
-                        true
-                    }
-                } else {
-                    let check_result = startup_version_check(&app_version, port);
-                    !matches!(check_result, VersionCheckResult::RunningOk)
-                };
-                log_to_file(&format!(
-                    "[auto-start] app_version={}, ws_id={}, port={}, need_start={}",
-                    app_version, ws_id, port, need_start
-                ));
-                if need_start {
+            let app_version_for_hb = app_version.clone();
+            {
+                let is_auto_restarted = std::env::args().any(|a| a == "--auto-restarted");
+                let state = read_state_file();
+                if let Some(ws_id) = state.current_workspace_id {
+                    let ws_clone = ws_id.clone();
                     AUTO_START_IN_PROGRESS.store(true, Ordering::Release);
                     AUTO_START_STARTED_AT_MS.store(now_ms(), Ordering::Release);
-                    let venv_dir = openakita_root_dir().join("venv").to_string_lossy().to_string();
-                    let ws_clone = ws_id.clone();
+                    let venv_dir = openakita_root_dir()
+                        .join("venv")
+                        .to_string_lossy()
+                        .to_string();
                     std::thread::spawn(move || {
-                        match openakita_service_start_impl(venv_dir.clone(), ws_clone.clone()) {
-                            Ok(status) => {
+                        let port = read_workspace_api_port(&ws_clone).unwrap_or(DEFAULT_API_PORT);
+                        let need_start = if is_auto_restarted {
+                            if let Some(pid) = read_pid_file(&ws_clone).and_then(|d| {
+                                if is_pid_running(d.pid) {
+                                    Some(d.pid)
+                                } else {
+                                    None
+                                }
+                            }) {
                                 log_to_file(&format!(
-                                    "[auto-start] success: running={}, pid={:?}",
-                                    status.running, status.pid
+                                    "[auto-start] self-heal: adopting pid={pid}"
                                 ));
+                                false
+                            } else if let Some(pid) = healthy_backend_pid(port) {
+                                log_to_file(&format!(
+                                    "[auto-start] self-heal: found healthy pid={pid}"
+                                ));
+                                let _ = write_pid_file(&ws_clone, pid, "external");
+                                false
+                            } else {
+                                log_to_file(
+                                    "[auto-start] self-heal: no backend, starting new",
+                                );
+                                true
                             }
-                            Err(e) => {
-                                log_to_file(&format!("[auto-start] FAILED: {}", e));
+                        } else {
+                            let check_result =
+                                startup_version_check(&app_version, port);
+                            !matches!(check_result, VersionCheckResult::RunningOk)
+                        };
+                        log_to_file(&format!(
+                            "[auto-start] app_version={}, ws_id={}, port={}, need_start={}",
+                            app_version, ws_clone, port, need_start
+                        ));
+                        if need_start {
+                            match openakita_service_start_impl(
+                                venv_dir.clone(),
+                                ws_clone.clone(),
+                            ) {
+                                Ok(status) => {
+                                    log_to_file(&format!(
+                                        "[auto-start] success: running={}, pid={:?}",
+                                        status.running, status.pid
+                                    ));
+                                }
+                                Err(e) => {
+                                    log_to_file(&format!(
+                                        "[auto-start] FAILED: {}",
+                                        e
+                                    ));
+                                }
+                            }
+                        } else if let Some(pid) = healthy_backend_pid(port) {
+                            let should_adopt = read_pid_file(&ws_clone)
+                                .map(|data| {
+                                    !is_pid_file_valid(&data) || data.pid != pid
+                                })
+                                .unwrap_or(true);
+                            if should_adopt {
+                                match write_pid_file(&ws_clone, pid, "external") {
+                                    Ok(()) => log_to_file(&format!(
+                                        "[auto-start] adopted healthy backend pid={} for ws={}",
+                                        pid, ws_clone
+                                    )),
+                                    Err(e) => log_to_file(&format!(
+                                        "[auto-start] failed to adopt healthy backend pid={}: {}",
+                                        pid, e
+                                    )),
+                                }
                             }
                         }
                         AUTO_START_IN_PROGRESS.store(false, Ordering::Release);
                         AUTO_START_STARTED_AT_MS.store(0, Ordering::Release);
                     });
-                } else if let Some(pid) = healthy_backend_pid(port) {
-                    let should_adopt = read_pid_file(ws_id)
-                        .map(|data| !is_pid_file_valid(&data) || data.pid != pid)
-                        .unwrap_or(true);
-                    if should_adopt {
-                        match write_pid_file(ws_id, pid, "external") {
-                            Ok(()) => log_to_file(&format!(
-                                "[auto-start] adopted healthy backend pid={} for ws={}",
-                                pid, ws_id
-                            )),
-                            Err(e) => log_to_file(&format!(
-                                "[auto-start] failed to adopt healthy backend pid={}: {}",
-                                pid, e
-                            )),
-                        }
-                    }
+                } else {
+                    log_to_file("[auto-start] skipped: no current_workspace_id in state");
                 }
-            } else {
-                log_to_file("[auto-start] skipped: no current_workspace_id in state");
             }
 
-            // PR-F1: 启动常驻 5s 心跳。后端崩溃时连续 3 次失败（≈ 15s）就尝试
-            // 自动重启 + 向前端 emit `backend:lost` / `backend:back`。
-            // 旧实现仅依赖 startup_version_check 一次性探测，进程死后用户要等
-            // 60+ 分钟才能在 autostart.log 里看到下一次探测。
+            // 启动常驻 5s 心跳。后端崩溃时连续 3 次失败就尝试自动重启。
             {
                 let app_handle = app.handle().clone();
-                let app_version_for_hb = app_version.clone();
+                let hb_version = app_version_for_hb.clone();
                 std::thread::spawn(move || {
                     let mut consecutive_failures: u32 = 0;
                     let mut last_status_was_healthy: Option<bool> = None;
@@ -4129,7 +4126,7 @@ fn main() {
                             Some(s) => s,
                             None => continue,
                         };
-                        let port = read_workspace_api_port(&ws_id).unwrap_or(18900);
+                        let port = read_workspace_api_port(&ws_id).unwrap_or(DEFAULT_API_PORT);
                         let healthy = is_backend_http_healthy(Some(port));
                         if healthy {
                             consecutive_failures = 0;
@@ -4149,18 +4146,8 @@ fn main() {
                             continue;
                         }
 
-                        // ── 启动宽限期：PID 还在 spawn 后的 BACKEND_BOOT_GRACE_SEC 秒内 ──
-                        // 后端 dual-venv hack cold start 实测需要 90~120 秒（Python
-                        // import + 122 个 skills + Memory + IM channels + uvicorn bind）。
-                        // 心跳 5s × 3 次失败 = 15s 就报 down 完全不合理：那时后端
-                        // 才刚开始加载 skills，HTTP 还没绑定端口。
-                        // 在宽限期内：
-                        //   - emit `backend:status starting=true` 让 UI 显示"正在启动"
-                        //   - 不发 backend:lost，不触发 auto-spawn
-                        //   - 不累加 consecutive_failures
                         if backend_in_boot_grace(&ws_id) {
                             let now = now_epoch_secs();
-                            // 最多每 30 秒打一条 log + emit，避免刷屏
                             if now.saturating_sub(last_starting_log_at) >= 30 {
                                 log_to_file(&format!(
                                     "[heartbeat] backend in boot-grace (port={}) — skipping down/spawn",
@@ -4195,17 +4182,21 @@ fn main() {
                             ));
                             last_status_was_healthy = Some(false);
                         }
-                        if AUTO_START_IN_PROGRESS.load(Ordering::Acquire) {
+                        // 原子 compare_exchange：同时在一次操作中检查并设置，
+                        // 避免 TOCTOU 窗口期内的重复 spawn。
+                        if AUTO_START_IN_PROGRESS
+                            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                            .is_err()
+                        {
                             continue;
                         }
-                        let check_result = startup_version_check(&app_version_for_hb, port);
+                        let check_result = startup_version_check(&hb_version, port);
                         let need_start = !matches!(check_result, VersionCheckResult::RunningOk);
                         if !need_start {
-                            // 端口又被别人占了或 health 临时抖动 — 重置计数
+                            AUTO_START_IN_PROGRESS.store(false, Ordering::Release);
                             consecutive_failures = 0;
                             continue;
                         }
-                        AUTO_START_IN_PROGRESS.store(true, Ordering::Release);
                         AUTO_START_STARTED_AT_MS.store(now_ms(), Ordering::Release);
                         let venv_dir = openakita_root_dir()
                             .join("venv")
@@ -4214,7 +4205,7 @@ fn main() {
                         let ws_clone = ws_id.clone();
                         match openakita_service_start_impl(venv_dir, ws_clone) {
                             Ok(status) => log_to_file(&format!(
-                                "[heartbeat] auto-spawn returned: running={}, pid={:?} (note: pid may be existing process if dedupe-skip)",
+                                "[heartbeat] auto-spawn returned: running={}, pid={:?}",
                                 status.running, status.pid
                             )),
                             Err(e) => log_to_file(&format!("[heartbeat] auto-spawn FAILED: {}", e)),
@@ -4455,22 +4446,20 @@ fn openakita_service_status(workspace_id: String) -> Result<ServiceStatus, Strin
     let pid_file = service_pid_file(&workspace_id);
     let pf = pid_file.to_string_lossy().to_string();
 
-    // ── 1. 优先用 MANAGED_CHILD（精确 try_wait）──
+    // ── 1. 优先用 MANAGED_CHILDREN（精确 try_wait）──
     {
-        let mut guard = MANAGED_CHILD.lock().unwrap();
-        if let Some(ref mut mp) = *guard {
-            if mp.workspace_id == workspace_id {
-                match mp.child.try_wait() {
-                    Ok(None) => {
-                        return Ok(build_service_status(&workspace_id, true, Some(mp.pid), pf));
-                    }
-                    _ => {
-                        // 进程已退出，清理 handle、PID 文件和心跳文件
-                        *guard = None;
-                        let _ = fs::remove_file(&pid_file);
-                        remove_heartbeat_file(&workspace_id);
-                        return Ok(build_service_status(&workspace_id, false, None, pf));
-                    }
+        let mut guard = MANAGED_CHILDREN.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(mp) = guard.get_mut(&workspace_id) {
+            match mp.child.try_wait() {
+                Ok(None) => {
+                    return Ok(build_service_status(&workspace_id, true, Some(mp.pid), pf));
+                }
+                _ => {
+                    // 进程已退出，清理 handle、PID 文件和心跳文件
+                    guard.remove(&workspace_id);
+                    let _ = fs::remove_file(&pid_file);
+                    remove_heartbeat_file(&workspace_id);
+                    return Ok(build_service_status(&workspace_id, false, None, pf));
                 }
             }
         }
@@ -4501,20 +4490,18 @@ fn openakita_service_status(workspace_id: String) -> Result<ServiceStatus, Strin
 /// 如果心跳超过 60 秒没更新且 HTTP 不可达，自动清理进程和 PID 文件。
 #[tauri::command]
 fn openakita_check_pid_alive(workspace_id: String) -> Result<bool, String> {
-    // 优先 MANAGED_CHILD（由 Tauri 直接管理的子进程，不需要额外校验身份）
+    // 优先 MANAGED_CHILDREN（由 Tauri 直接管理的子进程，不需要额外校验身份）
     {
-        let mut guard = MANAGED_CHILD.lock().unwrap();
-        if let Some(ref mut mp) = *guard {
-            if mp.workspace_id == workspace_id {
-                let alive = mp.child.try_wait().ok().flatten().is_none();
-                if !alive {
-                    // 进程已退出，清理
-                    *guard = None;
-                    let _ = fs::remove_file(service_pid_file(&workspace_id));
-                    remove_heartbeat_file(&workspace_id);
-                }
-                return Ok(alive);
+        let mut guard = MANAGED_CHILDREN.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(mp) = guard.get_mut(&workspace_id) {
+            let alive = mp.child.try_wait().ok().flatten().is_none();
+            if !alive {
+                // 进程已退出，清理
+                guard.remove(&workspace_id);
+                let _ = fs::remove_file(service_pid_file(&workspace_id));
+                remove_heartbeat_file(&workspace_id);
             }
+            return Ok(alive);
         }
     }
     // 回退到 PID 文件：检查 PID 存活 + 验证进程身份
@@ -4807,7 +4794,7 @@ fn openakita_service_start_impl(
     // 短暂失效窗，需要在更外层加一层时间窗去重。命中时直接返回当前已知
     // ServiceStatus（让前端继续轮询 health 即可），不抛错避免触发 toast。
     {
-        let mut last_map = SERVICE_START_LAST_AT.lock().unwrap();
+        let mut last_map = SERVICE_START_LAST_AT.lock().unwrap_or_else(|e| e.into_inner());
         let now = now_ms();
         if let Some(&last) = last_map.get(&workspace_id) {
             let elapsed = now.saturating_sub(last);
@@ -4836,31 +4823,40 @@ fn openakita_service_start_impl(
     let pid_file = service_pid_file(&workspace_id);
     let pf = pid_file.to_string_lossy().to_string();
 
+    // ── 2. 获取启动锁（防止竞态双启动）──
+    // 锁必须在所有"检查已运行/清理心跳"之前获取，避免 TOCTOU 竞态。
+    if !try_acquire_start_lock(&workspace_id) {
+        return Err("另一个启动操作正在进行中，请稍候".to_string());
+    }
+    struct LockGuard(String);
+    impl Drop for LockGuard {
+        fn drop(&mut self) {
+            release_start_lock(&self.0);
+        }
+    }
+    let _lock_guard = LockGuard(workspace_id.clone());
+
     // ── 0. 启动前清理旧的心跳文件（避免新进程读到旧心跳） ──
     remove_heartbeat_file(&workspace_id);
 
-    // ── 1. 检查是否已在运行（通过 MANAGED_CHILD 或 PID 文件）──
+    // ── 1. 检查是否已在运行（通过 MANAGED_CHILDREN 或 PID 文件）──
+    // 在锁内重新检查，防止并发调用的时间窗口内另一个线程已经 spawn 成功。
     {
-        let mut guard = MANAGED_CHILD.lock().unwrap();
-        if let Some(ref mut mp) = *guard {
-            if mp.workspace_id == workspace_id {
-                match mp.child.try_wait() {
-                    Ok(None) => {
-                        return Ok(build_service_status(&workspace_id, true, Some(mp.pid), pf));
-                    }
-                    _ => {
-                        *guard = None;
-                    }
+        let mut guard = MANAGED_CHILDREN.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(mp) = guard.get_mut(&workspace_id) {
+            match mp.child.try_wait() {
+                Ok(None) => {
+                    return Ok(build_service_status(&workspace_id, true, Some(mp.pid), pf));
+                }
+                _ => {
+                    guard.remove(&workspace_id);
                 }
             }
         }
     }
     if let Some(data) = read_pid_file(&workspace_id) {
         if is_pid_file_valid(&data) {
-            // 进程已在运行，但检查心跳是否严重过期（可能卡死）
             if let Some(true) = is_heartbeat_stale(&workspace_id, 60) {
-                // 心跳严重过期时先复核 HTTP health；如果 API 仍正常，
-                // 继续复用现有进程，不启动第二个后端。
                 let port = read_workspace_api_port(&workspace_id);
                 if should_cleanup_stale_heartbeat(Some(true), is_backend_http_healthy(port)) {
                     let _ = graceful_stop_pid(data.pid, port);
@@ -4888,25 +4884,13 @@ fn openakita_service_start_impl(
         }
     }
 
-    // ── 2. 获取启动锁（防止竞态双启动）──
-    if !try_acquire_start_lock(&workspace_id) {
-        return Err("另一个启动操作正在进行中，请稍候".to_string());
-    }
-    struct LockGuard(String);
-    impl Drop for LockGuard {
-        fn drop(&mut self) {
-            release_start_lock(&self.0);
-        }
-    }
-    let _lock_guard = LockGuard(workspace_id.clone());
-
     let ws_dir = workspace_dir(&workspace_id);
     ensure_workspace_scaffold(&ws_dir)?;
 
     // ── 2.5 端口可用性预检 ──
     // 在 spawn 之前检查端口是否被占用（旧进程残留、TIME_WAIT、其他程序等）。
     // Python 端也有重试，但尽早发现可以给用户更明确的提示。
-    let effective_port = read_workspace_api_port(&workspace_id).unwrap_or(18900);
+    let effective_port = read_workspace_api_port(&workspace_id).unwrap_or(DEFAULT_API_PORT);
     if !check_port_available(effective_port) {
         // 端口被占用，等待最多 10 秒（处理 TIME_WAIT 等场景）
         if !wait_for_port_free(effective_port, 10_000) {
@@ -5033,20 +5017,20 @@ fn openakita_service_start_impl(
         pid,
         spawn_started.elapsed().as_millis()
     ));
-    let started_at = now_epoch_secs();
 
     // ── 3. 写 JSON PID 文件 ──
     write_pid_file(&workspace_id, pid, "tauri")?;
 
-    // ── 4. 存入 MANAGED_CHILD ──
+    // ── 4. 存入 MANAGED_CHILDREN ──
     {
-        let mut guard = MANAGED_CHILD.lock().unwrap();
-        *guard = Some(ManagedProcess {
-            child,
-            workspace_id: workspace_id.clone(),
-            pid,
-            started_at,
-        });
+        let mut guard = MANAGED_CHILDREN.lock().unwrap_or_else(|e| e.into_inner());
+        guard.insert(
+            workspace_id.clone(),
+            ManagedProcess {
+                child,
+                pid,
+            },
+        );
     }
 
     // Confirm the process is still alive after spawning.
@@ -5065,12 +5049,8 @@ fn openakita_service_start_impl(
     }
     if !alive {
         {
-            let mut guard = MANAGED_CHILD.lock().unwrap();
-            if let Some(ref mp) = *guard {
-                if mp.pid == pid {
-                    *guard = None;
-                }
-            }
+            let mut guard = MANAGED_CHILDREN.lock().unwrap_or_else(|e| e.into_inner());
+            guard.retain(|_, mp| mp.pid != pid);
         }
         let _ = fs::remove_file(&pid_file);
         let tail = fs::read_to_string(&log_path)
@@ -5101,31 +5081,27 @@ fn openakita_service_start_impl(
 fn openakita_service_stop(workspace_id: String) -> Result<ServiceStatus, String> {
     let pid_file = service_pid_file(&workspace_id);
     let port = read_workspace_api_port(&workspace_id);
-    let effective_port = port.unwrap_or(18900);
+    let effective_port = port.unwrap_or(DEFAULT_API_PORT);
 
-    // ── 1. MANAGED_CHILD handle ──
+    // ── 1. MANAGED_CHILDREN handle ──
     {
-        let mut guard = MANAGED_CHILD.lock().unwrap();
-        if let Some(mut mp) = guard.take() {
-            if mp.workspace_id == workspace_id {
-                let _ = graceful_stop_pid(mp.pid, port);
-                if is_pid_running(mp.pid) {
-                    let _ = mp.child.kill();
-                    let _ = mp.child.wait();
-                }
-                let _ = fs::remove_file(&pid_file);
-                // 等待端口释放（最多 10 秒），确保后续重启不会遇到端口冲突
-                let _ = wait_for_port_free(effective_port, 10_000);
-                remove_heartbeat_file(&workspace_id);
-                return Ok(build_service_status(
-                    &workspace_id,
-                    false,
-                    None,
-                    pid_file.to_string_lossy().to_string(),
-                ));
-            } else {
-                *guard = Some(mp);
+        let mut guard = MANAGED_CHILDREN.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(mut mp) = guard.remove(&workspace_id) {
+            let _ = graceful_stop_pid(mp.pid, port);
+            if is_pid_running(mp.pid) {
+                let _ = mp.child.kill();
+                let _ = mp.child.wait();
             }
+            let _ = fs::remove_file(&pid_file);
+            // 等待端口释放（最多 10 秒），确保后续重启不会遇到端口冲突
+            let _ = wait_for_port_free(effective_port, 10_000);
+            remove_heartbeat_file(&workspace_id);
+            return Ok(build_service_status(
+                &workspace_id,
+                false,
+                None,
+                pid_file.to_string_lossy().to_string(),
+            ));
         }
     }
 
@@ -5264,7 +5240,7 @@ fn is_backend_auto_starting() -> bool {
     let state = read_state_file();
     if let Some(ws_id) = state.current_workspace_id {
         if backend_in_boot_grace(&ws_id) {
-            let port = read_workspace_api_port(&ws_id).unwrap_or(18900);
+            let port = read_workspace_api_port(&ws_id).unwrap_or(DEFAULT_API_PORT);
             if !is_backend_http_healthy(Some(port)) {
                 return true;
             }
@@ -5446,17 +5422,17 @@ fn setup_tray(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             "quit" => {
                 // ── 退出前根据所有权标记决定是否停止后端 ──
 
-                // 1. 先停 MANAGED_CHILD（Tauri 自己启动的进程）
+                // 1. 先停 MANAGED_CHILDREN（Tauri 自己启动的进程）
                 {
-                    let mut guard = MANAGED_CHILD.lock().unwrap();
-                    if let Some(mut mp) = guard.take() {
-                        let port = read_workspace_api_port(&mp.workspace_id);
+                    let mut guard = MANAGED_CHILDREN.lock().unwrap_or_else(|e| e.into_inner());
+                    for (ws_id, mut mp) in guard.drain() {
+                        let port = read_workspace_api_port(&ws_id);
                         let _ = graceful_stop_pid(mp.pid, port);
                         if is_pid_running(mp.pid) {
                             let _ = mp.child.kill();
                             let _ = mp.child.wait();
                         }
-                        let _ = fs::remove_file(service_pid_file(&mp.workspace_id));
+                        let _ = fs::remove_file(service_pid_file(&ws_id));
                     }
                 }
 
@@ -5522,7 +5498,7 @@ fn setup_tray(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             "open_web" => {
                 let state = read_state_file();
                 let ws_id = state.current_workspace_id.unwrap_or_else(|| "default".into());
-                let port = read_workspace_api_port(&ws_id).unwrap_or(18900);
+                let port = read_workspace_api_port(&ws_id).unwrap_or(DEFAULT_API_PORT);
                 let url = format!("http://127.0.0.1:{}/web", port);
                 #[cfg(target_os = "windows")]
                 { let _ = std::process::Command::new("cmd").args(["/c", "start", &url]).spawn(); }
@@ -6017,14 +5993,7 @@ mod walkdir_entry {
 }
 
 fn chrono_like_timestamp() -> String {
-    use std::time::SystemTime;
-    let now = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default();
-    // Convert to a simple YYYYMMDD_HHMMSS using rough calculation
-    let secs = now.as_secs();
-    // Use a simple approach: format via the system's time
-    let dt = time_from_epoch(secs);
+    let dt = time_from_epoch(now_epoch_secs());
     format!(
         "{:04}{:02}{:02}_{:02}{:02}{:02}",
         dt.0, dt.1, dt.2, dt.3, dt.4, dt.5
@@ -6210,19 +6179,11 @@ struct PythonEnvironmentSnapshot {
 }
 
 fn python_diag_trace_id() -> String {
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    format!("pydiag-{now_ms}")
+    format!("pydiag-{}", now_ms())
 }
 
 fn python_diag_generated_at() -> String {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-        .to_string()
+    now_epoch_secs().to_string()
 }
 
 /// Run a full diagnostic.
@@ -6245,7 +6206,7 @@ fn diagnose_python_env(venv_dir: String) -> PythonDiagnostic {
     let port = ws_id
         .as_deref()
         .and_then(read_workspace_api_port)
-        .unwrap_or(18900);
+        .unwrap_or(DEFAULT_API_PORT);
 
     // --- Strategy 0: check heartbeat to understand backend lifecycle ---
     let heartbeat = ws_id.as_deref().and_then(read_heartbeat_file);
@@ -7557,7 +7518,8 @@ async fn backend_fetch(
 
     let mut builder = reqwest::Client::builder()
         .no_proxy()
-        .connect_timeout(std::time::Duration::from_secs(10));
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .read_timeout(std::time::Duration::from_secs(60));
     if let Some(t) = timeout_secs {
         builder = builder.timeout(std::time::Duration::from_secs(t));
     }
@@ -7679,31 +7641,9 @@ fn sanitize_download_filename(candidate: &str) -> String {
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or(name);
-    let reserved = matches!(
-        stem.to_ascii_uppercase().as_str(),
-        "CON"
-            | "PRN"
-            | "AUX"
-            | "NUL"
-            | "COM1"
-            | "COM2"
-            | "COM3"
-            | "COM4"
-            | "COM5"
-            | "COM6"
-            | "COM7"
-            | "COM8"
-            | "COM9"
-            | "LPT1"
-            | "LPT2"
-            | "LPT3"
-            | "LPT4"
-            | "LPT5"
-            | "LPT6"
-            | "LPT7"
-            | "LPT8"
-            | "LPT9"
-    );
+    let reserved = WINDOWS_RESERVED_NAMES
+        .iter()
+        .any(|r| stem.eq_ignore_ascii_case(r));
     if reserved {
         format!("_{name}")
     } else {
@@ -7891,6 +7831,88 @@ fn export_env_backup(workspace_id: String, dest_path: Option<String>) -> Result<
     Ok(dest.to_string_lossy().to_string())
 }
 
+// ── 通用 ZIP 打包辅助函数 ──
+
+fn zip_collect_files(dir: &Path) -> Vec<PathBuf> {
+    let mut result = Vec::new();
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                result.extend(zip_collect_files(&path));
+            } else {
+                result.push(path);
+            }
+        }
+    }
+    result
+}
+
+fn zip_add_dir(
+    zw: &mut zip::ZipWriter<fs::File>,
+    dir: &Path,
+    prefix: &str,
+    opts: zip::write::SimpleFileOptions,
+) {
+    if !dir.exists() {
+        return;
+    }
+    for fp in zip_collect_files(dir) {
+        if let Ok(rel) = fp.strip_prefix(dir) {
+            let name = format!("{}/{}", prefix, rel.to_string_lossy().replace('\\', "/"));
+            if zw.start_file(&name, opts).is_ok() {
+                let _ = zw.write_all(&fs::read(&fp).unwrap_or_default());
+            }
+        }
+    }
+}
+
+fn zip_add_dir_capped(
+    zw: &mut zip::ZipWriter<fs::File>,
+    dir: &Path,
+    prefix: &str,
+    opts: zip::write::SimpleFileOptions,
+    max_bytes: u64,
+) {
+    if !dir.exists() {
+        return;
+    }
+    let mut files = zip_collect_files(dir);
+    files.sort_by(|a, b| {
+        let ma = fs::metadata(a).and_then(|m| m.modified()).ok();
+        let mb = fs::metadata(b).and_then(|m| m.modified()).ok();
+        mb.cmp(&ma)
+    });
+    let mut total: u64 = 0;
+    for fp in files {
+        let sz = fs::metadata(&fp).map(|m| m.len()).unwrap_or(0);
+        if total + sz > max_bytes {
+            continue;
+        }
+        if let Ok(rel) = fp.strip_prefix(dir) {
+            let name = format!("{}/{}", prefix, rel.to_string_lossy().replace('\\', "/"));
+            if zw.start_file(&name, opts).is_ok() {
+                let _ = zw.write_all(&fs::read(&fp).unwrap_or_default());
+                total += sz;
+            }
+        }
+    }
+}
+
+fn zip_add_file(
+    zw: &mut zip::ZipWriter<fs::File>,
+    path: &Path,
+    zip_name: &str,
+    opts: zip::write::SimpleFileOptions,
+) {
+    if !path.exists() || !path.is_file() {
+        return;
+    }
+    if zw.start_file(zip_name, opts).is_ok() {
+        let _ = zw.write_all(&fs::read(path).unwrap_or_default());
+    }
+}
+
 /// Export diagnostic bundle (logs, llm_debug, system info) as a zip.
 /// If `dest_path` is given (from a save dialog), write there; otherwise fall back to Downloads.
 #[tauri::command]
@@ -7927,233 +7949,130 @@ fn export_diagnostic_bundle(
     let options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
 
-    fn collect_files(dir: &Path) -> Vec<PathBuf> {
-        let mut result = Vec::new();
-        if let Ok(entries) = fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    result.extend(collect_files(&path));
-                } else {
-                    result.push(path);
-                }
-            }
-        }
-        result
-    }
-
-    fn add_dir_to_zip(
-        zip_writer: &mut zip::ZipWriter<fs::File>,
-        dir: &Path,
-        prefix: &str,
-        options: zip::write::SimpleFileOptions,
-    ) -> Result<(), String> {
-        if !dir.exists() {
-            return Ok(());
-        }
-        for file_path in collect_files(dir) {
-            if let Ok(rel) = file_path.strip_prefix(dir) {
-                let name = format!("{}/{}", prefix, rel.to_string_lossy().replace('\\', "/"));
-                zip_writer
-                    .start_file(&name, options)
-                    .map_err(|e| format!("zip start error: {e}"))?;
-                let data = fs::read(&file_path).unwrap_or_default();
-                zip_writer
-                    .write_all(&data)
-                    .map_err(|e| format!("zip write error: {e}"))?;
-            }
-        }
-        Ok(())
-    }
-
-    fn add_dir_to_zip_capped(
-        zip_writer: &mut zip::ZipWriter<fs::File>,
-        dir: &Path,
-        prefix: &str,
-        options: zip::write::SimpleFileOptions,
-        max_bytes: u64,
-    ) -> Result<(), String> {
-        if !dir.exists() {
-            return Ok(());
-        }
-        let mut files = collect_files(dir);
-        files.sort_by(|a, b| {
-            let ma = fs::metadata(a).and_then(|m| m.modified()).ok();
-            let mb = fs::metadata(b).and_then(|m| m.modified()).ok();
-            mb.cmp(&ma)
-        });
-        let mut total: u64 = 0;
-        for file_path in files {
-            let sz = fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0);
-            if total + sz > max_bytes {
-                continue;
-            }
-            if let Ok(rel) = file_path.strip_prefix(dir) {
-                let name = format!("{}/{}", prefix, rel.to_string_lossy().replace('\\', "/"));
-                zip_writer
-                    .start_file(&name, options)
-                    .map_err(|e| format!("zip start error: {e}"))?;
-                let data = fs::read(&file_path).unwrap_or_default();
-                zip_writer
-                    .write_all(&data)
-                    .map_err(|e| format!("zip write error: {e}"))?;
-                total += sz;
-            }
-        }
-        Ok(())
-    }
-
-    fn add_file_to_zip(
-        zip_writer: &mut zip::ZipWriter<fs::File>,
-        path: &Path,
-        zip_name: &str,
-        options: zip::write::SimpleFileOptions,
-    ) -> Result<(), String> {
-        if !path.exists() || !path.is_file() {
-            return Ok(());
-        }
-        zip_writer
-            .start_file(zip_name, options)
-            .map_err(|e| format!("zip start error: {e}"))?;
-        let data = fs::read(path).unwrap_or_default();
-        zip_writer
-            .write_all(&data)
-            .map_err(|e| format!("zip write error: {e}"))?;
-        Ok(())
-    }
-
     // -- Logs (workspace) --
-    add_dir_to_zip(&mut zip_writer, &logs_dir, "logs", options)?;
-
+    zip_add_dir(&mut zip_writer, &logs_dir, "logs", options);
     // -- LLM debug data --
-    add_dir_to_zip_capped(
-        &mut zip_writer,
-        &llm_debug_dir,
-        "llm_debug",
-        options,
-        10 * 1024 * 1024,
-    )?;
-
-    // -- Debug data directories (capped per-dir) --
+    zip_add_dir_capped(&mut zip_writer, &llm_debug_dir, "llm_debug", options, 10 * 1024 * 1024);
+    // -- Debug data directories --
     let data_dir = ws_dir.join("data");
-    add_dir_to_zip_capped(
+    zip_add_dir_capped(
         &mut zip_writer,
         &data_dir.join("delegation_logs"),
         "delegation_logs",
         options,
         2 * 1024 * 1024,
-    )?;
-    add_dir_to_zip_capped(
+    );
+    zip_add_dir_capped(
         &mut zip_writer,
         &data_dir.join("react_traces"),
         "react_traces",
         options,
         5 * 1024 * 1024,
-    )?;
-    add_dir_to_zip_capped(
+    );
+    zip_add_dir_capped(
         &mut zip_writer,
         &data_dir.join("traces"),
         "traces",
         options,
         2 * 1024 * 1024,
-    )?;
-    add_dir_to_zip_capped(
+    );
+    zip_add_dir_capped(
         &mut zip_writer,
         &data_dir.join("orgs"),
         "orgs",
         options,
         2 * 1024 * 1024,
-    )?;
-    add_dir_to_zip_capped(
+    );
+    zip_add_dir_capped(
         &mut zip_writer,
         &data_dir.join("tool_overflow"),
         "tool_overflow",
         options,
         2 * 1024 * 1024,
-    )?;
-    add_dir_to_zip_capped(
+    );
+    zip_add_dir_capped(
         &mut zip_writer,
         &data_dir.join("failure_analysis"),
         "failure_analysis",
         options,
         1 * 1024 * 1024,
-    )?;
-    add_dir_to_zip_capped(
+    );
+    zip_add_dir_capped(
         &mut zip_writer,
         &data_dir.join("retrospects"),
         "retrospects",
         options,
         1 * 1024 * 1024,
-    )?;
+    );
 
     // -- Small state files --
-    add_file_to_zip(
+    zip_add_file(
         &mut zip_writer,
         &data_dir.join("runtime_state.json"),
         "state/runtime_state.json",
         options,
-    )?;
-    add_file_to_zip(
+    );
+    zip_add_file(
         &mut zip_writer,
         &data_dir.join("sub_agent_states.json"),
         "state/sub_agent_states.json",
         options,
-    )?;
-    add_file_to_zip(
+    );
+    zip_add_file(
         &mut zip_writer,
         &data_dir.join("backend.heartbeat"),
         "state/backend.heartbeat",
         options,
-    )?;
-    add_file_to_zip(
+    );
+    zip_add_file(
         &mut zip_writer,
         &data_dir.join("sessions").join("sessions.json"),
         "state/sessions.json",
         options,
-    )?;
-    add_file_to_zip(
+    );
+    zip_add_file(
         &mut zip_writer,
         &data_dir.join("sessions").join("channel_registry.json"),
         "state/channel_registry.json",
         options,
-    )?;
-    add_file_to_zip(
+    );
+    zip_add_file(
         &mut zip_writer,
         &data_dir.join("scheduler").join("tasks.json"),
         "state/scheduler_tasks.json",
         options,
-    )?;
-    add_file_to_zip(
+    );
+    zip_add_file(
         &mut zip_writer,
         &data_dir.join("scheduler").join("executions.json"),
         "state/scheduler_executions.json",
         options,
-    )?;
+    );
 
     // -- Global logs (frontend.log, crash.log, onboarding) --
     let global_logs = setup_logs_dir();
-    add_file_to_zip(
+    zip_add_file(
         &mut zip_writer,
         &global_logs.join("frontend.log"),
         "global_logs/frontend.log",
         options,
-    )?;
-    add_file_to_zip(
+    );
+    zip_add_file(
         &mut zip_writer,
         &global_logs.join("crash.log"),
         "global_logs/crash.log",
         options,
-    )?;
+    );
     for entry in fs::read_dir(&global_logs).into_iter().flatten().flatten() {
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
         if name_str.starts_with("onboarding-") && name_str.ends_with(".log") {
-            add_file_to_zip(
+            zip_add_file(
                 &mut zip_writer,
                 &entry.path(),
-                &format!("global_logs/{}", name_str),
+                &format!("global_logs/{name_str}"),
                 options,
-            )?;
+            );
         }
     }
 
@@ -8301,83 +8220,7 @@ fn build_feedback_zip(
         }
     }
 
-    // --- Reuse diagnostic collection logic (same as export_diagnostic_bundle) ---
-    fn collect_files_recursive(dir: &Path) -> Vec<PathBuf> {
-        let mut result = Vec::new();
-        if let Ok(entries) = fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let p = entry.path();
-                if p.is_dir() {
-                    result.extend(collect_files_recursive(&p));
-                } else {
-                    result.push(p);
-                }
-            }
-        }
-        result
-    }
-    fn zip_add_dir(
-        zw: &mut zip::ZipWriter<fs::File>,
-        dir: &Path,
-        prefix: &str,
-        opts: zip::write::SimpleFileOptions,
-    ) {
-        if !dir.exists() {
-            return;
-        }
-        for fp in collect_files_recursive(dir) {
-            if let Ok(rel) = fp.strip_prefix(dir) {
-                let name = format!("{}/{}", prefix, rel.to_string_lossy().replace('\\', "/"));
-                if zw.start_file(&name, opts).is_ok() {
-                    let _ = zw.write_all(&fs::read(&fp).unwrap_or_default());
-                }
-            }
-        }
-    }
-    fn zip_add_dir_capped(
-        zw: &mut zip::ZipWriter<fs::File>,
-        dir: &Path,
-        prefix: &str,
-        opts: zip::write::SimpleFileOptions,
-        max_bytes: u64,
-    ) {
-        if !dir.exists() {
-            return;
-        }
-        let mut files = collect_files_recursive(dir);
-        files.sort_by(|a, b| {
-            let ma = fs::metadata(a).and_then(|m| m.modified()).ok();
-            let mb = fs::metadata(b).and_then(|m| m.modified()).ok();
-            mb.cmp(&ma)
-        });
-        let mut total: u64 = 0;
-        for fp in files {
-            let sz = fs::metadata(&fp).map(|m| m.len()).unwrap_or(0);
-            if total + sz > max_bytes {
-                continue;
-            }
-            if let Ok(rel) = fp.strip_prefix(dir) {
-                let name = format!("{}/{}", prefix, rel.to_string_lossy().replace('\\', "/"));
-                if zw.start_file(&name, opts).is_ok() {
-                    let _ = zw.write_all(&fs::read(&fp).unwrap_or_default());
-                    total += sz;
-                }
-            }
-        }
-    }
-    fn zip_add_file(
-        zw: &mut zip::ZipWriter<fs::File>,
-        path: &Path,
-        zip_name: &str,
-        opts: zip::write::SimpleFileOptions,
-    ) {
-        if !path.exists() || !path.is_file() {
-            return;
-        }
-        if zw.start_file(zip_name, opts).is_ok() {
-            let _ = zw.write_all(&fs::read(path).unwrap_or_default());
-        }
-    }
+    // --- Reuse shared zip helpers (zip_add_dir / zip_add_dir_capped / zip_add_file) ---
 
     let logs_dir = ws_dir.join("logs");
     let data_dir = ws_dir.join("data");

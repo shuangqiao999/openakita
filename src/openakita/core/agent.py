@@ -4643,6 +4643,7 @@ class Agent:
         # Check if user has pending confirmation actions in SQLite.
         # If message resolves a pending action (confirm/cancel), set
         # awaiting_confirmation flag so existing step 6.5 handles it.
+        session_type = "cli"  # default, overwritten at session_type detection step
         if session and len(session_messages) <= 10:
             _resolved = await self._resolve_pending_confirmation(session, message)
             if isinstance(_resolved, str):
