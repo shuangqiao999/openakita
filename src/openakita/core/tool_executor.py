@@ -85,6 +85,92 @@ def get_tool_usage_stats() -> dict[str, int]:
     return dict(_tool_usage_stats)
 
 
+# P2-2 cache read-only tools by (tool_name, frozen_args_hash)
+_READ_TOOLS_FOR_CACHE: frozenset[str] = frozenset({
+    "read_file", "list_files", "search_files", "web_fetch",
+    "get_time", "get_workspace_map", "read_resource", "list_resources",
+})
+
+
+def _make_tool_cache_key(tool_name: str, tool_input: dict) -> tuple[str, int] | None:
+    if tool_name not in _READ_TOOLS_FOR_CACHE:
+        return None
+    try:
+        args_hash = hash(json.dumps(tool_input, sort_keys=True, default=str))
+    except (TypeError, ValueError):
+        return None
+    return (tool_name, args_hash)
+
+
+class ToolSkipped(Exception):
+    """用户主动跳过当前工具执行（非错误，仅中断单步）"""
+
+    def __init__(self, reason: str = "用户请求跳过"):
+        self.reason = reason
+        super().__init__(reason)
+
+
+# ========== 通用截断守卫常量 ==========
+DEFAULT_TOOL_RESULT_MAX_CHARS = 32000
+MAX_TOOL_RESULT_CHARS = DEFAULT_TOOL_RESULT_MAX_CHARS  # backward-compatible export
+OVERFLOW_MARKER = "[OUTPUT_TRUNCATED]"  # 截断标记，已含此标记的不二次截断
+_OVERFLOW_DIR = Path("data/tool_overflow")
+_OVERFLOW_MAX_FILES = 200  # fallback; runtime value comes from settings
+
+
+def _get_tool_result_max_chars() -> int:
+    try:
+        return max(1000, int(getattr(settings, "tool_result_max_chars",
+                                      DEFAULT_TOOL_RESULT_MAX_CHARS)))
+    except (TypeError, ValueError):
+        return DEFAULT_TOOL_RESULT_MAX_CHARS
+
+
+def _get_tool_overflow_max_files() -> int:
+    try:
+        return max(10, int(getattr(settings, "tool_overflow_max_files",
+                                    _OVERFLOW_MAX_FILES)))
+    except (TypeError, ValueError):
+        return _OVERFLOW_MAX_FILES
+
+
+def _get_read_file_default_limit() -> int:
+    try:
+        return max(1, int(getattr(settings, "read_file_default_limit", 2000)))
+    except (TypeError, ValueError):
+        return 2000
+
+
+def save_overflow(tool_name: str, content: str) -> str:
+    """将大输出保存到溢出文件，返回文件路径。
+    tool_executor 和各 handler 共用。
+    """
+    try:
+        _OVERFLOW_DIR.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        filename = f"{tool_name}_{ts}.txt"
+        filepath = _OVERFLOW_DIR / filename
+        filepath.write_text(content, encoding="utf-8")
+        max_files = _get_tool_overflow_max_files()
+        _cleanup_overflow_files(_OVERFLOW_DIR, max_files)
+        logger.info(f"[Overflow] Saved {len(content)} chars to {filepath}")
+        return str(filepath)
+    except Exception as e:
+        logger.warning(f"[Overflow] Failed to save: {e}")
+        return ""
+
+
+def _cleanup_overflow_files(directory: Path, max_files: int) -> None:
+    """清理溢出目录，保留最近的 max_files 个文件。"""
+    try:
+        files = sorted(directory.glob("*.txt"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for f in files[max_files:]:
+            try:
+                f.unlink()
+            except OSError:
+                pass
+    except Exception:
+        pass
 
 
 class ToolExecutor:
