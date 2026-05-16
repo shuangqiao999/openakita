@@ -39,8 +39,10 @@ from ..memory import MemoryManager
 from ..memory.json_utils import coerce_text
 
 # Prompt 编译管线 (v2)
-# 技能系统 (SKILL.md 规范)
-from ..skills import SkillCatalog, SkillLoader, SkillRegistry
+# 技能系统 (SKILL.md 规范) — 惰性导入避免循环依赖 (agent → skills → capabilities → core)
+# 实际导入见 Agent.__init__ 内
+if TYPE_CHECKING:
+    from ..skills import SkillCatalog, SkillLoader, SkillRegistry
 
 # 系统工具目录（渐进式披露）
 from ..tools.catalog import ToolCatalog
@@ -77,7 +79,6 @@ from ..tools.handlers.profile import create_handler as create_profile_handler
 from ..tools.handlers.scheduled import create_handler as create_scheduled_handler
 from ..tools.handlers.search import create_handler as create_search_handler
 from ..tools.handlers.skill_store import create_handler as create_skill_store_handler
-from ..tools.handlers.skills import create_handler as create_skills_handler
 from ..tools.handlers.sleep import create_handler as create_sleep_handler
 from ..tools.handlers.sticker import create_handler as create_sticker_handler
 from ..tools.handlers.structured_output import create_handler as create_structured_output_handler
@@ -1107,6 +1108,7 @@ class Agent:
         self.web_tool = WebTool()
 
         # 初始化技能系统 (SKILL.md 规范)
+        from ..skills import SkillCatalog, SkillLoader, SkillRegistry
         from ..skills.categories import CategoryRegistry
 
         self.skill_registry = SkillRegistry()
@@ -2155,7 +2157,8 @@ class Agent:
         # IM 渠道
         self.handler_registry.register("im_channel", create_im_channel_handler(self))
 
-        # 技能管理
+        # 技能管理 (惰性导入，避免 agent → skills → core 循环)
+        from ..tools.handlers.skills import create_handler as create_skills_handler
         self.handler_registry.register("skills", create_skills_handler(self))
 
         # Web 搜索

@@ -10,16 +10,14 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional
 
-from ..core.capabilities import (
-    CapabilityDescriptor,
-    CapabilityKind,
-    CapabilityOrigin,
-    CapabilityVisibility,
-    build_capability_id,
-    build_namespace,
-)
-
 if TYPE_CHECKING:
+    from ..core.capabilities import (
+        CapabilityDescriptor,
+        CapabilityKind,
+        CapabilityOrigin,
+        CapabilityVisibility,
+    )
+
     from pathlib import Path
 
     from .parser import ParsedSkill
@@ -65,7 +63,8 @@ def _infer_origin(
     skill: "ParsedSkill",
     source_url: str | None,
     plugin_source: str | None,
-) -> CapabilityOrigin:
+) -> "CapabilityOrigin":
+    from ..core.capabilities import CapabilityOrigin
     if plugin_source:
         return CapabilityOrigin.PLUGIN
     if getattr(skill.metadata, "system", False):
@@ -128,10 +127,10 @@ class SkillEntry:
     # 插件来源标识（如 "plugin:translate-skill"），非插件技能为 None
     plugin_source: str | None = None
 
-    # 统一 capability 元数据
-    origin: str = CapabilityOrigin.PROJECT.value
-    namespace: str = CapabilityOrigin.PROJECT.value
-    visibility: str = CapabilityVisibility.PUBLIC.value
+    # 统一 capability 元数据 (值来自 CapabilityOrigin/CapabilityVisibility 常量)
+    origin: str = "project"  # CapabilityOrigin.PROJECT.value
+    namespace: str = "project"  # CapabilityOrigin.PROJECT.value
+    visibility: str = "public"  # CapabilityVisibility.PUBLIC.value
     permission_profile: str = ""
     capability_id: str = ""
 
@@ -238,6 +237,12 @@ class SkillEntry:
         trust_level = _infer_trust_level(skill, source_url)
         origin = _infer_origin(skill, source_url, plugin_source)
         effective_skill_id = skill_id or meta.name
+        from ..core.capabilities import (  # 惰性导入，避免 agent → skills → core 循环
+            CapabilityKind,
+            CapabilityVisibility,
+            build_capability_id,
+            build_namespace,
+        )
         namespace = build_namespace(origin, plugin_id=plugin_source or "")
         permission_profile = (
             "trusted" if trust_level in ("builtin", "local", "marketplace") else "restricted"
@@ -307,7 +312,14 @@ class SkillEntry:
             return self._parsed_skill.body
         return None
 
-    def to_capability_descriptor(self) -> CapabilityDescriptor:
+    def to_capability_descriptor(self) -> "CapabilityDescriptor":
+        from ..core.capabilities import (  # 惰性导入，避免循环
+            CapabilityDescriptor,
+            CapabilityKind,
+            CapabilityOrigin,
+            CapabilityVisibility,
+            build_capability_id,
+        )
         return CapabilityDescriptor(
             id=self.capability_id
             or build_capability_id(

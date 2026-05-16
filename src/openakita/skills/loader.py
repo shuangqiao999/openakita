@@ -13,7 +13,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..core.log_health import record_health_event
+
 from .categories import (
     RESERVED_NAMESPACE_DIRS,
     CategoryRegistry,
@@ -373,20 +373,8 @@ class SkillLoader:
         - 子目录含 SKILL.md → 视为一个技能，调用 ``load_skill``
         - 子目录名属于 ``RESERVED_NAMESPACE_DIRS``（system/external/custom/
           community/builtin）→ 命名空间容器，递归但不作为分类透传
-        - 子目录不含 SKILL.md 且不是命名空间 → **分类容器**：
-            * 若同级有 DESCRIPTION.md，读取分类描述
-            * 把目录名（嵌套时用 / 拼接）作为 ``inferred_category`` 透传
-              给该分类下的所有 SKILL.md
-
-        Args:
-            directory: 技能目录
-            force: 是否允许覆盖已注册的同名 skill
-            _category_path: 内部参数。当前正在递归的分类路径，外部调用请保持空
-            _readonly: 内部参数。当前根（如 ``__builtin__``）是否为只读
-
-        Returns:
-            加载的技能数量
         """
+        from ..core.log_health import record_health_event  # 惰性导入避免循环
         if not directory.exists():
             logger.warning(f"Skill directory not found: {directory}")
             return 0

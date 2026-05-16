@@ -20,7 +20,6 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ...core.tool_executor import MAX_TOOL_RESULT_CHARS, OVERFLOW_MARKER, save_overflow
 from ...skills.catalog import SKILL_INSTRUCTION_ADVISORY
 from ...skills.events import SkillEvent
 from ...skills.exposure import build_skill_exposure
@@ -243,6 +242,7 @@ class SkillsHandler:
         - 16000 < len <= SKILL_MAX_CHARS (64000)：全量返回 + OVERFLOW_MARKER 跳过守卫
         - > SKILL_MAX_CHARS：截断到 64000 + 溢出文件 + 分段读取指引
         """
+        from ...core.tool_executor import MAX_TOOL_RESULT_CHARS, OVERFLOW_MARKER, save_overflow
         if not content or len(content) <= MAX_TOOL_RESULT_CHARS:
             return content
 
