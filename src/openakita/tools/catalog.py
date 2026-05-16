@@ -779,6 +779,65 @@ but with full schema you'll fill arguments more reliably.
         self._cached_catalog = None
 
     @property
+    def sort_by_priority(
+        self,
+        tool_names: list[str],
+        usage_stats: dict[str, int] | None = None,
+        always_tools: set[str] | None = None,
+        always_cats: set[str] | None = None,
+    ) -> list[str]:
+        """按优先级排序工具名称列表（预算紧张时优先保留高优先级工具）。
+
+        优先级规则（从高到低）：
+        1. 用户显式声明的 always_tools
+        2. 属于 always_cats 分类的工具
+        3. 历史上调用次数最多的前 20% 工具
+        4. 剩余工具保持原始顺序（字母序稳定）
+        """
+        always_tools = always_tools or set()
+        always_cats = always_cats or set()
+        usage_stats = usage_stats or {}
+
+        # 按分类查找工具
+        tool_groups = self.get_tool_groups()
+        tool_to_cat: dict[str, str] = {}
+        for cat, names in tool_groups.items():
+            for name in names:
+                tool_to_cat[name] = cat
+
+        def _priority(name: str) -> tuple[int, int, int]:
+            """返回 (优先级层级, -使用次数, 原始索引)。层级越小越重要。"""
+            if name in always_tools:
+                tier = 0
+            elif tool_to_cat.get(name, "") in always_cats:
+                tier = 1
+            else:
+                tier = 2
+            usage = -(usage_stats.get(name, 0))
+            return (tier, usage, 0)
+
+        top_count = max(
+            len(usage_stats) // 5, 3
+        ) if usage_stats else 0
+        top_tools: set[str] = set()
+        if top_count > 0:
+            sorted_usage = sorted(usage_stats.items(), key=lambda x: -x[1])
+            top_tools = {name for name, _ in sorted_usage[:top_count]}
+
+        def _final_priority(name: str) -> tuple[int, int, int]:
+            if name in always_tools:
+                tier = 0
+            elif name in top_tools:
+                tier = 1
+            elif tool_to_cat.get(name, "") in always_cats:
+                tier = 2
+            else:
+                tier = 3
+            usage = -(usage_stats.get(name, 0))
+            return (tier, usage, 0)
+
+        return sorted(tool_names, key=_final_priority)
+
     def tool_count(self) -> int:
         """工具数量"""
         return len(self._tools)

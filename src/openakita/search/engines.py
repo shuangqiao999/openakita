@@ -16,6 +16,7 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -688,10 +689,70 @@ def filter_by_relevance(
     return filtered
 
 
-# ── 引擎健康追踪 ────────────────────────────────────────────
+# ── 引擎健康追踪（持久化版）─────────────────────────────────
 
 _engine_failure_counts: dict[str, int] = {}
+_engine_disabled_until: dict[str, float] = {}  # 时间戳，在此时间之前不重试
 _MAX_CONSECUTIVE_FAILURES = 5  # 连续失败超过此值自动禁用引擎
+_DISABLED_COOLDOWN_SECONDS = 3600  # 禁用后 1 小时后自动重试
+_DISABLED_ENGINES_FILE = Path("data") / "disabled_engines.json"
+
+
+def _load_disabled_engines() -> None:
+    """从磁盘加载被禁用的引擎列表。"""
+    try:
+        if not _DISABLED_ENGINES_FILE.exists():
+            return
+        data = json.loads(_DISABLED_ENGINES_FILE.read_text(encoding="utf-8"))
+        saved = data.get("failure_counts", {})
+        for name, count in saved.items():
+            _engine_failure_counts[name] = max(_engine_failure_counts.get(name, 0), count)
+        # 恢复禁用超时时间戳
+        for item in data.get("disabled_until", []):
+            if isinstance(item, dict):
+                _engine_disabled_until[item["name"]] = float(item.get("until", 0))
+        logger.debug("[EngineHealth] Loaded state: failures=%s, disabled_until=%s",
+                     _engine_failure_counts, _engine_disabled_until)
+    except Exception:
+        pass
+
+
+def _save_disabled_engines() -> None:
+    """持久化引擎状态到磁盘。"""
+    try:
+        _DISABLED_ENGINES_FILE.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "failure_counts": dict(_engine_failure_counts),
+            "disabled_until": [
+                {"name": n, "until": t}
+                for n, t in _engine_disabled_until.items()
+                if t > time.time()
+            ],
+            "updated": time.time(),
+        }
+        _DISABLED_ENGINES_FILE.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
+# 模块加载时恢复状态
+_load_disabled_engines()
+
+
+def _check_re_enable_engine(engine_name: str) -> bool:
+    """检查引擎是否可以重新启用（冷却时间已过）。"""
+    if engine_name not in _engine_disabled_until:
+        return False
+    if time.time() >= _engine_disabled_until[engine_name]:
+        del _engine_disabled_until[engine_name]
+        _engine_failure_counts[engine_name] = 0
+        logger.info("[EngineHealth] %s cooldown expired, re-enabling.", engine_name)
+        _save_disabled_engines()
+        return True
+    return False
 
 
 def record_engine_success(engine_name: str) -> None:
@@ -704,6 +765,8 @@ def record_engine_success(engine_name: str) -> None:
                 _engine_failure_counts[engine_name],
             )
     _engine_failure_counts[engine_name] = 0
+    _engine_disabled_until.pop(engine_name, None)
+    _save_disabled_engines()
 
 
 def record_engine_failure(engine_name: str) -> bool:
@@ -711,27 +774,62 @@ def record_engine_failure(engine_name: str) -> bool:
     current = _engine_failure_counts.get(engine_name, 0) + 1
     _engine_failure_counts[engine_name] = current
     if current >= _MAX_CONSECUTIVE_FAILURES:
+        _engine_disabled_until[engine_name] = time.time() + _DISABLED_COOLDOWN_SECONDS
         logger.warning(
-            "[EngineHealth] %s has failed %d consecutive times, disabling.",
-            engine_name,
-            current,
+            "[EngineHealth] %s has failed %d consecutive times, disabling for %ds.",
+            engine_name, current, _DISABLED_COOLDOWN_SECONDS,
         )
+        _save_disabled_engines()
         return True
+    _save_disabled_engines()
     return False
 
 
 def is_engine_disabled(engine_name: str) -> bool:
     """检查引擎是否因连续失败被禁用。"""
+    _check_re_enable_engine(engine_name)
     return _engine_failure_counts.get(engine_name, 0) >= _MAX_CONSECUTIVE_FAILURES
 
 
 def get_disabled_engines() -> list[str]:
     """获取当前被禁用的引擎名称列表。"""
-    return [
-        name
-        for name, count in _engine_failure_counts.items()
+    disabled = [
+        name for name, count in _engine_failure_counts.items()
         if count >= _MAX_CONSECUTIVE_FAILURES
     ]
+    return [d for d in disabled if not _check_re_enable_engine(d)]
+
+
+def reset_all_engines() -> int:
+    """手动重新启用所有引擎。返回之前被禁用的引擎数。"""
+    count = len(get_disabled_engines())
+    _engine_failure_counts.clear()
+    _engine_disabled_until.clear()
+    _save_disabled_engines()
+    if count > 0:
+        logger.info("[EngineHealth] Reset %d disabled engines.", count)
+    return count
+
+
+def get_active_engines(all_engines: list) -> list:
+    """从引擎列表中筛选未被禁用的活跃引擎。
+
+    Args:
+        all_engines: SearchEngine 列表
+
+    Returns:
+        未被禁用的引擎列表
+    """
+    active = []
+    for eng in all_engines:
+        _check_re_enable_engine(eng.name)
+        if not is_engine_disabled(eng.name):
+            active.append(eng)
+    skipped = len(all_engines) - len(active)
+    if skipped:
+        logger.info("[EngineHealth] %d/%d engines active (%d disabled skipped).",
+                     len(active), len(all_engines), skipped)
+    return active
 
 
 # ── 查询扩展 ───────────────────────────────────────────────

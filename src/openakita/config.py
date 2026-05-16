@@ -766,6 +766,48 @@ class Settings(BaseSettings):
         description="系统提示总 token 预算覆盖值（0=自动计算）。"
         "如果模型上下文窗口足够大但自动预算偏保守，可手动调大",
     )
+    # === 搜索与幻觉防护配置 ===
+    min_search_results_required: int = Field(
+        default=2,
+        ge=1,
+        description="认为搜索成功所需的最低结果数。低于此值触发搜索不可靠标记",
+    )
+    min_relevance_score: float = Field(
+        default=0.3,
+        ge=0.0,
+        le=1.0,
+        description="搜索结果相关性评分阈值。低于此值的结果被过滤",
+    )
+    # === 硬截断配置 ===
+    hard_truncate_archive_enabled: bool = Field(
+        default=True,
+        description="是否将硬截断丢弃的对话写入 data/truncated_contexts/ 存档",
+    )
+    # === 上下文最小要求 ===
+    force_context_min_tokens: int = Field(
+        default=4096,
+        ge=1024,
+        description="强制要求的最小上下文窗口（tokens）。"
+        "低于此值启动时警告，且可能触发安全模式拒绝执行",
+    )
+    # === 工具优先级配置 ===
+    tool_priority_keep_count: int = Field(
+        default=10,
+        ge=3,
+        description="预算截断时无论如何都保留的工具数量（按优先级排序后的前N个）",
+    )
+    # === 软压缩配置 ===
+    soft_compress_keep_rounds: int = Field(
+        default=8,
+        ge=2,
+        le=20,
+        description="确定性压缩时保留的最近完整对话轮数",
+    )
+    # === 后处理幻觉验证 ===
+    hallucination_check_enabled: bool = Field(
+        default=True,
+        description="是否启用后处理阶段的事实性幻觉验证",
+    )
     api_tools_schema_budget_tokens: int = Field(
         default=12000,
         description="发送给 LLM API 的 tools schema 估算 token 预算，超出后动态 defer 非核心工具",

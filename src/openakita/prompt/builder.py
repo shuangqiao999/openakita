@@ -174,6 +174,7 @@ def _scope_value(value: Any, default: str) -> str:
 # ---------------------------------------------------------------------------
 # _ALWAYS_ON_RULES: 所有 profile/tier 都注入 (~350 token)
 _ALWAYS_ON_RULES = """\
+# [CORE]
 ## 语言规则（最高优先级）
 - **始终使用与用户当前消息相同的语言回复。** 用户用中文提问就用中文回答，用英文就用英文回答。
 - 不要在用户没有切换语言时自行更换回复语言。
@@ -306,6 +307,7 @@ _EXTENDED_RULES = """\
 # 参考 OpenClaw/Anthropic Constitution 风格
 # ---------------------------------------------------------------------------
 _SAFETY_SECTION = """\
+# [CORE]
 ## 安全约束
 
 - 支持人类监督和控制，不追求自我保存、复制或权力扩张
@@ -343,6 +345,7 @@ _SAFETY_SECTION = """\
 # 与 SOUL.md 的 "Source Honesty" 段落配套，是工具调用场景下的硬性输出格式。
 # ---------------------------------------------------------------------------
 _INFO_SOURCE_HONESTY_SECTION = """\
+# [CORE]
 ## 信息来源诚实（输出格式硬性要求）
 
 涉及具体事实、数据、状态、数字、文件内容、代码细节、外部系统状态时，
@@ -1879,7 +1882,32 @@ def _build_catalogs_section(
                     "> 如果某个工具不在你的可调用列表中，不要尝试调用它。\n"
                 ).format("Plan" if mode == "plan" else "Ask")
                 tools_text = mode_note + tools_text
-            tools_result = apply_budget(tools_text, budget_tokens // 3, "tools")
+            tools_result = apply_budget(
+                tools_text,
+                max(budget_tokens // 3, 500),
+                "tools",
+                truncate_strategy="end",
+            )
+            # 如果工具部分被截断，尝试优先级截断以保留高频工具
+            if tools_result.truncated:
+                try:
+                    from ...core.tool_executor import get_tool_usage_stats
+                    usage_stats = get_tool_usage_stats()
+                    if usage_stats:
+                        from .budget import apply_tool_priority_truncation
+                        priority_text = apply_tool_priority_truncation(
+                            tools_text,
+                            max(budget_tokens // 3, 500),
+                            tool_usage_ranking=usage_stats,
+                        )
+                        tools_result = apply_budget(
+                            priority_text,
+                            max(budget_tokens // 3, 500),
+                            "tools",
+                            truncate_strategy="end",
+                        )
+                except Exception:
+                    pass  # fallback to original truncation
             parts.append(tools_result.content)
         except Exception as e:
             logger.error(

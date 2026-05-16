@@ -1018,3 +1018,58 @@ class RetrievalEngine:
             seen.add(key)
             out.append(c)
         return out
+
+
+def retrieve_truncated_context(
+    session_id: str, current_turn: int = 0
+) -> str | None:
+    """检索与会话相关的硬截断上下文存档。
+
+    自动搜索 data/truncated_contexts/ 目录下以 session_id 命名的
+    JSON 存档文件，读取并返回摘要格式的早期对话内容。
+
+    Args:
+        session_id: 当前会话 ID
+        current_turn: 当前轮次（用于标记时效性）
+
+    Returns:
+        截断历史摘要字符串，或 None（无存档）
+    """
+    try:
+        import json
+        from pathlib import Path
+
+        archive_dir = Path("data") / "truncated_contexts"
+        if not archive_dir.exists():
+            return None
+
+        matching: list[Path] = []
+        for f in archive_dir.glob(f"{session_id}_*.json"):
+            matching.append(f)
+        if not matching:
+            matching = sorted(archive_dir.glob("*.json"), key=lambda p: -p.stat().st_mtime)[:3]
+
+        if not matching:
+            return None
+
+        latest = sorted(matching, key=lambda p: -p.stat().st_mtime)[0]
+        data = json.loads(latest.read_text(encoding="utf-8"))
+        msg_count = data.get("message_count", 0)
+        messages = data.get("messages", [])[:20]
+
+        lines = [f"[截断历史摘要] 共 {msg_count} 条早期消息已存档（{latest.name}）："]
+        for m in messages:
+            role = m.get("role", "?")
+            content = m.get("content", "")
+            if isinstance(content, str) and len(content) > 100:
+                content = content[:100] + "..."
+            elif isinstance(content, list):
+                content = str(content)[:100]
+            lines.append(f"  [{role}] {str(content)[:120]}")
+
+        lines.append("（以上为自动存档的早期对话，仅供参考）")
+        return "\n".join(lines)
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.warning("[TruncatedContext] retrieval failed: %s", e)
+        return None

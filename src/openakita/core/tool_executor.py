@@ -32,130 +32,59 @@ from .agent_state import TaskState
 
 logger = logging.getLogger(__name__)
 
-# P2-2 cache read-only tools by (tool_name, frozen_args_hash)
-_READ_TOOLS_FOR_CACHE: frozenset[str] = frozenset({
-    "read_file", "list_files", "search_files", "web_fetch",
-    "get_time", "get_workspace_map", "read_resource", "list_resources",
-})
+_TOOL_STATS_FILE = Path("data") / "tool_stats.json"
+_tool_usage_stats: dict[str, int] = {}
+_tool_stats_loaded = False
 
 
-def _make_tool_cache_key(tool_name: str, tool_input: dict) -> tuple[str, int] | None:
-    if tool_name not in _READ_TOOLS_FOR_CACHE:
-        return None
-    # Hash stable JSON representation of args
+def _load_tool_stats() -> dict[str, int]:
+    """从磁盘加载工具使用统计。"""
+    global _tool_stats_loaded, _tool_usage_stats
+    if _tool_stats_loaded:
+        return _tool_usage_stats
+    _tool_stats_loaded = True
     try:
-        args_hash = hash(json.dumps(tool_input, sort_keys=True, default=str))
-    except (TypeError, ValueError):
-        return None
-    return (tool_name, args_hash)
-
-
-class ToolSkipped(Exception):
-    """用户主动跳过当前工具执行（非错误，仅中断单步）。"""
-
-    def __init__(self, reason: str = "用户请求跳过"):
-        self.reason = reason
-        super().__init__(reason)
-
-
-# ========== 通用截断守卫常量 ==========
-DEFAULT_TOOL_RESULT_MAX_CHARS = 32000
-MAX_TOOL_RESULT_CHARS = DEFAULT_TOOL_RESULT_MAX_CHARS  # backward-compatible export
-OVERFLOW_MARKER = "[OUTPUT_TRUNCATED]"  # 截断标记，已含此标记的不二次截断
-_OVERFLOW_DIR = Path("data/tool_overflow")
-_OVERFLOW_MAX_FILES = 200  # fallback; runtime value comes from settings
-
-
-def _get_tool_result_max_chars() -> int:
-    try:
-        return max(1000, int(getattr(settings, "tool_result_max_chars", DEFAULT_TOOL_RESULT_MAX_CHARS)))
-    except (TypeError, ValueError):
-        return DEFAULT_TOOL_RESULT_MAX_CHARS
-
-
-def _get_tool_overflow_max_files() -> int:
-    try:
-        return max(10, int(getattr(settings, "tool_overflow_max_files", _OVERFLOW_MAX_FILES)))
-    except (TypeError, ValueError):
-        return _OVERFLOW_MAX_FILES
-
-
-def _get_read_file_default_limit() -> int:
-    try:
-        return max(1, int(getattr(settings, "read_file_default_limit", 2000)))
-    except (TypeError, ValueError):
-        return 2000
-
-
-def save_overflow(tool_name: str, content: str) -> str:
-    """将大输出保存到溢出文件，返回文件路径。
-
-    供 tool_executor 和各 handler 共用。
-    """
-    try:
-        _OVERFLOW_DIR.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        filename = f"{tool_name}_{ts}.txt"
-        filepath = _OVERFLOW_DIR / filename
-        filepath.write_text(content, encoding="utf-8")
-        max_files = _get_tool_overflow_max_files()
-        _cleanup_overflow_files(_OVERFLOW_DIR, max_files)
-        logger.info(f"[Overflow] Saved {len(content)} chars to {filepath}")
-        return str(filepath)
-    except Exception as exc:
-        logger.warning(f"[Overflow] Failed to save overflow file: {exc}")
-        return "(溢出文件保存失败)"
-
-
-def smart_truncate(
-    content: str,
-    limit: int,
-    *,
-    label: str = "content",
-    save_full: bool = True,
-    head_ratio: float = 0.65,
-) -> tuple[str, bool]:
-    """智能截断：首尾保留 + 溢出文件 + 截断标记。
-
-    Args:
-        content: 原始文本
-        limit: 截断字符上限
-        label: 溢出文件名前缀
-        save_full: 是否保存完整内容到溢出文件（验证类调用设为 False）
-        head_ratio: 保留头部的比例
-
-    Returns:
-        (result_text, was_truncated)
-    """
-    if not content or len(content) <= limit:
-        return content, False
-
-    head = int(limit * head_ratio)
-    tail = limit - head - 120
-    if tail < 0:
-        tail = 0
-
-    overflow_ref = ""
-    if save_full:
-        path = save_overflow(label, content)
-        overflow_ref = f", 完整内容: {path}, 可用 read_file 查看"
-
-    marker = f"\n[已截断, 原文{len(content)}字{overflow_ref}]\n"
-
-    if tail > 0:
-        return content[:head] + marker + content[-tail:], True
-    return content[:head] + marker, True
-
-
-def _cleanup_overflow_files(directory: Path, max_files: int) -> None:
-    """清理溢出目录，只保留最近 max_files 个文件。"""
-    try:
-        files = sorted(directory.glob("*.txt"), key=lambda f: f.stat().st_mtime)
-        if len(files) > max_files:
-            for f in files[: len(files) - max_files]:
-                f.unlink(missing_ok=True)
+        if _TOOL_STATS_FILE.exists():
+            data = json.loads(_TOOL_STATS_FILE.read_text(encoding="utf-8"))
+            _tool_usage_stats = {
+                k: int(v) for k, v in data.get("counts", {}).items()
+            }
+            logger.debug("[ToolStats] Loaded %d entries from %s",
+                         len(_tool_usage_stats), _TOOL_STATS_FILE)
     except Exception:
         pass
+    return _tool_usage_stats
+
+
+def _save_tool_stats() -> None:
+    """持久化工具使用统计到磁盘。"""
+    try:
+        _TOOL_STATS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"counts": dict(_tool_usage_stats), "updated": time.time()}
+        _TOOL_STATS_FILE.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8",
+        )
+    except Exception as e:
+        logger.debug("[ToolStats] Failed to save: %s", e)
+
+
+def record_tool_usage(tool_name: str) -> None:
+    """记录工具成功调用，递增使用计数。"""
+    global _tool_usage_stats
+    if not _tool_stats_loaded:
+        _load_tool_stats()
+    _tool_usage_stats[tool_name] = _tool_usage_stats.get(tool_name, 0) + 1
+    if _tool_usage_stats[tool_name] % 10 == 0:
+        _save_tool_stats()
+
+
+def get_tool_usage_stats() -> dict[str, int]:
+    """获取所有工具的使用统计。"""
+    if not _tool_stats_loaded:
+        _load_tool_stats()
+    return dict(_tool_usage_stats)
+
+
 
 
 class ToolExecutor:
@@ -637,6 +566,7 @@ class ToolExecutor:
                     success=True,
                     duration_ms=(time.monotonic() - started_at) * 1000,
                 )
+                record_tool_usage(tool_name)
                 return result
 
             except ToolError as e:

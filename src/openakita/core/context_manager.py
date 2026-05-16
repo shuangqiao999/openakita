@@ -490,6 +490,9 @@ class ContextManager:
             except Exception as e:
                 logger.warning(f"[Compress] Memory extraction before compression failed: {e}")
 
+        # 压缩前提取用户初始目标，确保压缩后仍可追溯
+        _initial_goal = self._extract_initial_user_goal(messages)
+
         tracer = get_tracer()
         from ..tracing.tracer import SpanType
 
@@ -583,6 +586,16 @@ class ContextManager:
             previous_summary=self._previous_summaries.get(_summary_key, ""),
             url_facts=self._extract_urls_from_messages(early_messages),
         )
+
+        # 确定性 fallback：LLM 压缩失败或返回空时，使用规则压缩
+        if not summary or len(summary) < 20:
+            logger.warning(
+                "[Compress] LLM summary failed or empty, using deterministic fallback"
+            )
+            summary = self._deterministic_summarize(early_messages)
+            if not summary:
+                summary = f"早期对话摘要（共 {len(early_messages)} 条消息，均与用户当前请求无关）"
+
         if summary:
             self._previous_summaries[_summary_key] = summary
 
@@ -596,9 +609,50 @@ class ContextManager:
 
         compressed = self._inject_summary_into_recent(summary, recent_messages)
 
+        # 注入用户初始目标到压缩后的上下文
+        if _initial_goal and len(compressed) > 1:
+            _found = False
+            for _j, m in enumerate(compressed):
+                if m.get("role") == "user" and _initial_goal in str(m.get("content", "")):
+                    _found = True
+                    break
+            if not _found:
+                compressed.insert(0, {
+                    "role": "user",
+                    "content": f"[初始目标] {_initial_goal}",
+                })
+
         compressed_tokens = self.estimate_messages_tokens(compressed)
+
+        # 压缩健康检查：逐步减少保留轮数直到满足限制
+        _keep_rounds = int(
+            getattr(_settings, "soft_compress_keep_rounds", 8) or 8
+        )
+        for _attempt in range(3):
+            if compressed_tokens <= soft_limit:
+                break
+            _keep_rounds = max(2, _keep_rounds // 2)
+            recent_groups_reduced = groups[-_keep_rounds:]
+            recent_messages_reduced = [
+                msg for group in recent_groups_reduced for msg in group
+            ]
+            compressed = self._inject_summary_into_recent(
+                summary, recent_messages_reduced
+            )
+            if _initial_goal and len(compressed) > 1:
+                compressed.insert(0, {
+                    "role": "user",
+                    "content": f"[初始目标] {_initial_goal}",
+                })
+            compressed_tokens = self.estimate_messages_tokens(compressed)
+            logger.info(
+                "[CompressHealth] keep_rounds=%d, tokens=%d, soft_limit=%d",
+                _keep_rounds, compressed_tokens, soft_limit,
+            )
+
         if compressed_tokens <= soft_limit:
             logger.info(f"Compressed context from {current_tokens} to {compressed_tokens} tokens")
+            self._log_compression(conversation_id, current_tokens, compressed_tokens, "success")
             return _end_ctx_span(compressed)
 
         # Step 4: 递归压缩
@@ -1842,3 +1896,77 @@ class ContextManager:
         except Exception as e:
             logger.warning("[HardTruncate] Failed to save context to disk: %s", e)
             return None
+
+    @staticmethod
+    def _deterministic_summarize(messages: list[dict]) -> str:
+        """确定性摘要 fallback（LLM 压缩失败时使用）。
+
+        提取每条消息中的关键实体（人名、地点、数字、工具名称），
+        生成简短的纯文本摘要。
+        """
+        import re
+        lines: list[str] = []
+        entity_pattern = re.compile(
+            r"[" "\u4e00-\u9fff" r"]{2,}"  # 中文词语
+            r"|[A-Z][a-z]+"  # 英文大写开头词
+            r"|\d{4}年|\d+月|\d+日"  # 日期
+            r"|\d+\.\d+|\d+%"  # 数字
+        )
+        tool_pattern = re.compile(r"__(.+?)__|`([^`]+)`")
+        tool_names: set[str] = set()
+        for msg in messages[:30]:  # 最多处理前30条
+            content = msg.get("content", "")
+            if not isinstance(content, str) or len(content) < 10:
+                continue
+            role = msg.get("role", "")
+            prefix = "用户" if role == "user" else ("助手" if role == "assistant" else role)
+            # 提取工具名
+            for m in tool_pattern.finditer(content):
+                t = m.group(1) or m.group(2) or ""
+                if 2 < len(t) < 50:
+                    tool_names.add(t)
+            # 提取关键实体
+            entities = entity_pattern.findall(content[:500])
+            entity_str = "、".join(entities[:6]) if entities else ""
+            if prefix == "用户" and entity_str:
+                lines.append(f"{prefix}关注: {entity_str}")
+            elif prefix == "助手" and tool_names:
+                pass  # 助手消息汇总到工具列表
+        parts: list[str] = []
+        if lines:
+            parts.append("。".join(lines[:5]))
+        if tool_names:
+            parts.append(f"使用工具: {', '.join(sorted(tool_names)[:10])}")
+        if not parts:
+            return f"早期对话（共 {len(messages)} 条消息）"
+        return "。".join(parts) + f"。共 {len(messages)} 条早期消息"
+
+    @staticmethod
+    def _log_compression(
+        self,
+        conversation_id: str | None,
+        before_tokens: int,
+        after_tokens: int,
+        method: str,
+    ) -> None:
+        """记录压缩日志到 data/compression_logs/。"""
+        try:
+            import json
+            import time
+            from pathlib import Path
+            save_dir = Path("data") / "compression_logs"
+            save_dir.mkdir(parents=True, exist_ok=True)
+            ts = int(time.time())
+            entry = {
+                "ts": ts,
+                "session": conversation_id or "unknown",
+                "before": before_tokens,
+                "after": after_tokens,
+                "ratio": round(after_tokens / max(before_tokens, 1), 3),
+                "method": method,
+            }
+            (save_dir / f"compress_{ts}.json").write_text(
+                json.dumps(entry, ensure_ascii=False), encoding="utf-8",
+            )
+        except Exception:
+            pass

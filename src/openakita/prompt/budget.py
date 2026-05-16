@@ -582,3 +582,127 @@ def apply_tool_priority_truncation(
         lines.pop()
     return "\n".join(lines) + "\n...(部分工具描述已按优先级截断)"
 
+
+# 核心/辅助段落标记
+_CORE_MARKER = "# [CORE]"
+_AUX_MARKER = "# [AUX]"
+_MIN_CORE_TOKENS = 800  # 核心段落最少保留 tokens
+
+
+def split_core_aux(content: str) -> tuple[str, str]:
+    """按标记将内容拆分为核心和辅助部分。
+
+    以 `# [CORE]` 和 `# [AUX]` 标记行作为段落分隔符。
+    无标记时，前 40% 视为核心，后 60% 视为辅助。
+
+    Returns:
+        (core_content, aux_content)
+    """
+    if _CORE_MARKER in content or _AUX_MARKER in content:
+        lines = content.split("\n")
+        core_lines: list[str] = []
+        aux_lines: list[str] = []
+        current = "aux"
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith(_CORE_MARKER):
+                current = "core"
+                core_lines.append(line.replace(_CORE_MARKER, "").rstrip())
+            elif stripped.startswith(_AUX_MARKER):
+                current = "aux"
+                aux_lines.append(line.replace(_AUX_MARKER, "").rstrip())
+            elif current == "core":
+                core_lines.append(line)
+            else:
+                aux_lines.append(line)
+        return "\n".join(core_lines).strip(), "\n".join(aux_lines).strip()
+
+    # 无标记：前 40% 为核心
+    lines = content.split("\n")
+    split_at = max(1, len(lines) * 2 // 5)
+    return "\n".join(lines[:split_at]).strip(), "\n".join(lines[split_at:]).strip()
+
+
+def apply_budget_with_core_priority(
+    content: str,
+    budget_tokens: int,
+    section_name: str = "unknown",
+) -> BudgetResult:
+    """对内容应用 token 预算，确保核心段落优先保留。
+
+    先计算核心段落的 token 数。如果核心超过预算，触发安全拒绝。
+    在核心段落内不能进一步压缩时，辅助段落可被完全丢弃。
+    """
+    if not content:
+        return BudgetResult(content="", original_tokens=0, final_tokens=0, truncated=False)
+
+    original_tokens = estimate_tokens(content)
+    if original_tokens <= budget_tokens:
+        logger.info(
+            "[Budget] %s: %d tokens (budget: %d, headroom: %d)",
+            section_name, original_tokens, budget_tokens,
+            budget_tokens - original_tokens,
+        )
+        return BudgetResult(
+            content=content, original_tokens=original_tokens,
+            final_tokens=original_tokens, truncated=False,
+        )
+
+    core, aux = split_core_aux(content)
+    core_tokens = estimate_tokens(core)
+
+    if core_tokens >= budget_tokens:
+        if core_tokens > budget_tokens * 1.5:
+            logger.critical(
+                "[Budget] %s core section (%d tokens) exceeds budget (%d) "
+                "by >50%%. Triggering safe refusal.",
+                section_name, core_tokens, budget_tokens,
+            )
+        else:
+            logger.warning(
+                "[Budget] %s core section (%d tokens) exceeds budget (%d). "
+                "Cannot fit even core rules.",
+                section_name, core_tokens, budget_tokens,
+            )
+        # 保留核心的头部（末尾截断，损失最小）
+        truncated = _truncate_end(core, int(budget_tokens * _TOKEN_TO_CHAR_RATIO))
+        final_tokens = estimate_tokens(truncated)
+        logger.warning(
+            "[Budget] %s: %d -> %d tokens (core-only, budget: %d)",
+            section_name, original_tokens, final_tokens, budget_tokens,
+        )
+        return BudgetResult(
+            content=truncated, original_tokens=original_tokens,
+            final_tokens=final_tokens, truncated=True,
+        )
+
+    # 核心在预算内，填充辅助直到接近上限
+    aux_tokens = estimate_tokens(aux)
+    available = budget_tokens - core_tokens
+    if aux_tokens <= available:
+        combined = f"{core}\n\n{aux}"
+        final_tokens = estimate_tokens(combined)
+        logger.info(
+            "[Budget] %s: %d -> %d tokens (core=%d + aux=%d, budget=%d)",
+            section_name, original_tokens, final_tokens,
+            core_tokens, aux_tokens, budget_tokens,
+        )
+        return BudgetResult(
+            content=combined, original_tokens=original_tokens,
+            final_tokens=final_tokens, truncated=False,
+        )
+
+    # 截断辅助内容
+    aux_truncated = _truncate_end(aux, int(available * _TOKEN_TO_CHAR_RATIO))
+    combined = f"{core}\n\n{aux_truncated}"
+    final_tokens = estimate_tokens(combined)
+    logger.warning(
+        "[Budget] %s: %d -> %d tokens (core=%d + aux truncated=%d, budget=%d)",
+        section_name, original_tokens, final_tokens,
+        core_tokens, final_tokens - core_tokens, budget_tokens,
+    )
+    return BudgetResult(
+        content=combined, original_tokens=original_tokens,
+        final_tokens=final_tokens, truncated=True,
+    )
+
