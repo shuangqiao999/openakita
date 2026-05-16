@@ -160,6 +160,46 @@ def save_overflow(tool_name: str, content: str) -> str:
         return ""
 
 
+def smart_truncate(
+    content: str,
+    limit: int,
+    *,
+    label: str = "content",
+    save_full: bool = True,
+    head_ratio: float = 0.65,
+) -> tuple[str, bool]:
+    """智能截断：首尾保留 + 溢出文件 + 截断标记。
+
+    Args:
+        content: 原始文本
+        limit: 截断字符上限
+        label: 溢出文件名前缀
+        save_full: 是否保存完整内容到溢出文件（验证类调用设为 False）
+        head_ratio: 保留头部的比例
+
+    Returns:
+        (result_text, was_truncated)
+    """
+    if not content or len(content) <= limit:
+        return content, False
+
+    head = int(limit * head_ratio)
+    tail = limit - head - 120
+    if tail < 0:
+        tail = 0
+
+    overflow_ref = ""
+    if save_full:
+        path = save_overflow(label, content)
+        overflow_ref = f", 完整内容: {path}, 可用 read_file 查看"
+
+    marker = f"\n[已截断 原文{len(content)}字{overflow_ref}]\n"
+
+    if tail > 0:
+        return content[:head] + marker + content[-tail:], True
+    return content[:head] + marker, True
+
+
 def _cleanup_overflow_files(directory: Path, max_files: int) -> None:
     """清理溢出目录，保留最近的 max_files 个文件。"""
     try:

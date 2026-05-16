@@ -888,86 +888,6 @@ NEXT: 建议的下一步"""
             logger.warning(f"Task retrospect failed: {e}")
         return ""
 
-
-def verify_response_hallucination(
-    response_text: str,
-    search_results: list[dict] | None = None,
-    search_reliable: bool = True,
-    enabled: bool = True,
-) -> tuple[str, bool]:
-    """后处理幻觉验证：检查模型回答中的具体事实声明是否有搜索结果支撑。
-
-    当搜索不可靠时，从回答中提取具体事实模式（日期、数字、人名等），
-    与搜索结果进行交叉验证。无法验证的事实声明触发安全替换。
-
-    Args:
-        response_text: 模型生成的回答
-        search_results: 搜索结果列表
-        search_reliable: 搜索是否可靠
-        enabled: 是否启用（配置开关）
-
-    Returns:
-        (verified_or_replaced_text, was_replaced)
-    """
-    if not enabled or search_reliable or not search_results:
-        return response_text, False
-
-    import re
-    fact_pattern = re.compile(
-        r"\d{4}年\d{1,2}月\d{1,2}日"  # 日期
-        r"|\d{1,2}月\d{1,2}日"
-        r"|[A-Z][a-z]+ [A-Z][a-z]+"  # 英文专名
-        r"|[\u4e00-\u9fff]{2,4}总统|[\u4e00-\u9fff]{2,4}主席"  # 职务
-        r"|\d+亿美元|\d+亿人民币|\d+万元"  # 金额
-    )
-    facts = fact_pattern.findall(response_text)
-    if not facts:
-        return response_text, False
-
-    # 检查每个事实是否能从搜索结果中找到
-    search_text = " ".join(
-        f"{r.get('title', '')} {r.get('body', '')} {r.get('snippet', '')} "
-        f"{r.get('excerpt', '')} {r.get('abstract', '')}"
-        for r in (search_results or [])
-    )
-    unverified: list[str] = []
-    for fact in set(facts):
-        if fact not in search_text:
-            unverified.append(fact)
-
-    if not unverified:
-        return response_text, False
-
-    # 记录幻觉候选
-    logger.warning(
-        "[HallucinationRisk] Unverified facts in response: %s", unverified[:5]
-    )
-    try:
-        import json
-        import time
-        from pathlib import Path
-        save_dir = Path("data") / "hallucination_candidates"
-        save_dir.mkdir(parents=True, exist_ok=True)
-        entry = {
-            "ts": int(time.time()),
-            "facts": unverified[:10],
-            "response_preview": response_text[:500],
-            "search_reliable": search_reliable,
-        }
-        (save_dir / f"hc_{int(time.time())}.json").write_text(
-            json.dumps(entry, ensure_ascii=False, indent=2), encoding="utf-8",
-        )
-    except Exception:
-        pass
-
-    # 安全替换：保留不确定前缀，移除具体事实
-    safe_prefix = (
-        "我无法从搜索结果中确认以下具体信息："
-        + "、".join(unverified[:5])
-        + "。以下是我找到的相关结果（如有）。"
-    )
-    return safe_prefix, True
-
     async def do_task_retrospect_background(self, task_monitor: Any, session_id: str) -> None:
         """
         后台执行任务复盘分析（不阻塞主响应）。
@@ -1039,4 +959,81 @@ def verify_response_hallucination(
                                 )
                                 return result
         return ""
+
+
+def verify_response_hallucination(
+    response_text: str,
+    search_results: list[dict] | None = None,
+    search_reliable: bool = True,
+    enabled: bool = True,
+) -> tuple[str, bool]:
+    """后处理幻觉验证：检查模型回答中的具体事实声明是否有搜索结果支撑。
+
+    当搜索不可靠时，从回答中提取具体事实模式（日期、数字、人名等），
+    与搜索结果进行交叉验证。无法验证的事实声明触发安全替换。
+
+    Args:
+        response_text: 模型生成的回答
+        search_results: 搜索结果列表
+        search_reliable: 搜索是否可靠
+        enabled: 是否启用（配置开关）
+
+    Returns:
+        (verified_or_replaced_text, was_replaced)
+    """
+    if not enabled or search_reliable or not search_results:
+        return response_text, False
+
+    import re
+    fact_pattern = re.compile(
+        r"\d{4}年\d{1,2}月\d{1,2}日"
+        r"|\d{1,2}月\d{1,2}日"
+        r"|[A-Z][a-z]+ [A-Z][a-z]+"
+        r"|[\u4e00-\u9fff]{2,4}总统|[\u4e00-\u9fff]{2,4}主席"
+        r"|\d+亿美元|\d+亿人民币|\d+万元"
+    )
+    facts = fact_pattern.findall(response_text)
+    if not facts:
+        return response_text, False
+
+    search_text = " ".join(
+        f"{r.get('title', '')} {r.get('body', '')} {r.get('snippet', '')} "
+        f"{r.get('excerpt', '')} {r.get('abstract', '')}"
+        for r in (search_results or [])
+    )
+    unverified: list[str] = []
+    for fact in set(facts):
+        if fact not in search_text:
+            unverified.append(fact)
+
+    if not unverified:
+        return response_text, False
+
+    logger.warning(
+        "[HallucinationRisk] Unverified facts in response: %s", unverified[:5]
+    )
+    try:
+        import json
+        import time
+        from pathlib import Path
+        save_dir = Path("data") / "hallucination_candidates"
+        save_dir.mkdir(parents=True, exist_ok=True)
+        entry = {
+            "ts": int(time.time()),
+            "facts": unverified[:10],
+            "response_preview": response_text[:500],
+            "search_reliable": search_reliable,
+        }
+        (save_dir / f"hc_{int(time.time())}.json").write_text(
+            json.dumps(entry, ensure_ascii=False, indent=2), encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+    safe_prefix = (
+        "我无法从搜索结果中确认以下具体信息："
+        + "、".join(unverified[:5])
+        + "。以下是我找到的相关结果（如有）。"
+    )
+    return safe_prefix, True
 
