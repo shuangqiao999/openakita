@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time as _time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any
@@ -592,11 +593,49 @@ def _try_fast_chat_shortcut(message: str, has_history: bool = False) -> IntentRe
     return None
 
 
+# P0-3: Fast task keyword shortcut — explicit task imperatives skip LLM intent analysis.
+_TASK_KEYWORDS = frozenset({
+    "帮我", "写一个", "写个", "创建一个", "生成", "翻译", "解释",
+    "修改", "修复", "优化", "重构", "分析", "总结", "查一下",
+    "搜索", "找一下", "运行", "执行", "安装", "配置", "部署",
+    "比较", "转换", "提取", "计算", "统计", "整理",
+    "画一张", "画个", "做一个", "做个", "写一段", "写篇",
+})
+
+
+def _try_fast_task_shortcut(message: str) -> IntentResult | None:
+    """Task keyword fast-path: explicit action imperatives return TASK without LLM."""
+    stripped = message.strip()
+    if len(stripped) < 3:
+        return None
+    # Only match at message start or early position (first 30 chars)
+    head = stripped[:40]
+    for kw in _TASK_KEYWORDS:
+        if head.startswith(kw) or f" {kw}" in head[:30]:
+            logger.info("[IntentAnalyzer] Fast-path: task keyword '%s' → TASK", kw)
+            return IntentResult(
+                intent=IntentType.TASK,
+                confidence=0.85,
+                task_definition=stripped[:600],
+                task_type="action",
+                tool_hints=[],
+                memory_keywords=[],
+                force_tool=False,
+                requires_tools=True,
+                evidence_required=False,
+                evidence_recommended=True,
+                todo_required=False,
+            )
+    return None
+
+
 class IntentAnalyzer:
     """LLM-based intent analyzer. All messages go through LLM analysis."""
 
     def __init__(self, brain: Brain):
         self.brain = brain
+        self._intent_cache: dict[str, tuple[float, IntentResult]] = {}
+        self._intent_cache_ttl = 60.0
 
     async def analyze(
         self,
@@ -612,12 +651,21 @@ class IntentAnalyzer:
             return query_result
 
         # Rule-based fast-path for greetings and other unambiguous casual chat.
-        # This avoids sending a full prompt/tool context to small local models for
-        # messages like "你好", while still letting ambiguous follow-ups with
-        # history go through the normal analyzer.
         chat_result = _try_fast_chat_shortcut(message, has_history=has_history)
         if chat_result is not None:
             return chat_result
+
+        # Task keyword fast-path: explicit imperatives skip LLM intent analysis
+        task_result = _try_fast_task_shortcut(message)
+        if task_result is not None:
+            return task_result
+
+        # Per-instance intent cache: reuse recent results for identical/similar messages
+        _cache_key = _normalize_for_cache(message)
+        _cached = self._intent_cache.get(_cache_key)
+        if _cached and _time.monotonic() - _cached[0] < self._intent_cache_ttl:
+            logger.debug("[IntentAnalyzer] Intent cache HIT (key=%s)", _cache_key[:30])
+            return _cached[1]
 
         try:
             response = await self.brain.compiler_think(
@@ -642,11 +690,19 @@ class IntentAnalyzer:
                     f"[IntentAnalyzer] Recall markers detected, "
                     f"memory_scope upgraded: {result.memory_scope.value}"
                 )
+            self._intent_cache[_cache_key] = (_time.monotonic(), result)
             return result
 
         except Exception as e:
             logger.warning(f"[IntentAnalyzer] LLM analysis failed: {e}, using default")
-            return _make_default(message)
+            _fallback = _make_default(message)
+            self._intent_cache[_cache_key] = (_time.monotonic(), _fallback)
+            return _fallback
+
+
+def _normalize_for_cache(message: str) -> str:
+    """Normalize message for intent cache key: remove punctuation/whitespace, lowercase, truncate."""
+    return re.sub(r'[^\w]', '', message.lower())[:80]
 
 
 def _make_default(message: str) -> IntentResult:

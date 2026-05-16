@@ -32,6 +32,23 @@ from .agent_state import TaskState
 
 logger = logging.getLogger(__name__)
 
+# P2-2 cache read-only tools by (tool_name, frozen_args_hash)
+_READ_TOOLS_FOR_CACHE: frozenset[str] = frozenset({
+    "read_file", "list_files", "search_files", "web_fetch",
+    "get_time", "get_workspace_map", "read_resource", "list_resources",
+})
+
+
+def _make_tool_cache_key(tool_name: str, tool_input: dict) -> tuple[str, int] | None:
+    if tool_name not in _READ_TOOLS_FOR_CACHE:
+        return None
+    # Hash stable JSON representation of args
+    try:
+        args_hash = hash(json.dumps(tool_input, sort_keys=True, default=str))
+    except (TypeError, ValueError):
+        return None
+    return (tool_name, args_hash)
+
 
 class ToolSkipped(Exception):
     """用户主动跳过当前工具执行（非错误，仅中断单步）。"""
@@ -203,6 +220,22 @@ class ToolExecutor:
 
         # Extra permission rules injected by AgentFactory (profile rules)
         self._extra_permission_rules: list | None = None
+
+        # Tool result cache for pure-read tools (P2-2 optimization)
+        # key: (tool_name, args_hash) → (timestamp, result_str)
+        self._tool_result_cache: dict[tuple[str, int], tuple[float, str]] = {}
+        self._tool_result_cache_ttl: dict[str, float] = {
+            "read_file": 10.0,
+            "list_files": 10.0,
+            "search_files": 10.0,
+            "web_fetch": 30.0,
+            "get_time": 5.0,
+            "get_workspace_map": 10.0,
+        }
+        self._WRITE_TOOLS = frozenset({
+            "write_file", "run_shell", "run_powershell", "delete_file",
+            "move_file", "copy_file", "mkdir", "pip_install", "pip_uninstall",
+        })
 
     # 并发安全工具: 这些工具的只读操作可以并行执行
     _CONCURRENCY_SAFE_TOOLS: set[str] = {
@@ -748,7 +781,24 @@ class ToolExecutor:
                 sandbox_output += f"stderr:\n{sb_result.stderr}\n"
             return self._guard_truncate(tool_name, sandbox_output)
 
-        return await self._execute_tool_impl(tool_name, tool_input)
+        # P2-2: tool result cache for pure-read tools
+        _cache_key = _make_tool_cache_key(tool_name, tool_input)
+        if _cache_key:
+            _cached = self._tool_result_cache.get(_cache_key)
+            if _cached and time.monotonic() - _cached[0] < self._tool_result_cache_ttl.get(tool_name, 10.0):
+                logger.debug("[ToolCache] HIT %s", tool_name)
+                return _cached[1]
+
+        # Write tools invalidate read cache entries
+        if tool_name in self._WRITE_TOOLS:
+            self._tool_result_cache.clear()
+
+        result = await self._execute_tool_impl(tool_name, tool_input)
+
+        # Store successful results in cache
+        if _cache_key and isinstance(result, str) and "error" not in result.lower()[:200]:
+            self._tool_result_cache[_cache_key] = (time.monotonic(), result)
+        return result
 
     async def execute_batch(
         self,
