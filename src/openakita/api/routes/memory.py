@@ -595,7 +595,25 @@ async def memory_stats(request: Request):
         "total": len(all_mems),
         "by_type": by_type,
         "avg_score": round(total_score / len(all_mems), 2) if all_mems else 0,
+        "recent_new_count": _extraction_tracker("recent_new_count", request),
+        "recent_updated_count": _extraction_tracker("recent_updated_count", request),
     }
+
+
+def _extraction_tracker(field: str, request: Request) -> int:
+    mm = _get_manager(request)
+    if mm and hasattr(mm, field):
+        return getattr(mm, field, 0)
+    return 0
+
+
+@router.get("/extraction-status")
+async def extraction_status(request: Request):
+    """Return the most recent memory extraction result (for frontend polling)."""
+    mm = _get_manager(request)
+    if not mm:
+        raise HTTPException(503, "Memory manager not available")
+    return mm.get_extraction_status()
 
 
 @router.get("/migration-status")

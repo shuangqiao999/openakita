@@ -49,6 +49,8 @@ type Stats = {
   total: number;
   by_type: Record<string, number>;
   avg_score: number;
+  recent_new_count: number;
+  recent_updated_count: number;
 };
 
 type MigrationStatus = {
@@ -211,6 +213,9 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
   const [migrationStatus, setMigrationStatus] = useState<MigrationStatus | null>(null);
   const [claimingLegacy, setClaimingLegacy] = useState(false);
   const [graphRefreshKey, setGraphRefreshKey] = useState(0);
+  const [lastExtractionError, setLastExtractionError] = useState<any>(null);
+  const [lastExtractionTime, setLastExtractionTime] = useState<number>(0);
+  const [retryingExtraction, setRetryingExtraction] = useState(false);
 
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth <= 768);
@@ -269,16 +274,30 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
     loadMigrationStatus();
   }, [loadMemories, loadStats, loadMigrationStatus]);
 
-  // Periodic auto-refresh: keep stats and memory list updated when memories are
-  // extracted by background tasks (e.g. after conversations end).
+  // Periodic refresh: every 5s check extraction-status for new results,
+  // and refresh stats/memories when new extraction data is detected.
   useEffect(() => {
-    const interval = setInterval(() => {
-      if (!reviewing) {
-        loadStats();
-      }
-    }, 30_000);
+    const interval = setInterval(async () => {
+      if (!serviceRunning || reviewing) return;
+      try {
+        const res = await safeFetch(`${API_BASE}/api/memories/extraction-status`);
+        const status = await res.json();
+        const err = status.last_extraction_error;
+        if (err) {
+          setLastExtractionError(err);
+        } else {
+          setLastExtractionError(null);
+        }
+        const newTime = status.last_extraction_time || 0;
+        if (newTime > lastExtractionTime && newTime > 0) {
+          setLastExtractionTime(newTime);
+          loadStats();
+          loadMemories();
+        }
+      } catch { /* ignore polling errors */ }
+    }, 5_000);
     return () => clearInterval(interval);
-  }, [reviewing, loadStats]);
+  }, [serviceRunning, reviewing, API_BASE, lastExtractionTime, loadStats, loadMemories]);
 
   const doDelete = async (id: string) => {
     try {
@@ -467,6 +486,20 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
     }
   };
 
+  const handleRetryExtraction = async () => {
+    setRetryingExtraction(true);
+    setLastExtractionError(null);
+    try {
+      loadStats();
+      loadMemories();
+      toast.success(t("memory.refreshed"));
+    } catch {
+      toast.error(t("memory.loadFailed"));
+    } finally {
+      setRetryingExtraction(false);
+    }
+  };
+
   const toggleSelect = (id: string) => {
     setSelected(prev => {
       const n = new Set(prev);
@@ -513,6 +546,11 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
               {[
                 { value: stats.total, label: t("memory.totalMemories"), color: "var(--foreground)" },
                 { value: stats.avg_score.toFixed(2), label: t("memory.avgScore"), color: "var(--foreground)" },
+                ...(stats.recent_new_count > 0 || stats.recent_updated_count > 0 ? [{
+                  value: `+${stats.recent_new_count} / ${stats.recent_updated_count}`,
+                  label: t("memory.recentChanges"),
+                  color: "#22c55e",
+                }] : []),
                 ...Object.entries(stats.by_type).map(([tp, c]) => ({
                   value: c,
                   label: typeLabel(tp),
@@ -534,6 +572,33 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
       )}
 
       {/* Toolbar */}
+      {lastExtractionError && (
+        <Card className="gap-0 border-red-500/30 bg-red-500/10 py-0 shadow-sm shrink-0">
+          <CardContent className="flex flex-col gap-3 p-4 md:flex-row md:items-center md:justify-between">
+            <div>
+              <div className="text-sm font-semibold text-red-700 dark:text-red-300">
+                {t("memory.extractionFailedTitle")}
+              </div>
+              <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                {t("memory.extractionFailedDesc", {
+                  count: lastExtractionError.errors?.length ?? 1,
+                  phase: lastExtractionError.errors?.[0]?.phase ?? "unknown",
+                })}
+              </div>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleRetryExtraction}
+              disabled={retryingExtraction}
+              className="shrink-0 border-red-300/60 text-red-700 hover:bg-red-500/20"
+            >
+              {retryingExtraction ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <RefreshCw className="mr-1 h-3 w-3" />}
+              {t("memory.retryExtraction")}
+            </Button>
+          </CardContent>
+        </Card>
+      )}
       {showLegacyRecovery && (
         <Card className="gap-0 border-amber-500/30 bg-amber-500/10 py-0 shadow-sm shrink-0">
           <CardContent className="flex flex-col gap-3 p-4 md:flex-row md:items-center md:justify-between">

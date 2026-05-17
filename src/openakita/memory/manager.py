@@ -30,6 +30,7 @@ import re
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
+import time
 
 from .consolidator import MemoryConsolidator
 from .extractor import MemoryExtractor
@@ -134,6 +135,13 @@ class MemoryManager:
 
         # Track pending async tasks to await on shutdown
         self._pending_tasks: set[asyncio.Task] = set()
+
+        # Extraction result tracking — exposes extraction outcome to API / frontend
+        self.last_extraction_error: dict | None = None
+        self.last_extraction_session_id: str | None = None
+        self.last_extraction_time: float | None = None
+        self.recent_new_count: int = 0
+        self.recent_updated_count: int = 0
 
         # Global store fallback for isolated agents (set by AgentFactory)
         self._global_store_ref: UnifiedStore | None = None
@@ -323,6 +331,7 @@ class MemoryManager:
         workspace_id: str | None | object = _UNSET_OWNER,
     ) -> None:
         self._current_session_id = session_id
+        self.reset_extraction_counters()
         if user_id is not _UNSET_OWNER:
             self._current_user_id = str(user_id).strip() if user_id else "anonymous"
         if workspace_id is not _UNSET_OWNER:
@@ -905,6 +914,7 @@ class MemoryManager:
             )
             if existing:
                 self._evolve_memory(existing, content, importance)
+                self.recent_updated_count += 1
                 logger.debug(f"[Memory] Dedup L1: evolved {existing.id[:8]} (subject+predicate)")
                 return existing.id
 
@@ -925,6 +935,7 @@ class MemoryManager:
 
                     if dup_level == "exact":
                         self._evolve_memory(s, content, importance)
+                        self.recent_updated_count += 1
                         logger.debug(f"[Memory] Dedup L2: exact match, evolved {s.id[:8]}")
                         return s.id
 
@@ -932,6 +943,7 @@ class MemoryManager:
                         is_dup = await self._check_duplicate_with_llm(content, existing_content)
                         if is_dup:
                             self._evolve_memory(s, content, importance)
+                            self.recent_updated_count += 1
                             logger.debug(
                                 f"[Memory] Dedup L2: LLM confirmed dup, evolved {s.id[:8]}"
                             )
@@ -959,6 +971,7 @@ class MemoryManager:
             workspace_id=write_workspace,
         )
 
+        self.recent_new_count += 1
         return saved_id
 
     def _sync_profile_fact(self, subject: str, predicate: str, content: str) -> None:
@@ -1149,6 +1162,7 @@ class MemoryManager:
             loop = asyncio.get_running_loop()
 
             async def _finalize_session():
+                extraction_errors: list[dict] = []
                 episode = None
                 try:
                     episode = await self.extractor.generate_episode(
@@ -1158,13 +1172,19 @@ class MemoryManager:
                         self.store.save_episode(episode)
                         logger.info("[Memory] Session finalized: episode saved")
                 except Exception as e:
-                    if record_health_event(
-                        "memory",
-                        "episode_generation",
-                        str(e),
-                        suggestion="会话 episode 生成失败已跳过；通常是 LLM 连接瞬断。",
-                    ):
-                        logger.warning(f"[Memory] Episode generation failed: {e}")
+                    _err_detail = {
+                        "phase": "episode_generation",
+                        "error": str(e),
+                        "session_id": session_id,
+                        "user_id": _captured_user_id,
+                        "workspace_id": _captured_workspace_id,
+                    }
+                    extraction_errors.append(_err_detail)
+                    logger.error(
+                        f"[Memory] Episode generation failed: {e} "
+                        f"(session={session_id}, user={_captured_user_id})",
+                        exc_info=True,
+                    )
 
                 ep_id = episode.id if episode else None
                 saved_memory_ids: list[str] = []
@@ -1198,13 +1218,19 @@ class MemoryManager:
                             f"[Memory] Profile extraction: {saved}/{len(items)} items saved"
                         )
                 except Exception as e:
-                    if record_health_event(
-                        "memory",
-                        "profile_extraction",
-                        str(e),
-                        suggestion="用户画像抽取失败已跳过本轮；主聊天不受影响。",
-                    ):
-                        logger.warning(f"[Memory] Profile extraction failed: {e}")
+                    _err_detail = {
+                        "phase": "profile_extraction",
+                        "error": str(e),
+                        "session_id": session_id,
+                        "user_id": _captured_user_id,
+                        "workspace_id": _captured_workspace_id,
+                    }
+                    extraction_errors.append(_err_detail)
+                    logger.error(
+                        f"[Memory] Profile extraction failed: {e} "
+                        f"(session={session_id}, user={_captured_user_id})",
+                        exc_info=True,
+                    )
 
                 # Track 2: Task experience extraction
                 try:
@@ -1229,13 +1255,19 @@ class MemoryManager:
                             f"[Memory] Experience extraction: {exp_saved}/{len(exp_items)} items saved"
                         )
                 except Exception as e:
-                    if record_health_event(
-                        "memory",
-                        "experience_extraction",
-                        str(e),
-                        suggestion="经验抽取失败已跳过本轮；可稍后手动整理记忆。",
-                    ):
-                        logger.warning(f"[Memory] Experience extraction failed: {e}")
+                    _err_detail = {
+                        "phase": "experience_extraction",
+                        "error": str(e),
+                        "session_id": session_id,
+                        "user_id": _captured_user_id,
+                        "workspace_id": _captured_workspace_id,
+                    }
+                    extraction_errors.append(_err_detail)
+                    logger.error(
+                        f"[Memory] Experience extraction failed: {e} "
+                        f"(session={session_id}, user={_captured_user_id})",
+                        exc_info=True,
+                    )
 
                 # Back-fill bidirectional links between episode, memories, and turns
                 if ep_id:
@@ -1285,6 +1317,18 @@ class MemoryManager:
                             )
                     except Exception as e:
                         logger.warning(f"[Memory] Relational session encoding failed: {e}")
+
+                # Record extraction result for API / frontend visibility
+                self.last_extraction_session_id = session_id
+                self.last_extraction_time = time.time()
+                if extraction_errors:
+                    self.last_extraction_error = {
+                        "session_id": session_id,
+                        "errors": extraction_errors,
+                        "extraction_time": self.last_extraction_time,
+                    }
+                else:
+                    self.last_extraction_error = None
 
             task = loop.create_task(_finalize_session())
             self._pending_tasks.add(task)
@@ -2002,3 +2046,18 @@ class MemoryManager:
             "unprocessed_sessions": len(self.consolidator.get_unprocessed_sessions()),
             "v2_store": v2_stats,
         }
+
+    def get_extraction_status(self) -> dict:
+        """Return the most recent extraction result for API/frontend visibility."""
+        return {
+            "last_extraction_error": self.last_extraction_error,
+            "last_extraction_session_id": self.last_extraction_session_id,
+            "last_extraction_time": self.last_extraction_time,
+            "recent_new_count": self.recent_new_count,
+            "recent_updated_count": self.recent_updated_count,
+        }
+
+    def reset_extraction_counters(self) -> None:
+        """Reset per-session extraction counters (called from start_session)."""
+        self.recent_new_count = 0
+        self.recent_updated_count = 0

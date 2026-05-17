@@ -785,15 +785,24 @@ class LifecycleManager:
 
 只输出 JSON 数组，不要其他内容。"""
 
+
+    MAX_REVIEW_MEMORIES = 500
+    MAX_CLUSTER_GROUP_SIZE = 50
+
     @staticmethod
     def _cluster_similar_memories(memories: list) -> list[str]:
         """Reorder memory IDs so similar memories are grouped in the same review batch.
 
         Strategy:
           1. Group by (subject, predicate) — same key = almost certainly a duplicate.
-          2. Within unmatched memories, use token overlap to find near-duplicates.
+          2. Within each key group (capped at MAX_CLUSTER_GROUP_SIZE), compute Jaccard
+             similarity for sub-clustering. No global O(n²) cross-group computation.
           3. Order output so similar groups are adjacent, ensuring LLM sees them together.
         """
+        import time as _time
+
+        _t0 = _time.monotonic()
+
         # Step 1: group by subject+predicate key
         key_groups: dict[str, list] = {}
         unkeyed: list = []
@@ -807,68 +816,92 @@ class LifecycleManager:
             else:
                 unkeyed.append(m)
 
-        # Step 2: within unkeyed, find content-similar pairs using token overlap
+        # Step 2: within each key group, find content-similar pairs using Jaccard
+        # (capped to avoid O(n²) explosion on large groups)
         def _tokenize(content: str) -> set[str]:
             return set(content.lower().split())
 
-        token_cache: dict[str, set[str]] = {}
-        for m in unkeyed:
-            content = (getattr(m, "content", "") or "").strip()
-            token_cache[m.id] = _tokenize(content)
-
-        similarity_graph: dict[str, set[str]] = {}
-        unkeyed_ids = [m.id for m in unkeyed]
-        for i in range(len(unkeyed_ids)):
-            tid_i = unkeyed_ids[i]
-            tokens_i = token_cache.get(tid_i, set())
-            if len(tokens_i) < 3:
-                continue
-            for j in range(i + 1, len(unkeyed_ids)):
-                tid_j = unkeyed_ids[j]
-                tokens_j = token_cache.get(tid_j, set())
-                if len(tokens_j) < 3:
-                    continue
-                # Jaccard similarity
-                intersection = len(tokens_i & tokens_j)
-                union = len(tokens_i | tokens_j)
-                if union > 0 and intersection / union > 0.5:
-                    similarity_graph.setdefault(tid_i, set()).add(tid_j)
-                    similarity_graph.setdefault(tid_j, set()).add(tid_i)
-
-        # BFS cluster unkeyed memories
-        visited: set[str] = set()
-        content_clusters: list[list[str]] = []
-        for mid in unkeyed_ids:
-            if mid in visited:
-                continue
-            cluster: list[str] = []
-            stack = [mid]
-            while stack:
-                cur = stack.pop()
-                if cur in visited:
-                    continue
-                visited.add(cur)
-                cluster.append(cur)
-                for neighbor in similarity_graph.get(cur, set()):
-                    if neighbor not in visited:
-                        stack.append(neighbor)
-            if cluster:
-                content_clusters.append(cluster)
-        # Remaining unclustered singletons
-        for mid in unkeyed_ids:
-            if mid not in visited:
-                content_clusters.append([mid])
-                visited.add(mid)
-
-        # Step 3: build ordered list — key_groups first (highest dupe risk), then content clusters, then singletons
-        ordered: list[str] = []
-        # Flatten key groups (largest first)
+        jaccard_groups_processed = 0
+        all_ordered: list[str] = []
         for group in sorted(key_groups.values(), key=len, reverse=True):
-            ordered.extend(m.id for m in group)
-        # Flatten content clusters (largest first)
-        for cluster in sorted(content_clusters, key=len, reverse=True):
-            ordered.extend(cluster)
-        return ordered
+            if len(group) <= 1:
+                all_ordered.extend(m.id for m in group)
+                continue
+            # Cap group size — only sub-cluster the top 50 by importance
+            capped = sorted(
+                group,
+                key=lambda m: getattr(m, "importance_score", 0.5) or 0.5,
+                reverse=True,
+            )
+            excess = capped[LifecycleManager.MAX_CLUSTER_GROUP_SIZE:]
+            capped = capped[:LifecycleManager.MAX_CLUSTER_GROUP_SIZE]
+            gids = [m.id for m in capped]
+
+            if len(capped) < 2:
+                all_ordered.extend(gids)
+                all_ordered.extend(m.id for m in excess)
+                continue
+
+            jaccard_groups_processed += 1
+            token_cache: dict[str, set[str]] = {}
+            for m in capped:
+                content = (getattr(m, "content", "") or "").strip()
+                token_cache[m.id] = _tokenize(content)
+
+            similarity_graph: dict[str, set[str]] = {}
+            for i in range(len(gids)):
+                tid_i = gids[i]
+                tokens_i = token_cache.get(tid_i, set())
+                if len(tokens_i) < 3:
+                    continue
+                for j in range(i + 1, len(gids)):
+                    tid_j = gids[j]
+                    tokens_j = token_cache.get(tid_j, set())
+                    if len(tokens_j) < 3:
+                        continue
+                    intersection = len(tokens_i & tokens_j)
+                    union = len(tokens_i | tokens_j)
+                    if union > 0 and intersection / union > 0.5:
+                        similarity_graph.setdefault(tid_i, set()).add(tid_j)
+                        similarity_graph.setdefault(tid_j, set()).add(tid_i)
+
+            # BFS cluster within this group
+            visited: set[str] = set()
+            for mid in gids:
+                if mid in visited:
+                    continue
+                cluster: list[str] = []
+                stack = [mid]
+                while stack:
+                    cur = stack.pop()
+                    if cur in visited:
+                        continue
+                    visited.add(cur)
+                    cluster.append(cur)
+                    for neighbor in similarity_graph.get(cur, set()):
+                        if neighbor not in visited:
+                            stack.append(neighbor)
+                if cluster:
+                    all_ordered.extend(cluster)
+            # Add any unvisited from this group
+            for mid in gids:
+                if mid not in visited:
+                    all_ordered.append(mid)
+            # Append excess (uncapped) at the end of this group's output
+            all_ordered.extend(m.id for m in excess)
+
+        # Step 3: append unkeyed memories as-is (no global Jaccard — too expensive)
+        all_ordered.extend(m.id for m in unkeyed)
+
+        _elapsed = _time.monotonic() - _t0
+        logger = logging.getLogger(__name__)
+        logger.info(
+            f"[Lifecycle] Pre-clustering: {len(memories)} memories → "
+            f"{len(key_groups)} key groups, {len(unkeyed)} unkeyed, "
+            f"{jaccard_groups_processed} groups processed with Jaccard, "
+            f"took {_elapsed:.3f}s"
+        )
+        return all_ordered
 
     def _cleanup_subject_predicate_duplicates(self) -> dict:
         """Sweep remaining memories for subject+predicate duplicates that the
@@ -943,6 +976,18 @@ class LifecycleManager:
         all_memories = self.store.load_all_memories()
         if not all_memories:
             return {"deleted": 0, "updated": 0, "merged": 0, "kept": 0, "partial": False}
+
+        # Cap memory count for review — prevent O(n²) clustering and excessive LLM calls
+        if len(all_memories) > self.MAX_REVIEW_MEMORIES:
+            logger.info(
+                f"[Lifecycle] Capping review from {len(all_memories)} to "
+                f"{self.MAX_REVIEW_MEMORIES} memories (sorted by importance)"
+            )
+            all_memories = sorted(
+                all_memories,
+                key=lambda m: getattr(m, "importance_score", 0.5) or 0.5,
+                reverse=True,
+            )[:self.MAX_REVIEW_MEMORIES]
 
         if not self.extractor or not self.extractor.brain:
             logger.warning("[Lifecycle] No LLM available for memory review, skipping")
