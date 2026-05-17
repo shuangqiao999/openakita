@@ -378,7 +378,7 @@ class Settings(BaseSettings):
         description="在线 Embedding API Key (仅 search_backend=api_embedding 时需要)",
     )
     embedding_api_model: str = Field(
-        default="text-embedding-v3",
+        default="",
         description="在线 Embedding 模型名称 (如 text-embedding-v3, text-embedding-3-small)",
     )
 
