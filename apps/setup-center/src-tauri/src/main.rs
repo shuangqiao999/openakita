@@ -9268,11 +9268,29 @@ async fn test_embedding_config(config: String) -> Result<String, String> {
 #[tauri::command]
 async fn fetch_embedding_models(provider: String, api_base: String, api_key: String) -> Result<String, String> {
     let port = current_workspace_api_port();
-    let url = format!(
-        "http://127.0.0.1:{}/api/embedding/models?provider={}&api_base={}&api_key={}",
-        port, provider, api_base, api_key,
-    );
-    http_get_json(url).await
+    let url = format!("http://127.0.0.1:{}/api/embedding/models", port);
+    let body = serde_json::json!({
+        "provider": provider,
+        "api_base": api_base,
+        "api_key": api_key,
+    }).to_string();
+    spawn_blocking_result(move || {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .map_err(|e| format!("HTTP client error: {e}"))?;
+        let resp = client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .body(body)
+            .send()
+            .map_err(|e| format!("HTTP POST to {} failed: {e}", url))?
+            .error_for_status()
+            .map_err(|e| format!("HTTP POST to {} failed: {e}", url))?;
+        resp.text()
+            .map_err(|e| format!("read response body failed: {e}"))
+    })
+    .await
 }
 
 fn current_workspace_api_port() -> u16 {

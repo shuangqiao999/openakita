@@ -362,6 +362,9 @@ class Settings(BaseSettings):
     )
 
     # === 搜索后端配置 (v2) ===
+    # 注意: embedding_api_* 系列用于 search_backend=api_embedding (旧)
+    #       embedding_* 系列用于 zvec 后端 (新, 默认)
+    #       两套配置共存, zvec 后端优先使用 embedding_* 系列
     search_backend: str = Field(
         default="zvec",
         description="记忆搜索后端: zvec(默认,零API依赖) | fts5(纯SQLite) | chromadb(本地向量) | api_embedding(在线API)",

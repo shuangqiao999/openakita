@@ -42,7 +42,7 @@ from ..memory.json_utils import coerce_text
 # 技能系统 (SKILL.md 规范) — 惰性导入避免循环依赖 (agent → skills → capabilities → core)
 # 实际导入见 Agent.__init__ 内
 if TYPE_CHECKING:
-    from ..skills import SkillCatalog, SkillLoader, SkillRegistry
+    pass
 
 # 系统工具目录（渐进式披露）
 from ..tools.catalog import ToolCatalog
@@ -97,9 +97,9 @@ from .agent_state import AgentState
 
 try:
     from .attachment_processor import (
+        _LOCAL_UPLOAD_RE,
         format_desktop_attachment_reference,
         maybe_inline_local_image,
-        _LOCAL_UPLOAD_RE,
     )
 except ImportError:
     _LOCAL_UPLOAD_RE = re.compile(
@@ -589,16 +589,16 @@ _MEDIA_EXTENSIONS: set[str] = {
 # 上下文管理常量（部分迁移至 context_manager.py，压缩相关仍需就地定义）
 try:
     from .constants import (
+        _DESTRUCTIVE_VERBS,
+        _EXTERNAL_TOOL_MARKERS,
+        _REPLAY_REQUEST_MARKERS,
+        _TASK_PROGRESS_ONLY_MARKERS,
+        _TASK_RESULT_META_MARKERS,
         CHARS_PER_TOKEN,
         CHUNK_MAX_TOKENS,
         COMPRESSION_RATIO,
         LARGE_TOOL_RESULT_THRESHOLD,
         MIN_RECENT_TURNS,
-        _EXTERNAL_TOOL_MARKERS,
-        _TASK_RESULT_META_MARKERS,
-        _TASK_PROGRESS_ONLY_MARKERS,
-        _REPLAY_REQUEST_MARKERS,
-        _DESTRUCTIVE_VERBS,
     )
 except ImportError:
     CHARS_PER_TOKEN = 2
@@ -1193,9 +1193,9 @@ class Agent:
             embedding_device=settings.embedding_device,
             model_download_source=settings.model_download_source,
             search_backend=settings.search_backend,
-            embedding_api_provider=settings.embedding_api_provider,
+            embedding_api_provider=settings.embedding_api_provider or settings.embedding_provider,
             embedding_api_key=settings.embedding_api_key,
-            embedding_api_model=settings.embedding_api_model,
+            embedding_api_model=settings.embedding_model_name or settings.embedding_api_model,
             agent_id=self.name,
         )
         self._memory_backends: dict[str, dict] = {}
@@ -5712,7 +5712,7 @@ class Agent:
                 ),
                 timeout=3.0,
             )
-        except (asyncio.TimeoutError, Exception):
+        except (TimeoutError, Exception):
             # Compression timed out — proceed with uncompressed context
             # and schedule background compression for the next turn
             logger.info(

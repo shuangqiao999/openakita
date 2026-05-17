@@ -806,7 +806,16 @@ export function LLMView(props: LLMViewProps) {
     setEmbFetchingModels(true);
     try {
       const res = await safeFetch(
-        `${httpApiBase()}/api/embedding/models?provider=${encodeURIComponent(embProvider)}&api_base=${encodeURIComponent(embApiBase)}&api_key=${encodeURIComponent(embApiKey)}`
+        `${httpApiBase()}/api/embedding/models`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            provider: embProvider,
+            api_base: embApiBase,
+            api_key: embApiKey,
+          }),
+        }
       );
       const data = await res.json();
       setEmbModels(data.models || []);

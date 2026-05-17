@@ -387,7 +387,7 @@ class APIEmbeddingBackend:
 
 
 def create_search_backend(
-    backend_type: str = "fts5",
+    backend_type: str = "zvec",
     *,
     storage: Any = None,
     vector_store: Any = None,
@@ -422,12 +422,35 @@ def create_search_backend(
         try:
             from .zvec_backend import ZvecBackend
 
-            backend = ZvecBackend(
-                persist_dir=str(storage.db_path.parent / "zvec") if storage and hasattr(storage, "db_path") else "data/zvec",
-            )
+            _persist = "data/zvec"
+            if storage and hasattr(storage, "_db_path"):
+                _persist = str(storage._db_path.parent / "zvec")
+            backend = ZvecBackend(persist_dir=_persist)
             if backend.available:
                 logger.info("[SearchBackend] Using Zvec backend")
                 return backend
+
+            # 首次运行: zvec 已安装但集合未创建 (embedding_dim=0)
+            # 主动获取嵌入模型维度并初始化集合，否则永久退化为 FTS5
+            if not backend.available and hasattr(backend, "_zvec") and backend._zvec:
+                try:
+                    from openakita.llm.embeddings import get_embedding_model
+
+                    model = get_embedding_model()
+                    if model and model.dimension > 0:
+                        backend._embedding_dim = model.dimension
+                        backend._init_or_open(model.dimension)
+                        if backend.available:
+                            logger.info(
+                                f"[SearchBackend] Auto-created Zvec collection "
+                                f"(dim={model.dimension})"
+                            )
+                            return backend
+                except Exception as _auto_err:
+                    logger.info(
+                        f"[SearchBackend] Cannot auto-create zvec collection (no embedding config): "
+                        f"{_auto_err}"
+                    )
             logger.warning("[SearchBackend] Zvec not available, falling back")
         except ImportError:
             logger.warning("[SearchBackend] Zvec not installed, falling back")

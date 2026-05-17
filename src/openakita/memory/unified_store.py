@@ -141,8 +141,8 @@ class UnifiedStore:
             user_id=user_id,
             workspace_id=workspace_id,
         )
-        if not hits and self._fts5_fallback is not None:
-            hits = self._fts5_fallback.search(
+        if self._fts5_fallback is not None:
+            fts5_hits = self._fts5_fallback.search(
                 core,
                 limit=5,
                 scope=scope,
@@ -150,6 +150,12 @@ class UnifiedStore:
                 user_id=user_id,
                 workspace_id=workspace_id,
             )
+            # 合并主后端和 FTS5 结果，取每个 ID 的最高分
+            existing_scores = dict(hits)
+            for mid, score in fts5_hits:
+                if mid not in existing_scores or score > existing_scores[mid]:
+                    existing_scores[mid] = score
+            hits = list(existing_scores.items())
         for mid, _score in hits:
             existing = self.db.get_memory(mid)
             if not existing:
