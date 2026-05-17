@@ -21,6 +21,7 @@ router = APIRouter(prefix="/api/embedding", tags=["嵌入模型"])
 
 class EmbedTestBody(BaseModel):
     provider: str = ""
+    api_type: str = ""
     model_name: str = ""
     api_base: str = ""
     api_key: str = ""
@@ -29,14 +30,17 @@ class EmbedTestBody(BaseModel):
 
 class FetchModelsBody(BaseModel):
     provider: str = ""
+    api_type: str = ""
     api_base: str = ""
     api_key: str = ""
 
 
 @router.post("/test")
 async def test_embedding_endpoint(body: EmbedTestBody):
+    api_type = body.api_type or ("openai" if body.provider not in ("huggingface", "") else "")
     config = {
         "provider": body.provider,
+        "api_type": api_type,
         "model_name": body.model_name,
         "api_base": body.api_base,
         "api_key": body.api_key,
@@ -51,17 +55,20 @@ async def test_embedding_endpoint(body: EmbedTestBody):
 
 @router.post("/models")
 async def list_embedding_models(body: FetchModelsBody):
-    """拉取嵌入模型列表 (仅 OpenAI 兼容 API 支持)。API key 通过 POST body 传递"""
+    """拉取嵌入模型列表 (OpenAI 兼容 API)。API key 通过 POST body 传递"""
     if not body.api_base and not body.provider:
         return {"models": []}
-    if body.provider in ("openai", "") and body.api_key:
+    api_type = body.api_type or ("openai" if body.provider not in ("huggingface", "") else "")
+    if api_type == "openai" and (body.api_base or body.api_key):
         import httpx
 
         base = (body.api_base or "https://api.openai.com/v1").rstrip("/")
         url = f"{base}/models"
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
-                headers = {"Authorization": f"Bearer {body.api_key}"}
+                headers = {"Content-Type": "application/json"}
+                if body.api_key:
+                    headers["Authorization"] = f"Bearer {body.api_key}"
                 resp = await client.get(url, headers=headers)
                 resp.raise_for_status()
                 data = resp.json()

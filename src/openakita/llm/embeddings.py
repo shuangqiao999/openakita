@@ -217,6 +217,7 @@ def _read_embedding_endpoint_from_config() -> dict | None:
             if ep_data.get("enabled", True) is False:
                 continue
             provider = (ep_data.get("provider", "") or "").lower()
+            api_type = (ep_data.get("api_type", "") or "").lower()
             base_url = (ep_data.get("base_url", "") or "").strip()
             api_key_env = ep_data.get("api_key_env", "")
             model = ep_data.get("model", "")
@@ -231,6 +232,7 @@ def _read_embedding_endpoint_from_config() -> dict | None:
             if provider and model:
                 return {
                     "provider": provider,
+                    "api_type": api_type,
                     "model_name": model,
                     "api_base": base_url,
                     "api_key": api_key,
@@ -253,8 +255,10 @@ def _build_embedding_config() -> dict:
     try:
         from openakita.config import settings
 
+        provider = getattr(settings, "embedding_provider", "") or ""
         return {
-            "provider": getattr(settings, "embedding_provider", "") or "",
+            "provider": provider,
+            "api_type": "openai" if provider not in ("huggingface", "") else "",
             "api_base": getattr(settings, "embedding_api_base", "") or "",
             "api_key": getattr(settings, "embedding_api_key", "") or "",
             "model_name": getattr(settings, "embedding_model_name", "") or "",
@@ -282,6 +286,7 @@ def _infer_embedding_from_chat_endpoint(config: dict) -> dict | None:
         if api_base and api_key:
             return {
                 "provider": "openai",
+                "api_type": "openai",
                 "api_base": api_base.rstrip("/"),
                 "api_key": api_key,
                 "model_name": config.get("model_name", "text-embedding-3-small") or "text-embedding-3-small",
@@ -355,10 +360,23 @@ def get_embedding_model(config: dict | None = None) -> BaseEmbedding:
                     model_name=config.get("model_name", ""),
                 )
             else:
-                raise EmbeddingModelError(f"不支持的嵌入模型提供商: {provider}")
+                # 前端可选 ollama / lmstudio / deepseek 等 OpenAI 兼容提供商
+                # 通过 api_type 字段判断 API 协议类型，映射到对应嵌入类
+                api_type = (config.get("api_type") or "").strip().lower()
+                if api_type == "openai" or config.get("api_base"):
+                    model = OpenAIEmbedding(
+                        model_name=config.get("model_name", "text-embedding-3-small"),
+                        api_base=config.get("api_base", "") or None,
+                        api_key=config.get("api_key", "") or None,
+                    )
+                else:
+                    raise EmbeddingModelError(
+                        f"不支持的嵌入模型提供商: {provider}"
+                        f"（api_type={api_type or '未知'}）"
+                    )
 
             # Auto-discover true dimension from API response (not hardcoded default)
-            if provider in ("openai", "custom"):
+            if isinstance(model, OpenAIEmbedding) or isinstance(model, CustomEmbedding):
                 try:
                     test_vec = await model.embed_query("dimension probe")
                     if test_vec:
