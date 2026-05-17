@@ -74,6 +74,7 @@ class ZvecBackend:
         self._collection: object | None = None
         self._zvec = None
         self._lock = threading.Lock()
+        self._cached_embedder: object | None = None
 
         try:
             import zvec as _zvec_mod
@@ -163,10 +164,13 @@ class ZvecBackend:
         return "zvec"
 
     def _get_embedder(self):
+        if self._cached_embedder is not None:
+            return self._cached_embedder
         try:
             from openakita.llm.embeddings import get_embedding_model
 
             model = get_embedding_model()
+            self._cached_embedder = model
             return model
         except Exception:
             return None
@@ -224,7 +228,8 @@ class ZvecBackend:
                     # Inner product score normalize to [0, 1]
                     score = float(max(0.0, min(1.0, raw_score)))
                 else:
-                    score = float(raw_score)
+                    # L2 (Euclidean): lower distance = more similar, invert to [0, 1]
+                    score = 1.0 / (1.0 + float(raw_score))
                 score = max(0.0, min(1.0, score))
                 if math.isfinite(score):
                     scored.append((coerce_text(doc_id), score))
@@ -245,18 +250,6 @@ class ZvecBackend:
         if vec_dim <= 0:
             return False
 
-        # 延迟创建 collection (当嵌入模型维度已知时)
-        with self._lock:
-            if not self._collection and vec_dim > 0:
-                try:
-                    self._ensure_collection(self._coll_path(), vec_dim)
-                except Exception as e:
-                    logger.warning(f"[ZvecBackend] Auto-create collection failed: {e}")
-                    return False
-
-        if not self.available:
-            return False
-
         try:
             vec = _run_embedding_sync(embedder, "embed_query", content)
         except Exception as e:
@@ -266,19 +259,29 @@ class ZvecBackend:
         if not vec:
             return False
 
-        try:
-            doc = self._zvec.Doc(id=memory_id, vectors={self._EMBEDDING_FIELD: vec})
-            if metadata:
-                for k, v in metadata.items():
-                    if isinstance(v, (str, int, float, bool)):
-                        setattr(doc, k, v)
-            with self._lock:
+        with self._lock:
+            if not self._collection and vec_dim > 0:
+                try:
+                    self._ensure_collection(self._coll_path(), vec_dim)
+                except Exception as e:
+                    logger.warning(f"[ZvecBackend] Auto-create collection failed: {e}")
+                    return False
+
+            if not self._collection:
+                return False
+
+            try:
+                doc = self._zvec.Doc(id=memory_id, vectors={self._EMBEDDING_FIELD: vec})
+                if metadata:
+                    for k, v in metadata.items():
+                        if isinstance(v, (str, int, float, bool)):
+                            setattr(doc, k, v)
                 self._collection.insert([doc])
                 self._collection.flush()
-            return True
-        except Exception as e:
-            logger.warning(f"[ZvecBackend] add failed for {memory_id[:8]}: {e}")
-            return False
+                return True
+            except Exception as e:
+                logger.warning(f"[ZvecBackend] add failed for {memory_id[:8]}: {e}")
+                return False
 
     def delete(self, memory_id: str) -> bool:
         if not self.available:
@@ -320,30 +323,32 @@ class ZvecBackend:
                     logger.warning(f"[ZvecBackend] Auto-create collection failed: {e}")
                     return 0
 
-        if not self.available:
-            return 0
+            if not self._collection:
+                return 0
 
-        try:
-            docs = []
-            for i, it in enumerate(items):
-                doc_id = it.get("id", "")
-                if not doc_id:
-                    continue
-                docs.append(
-                    self._zvec.Doc(
+            try:
+                docs = []
+                for i, it in enumerate(items):
+                    doc_id = it.get("id", "")
+                    if not doc_id:
+                        continue
+                    doc = self._zvec.Doc(
                         id=doc_id,
                         vectors={self._EMBEDDING_FIELD: vecs[i]},
                     )
-                )
-            if docs:
-                with self._lock:
+                    metadata = it.get("metadata")
+                    if metadata and isinstance(metadata, dict):
+                        for k, v in metadata.items():
+                            if isinstance(v, (str, int, float, bool)):
+                                setattr(doc, k, v)
+                    docs.append(doc)
+                if docs:
                     self._collection.insert(docs)
                     self._collection.flush()
                 return len(docs)
-            return 0
-        except Exception as e:
-            logger.warning(f"[ZvecBackend] batch_add failed: {e}")
-            return 0
+            except Exception as e:
+                logger.warning(f"[ZvecBackend] batch_add failed: {e}")
+                return 0
 
     def count(self) -> int:
         if not self.available:
@@ -352,7 +357,8 @@ class ZvecBackend:
             with self._lock:
                 stats = self._collection.stats
                 return getattr(stats, "row_count", 0) if stats else 0
-        except Exception:
+        except Exception as e:
+            logger.warning(f"[ZvecBackend] count failed: {e}")
             return 0
 
     def clear(self) -> bool:

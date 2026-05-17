@@ -438,7 +438,6 @@ def create_search_backend(
 
                     model = get_embedding_model()
                     if model and model.dimension > 0:
-                        backend._embedding_dim = model.dimension
                         backend._init_or_open(model.dimension)
                         if backend.available:
                             logger.info(

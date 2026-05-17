@@ -357,6 +357,22 @@ def get_embedding_model(config: dict | None = None) -> BaseEmbedding:
             else:
                 raise EmbeddingModelError(f"不支持的嵌入模型提供商: {provider}")
 
+            # Auto-discover true dimension from API response (not hardcoded default)
+            if provider in ("openai", "custom"):
+                try:
+                    test_vec = await model.embed_query("dimension probe")
+                    if test_vec:
+                        model._dimension = len(test_vec)
+                        logger.debug(
+                            f"[Embedding] Auto-discovered dimension={model._dimension} "
+                            f"for {provider}/{config.get('model_name')}"
+                        )
+                except Exception:
+                    logger.debug(
+                        f"[Embedding] Dimension discovery skipped, using default "
+                        f"dim={model.dimension} for {provider}"
+                    )
+
             _EMBEDDING_MODEL_CACHE[cache_key] = model
             logger.info(
                 f"[Embedding] Initialized {provider} embedding model: "
