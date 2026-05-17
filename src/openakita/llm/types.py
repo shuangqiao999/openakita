@@ -537,19 +537,22 @@ def normalize_context_window(
     *,
     provider: str = "",
     base_url: str = "",
+    explicit: bool = False,
 ) -> int:
     """Normalize endpoint context windows.
 
     Priority:
     1. OPENAKITA_FORCE_MAX_CTX env var (user override)
-    2. Explicitly configured context_window
-    3. Local endpoints: 16384 (safe default for modern local models,
-       many Ollama/LM Studio 7B+ models support 32K+)
+    2. Explicitly configured context_window (via JSON config or code)
+    3. Local endpoints: 16384 (safe default when not explicitly configured)
     4. Cloud endpoints: 200000 (standard fallback)
 
-    NOTE: LOCAL_ENDPOINT_DEFAULT_CONTEXT_WINDOW was raised from 4096 to 16384
-    to prevent extreme budget truncation. Most local models (qwen2.5, llama3,
-    deepseek-r1, etc.) support 32K+ context when configured properly.
+    The ``explicit`` flag distinguishes a value that was explicitly set by the
+    user/endpoint-config from one that was merely defaulted.  Without this,
+    setting context_window=200000 on a local endpoint is indistinguishable
+    from the DEFAULT_CONTEXT_WINDOW=200000 and gets silently overridden to
+    16384 — the root cause of ``max_ctx=11673`` when the user configured
+    200000.
     """
     forced = _get_force_max_ctx()
     if forced is not None:
@@ -560,7 +563,7 @@ def normalize_context_window(
     except (TypeError, ValueError):
         ctx = 0
 
-    if is_local and (ctx <= 0 or ctx == DEFAULT_CONTEXT_WINDOW):
+    if is_local and (ctx <= 0 or (ctx == DEFAULT_CONTEXT_WINDOW and not explicit)):
         return LOCAL_ENDPOINT_DEFAULT_CONTEXT_WINDOW
     if ctx <= 0:
         return DEFAULT_CONTEXT_WINDOW
@@ -731,6 +734,8 @@ class EndpointConfig:
 
     @classmethod
     def from_dict(cls, data: dict) -> "EndpointConfig":
+        ctx_raw = data.get("context_window")
+        ctx_explicit = "context_window" in data
         return cls(
             name=data["name"],
             provider=data["provider"],
@@ -742,9 +747,10 @@ class EndpointConfig:
             priority=data.get("priority", 1),
             max_tokens=data.get("max_tokens", 0),
             context_window=normalize_context_window(
-                data.get("context_window"),
+                ctx_raw,
                 provider=data.get("provider", ""),
                 base_url=data.get("base_url", ""),
+                explicit=ctx_explicit,
             ),
             timeout=data.get("timeout", 180),
             capabilities=data.get("capabilities"),
