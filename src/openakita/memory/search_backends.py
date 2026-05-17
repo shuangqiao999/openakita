@@ -235,11 +235,10 @@ class APIEmbeddingBackend:
 
     @staticmethod
     def _default_model(provider: str) -> str:
-        defaults = {
+        defaults: dict[str, str] = {
             "dashscope": "text-embedding-v3",
-            "openai": "text-embedding-3-small",
         }
-        return defaults.get(provider, "text-embedding-v3")
+        return defaults.get(provider, "")
 
     def search(
         self,

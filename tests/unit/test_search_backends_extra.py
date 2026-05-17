@@ -102,7 +102,7 @@ class TestAPIEmbeddingBackend:
 
     def test_default_model_openai(self, tmp_storage):
         backend = APIEmbeddingBackend(storage=tmp_storage, provider="openai", api_key="k")
-        assert backend._model == "text-embedding-3-small"
+        assert backend._model == ""
 
     def test_search_empty_text_returns_none(self, tmp_storage):
         backend = APIEmbeddingBackend(storage=tmp_storage, api_key="sk-test")

@@ -77,7 +77,7 @@ class OpenAIEmbedding(BaseEmbedding):
 
     def __init__(
         self,
-        model_name: str = "text-embedding-3-small",
+        model_name: str = "",
         api_base: str | None = None,
         api_key: str | None = None,
         dimension: int = 0,
@@ -289,7 +289,7 @@ def _infer_embedding_from_chat_endpoint(config: dict) -> dict | None:
                 "api_type": "openai",
                 "api_base": api_base.rstrip("/"),
                 "api_key": api_key,
-                "model_name": config.get("model_name", "text-embedding-3-small") or "text-embedding-3-small",
+                "model_name": config.get("model_name", "") or "",
                 "device": "cpu",
             }
         return None
@@ -344,7 +344,7 @@ def get_embedding_model(config: dict | None = None) -> BaseEmbedding:
             model: BaseEmbedding
             if provider == "openai":
                 model = OpenAIEmbedding(
-                    model_name=config.get("model_name", "text-embedding-3-small"),
+                    model_name=config.get("model_name", ""),
                     api_base=config.get("api_base", "") or None,
                     api_key=config.get("api_key", "") or None,
                 )
@@ -365,7 +365,7 @@ def get_embedding_model(config: dict | None = None) -> BaseEmbedding:
                 api_type = (config.get("api_type") or "").strip().lower()
                 if api_type == "openai" or config.get("api_base"):
                     model = OpenAIEmbedding(
-                        model_name=config.get("model_name", "text-embedding-3-small"),
+                        model_name=config.get("model_name", ""),
                         api_base=config.get("api_base", "") or None,
                         api_key=config.get("api_key", "") or None,
                     )
