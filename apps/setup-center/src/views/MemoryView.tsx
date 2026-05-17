@@ -269,6 +269,17 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
     loadMigrationStatus();
   }, [loadMemories, loadStats, loadMigrationStatus]);
 
+  // Periodic auto-refresh: keep stats and memory list updated when memories are
+  // extracted by background tasks (e.g. after conversations end).
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (!reviewing) {
+        loadStats();
+      }
+    }, 30_000);
+    return () => clearInterval(interval);
+  }, [reviewing, loadStats]);
+
   const doDelete = async (id: string) => {
     try {
       // PR-O1: encodePathSegment 防止 id 含特殊字符破坏路径

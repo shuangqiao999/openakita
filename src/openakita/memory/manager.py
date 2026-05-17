@@ -823,10 +823,23 @@ class MemoryManager:
                 logger.warning(f"[Memory] Topic-change extraction failed: {e}")
             return 0
 
-    async def _save_extracted_item(self, item: dict, episode_id: str | None = None) -> str | None:
+    async def _save_extracted_item(
+        self,
+        item: dict,
+        episode_id: str | None = None,
+        *,
+        force_user_id: str | None = None,
+        force_workspace_id: str | None = None,
+        force_scope: str | None = None,
+        force_scope_owner: str | None = None,
+    ) -> str | None:
         """Save a v2 extracted item as SemanticMemory, with multi-layer dedup.
 
         Returns the memory ID (new or evolved), or None on failure.
+
+        When force_* parameters are provided (from a pre-captured session snapshot),
+        they override the current dynamic scope/owner resolution, preventing races
+        when the async closure executes after a new session has started.
         """
         type_map = {
             "PREFERENCE": MemoryType.PREFERENCE,
@@ -865,8 +878,16 @@ class MemoryManager:
         else:
             priority = MemoryPriority.SHORT_TERM
 
-        write_scope, write_owner = self._current_write_scope()
-        write_user, write_workspace = self._current_owner()
+        write_scope, write_owner = (
+            (force_scope, force_scope_owner)
+            if force_scope is not None
+            else self._current_write_scope()
+        )
+        write_user, write_workspace = (
+            (force_user_id or "default", force_workspace_id or "default")
+            if force_user_id is not None
+            else self._current_owner()
+        )
 
         # Dedup layer 1: exact subject+predicate match → evolve existing
         subject = item.get("subject", "")
@@ -1116,6 +1137,11 @@ class MemoryManager:
         turns = list(self._session_turns)
         cited = self._consume_cited_memories()
 
+        # 快照当前 owner 信息，防止后台任务执行时被新的 start_session() 覆盖
+        _captured_user_id = self._current_user_id or "default"
+        _captured_workspace_id = self._current_workspace_id or "default"
+        _captured_write_scope, _captured_write_owner = self._current_write_scope()
+
         relational_pending_snapshot = list(self._relational_pending_nodes)
         self._relational_pending_nodes.clear()
 
@@ -1157,7 +1183,13 @@ class MemoryManager:
                         logger.info(f"[Memory] Citation scores applied: {useful} useful")
                     saved = 0
                     for item in items:
-                        mid = await self._save_extracted_item(item, episode_id=ep_id)
+                        mid = await self._save_extracted_item(
+                            item, episode_id=ep_id,
+                            force_user_id=_captured_user_id,
+                            force_workspace_id=_captured_workspace_id,
+                            force_scope=_captured_write_scope,
+                            force_scope_owner=_captured_write_owner,
+                        )
                         if mid:
                             saved_memory_ids.append(mid)
                         saved += 1
@@ -1182,7 +1214,13 @@ class MemoryManager:
                     )
                     exp_saved = 0
                     for item in exp_items:
-                        mid = await self._save_extracted_item(item, episode_id=ep_id)
+                        mid = await self._save_extracted_item(
+                            item, episode_id=ep_id,
+                            force_user_id=_captured_user_id,
+                            force_workspace_id=_captured_workspace_id,
+                            force_scope=_captured_write_scope,
+                            force_scope_owner=_captured_write_owner,
+                        )
                         if mid:
                             saved_memory_ids.append(mid)
                         exp_saved += 1

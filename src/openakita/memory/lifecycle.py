@@ -732,7 +732,7 @@ class LifecycleManager:
     # LLM-driven Memory Review
     # ==================================================================
 
-    MEMORY_REVIEW_PROMPT = """你是记忆质量审查专家。请逐条审查以下记忆，判断每条是否值得长期保留。
+    MEMORY_REVIEW_PROMPT = """你是记忆质量审查与精简专家。请逐条审查以下记忆，判断每条是否值得长期保留，并对冗余内容进行合并与精炼。
 
 ## 审查标准
 
@@ -754,7 +754,16 @@ class LifecycleManager:
 - 无上下文的碎片：缺乏主语、无法独立理解的短句
 - **零引用+低分记忆**（cited=0 且 score<0.5）：从未被证实有用，优先清理
 
-**合并**：如果两条记忆说的是同一件事，标记为 merge 并给出合并后的内容。
+**合并**（消除语义重复）：
+- 两条或多条记忆描述同一事实/偏好/规则时，标记为 merge
+- 将多条信息融合为一条精炼的内容，去除冗余表述
+- 合并后内容应更简洁、更完整，保留所有关键信息点
+- **优先合并同 subject+predicate 的记忆**，它们几乎一定是重复的
+
+**精炼**（update + 精简内容）：
+- 内容冗长啰嗦的 → 保留核心信息，压缩至 1-2 句话
+- 信息分散在多条记忆中的 → 合并后用 update 精炼
+- 表达不够清晰准确的 → 改写为更精确的表述
 
 ## 待审查记忆
 
@@ -769,12 +778,142 @@ class LifecycleManager:
     "action": "keep|delete|merge|update",
     "reason": "简要理由（10字内）",
     "merged_with": "合并目标ID（仅 merge 时）",
-    "new_content": "更新后的内容（仅 update/merge 时）",
+    "new_content": "更新/合并后的精炼内容（仅 update/merge 时，应比原文更简洁准确）",
     "new_importance": 0.5-1.0
   }}
 ]
 
 只输出 JSON 数组，不要其他内容。"""
+
+    @staticmethod
+    def _cluster_similar_memories(memories: list) -> list[str]:
+        """Reorder memory IDs so similar memories are grouped in the same review batch.
+
+        Strategy:
+          1. Group by (subject, predicate) — same key = almost certainly a duplicate.
+          2. Within unmatched memories, use token overlap to find near-duplicates.
+          3. Order output so similar groups are adjacent, ensuring LLM sees them together.
+        """
+        # Step 1: group by subject+predicate key
+        key_groups: dict[str, list] = {}
+        unkeyed: list = []
+
+        for m in memories:
+            subj = (getattr(m, "subject", "") or "").strip().lower()
+            pred = (getattr(m, "predicate", "") or "").strip().lower()
+            if subj and pred:
+                key = f"{subj}::{pred}"
+                key_groups.setdefault(key, []).append(m)
+            else:
+                unkeyed.append(m)
+
+        # Step 2: within unkeyed, find content-similar pairs using token overlap
+        def _tokenize(content: str) -> set[str]:
+            return set(content.lower().split())
+
+        token_cache: dict[str, set[str]] = {}
+        for m in unkeyed:
+            content = (getattr(m, "content", "") or "").strip()
+            token_cache[m.id] = _tokenize(content)
+
+        similarity_graph: dict[str, set[str]] = {}
+        unkeyed_ids = [m.id for m in unkeyed]
+        for i in range(len(unkeyed_ids)):
+            tid_i = unkeyed_ids[i]
+            tokens_i = token_cache.get(tid_i, set())
+            if len(tokens_i) < 3:
+                continue
+            for j in range(i + 1, len(unkeyed_ids)):
+                tid_j = unkeyed_ids[j]
+                tokens_j = token_cache.get(tid_j, set())
+                if len(tokens_j) < 3:
+                    continue
+                # Jaccard similarity
+                intersection = len(tokens_i & tokens_j)
+                union = len(tokens_i | tokens_j)
+                if union > 0 and intersection / union > 0.5:
+                    similarity_graph.setdefault(tid_i, set()).add(tid_j)
+                    similarity_graph.setdefault(tid_j, set()).add(tid_i)
+
+        # BFS cluster unkeyed memories
+        visited: set[str] = set()
+        content_clusters: list[list[str]] = []
+        for mid in unkeyed_ids:
+            if mid in visited:
+                continue
+            cluster: list[str] = []
+            stack = [mid]
+            while stack:
+                cur = stack.pop()
+                if cur in visited:
+                    continue
+                visited.add(cur)
+                cluster.append(cur)
+                for neighbor in similarity_graph.get(cur, set()):
+                    if neighbor not in visited:
+                        stack.append(neighbor)
+            if cluster:
+                content_clusters.append(cluster)
+        # Remaining unclustered singletons
+        for mid in unkeyed_ids:
+            if mid not in visited:
+                content_clusters.append([mid])
+                visited.add(mid)
+
+        # Step 3: build ordered list — key_groups first (highest dupe risk), then content clusters, then singletons
+        ordered: list[str] = []
+        # Flatten key groups (largest first)
+        for group in sorted(key_groups.values(), key=len, reverse=True):
+            ordered.extend(m.id for m in group)
+        # Flatten content clusters (largest first)
+        for cluster in sorted(content_clusters, key=len, reverse=True):
+            ordered.extend(cluster)
+        return ordered
+
+    def _cleanup_subject_predicate_duplicates(self) -> dict:
+        """Sweep remaining memories for subject+predicate duplicates that the
+        LLM review may have missed (e.g. duplicates split across batches).
+
+        For each group sharing the same subject+predicate, keep the best
+        memory and delete the rest.
+        """
+        remaining = self.store.load_all_memories()
+        if len(remaining) < 2:
+            return {"deleted": 0}
+
+        key_groups: dict[str, list] = {}
+        for m in remaining:
+            subj = (getattr(m, "subject", "") or "").strip().lower()
+            pred = (getattr(m, "predicate", "") or "").strip().lower()
+            if subj and pred:
+                key = f"{subj}::{pred}"
+                key_groups.setdefault(key, []).append(m)
+
+        deleted = 0
+        for group in key_groups.values():
+            if len(group) < 2:
+                continue
+            # Score: importance * (1 + access_count/10), prefer cited + important
+            group.sort(
+                key=lambda m: (
+                    getattr(m, "importance_score", 0.5) or 0.5
+                )
+                * (1 + (getattr(m, "access_count", 0) or 0) / 10),
+                reverse=True,
+            )
+            # Keep the best, delete the rest
+            for m in group[1:]:
+                try:
+                    self.store.delete_semantic(m.id)
+                    deleted += 1
+                    logger.debug(
+                        f"[Lifecycle] Post-review dedup: deleted {m.id[:8]} "
+                        f"(subject={getattr(m, 'subject', '')}, pred={getattr(m, 'predicate', '')})"
+                    )
+                except Exception as e:
+                    logger.warning(f"[Lifecycle] Post-review dedup delete failed: {e}")
+
+        return {"deleted": deleted}
 
     async def review_memories_with_llm(
         self,
@@ -820,8 +959,14 @@ class LifecycleManager:
         batch_size = 15
         memory_by_id = {m.id: m for m in all_memories}
 
+        # ── Pre-clustering: group similar memories together so the LLM sees
+        #    potential duplicates in the same batch ──
+        if not isinstance(checkpoint, dict) or not checkpoint:
+            memory_ids = self._cluster_similar_memories(all_memories)
+        else:
+            memory_ids = list(checkpoint.get("memory_ids") or [m.id for m in all_memories])
+
         if checkpoint and isinstance(checkpoint.get("memory_ids"), list):
-            memory_ids = list(checkpoint["memory_ids"])
             cursor = int(checkpoint.get("cursor", 0) or 0)
             saved_report = checkpoint.get("report")
             if isinstance(saved_report, dict):
@@ -829,7 +974,6 @@ class LifecycleManager:
                     report[key] = int(saved_report.get(key, report[key]) or 0)
             consecutive_risky_skips = int(checkpoint.get("consecutive_risky_skips", 0) or 0)
         else:
-            memory_ids = [m.id for m in all_memories]
             cursor = 0
             consecutive_risky_skips = 0
 
@@ -1072,6 +1216,17 @@ class LifecycleManager:
             from ..llm.types import AllEndpointsFailedError
 
             raise AllEndpointsFailedError(f"LLM review failed: all {total_batches} batches errored")
+
+        # ── Post-review secondary cleanup: sweep for remaining subject+predicate
+        #     duplicates that may have been in different batches ──
+        if not cancelled:
+            secondary_cleanup = self._cleanup_subject_predicate_duplicates()
+            if secondary_cleanup.get("deleted", 0) > 0:
+                report["deleted"] = report.get("deleted", 0) + secondary_cleanup["deleted"]
+                logger.info(
+                    f"[Lifecycle] Post-review sweep: removed {secondary_cleanup['deleted']} "
+                    f"subject+predicate duplicates"
+                )
 
         logger.info(
             f"[Lifecycle] Memory review complete: "

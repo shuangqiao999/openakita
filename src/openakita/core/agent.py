@@ -5957,6 +5957,7 @@ class Agent:
                 task_desc = (getattr(self, "_current_task_query", "") or "").strip()[:200]
                 self.memory_manager.end_session(task_desc, success=True)
                 logger.debug(f"[Session:{session_id}] memory_manager.end_session() called")
+                await self.memory_manager.await_pending_tasks(timeout=15.0)
             except Exception as e:
                 logger.debug(f"[Session:{session_id}] memory end_session failed: {e}")
 
