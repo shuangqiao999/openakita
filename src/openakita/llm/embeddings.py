@@ -80,7 +80,7 @@ class OpenAIEmbedding(BaseEmbedding):
         model_name: str = "text-embedding-3-small",
         api_base: str | None = None,
         api_key: str | None = None,
-        dimension: int = 1536,
+        dimension: int = 0,
     ):
         self._model_name = model_name
         self._api_base = (api_base or "").rstrip("/")
@@ -138,7 +138,7 @@ class HuggingFaceEmbedding(BaseEmbedding):
                 self._model = await asyncio.to_thread(
                     SentenceTransformer, self._model_name, device=self._device
                 )
-                self._dimension = self._model.get_sentence_embedding_dimension() or 768
+                self._dimension = self._model.get_sentence_embedding_dimension() or 0
             except ImportError:
                 raise EmbeddingModelError(
                     "sentence-transformers 未安装。请运行: pip install sentence-transformers"
@@ -167,7 +167,7 @@ class HuggingFaceEmbedding(BaseEmbedding):
 class CustomEmbedding(BaseEmbedding):
     """自定义 API 端点嵌入"""
 
-    def __init__(self, api_base: str, api_key: str = "", model_name: str = "", dimension: int = 768):
+    def __init__(self, api_base: str, api_key: str = "", model_name: str = "", dimension: int = 0):
         self._api_base = api_base.rstrip("/")
         self._api_key = api_key
         self._model_name = model_name
@@ -375,7 +375,7 @@ def get_embedding_model(config: dict | None = None) -> BaseEmbedding:
                         f"（api_type={api_type or '未知'}）"
                     )
 
-            # Auto-discover true dimension from API response (not hardcoded default)
+            # Auto-discover true dimension from API response (no hardcoded defaults)
             if isinstance(model, OpenAIEmbedding) or isinstance(model, CustomEmbedding):
                 try:
                     test_vec = await model.embed_query("dimension probe")
@@ -386,9 +386,10 @@ def get_embedding_model(config: dict | None = None) -> BaseEmbedding:
                             f"for {provider}/{config.get('model_name')}"
                         )
                 except Exception:
-                    logger.debug(
-                        f"[Embedding] Dimension discovery skipped, using default "
-                        f"dim={model.dimension} for {provider}"
+                    logger.warning(
+                        f"[Embedding] Dimension discovery failed for {provider}/"
+                        f"{config.get('model_name')} — vector search will be disabled "
+                        f"until a working embedding model is configured"
                     )
 
             _EMBEDDING_MODEL_CACHE[cache_key] = model
