@@ -649,6 +649,7 @@ function MainApp() {
   const [savedEndpoints, setSavedEndpoints] = useState<EndpointDraft[]>([]);
   const [savedCompilerEndpoints, setSavedCompilerEndpoints] = useState<EndpointDraft[]>([]);
   const [savedSttEndpoints, setSavedSttEndpoints] = useState<EndpointDraft[]>([]);
+  const [savedEmbeddingEndpoints, setSavedEmbeddingEndpoints] = useState<EndpointDraft[]>([]);
 
   // status panel data
   const [statusLoading, setStatusLoading] = useState(false);
@@ -1937,10 +1938,33 @@ function MainApp() {
         }))
         .sort((a: EndpointDraft, b: EndpointDraft) => a.priority - b.priority);
       setSavedSttEndpoints(sttEps);
+
+      // Load embedding endpoints
+      const embEps: EndpointDraft[] = (Array.isArray(parsed?.embedding_endpoints) ? parsed.embedding_endpoints : [])
+        .filter((e: any) => e?.name)
+        .map((e: any) => ({
+          name: String(e.name || ""),
+          provider: String(e.provider || ""),
+          api_type: String(e.api_type || "openai"),
+          base_url: String(e.base_url || ""),
+          api_key_env: String(e.api_key_env || ""),
+          model: String(e.model || ""),
+          priority: Number.isFinite(Number(e.priority)) ? Number(e.priority) : 1,
+          max_tokens: Number.isFinite(Number(e.max_tokens)) ? Number(e.max_tokens) : 0,
+          context_window: Number.isFinite(Number(e.context_window)) ? Number(e.context_window) : 8192,
+          timeout: Number.isFinite(Number(e.timeout)) ? Number(e.timeout) : 60,
+          capabilities: Array.isArray(e.capabilities) ? e.capabilities.map((x: any) => String(x)) : ["text"],
+          note: e.note ? String(e.note) : null,
+          enabled: e?.enabled !== false,
+        }))
+        .sort((a: EndpointDraft, b: EndpointDraft) => a.priority - b.priority);
+      setSavedEmbeddingEndpoints(embEps);
     } catch {
       setSavedEndpoints([]);
       setSavedCompilerEndpoints([]);
-      setSavedSttEndpoints([]);
+    setSavedSttEndpoints([]);
+    setSavedEmbeddingEndpoints([]);
+      setSavedEmbeddingEndpoints([]);
     }
   }
 
@@ -3335,9 +3359,11 @@ function MainApp() {
         savedEndpoints={savedEndpoints}
         savedCompilerEndpoints={savedCompilerEndpoints}
         savedSttEndpoints={savedSttEndpoints}
+        savedEmbeddingEndpoints={savedEmbeddingEndpoints}
         setSavedEndpoints={setSavedEndpoints}
         setSavedCompilerEndpoints={setSavedCompilerEndpoints}
         setSavedSttEndpoints={setSavedSttEndpoints}
+        setSavedEmbeddingEndpoints={setSavedEmbeddingEndpoints}
         envDraft={envDraft}
         setEnvDraft={setEnvDraft}
         secretShown={secretShown}

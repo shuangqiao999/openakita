@@ -4326,8 +4326,6 @@ fn main() {
             unregister_cli,
             get_cli_status,
             start_dragging,
-            get_embedding_config,
-            update_embedding_config,
             test_embedding_config,
             fetch_embedding_models,
         ])
@@ -9210,37 +9208,7 @@ fn get_cli_status() -> Result<CliStatus, String> {
     }
 }
 
-// ── Embedding model config commands (via Python HTTP API) ──
-
-#[tauri::command]
-async fn get_embedding_config() -> Result<String, String> {
-    let port = current_workspace_api_port();
-    let url = format!("http://127.0.0.1:{}/api/embedding/config", port);
-    http_get_json(url).await
-}
-
-#[tauri::command]
-async fn update_embedding_config(config: String) -> Result<String, String> {
-    let port = current_workspace_api_port();
-    let url = format!("http://127.0.0.1:{}/api/embedding/config", port);
-    spawn_blocking_result(move || {
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            .build()
-            .map_err(|e| format!("HTTP client error: {e}"))?;
-        let resp = client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .body(config)
-            .send()
-            .map_err(|e| format!("HTTP POST to {} failed: {e}", url))?
-            .error_for_status()
-            .map_err(|e| format!("HTTP POST to {} failed: {e}", url))?;
-        resp.text()
-            .map_err(|e| format!("read response body failed: {e}"))
-    })
-    .await
-}
+// ── Embedding model test / model-list commands (via Python HTTP API) ──
 
 #[tauri::command]
 async fn test_embedding_config(config: String) -> Result<String, String> {

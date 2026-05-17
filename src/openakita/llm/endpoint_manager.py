@@ -19,7 +19,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-_ENDPOINT_LISTS = ("endpoints", "compiler_endpoints", "stt_endpoints")
+_ENDPOINT_LISTS = ("endpoints", "compiler_endpoints", "stt_endpoints", "embedding_endpoints")
 
 
 def _strip_bom(raw: bytes) -> bytes:
@@ -625,6 +625,7 @@ class EndpointManager:
             "endpoints": [],
             "compiler_endpoints": [],
             "stt_endpoints": [],
+            "embedding_endpoints": [],
             "settings": {},
         }
 

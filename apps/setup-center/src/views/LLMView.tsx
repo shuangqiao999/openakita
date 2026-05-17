@@ -44,7 +44,7 @@ function friendlyConfigError(e: unknown): string {
   return msg;
 }
 
-type EndpointType = "endpoints" | "compiler_endpoints" | "stt_endpoints";
+type EndpointType = "endpoints" | "compiler_endpoints" | "stt_endpoints" | "embedding_endpoints";
 
 type SaveEndpointConfigResult = {
   endpoint: any;
@@ -70,9 +70,11 @@ export interface LLMViewProps {
   savedEndpoints: EndpointDraft[];
   savedCompilerEndpoints: EndpointDraft[];
   savedSttEndpoints: EndpointDraft[];
+  savedEmbeddingEndpoints: EndpointDraft[];
   setSavedEndpoints: React.Dispatch<React.SetStateAction<EndpointDraft[]>>;
   setSavedCompilerEndpoints: React.Dispatch<React.SetStateAction<EndpointDraft[]>>;
   setSavedSttEndpoints: React.Dispatch<React.SetStateAction<EndpointDraft[]>>;
+  setSavedEmbeddingEndpoints: React.Dispatch<React.SetStateAction<EndpointDraft[]>>;
   envDraft: EnvMap;
   setEnvDraft: React.Dispatch<React.SetStateAction<EnvMap>>;
   secretShown: Record<string, boolean>;
@@ -128,6 +130,7 @@ export function LLMView(props: LLMViewProps) {
   const [editBaseUrlExpanded, setEditBaseUrlExpanded] = useState(false);
   const [compBaseUrlExpanded, setCompBaseUrlExpanded] = useState(false);
   const [sttBaseUrlExpanded, setSttBaseUrlExpanded] = useState(false);
+  const [embBaseUrlExpanded, setEmbBaseUrlExpanded] = useState(false);
   const [addEpMaxTokens, setAddEpMaxTokens] = useState(0);
   const [addEpContextWindow, setAddEpContextWindow] = useState(200000);
   const [addEpTimeout, setAddEpTimeout] = useState(180);
@@ -153,23 +156,18 @@ export function LLMView(props: LLMViewProps) {
   const [sttEndpointName, setSttEndpointName] = useState("");
   const [sttModels, setSttModels] = useState<ListedModel[]>([]);
 
-  // Embedding model config
-  const [embProvider, setEmbProvider] = useState("openai");
-  const [embModelName, setEmbModelName] = useState("text-embedding-3-small");
-  const [embApiBase, setEmbApiBase] = useState("");
-  const [embApiKey, setEmbApiKey] = useState("");
-  const [embDevice, setEmbDevice] = useState("cpu");
-  const [embTesting, setEmbTesting] = useState(false);
-  const [embTestResult, setEmbTestResult] = useState<{
-    success: boolean; latency_ms: number; dimension: number; error?: string;
-  } | null>(null);
-  const [embSaving, setEmbSaving] = useState(false);
-  const [embModels, setEmbModels] = useState<string[]>([]);
-  const [embFetchingModels, setEmbFetchingModels] = useState(false);
+  // Embedding endpoint form
+  const [embProviderSlug, setEmbProviderSlug] = useState("");
+  const [embApiType, setEmbApiType] = useState<"openai" | "anthropic">("openai");
+  const [embBaseUrl, setEmbBaseUrl] = useState("");
+  const [embApiKeyValue, setEmbApiKeyValue] = useState("");
+  const [embModel, setEmbModel] = useState("");
+  const [embEndpointName, setEmbEndpointName] = useState("");
+  const [embModels, setEmbModels] = useState<ListedModel[]>([]);
 
   // Edit modal
   const [editingOriginalName, setEditingOriginalName] = useState<string | null>(null);
-  const [editEndpointType, setEditEndpointType] = useState<"endpoints" | "compiler_endpoints" | "stt_endpoints">("endpoints");
+  const [editEndpointType, setEditEndpointType] = useState<EndpointType>("endpoints");
   const [editModalOpen, setEditModalOpen] = useState(false);
   const isEditingEndpoint = editModalOpen && editingOriginalName !== null;
   const [editDraft, setEditDraft] = useState<{
@@ -188,6 +186,7 @@ export function LLMView(props: LLMViewProps) {
   const [addEpDialogOpen, setAddEpDialogOpen] = useState(false);
   const [addCompDialogOpen, setAddCompDialogOpen] = useState(false);
   const [addSttDialogOpen, setAddSttDialogOpen] = useState(false);
+  const [addEmbDialogOpen, setAddEmbDialogOpen] = useState(false);
 
   // Connection test
   const [connTesting, setConnTesting] = useState(false);
@@ -746,86 +745,107 @@ export function LLMView(props: LLMViewProps) {
     }
   }
 
-  // ── Embedding model handlers ──
+  // ── Embedding endpoint handlers ──
 
-  async function doTestEmbedding() {
-    setEmbTesting(true);
-    setEmbTestResult(null);
-    const config = {
-      provider: embProvider,
-      model_name: embModelName,
-      api_base: embApiBase,
-      api_key: embApiKey,
-      device: embDevice,
-    };
+  async function doFetchEmbModels() {
+    if (!currentWorkspaceId && dataMode !== "remote") return;
+    if (!ensureEndpointConfigApiReady()) return;
+    if (!embProviderSlug) { notifyError("请先选择嵌入服务商"); return; }
+    if (!embBaseUrl) { notifyError("请先填写嵌入端点的 Base URL"); return; }
+    const _busyId = notifyLoading("拉取嵌入模型列表...");
     try {
-      const res = await safeFetch(`${httpApiBase()}/api/embedding/test`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(config),
-      });
-      const data = await res.json();
-      setEmbTestResult(data);
-      if (data.success) {
-        notifySuccess(t("llm.embeddingTestSuccess", { ms: data.latency_ms }));
-      } else {
-        notifyError(data.error || t("llm.embeddingTestFailed"));
-      }
-    } catch (e: any) {
-      setEmbTestResult({ success: false, latency_ms: 0, dimension: 0, error: e.message || String(e) });
-      notifyError(e.message || t("llm.embeddingTestFailed"));
-    } finally {
-      setEmbTesting(false);
-    }
-  }
-
-  async function doSaveEmbedding() {
-    setEmbSaving(true);
-    const config = {
-      provider: embProvider,
-      model_name: embModelName,
-      api_base: embApiBase,
-      api_key: embApiKey,
-      device: embDevice,
-    };
-    try {
-      await safeFetch(`${httpApiBase()}/api/embedding/config`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(config),
-      });
-      notifySuccess(t("llm.embeddingSaved"));
-    } catch (e: any) {
-      notifyError(e.message || String(e));
-    } finally {
-      setEmbSaving(false);
-    }
-  }
-
-  async function doFetchEmbeddingModels() {
-    setEmbFetchingModels(true);
-    try {
-      const res = await safeFetch(
-        `${httpApiBase()}/api/embedding/models`,
-        {
+      let models: ListedModel[] = [];
+      if (shouldUseHttpApi()) {
+        const res = await safeFetch(`${httpApiBase()}/api/embedding/models`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            provider: embProvider,
-            api_base: embApiBase,
-            api_key: embApiKey,
-          }),
-        }
-      );
-      const data = await res.json();
-      setEmbModels(data.models || []);
-      if (data.error) notifyError(data.error);
-      else if ((data.models || []).length > 0) notifySuccess(t("llm.fetchSuccess", { count: data.models.length }));
+          body: JSON.stringify({ provider: embProviderSlug, api_base: embBaseUrl, api_key: embApiKeyValue }),
+        });
+        const data = await res.json();
+        models = (data.models || []).map((id: string) => ({ id, object: "model" }));
+      }
+      setEmbModels(models);
+      if (models.length === 0) notifyError("未找到嵌入模型");
+      else notifySuccess(t("llm.fetchSuccess", { count: models.length }));
     } catch (e: any) {
-      notifyError(e.message || String(e));
+      notifyError(friendlyFetchError(e));
     } finally {
-      setEmbFetchingModels(false);
+      dismissLoading(_busyId);
     }
+  }
+
+  async function doSaveEmbEndpoint(): Promise<boolean> {
+    if (!currentWorkspaceId && dataMode !== "remote") return false;
+    if (!ensureEndpointConfigApiReady()) return false;
+    if (!embModel) { notifyError("请填写嵌入模型名称"); return false; }
+    if (!embBaseUrl) { notifyError("请填写嵌入端点的 Base URL"); return false; }
+    if (!embBaseUrl.startsWith("http://") && !embBaseUrl.startsWith("https://")) {
+      notifyError("嵌入端点 Base URL 必须以 http:// 或 https:// 开头"); return false;
+    }
+    if (!embApiKeyValue) { notifyError("请填写嵌入端点的 API Key 值"); return false; }
+    const _busyId = notifyLoading("保存嵌入端点...");
+    try {
+      const epName = embEndpointName.trim() || embModel;
+      const effectiveEmbApiKeyValue = embApiKeyValue === "***" ? null : embApiKeyValue;
+      const endpoint = {
+        name: epName,
+        provider: embProviderSlug,
+        api_type: embApiType,
+        base_url: embBaseUrl,
+        model: embModel,
+        max_tokens: 0,
+        context_window: 8192,
+        timeout: 60,
+        capabilities: ["text"],
+      };
+      const saveResult = await saveEndpointConfig({
+        endpoint,
+        apiKey: effectiveEmbApiKeyValue || null,
+        endpointType: "embedding_endpoints",
+      });
+      setEmbModel("");
+      setEmbApiKeyValue("");
+      setEmbEndpointName("");
+      setEmbBaseUrl("");
+      setEmbModels([]);
+      await syncEndpointConfigChange("embedding_endpoints");
+      notifySuccess(appendReloadWarning(`嵌入端点 ${epName} 已保存`, saveResult));
+      return true;
+    } catch (e) {
+      notifyError(friendlyConfigError(e));
+      return false;
+    } finally {
+      dismissLoading(_busyId);
+    }
+  }
+
+  async function doStartEditEmbEndpoint(name: string) {
+    const eps = savedEmbeddingEndpoints;
+    const ep = eps.find((e) => e.name === name);
+    if (!ep) return;
+    const cur = await ensureEnvLoaded(currentWorkspaceId || "");
+    const apiKey = cur[ep.api_key_env] || "";
+    setEditingOriginalName(name);
+    setEditEndpointType("embedding_endpoints");
+    setEditDraft({
+      name: ep.name,
+      priority: ep.priority,
+      providerSlug: ep.provider,
+      apiType: ep.api_type as "openai" | "openai_responses" | "anthropic",
+      streamOnly: false,
+      baseUrl: ep.base_url,
+      apiKeyEnv: ep.api_key_env,
+      apiKeyValue: apiKey ? "***" : "",
+      apiKeyDirty: false,
+      modelId: ep.model || "",
+      caps: ep.capabilities || ["text"],
+      maxTokens: ep.max_tokens || 0,
+      contextWindow: ep.context_window || 8192,
+      timeout: ep.timeout || 60,
+      rpmLimit: ep.rpm_limit || 0,
+      pricingTiers: ep.pricing_tiers || [],
+    });
+    setEditModalOpen(true);
   }
 
   async function doReorderByNames(orderedNames: string[], endpointType: EndpointType = "endpoints") {
@@ -1068,6 +1088,10 @@ export function LLMView(props: LLMViewProps) {
         endpoint.max_tokens = editDraft.maxTokens ?? 2048;
         endpoint.context_window = editDraft.contextWindow ?? 200000;
         endpoint.timeout = editDraft.timeout ?? 30;
+      } else if (epType === "embedding_endpoints") {
+        endpoint.max_tokens = 0;
+        endpoint.context_window = editDraft.contextWindow ?? 8192;
+        endpoint.timeout = editDraft.timeout ?? 60;
       } else {
         endpoint.max_tokens = 0;
         endpoint.context_window = 0;
@@ -1526,125 +1550,54 @@ export function LLMView(props: LLMViewProps) {
         )}
       </div>
 
-      {/* ── Embedding model config ── */}
+      {/* ── Embedding endpoints ── */}
       <div className="card" style={{ marginTop: 10 }}>
-        <div className="cardTitle">{t("llm.embeddingModel")}</div>
-        <div className="cardHint mb-4">{t("llm.embeddingModelHint")}</div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* Provider */}
-          <div className="space-y-1.5">
-            <Label>{t("llm.embeddingProvider")}</Label>
-            <Select value={embProvider} onValueChange={(v) => { setEmbProvider(v); setEmbModels([]); }}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="openai">OpenAI</SelectItem>
-                <SelectItem value="huggingface">HuggingFace</SelectItem>
-                <SelectItem value="custom">{t("llm.customProvider")}</SelectItem>
-              </SelectContent>
-            </Select>
+        <div className="mb-2 flex items-start justify-between gap-3">
+          <div>
+            <div className="cardTitle">{t("llm.embeddingModel")}</div>
+            <div className="cardHint">{t("llm.embeddingModelHint")}</div>
           </div>
-
-          {/* Model name */}
-          <div className="space-y-1.5">
-            <Label>{t("llm.embeddingModelName")}</Label>
-            <div className="flex gap-2">
-              {embModels.length > 0 ? (
-                <Select value={embModelName} onValueChange={setEmbModelName}>
-                  <SelectTrigger className="flex-1"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {embModels.map((m) => (
-                      <SelectItem key={m} value={m}>{m}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              ) : (
-                <Input
-                  value={embModelName}
-                  onChange={(e) => setEmbModelName(e.target.value)}
-                  placeholder="text-embedding-3-small"
-                />
-              )}
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={doFetchEmbeddingModels}
-                disabled={embFetchingModels || embProvider === "huggingface"}
-                title={embProvider === "huggingface" ? t("llm.localHint") : t("llm.fetchModels")}
-              >
-                {embFetchingModels ? t("llm.fetchingModels") : t("llm.fetchModels")}
-              </Button>
-            </div>
-          </div>
-
-          {/* API Base (custom only) */}
-          {embProvider === "custom" && (
-            <div className="space-y-1.5">
-              <Label>{t("llm.embeddingApiBase")}</Label>
-              <Input
-                value={embApiBase}
-                onChange={(e) => setEmbApiBase(e.target.value)}
-                placeholder="https://your-api.com/v1"
-              />
-            </div>
-          )}
-
-          {/* API Key (openai / custom) */}
-          {embProvider !== "huggingface" && (
-            <div className="space-y-1.5">
-              <Label>API Key</Label>
-              <Input
-                type="password"
-                value={embApiKey}
-                onChange={(e) => setEmbApiKey(e.target.value)}
-                placeholder={t("llm.apiKeyPlaceholder")}
-              />
-            </div>
-          )}
-
-          {/* Device (huggingface only) */}
-          {embProvider === "huggingface" && (
-            <div className="space-y-1.5">
-              <Label>{t("llm.embeddingDevice")}</Label>
-              <Select value={embDevice} onValueChange={setEmbDevice}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="cpu">CPU</SelectItem>
-                  <SelectItem value="cuda">CUDA (GPU)</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          )}
+          <Button variant="outline" size="sm" className="bg-primary/5 border-primary/30 text-primary hover:bg-primary/10 hover:text-primary" onClick={() => { if (providers.length === 0) doLoadProviders(); setEmbProviderSlug(""); setEmbApiType("openai"); setEmbBaseUrl(""); setEmbApiKeyValue(""); setEmbModel(""); setEmbEndpointName(""); setEmbModels([]); setAddEmbDialogOpen(true); }} disabled={endpointConfigDisabled} title={!endpointConfigApiReady ? endpointConfigUnavailableMessage : undefined}>
+            + {t("llm.addEndpoint")}
+          </Button>
         </div>
-
-        {/* Test result */}
-        {embTestResult && (
-          <div className={`mt-3 text-sm rounded-md px-3 py-2 border ${embTestResult.success ? "border-green-400/40 bg-green-50 text-green-800 dark:bg-green-950 dark:text-green-300" : "border-red-400/40 bg-red-50 text-red-800 dark:bg-red-950 dark:text-red-300"}`}>
-            {embTestResult.success
-              ? t("llm.embeddingTestSuccess", { ms: embTestResult.latency_ms }) + ` (dim=${embTestResult.dimension})`
-              : t("llm.embeddingTestFailed") + (embTestResult.error ? `: ${embTestResult.error}` : "")
-            }
+        {savedEmbeddingEndpoints.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-7 text-muted-foreground">
+            <Inbox size={28} strokeWidth={1.5} className="mb-2 opacity-35" />
+            <p className="text-sm">{t("llm.noEndpoints")}</p>
           </div>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow className="hover:bg-transparent">
+                <TableHead>{t("status.endpoint")}</TableHead>
+                <TableHead>{t("status.model")}</TableHead>
+                <TableHead>{t("llm.baseUrl")}</TableHead>
+                <TableHead className="w-[140px]"></TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {savedEmbeddingEndpoints.map((e) => (
+                <TableRow key={e.name} className={e.enabled === false ? "opacity-45" : undefined}>
+                  <TableCell className="font-semibold">
+                    <span>{e.name}</span>
+                    {e.enabled === false && <span className="ml-1.5 text-[10px] font-bold text-muted-foreground">{t("llm.disabled")}</span>}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">{e.model}</TableCell>
+                  <TableCell className="text-muted-foreground max-w-[200px] truncate" title={e.base_url}>{e.base_url}</TableCell>
+                  <TableCell>
+                    <div className="flex gap-1 justify-end">
+                      <Button variant="ghost" size="icon-sm" className="text-muted-foreground hover:text-foreground" style={savedEmbeddingEndpoints[0]?.name === e.name ? { visibility: "hidden" } : undefined} onClick={() => doMoveUp(e.name, savedEmbeddingEndpoints, "embedding_endpoints")} disabled={endpointConfigDisabled} title={!endpointConfigApiReady ? endpointConfigUnavailableMessage : t("llm.moveUp")}><IconChevronUp size={14} /></Button>
+                      <Button variant="ghost" size="icon-sm" className="text-muted-foreground hover:text-foreground" onClick={() => doToggleEndpointEnabled(e.name, "embedding_endpoints")} disabled={endpointConfigDisabled} title={!endpointConfigApiReady ? endpointConfigUnavailableMessage : e.enabled === false ? t("llm.enable") : t("llm.disable")}>{e.enabled !== false ? <IconPower size={14} /> : <IconCircle size={14} />}</Button>
+                      <Button variant="ghost" size="icon-sm" className="text-muted-foreground hover:text-foreground" onClick={() => doStartEditEmbEndpoint(e.name)} disabled={endpointConfigDisabled} title={!endpointConfigApiReady ? endpointConfigUnavailableMessage : t("llm.edit")}><IconEdit size={14} /></Button>
+                      <Button variant="ghost" size="icon-sm" className="text-muted-foreground hover:text-destructive hover:bg-destructive/10" onClick={() => askConfirm(`${t("common.confirmDeleteMsg")} "${e.name}"?`, () => doDeleteEndpoint(e.name, "embedding_endpoints"))} disabled={endpointConfigDisabled} title={!endpointConfigApiReady ? endpointConfigUnavailableMessage : t("common.delete")}><IconTrash size={14} /></Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
         )}
-
-        {/* Action buttons */}
-        <div className="mt-4 flex gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={doTestEmbedding}
-            disabled={embTesting}
-          >
-            {embTesting ? t("llm.testTesting") : t("llm.testConnection")}
-          </Button>
-          <Button
-            size="sm"
-            onClick={doSaveEmbedding}
-            disabled={embSaving}
-          >
-            {embSaving ? t("llm.savingEndpoint") : t("common.save")}
-          </Button>
-        </div>
       </div>
 
       {/* ── Add endpoint dialog ── */}
@@ -2453,6 +2406,121 @@ export function LLMView(props: LLMViewProps) {
                 <div className={cn("text-[10px] text-muted-foreground text-right w-full", !sShow && "invisible")}>{t("common.missingFields") || "缺少"}: {sMissing.join(", ") || "—"}</div>
               );
             })()}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Add Embedding dialog ── */}
+      <Dialog open={addEmbDialogOpen} onOpenChange={(open) => { if (!open) setAddEmbDialogOpen(false); }}>
+        <DialogContent className="sm:max-w-[480px] max-h-[85vh] flex flex-col gap-0 p-0 overflow-hidden" onOpenAutoFocus={(e) => e.preventDefault()} onCloseAnimationEnd={() => { setConnTestResult(null); }}>
+          <DialogHeader className="px-6 pt-5 pb-3 shrink-0">
+            <DialogTitle>{t("llm.addEndpoint")} — {t("llm.embeddingModel")}</DialogTitle>
+            <DialogDescription className="sr-only">{t("llm.embeddingModel")}</DialogDescription>
+          </DialogHeader>
+
+          <div className="flex-1 overflow-y-auto min-h-0 px-6 py-4 space-y-4" style={{ scrollbarGutter: "stable" }}>
+            {/* Provider */}
+            <div className="space-y-1.5">
+              <Label>{t("llm.provider")} {!["custom", "ollama", "lmstudio"].includes(embProviderSlug) && <span className="text-[11px] font-normal text-muted-foreground/70">{t("llm.baseUrlLabel")}{embBaseUrl || "—"} <Button type="button" variant="link" size="xs" className="h-auto p-0 text-[11px]" onClick={() => setEmbBaseUrlExpanded(v => !v)}>{embBaseUrlExpanded ? t("llm.baseUrlCollapse") : t("llm.baseUrlToggle")}</Button></span>}</Label>
+              <ProviderSearchSelect
+                value={embProviderSlug}
+                onChange={(slug) => {
+                  setEmbBaseUrlExpanded(false);
+                  setEmbProviderSlug(slug);
+                  const p = providers.find((x) => x.slug === slug);
+                  if (p) {
+                    setEmbApiType((p.api_type as any) || "openai");
+                    setEmbBaseUrl(p.default_base_url || "");
+                    if (isLocalProvider(p)) setEmbApiKeyValue(localProviderPlaceholderKey(p));
+                    else setEmbApiKeyValue("");
+                  } else {
+                    setEmbApiType("openai");
+                    setEmbBaseUrl("");
+                    setEmbApiKeyValue("");
+                  }
+                  setEmbModels([]); setEmbModel(""); setEmbEndpointName("");
+                }}
+                options={providers.map((p) => ({ value: p.slug, label: p.name }))}
+              />
+            </div>
+
+            {/* Endpoint Name */}
+            <div className="space-y-1.5">
+              <Label>{t("llm.endpointName")} <span className="text-[11px] font-normal text-muted-foreground">{t("common.optional")}</span></Label>
+              <Input value={embEndpointName} onChange={(e) => setEmbEndpointName(e.target.value)} placeholder={embModel || t("llm.endpointName")} />
+            </div>
+
+            {/* Base URL */}
+            {["custom", "ollama", "lmstudio"].includes(embProviderSlug) || embBaseUrlExpanded ? (
+            <div className="space-y-1.5">
+              <Label>{t("llm.baseUrl")} <span className="text-[11px] font-normal text-muted-foreground/70">{t("llm.baseUrlHint")}</span></Label>
+              <Input value={embBaseUrl} onChange={(e) => setEmbBaseUrl(e.target.value)} placeholder="http://localhost:1234/v1" />
+            </div>
+            ) : null}
+
+            {/* API Key */}
+            <div className="space-y-1.5">
+              <Label className="inline-flex items-center gap-2">
+                API Key {isLocalProvider(providers.find((p) => p.slug === embProviderSlug)) && <span className="text-muted-foreground text-[11px] font-normal">({t("llm.localNoKey")})</span>}
+                {(() => { const url = getProviderApplyUrl(embProviderSlug); const sp = providers.find((p) => p.slug === embProviderSlug); return url && !isLocalProvider(sp) ? <Button type="button" variant="link" size="xs" className="h-auto p-0 text-[11px]" onClick={() => openApplyUrl(url)}>{t("llm.getApiKey")}</Button> : null; })()}
+              </Label>
+              <Input value={embApiKeyValue} onChange={(e) => setEmbApiKeyValue(e.target.value)} placeholder={isLocalProvider(providers.find((p) => p.slug === embProviderSlug)) ? t("llm.localKeyPlaceholder") : t("llm.apiKeyPlaceholder")} type="password" />
+              {isLocalProvider(providers.find((p) => p.slug === embProviderSlug)) && <p className="text-xs text-primary">{t("llm.localHint")}</p>}
+            </div>
+
+            {/* Model */}
+            <div className="space-y-1.5">
+              <Label>{t("status.model")} <span className="text-[11px] font-normal text-muted-foreground/70">{t("llm.modelHint")}<Button type="button" variant="link" size="xs" className="h-auto p-0 text-[11px] disabled:opacity-100 disabled:pointer-events-auto disabled:cursor-default" onClick={doFetchEmbModels} disabled={!embBaseUrl.trim() || !!busy}>{t("llm.modelHintFetch")}</Button>{t("llm.modelHintSelect")}{embModels.length > 0 && <span className="text-muted-foreground/50">{t("llm.modelHintFetched", { count: embModels.length })}</span>}</span></Label>
+              <SearchSelect value={embModel} onChange={(v) => setEmbModel(v)} options={embModels.map((m) => m.id)} placeholder={embModels.length > 0 ? t("llm.searchModel") : t("llm.modelPlaceholder")} disabled={!!busy} />
+              {!embModels.length && (
+                <div className="mt-1 text-xs text-muted-foreground/70">{t("llm.modelManualHint")}</div>
+              )}
+            </div>
+          </div>
+
+          <DialogFooter className="px-6 py-4 border-t shrink-0">
+            <div className="flex items-center justify-between w-full">
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" onClick={async () => {
+                  if (!embBaseUrl || !embApiKeyValue) return;
+                  const config = JSON.stringify({ provider: embProviderSlug, model_name: embModel, api_base: embBaseUrl, api_key: embApiKeyValue, device: "cpu" });
+                  const _busyId = notifyLoading(t("llm.testTesting"));
+                  try {
+                    const res = await safeFetch(`${httpApiBase()}/api/embedding/test`, { method: "POST", headers: { "Content-Type": "application/json" }, body: config });
+                    const data = await res.json();
+                    if (data.success) notifySuccess(t("llm.embeddingTestSuccess", { ms: data.latency_ms }));
+                    else notifyError(data.error || t("llm.embeddingTestFailed"));
+                  } catch (e: any) { notifyError(e.message || t("llm.embeddingTestFailed")); }
+                  finally { dismissLoading(_busyId); }
+                }} disabled={!embBaseUrl.trim() || !embApiKeyValue.trim() || !!busy}>
+                  {t("llm.testConnection")}
+                </Button>
+                {(() => {
+                  const _isEmbLocal = isLocalProvider(providers.find((p) => p.slug === embProviderSlug));
+                  const eMissing: string[] = [];
+                  if (!embModel.trim()) eMissing.push(t("status.model"));
+                  if (!_isEmbLocal && !embApiKeyValue.trim()) eMissing.push("API Key");
+                  if (!currentWorkspaceId && dataMode !== "remote") eMissing.push(t("workspace.title") || "工作区");
+                  const eBtnDisabled = eMissing.length > 0 || endpointConfigDisabled;
+                  return (
+                    <Button onClick={async () => { const ok = await doSaveEmbEndpoint(); if (ok) { setAddEmbDialogOpen(false); setConnTestResult(null); } }} disabled={eBtnDisabled} title={!endpointConfigApiReady ? endpointConfigUnavailableMessage : undefined}>
+                      {t("common.save")}
+                    </Button>
+                  );
+                })()}
+              </div>
+              {(() => {
+                const _isEmbLocal = isLocalProvider(providers.find((p) => p.slug === embProviderSlug));
+                const eMissing: string[] = [];
+                if (!embModel.trim()) eMissing.push(t("status.model"));
+                if (!_isEmbLocal && !embApiKeyValue.trim()) eMissing.push("API Key");
+                if (!currentWorkspaceId && dataMode !== "remote") eMissing.push(t("workspace.title") || "工作区");
+                const eShow = eMissing.length > 0 && !busy;
+                return (
+                  <div className={cn("text-[10px] text-muted-foreground text-right w-full", !eShow && "invisible")}>{t("common.missingFields") || "缺少"}: {eMissing.join(", ") || "—"}</div>
+                );
+              })()}
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>

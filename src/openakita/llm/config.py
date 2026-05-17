@@ -359,6 +359,7 @@ def save_endpoints_config(
     config_path: Path | None = None,
     compiler_endpoints: list[EndpointConfig] | None = None,
     stt_endpoints: list[EndpointConfig] | None = None,
+    embedding_endpoints: list[EndpointConfig] | None = None,
 ):
     """
     保存端点配置（CLI / 离线场景专用，通过 safe_write 原子写入）
@@ -387,6 +388,9 @@ def save_endpoints_config(
 
     if stt_endpoints:
         data["stt_endpoints"] = [ep.to_dict() for ep in stt_endpoints]
+
+    if embedding_endpoints:
+        data["embedding_endpoints"] = [ep.to_dict() for ep in embedding_endpoints]
 
     data["settings"] = settings or {
         "retry_count": 2,

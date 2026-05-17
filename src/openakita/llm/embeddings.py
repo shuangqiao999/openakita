@@ -201,8 +201,55 @@ class CustomEmbedding(BaseEmbedding):
         return "custom"
 
 
+def _read_embedding_endpoint_from_config() -> dict | None:
+    """从 llm_endpoints.json 的 embedding_endpoints 中读取活跃端点"""
+    try:
+        from openakita.llm.config import get_default_config_path
+        from openakita.utils.atomic_io import read_json_safe
+
+        config_path = get_default_config_path()
+        data = read_json_safe(config_path)
+        if not data:
+            return None
+
+        emb_eps = data.get("embedding_endpoints", [])
+        for ep_data in emb_eps:
+            if ep_data.get("enabled", True) is False:
+                continue
+            provider = (ep_data.get("provider", "") or "").lower()
+            base_url = (ep_data.get("base_url", "") or "").strip()
+            api_key_env = ep_data.get("api_key_env", "")
+            model = ep_data.get("model", "")
+
+            # 解析 API key
+            api_key = ep_data.get("api_key") or ""
+            if not api_key and api_key_env:
+                import os
+
+                api_key = os.environ.get(api_key_env, "")
+
+            if provider and model:
+                return {
+                    "provider": provider,
+                    "model_name": model,
+                    "api_base": base_url,
+                    "api_key": api_key,
+                    "device": "cpu",
+                }
+        return None
+    except Exception:
+        logger.exception("[Embedding] Failed to read embedding endpoint config")
+        return None
+
+
 def _build_embedding_config() -> dict:
-    """从全局 Settings 构建嵌入模型配置 dict"""
+    """构建嵌入模型配置 dict，优先从 embedding_endpoints 读取，fallback 到 .env"""
+    # 优先: embedding_endpoints (新端点体系)
+    ep_config = _read_embedding_endpoint_from_config()
+    if ep_config:
+        return ep_config
+
+    # fallback: 旧 .env 配置 (向后兼容)
     try:
         from openakita.config import settings
 
@@ -225,7 +272,6 @@ def _infer_embedding_from_chat_endpoint(config: dict) -> dict | None:
 
         api_key = getattr(settings, "embedding_api_key", "") or ""
         if not api_key:
-            # 尝试复用 chat endpoint 的 API key (OpenAI 兼容)
             api_key = getattr(settings, "openai_api_key", "") or ""
         if not api_key:
             return None
