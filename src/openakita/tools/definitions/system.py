@@ -328,5 +328,36 @@ SYSTEM_TOOLS = [
             "required": [],
         },
     },
+    {
+        "name": "expand_tool_result",
+        "category": "System",
+        "description": (
+            "Expand a truncated tool result by reading the full output from an overflow file. "
+            "Use when a previous tool result contains [已截断] or [OUTPUT_TRUNCATED] "
+            "with a file path reference, and you need the complete content."
+        ),
+        "detail": """读取被截断工具结果的完整内容。
+
+当工具返回结果中包含 [已截断] 或 [OUTPUT_TRUNCATED] 标记及文件路径时，
+调用此工具获取完整输出。只需提供标记中给出的 overflow_path。
+
+**重要**：
+- overflow_path 必须从工具结果标记中直接复制，不要自行构造
+- 仅当确实需要完整内容时才调用（如结果中有未显示的关键数据）
+- 截断内容由 tool_executor 自动管理，定时清理""",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "overflow_path": {
+                    "type": "string",
+                    "description": (
+                        "The overflow file path from a [已截断] or [OUTPUT_TRUNCATED] marker. "
+                        "Always copy this exactly from the marker."
+                    ),
+                },
+            },
+            "required": ["overflow_path"],
+        },
+    },
 ]
 

@@ -335,34 +335,48 @@ but with full schema you'll fill arguments more reliably.
     def _format_category_section(
         self, display_name: str, tools: list[tuple[str, dict]]
     ) -> str | None:
-        """
-        格式化一个分类的工具条目
+        """格式化一个分类的工具条目。
 
-        Args:
-            display_name: 分类显示名
-            tools: (name, tool_def) 列表
-
-        Returns:
-            格式化字符串，无工具时返回 None
+        Promoted（非deferred）工具保留完整描述行；
+        Deferred 工具压缩为逗号分隔名称列表，节省 token。
         """
         if not tools:
             return None
 
         deferred = getattr(self, "_deferred_tools", set())
+        promoted: list[tuple[str, dict]] = []
+        deferred_tools: list[tuple[str, dict]] = []
 
-        entries = []
         for name, tool in tools:
+            if name in deferred:
+                deferred_tools.append((name, tool))
+            else:
+                promoted.append((name, tool))
+
+        entries: list[str] = []
+
+        # Promoted tools: full description format
+        for name, tool in promoted:
             desc = tool.get("short_description") or self._get_short_description(
                 tool.get("description", "")
             )
-            if name in deferred:
-                desc = f"[deferred] {desc}"
             source = self._tool_sources.get(name, "")
             suffix = f" _(from {source})_" if source else ""
             entry = (
-                self._safe_format(self.TOOL_ENTRY_TEMPLATE, name=name, description=desc) + suffix
+                self._safe_format(
+                    self.TOOL_ENTRY_TEMPLATE, name=name, description=desc
+                )
+                + suffix
             )
             entries.append(entry)
+
+        # Deferred tools: compact comma-separated list (no descriptions)
+        if deferred_tools:
+            deferred_names = sorted(name for name, _ in deferred_tools)
+            entries.append(
+                f"_deferred, use tool_search for details_: "
+                + ", ".join(deferred_names)
+            )
 
         return self._safe_format(
             self.CATEGORY_TEMPLATE, category=display_name, tools="\n".join(entries)

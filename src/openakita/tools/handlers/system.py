@@ -30,6 +30,7 @@ class SystemHandler:
         "generate_image",
         "set_task_timeout",
         "get_workspace_map",
+        "expand_tool_result",
     ]
 
     def __init__(self, agent: "Agent"):
@@ -57,6 +58,8 @@ class SystemHandler:
             return self._set_task_timeout(params)
         elif tool_name == "get_workspace_map":
             return self._get_workspace_map()
+        elif tool_name == "expand_tool_result":
+            return await self._handle_expand_tool_result(params)
         else:
             return f"❌ Unknown system tool: {tool_name}"
 
@@ -353,6 +356,35 @@ class SystemHandler:
             ensure_ascii=False,
             indent=2,
         )
+
+    async def _handle_expand_tool_result(self, params: dict[str, Any]) -> str:
+        """读取被截断工具结果的完整内容。"""
+        overflow_path = (params.get("overflow_path") or "").strip()
+        if not overflow_path:
+            return "❌ 缺少 overflow_path 参数"
+
+        path = Path(overflow_path)
+        if not path.is_absolute():
+            from openakita.config import settings
+
+            path = settings.project_root / overflow_path
+
+        if not path.exists():
+            return (
+                f"❌ 溢出文件不存在: {overflow_path}\n"
+                "文件可能已被自动清理或路径错误。请从原始工具返回的截断标记中复制路径。"
+            )
+
+        try:
+            content = path.read_text(encoding="utf-8")
+        except Exception as e:
+            return f"❌ 读取溢出文件失败: {e}"
+
+        max_len = 32000
+        if len(content) > max_len:
+            content = content[:max_len] + f"\n\n[内容过长，已截断至{max_len}字符]"
+
+        return f"## 完整工具输出 ({overflow_path})\n\n```\n{content}\n```"
 
 
 def create_handler(agent: "Agent"):
