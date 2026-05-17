@@ -119,7 +119,7 @@ class OpenAIEmbedding(BaseEmbedding):
 class HuggingFaceEmbedding(BaseEmbedding):
     """HuggingFace Sentence-Transformers 本地嵌入"""
 
-    def __init__(self, model_name: str = "BAAI/bge-small-zh", device: str = "cpu"):
+    def __init__(self, model_name: str = "", device: str = "cpu"):
         self._model_name = model_name
         self._device = device
         self._model: object | None = None

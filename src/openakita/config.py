@@ -82,7 +82,8 @@ class Settings(BaseSettings):
         description="Anthropic API Base URL (支持云雾AI等转发服务)",
     )
     default_model: str = Field(
-        default="claude-opus-4-5-20251101-thinking", description="默认使用的模型"
+        default="",
+        description="默认使用的模型",
     )
     max_tokens: int = Field(
         default=0,
@@ -353,7 +354,7 @@ class Settings(BaseSettings):
 
     # === Embedding 模型配置 ===
     embedding_model: str = Field(
-        default="shibing624/text2vec-base-chinese",
+        default="",
         description="Embedding 模型名称 (如 shibing624/text2vec-base-chinese)",
     )
     embedding_device: str = Field(

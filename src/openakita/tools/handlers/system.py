@@ -211,7 +211,7 @@ class SystemHandler:
         if not api_key:
             return f"❌ 未配置 DASHSCOPE_API_KEY，无法生成图片{_hint}"
 
-        model = (params.get("model") or "qwen-image-max").strip()
+        model = (params.get("model") or "").strip()
         negative_prompt = (params.get("negative_prompt") or "").strip()
         size = (params.get("size") or "1664*928").strip()
         prompt_extend = params.get("prompt_extend", True)

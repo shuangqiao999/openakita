@@ -92,7 +92,7 @@ class VectorStore:
     """
 
     # 默认使用中文优化的 embedding 模型
-    DEFAULT_MODEL = "shibing624/text2vec-base-chinese"
+    DEFAULT_MODEL = ""
 
     def __init__(
         self,

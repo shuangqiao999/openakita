@@ -186,7 +186,7 @@ class STTClient:
         base_url = normalize_base_url(endpoint.base_url)
         url = f"{base_url}/chat/completions"
 
-        model = endpoint.model or "qwen3-asr-flash"
+        model = endpoint.model or ""
         if model.endswith("-realtime"):
             model = model.replace("-realtime", "")
             logger.info(f"[STT] DashScope ASR: stripped '-realtime' suffix, using model={model}")
