@@ -1345,7 +1345,16 @@
     "hideSecret": "隐藏",
     "pricingConfig": "定价配置",
     "pricingConfigHint": "（可选，用于费用估算）",
-    "getApiKey": "获取 API Key"
+    "getApiKey": "获取 API Key",
+    "embeddingModel": "文本嵌入模型",
+    "embeddingModelHint": "配置用于语义记忆搜索的嵌入模型（向量化文本）。支持 OpenAI / HuggingFace / 自定义 API",
+    "embeddingProvider": "嵌入服务商",
+    "embeddingModelName": "模型名称",
+    "embeddingApiBase": "API 地址",
+    "embeddingDevice": "运行设备",
+    "embeddingTestSuccess": "嵌入测试成功，延迟: {{ms}}ms",
+    "embeddingTestFailed": "嵌入测试失败",
+    "embeddingSaved": "嵌入模型配置已保存"
   },
   "welcome": {
     "title": "配置向导",

@@ -363,8 +363,8 @@ class Settings(BaseSettings):
 
     # === 搜索后端配置 (v2) ===
     search_backend: str = Field(
-        default="fts5",
-        description="记忆搜索后端: fts5(默认,零依赖) | chromadb(可选,本地向量) | api_embedding(可选,在线API)",
+        default="zvec",
+        description="记忆搜索后端: zvec(默认,零API依赖) | fts5(纯SQLite) | chromadb(本地向量) | api_embedding(在线API)",
     )
     embedding_api_provider: str = Field(
         default="",
@@ -377,6 +377,20 @@ class Settings(BaseSettings):
     embedding_api_model: str = Field(
         default="text-embedding-v3",
         description="在线 Embedding 模型名称 (如 text-embedding-v3, text-embedding-3-small)",
+    )
+
+    # === 嵌入模型独立配置 (用于 Zvec / 向量搜索的 embedding 生成) ===
+    embedding_provider: str = Field(
+        default="",
+        description="嵌入模型提供商: openai | huggingface | custom (为空时使用 chat endpoint 推断)",
+    )
+    embedding_api_base: str = Field(
+        default="",
+        description="嵌入模型 API Base URL (仅 provider=custom 时需要)",
+    )
+    embedding_model_name: str = Field(
+        default="",
+        description="嵌入模型名称 (如 text-embedding-3-small, BAAI/bge-small-zh)",
     )
 
     # === 记忆系统配置 ===

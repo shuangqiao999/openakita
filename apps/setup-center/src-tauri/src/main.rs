@@ -4325,7 +4325,11 @@ fn main() {
             register_cli,
             unregister_cli,
             get_cli_status,
-            start_dragging
+            start_dragging,
+            get_embedding_config,
+            update_embedding_config,
+            test_embedding_config,
+            fetch_embedding_models,
         ])
         .build(tauri::generate_context!())
     {
@@ -9204,6 +9208,85 @@ fn get_cli_status() -> Result<CliStatus, String> {
             bin_dir: bin_dir.to_string_lossy().to_string(),
         })
     }
+}
+
+// ── Embedding model config commands (via Python HTTP API) ──
+
+#[tauri::command]
+async fn get_embedding_config() -> Result<String, String> {
+    let port = current_workspace_api_port();
+    let url = format!("http://127.0.0.1:{}/api/embedding/config", port);
+    http_get_json(url).await
+}
+
+#[tauri::command]
+async fn update_embedding_config(config: String) -> Result<String, String> {
+    let port = current_workspace_api_port();
+    let url = format!("http://127.0.0.1:{}/api/embedding/config", port);
+    spawn_blocking_result(move || {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .map_err(|e| format!("HTTP client error: {e}"))?;
+        let resp = client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .body(config)
+            .send()
+            .map_err(|e| format!("HTTP POST to {} failed: {e}", url))?
+            .error_for_status()
+            .map_err(|e| format!("HTTP POST to {} failed: {e}", url))?;
+        resp.text()
+            .map_err(|e| format!("read response body failed: {e}"))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn test_embedding_config(config: String) -> Result<String, String> {
+    let port = current_workspace_api_port();
+    let url = format!("http://127.0.0.1:{}/api/embedding/test", port);
+    spawn_blocking_result(move || {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .map_err(|e| format!("HTTP client error: {e}"))?;
+        let resp = client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .body(config)
+            .send()
+            .map_err(|e| format!("HTTP POST to {} failed: {e}", url))?
+            .error_for_status()
+            .map_err(|e| format!("HTTP POST to {} failed: {e}", url))?;
+        resp.text()
+            .map_err(|e| format!("read response body failed: {e}"))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn fetch_embedding_models(provider: String, api_base: String, api_key: String) -> Result<String, String> {
+    let port = current_workspace_api_port();
+    let url = format!(
+        "http://127.0.0.1:{}/api/embedding/models?provider={}&api_base={}&api_key={}",
+        port, provider, api_base, api_key,
+    );
+    http_get_json(url).await
+}
+
+fn current_workspace_api_port() -> u16 {
+    use std::sync::OnceLock;
+    static CURRENT_PORT: OnceLock<u16> = OnceLock::new();
+    if let Some(port) = CURRENT_PORT.get() {
+        return *port;
+    }
+    let ws_id = get_current_workspace_id()
+        .unwrap_or(None)
+        .unwrap_or_default();
+    let port = read_workspace_api_port(&ws_id).unwrap_or(DEFAULT_API_PORT);
+    let _ = CURRENT_PORT.set(port);
+    port
 }
 
 #[cfg(test)]

@@ -153,6 +153,20 @@ export function LLMView(props: LLMViewProps) {
   const [sttEndpointName, setSttEndpointName] = useState("");
   const [sttModels, setSttModels] = useState<ListedModel[]>([]);
 
+  // Embedding model config
+  const [embProvider, setEmbProvider] = useState("openai");
+  const [embModelName, setEmbModelName] = useState("text-embedding-3-small");
+  const [embApiBase, setEmbApiBase] = useState("");
+  const [embApiKey, setEmbApiKey] = useState("");
+  const [embDevice, setEmbDevice] = useState("cpu");
+  const [embTesting, setEmbTesting] = useState(false);
+  const [embTestResult, setEmbTestResult] = useState<{
+    success: boolean; latency_ms: number; dimension: number; error?: string;
+  } | null>(null);
+  const [embSaving, setEmbSaving] = useState(false);
+  const [embModels, setEmbModels] = useState<string[]>([]);
+  const [embFetchingModels, setEmbFetchingModels] = useState(false);
+
   // Edit modal
   const [editingOriginalName, setEditingOriginalName] = useState<string | null>(null);
   const [editEndpointType, setEditEndpointType] = useState<"endpoints" | "compiler_endpoints" | "stt_endpoints">("endpoints");
@@ -729,6 +743,79 @@ export function LLMView(props: LLMViewProps) {
       return false;
     } finally {
       dismissLoading(_busyId);
+    }
+  }
+
+  // ── Embedding model handlers ──
+
+  async function doTestEmbedding() {
+    setEmbTesting(true);
+    setEmbTestResult(null);
+    const config = {
+      provider: embProvider,
+      model_name: embModelName,
+      api_base: embApiBase,
+      api_key: embApiKey,
+      device: embDevice,
+    };
+    try {
+      const res = await safeFetch(`${httpApiBase()}/api/embedding/test`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(config),
+      });
+      const data = await res.json();
+      setEmbTestResult(data);
+      if (data.success) {
+        notifySuccess(t("llm.embeddingTestSuccess", { ms: data.latency_ms }));
+      } else {
+        notifyError(data.error || t("llm.embeddingTestFailed"));
+      }
+    } catch (e: any) {
+      setEmbTestResult({ success: false, latency_ms: 0, dimension: 0, error: e.message || String(e) });
+      notifyError(e.message || t("llm.embeddingTestFailed"));
+    } finally {
+      setEmbTesting(false);
+    }
+  }
+
+  async function doSaveEmbedding() {
+    setEmbSaving(true);
+    const config = {
+      provider: embProvider,
+      model_name: embModelName,
+      api_base: embApiBase,
+      api_key: embApiKey,
+      device: embDevice,
+    };
+    try {
+      await safeFetch(`${httpApiBase()}/api/embedding/config`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(config),
+      });
+      notifySuccess(t("llm.embeddingSaved"));
+    } catch (e: any) {
+      notifyError(e.message || String(e));
+    } finally {
+      setEmbSaving(false);
+    }
+  }
+
+  async function doFetchEmbeddingModels() {
+    setEmbFetchingModels(true);
+    try {
+      const res = await safeFetch(
+        `${httpApiBase()}/api/embedding/models?provider=${encodeURIComponent(embProvider)}&api_base=${encodeURIComponent(embApiBase)}&api_key=${encodeURIComponent(embApiKey)}`
+      );
+      const data = await res.json();
+      setEmbModels(data.models || []);
+      if (data.error) notifyError(data.error);
+      else if ((data.models || []).length > 0) notifySuccess(t("llm.fetchSuccess", { count: data.models.length }));
+    } catch (e: any) {
+      notifyError(e.message || String(e));
+    } finally {
+      setEmbFetchingModels(false);
     }
   }
 
@@ -1428,6 +1515,127 @@ export function LLMView(props: LLMViewProps) {
             </TableBody>
           </Table>
         )}
+      </div>
+
+      {/* ── Embedding model config ── */}
+      <div className="card" style={{ marginTop: 10 }}>
+        <div className="cardTitle">{t("llm.embeddingModel")}</div>
+        <div className="cardHint mb-4">{t("llm.embeddingModelHint")}</div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Provider */}
+          <div className="space-y-1.5">
+            <Label>{t("llm.embeddingProvider")}</Label>
+            <Select value={embProvider} onValueChange={(v) => { setEmbProvider(v); setEmbModels([]); }}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="openai">OpenAI</SelectItem>
+                <SelectItem value="huggingface">HuggingFace</SelectItem>
+                <SelectItem value="custom">{t("llm.customProvider")}</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Model name */}
+          <div className="space-y-1.5">
+            <Label>{t("llm.embeddingModelName")}</Label>
+            <div className="flex gap-2">
+              {embModels.length > 0 ? (
+                <Select value={embModelName} onValueChange={setEmbModelName}>
+                  <SelectTrigger className="flex-1"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {embModels.map((m) => (
+                      <SelectItem key={m} value={m}>{m}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <Input
+                  value={embModelName}
+                  onChange={(e) => setEmbModelName(e.target.value)}
+                  placeholder="text-embedding-3-small"
+                />
+              )}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={doFetchEmbeddingModels}
+                disabled={embFetchingModels || embProvider === "huggingface"}
+                title={embProvider === "huggingface" ? t("llm.localHint") : t("llm.fetchModels")}
+              >
+                {embFetchingModels ? t("llm.fetchingModels") : t("llm.fetchModels")}
+              </Button>
+            </div>
+          </div>
+
+          {/* API Base (custom only) */}
+          {embProvider === "custom" && (
+            <div className="space-y-1.5">
+              <Label>{t("llm.embeddingApiBase")}</Label>
+              <Input
+                value={embApiBase}
+                onChange={(e) => setEmbApiBase(e.target.value)}
+                placeholder="https://your-api.com/v1"
+              />
+            </div>
+          )}
+
+          {/* API Key (openai / custom) */}
+          {embProvider !== "huggingface" && (
+            <div className="space-y-1.5">
+              <Label>API Key</Label>
+              <Input
+                type="password"
+                value={embApiKey}
+                onChange={(e) => setEmbApiKey(e.target.value)}
+                placeholder={t("llm.apiKeyPlaceholder")}
+              />
+            </div>
+          )}
+
+          {/* Device (huggingface only) */}
+          {embProvider === "huggingface" && (
+            <div className="space-y-1.5">
+              <Label>{t("llm.embeddingDevice")}</Label>
+              <Select value={embDevice} onValueChange={setEmbDevice}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="cpu">CPU</SelectItem>
+                  <SelectItem value="cuda">CUDA (GPU)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+        </div>
+
+        {/* Test result */}
+        {embTestResult && (
+          <div className={`mt-3 text-sm rounded-md px-3 py-2 border ${embTestResult.success ? "border-green-400/40 bg-green-50 text-green-800 dark:bg-green-950 dark:text-green-300" : "border-red-400/40 bg-red-50 text-red-800 dark:bg-red-950 dark:text-red-300"}`}>
+            {embTestResult.success
+              ? t("llm.embeddingTestSuccess", { ms: embTestResult.latency_ms }) + ` (dim=${embTestResult.dimension})`
+              : t("llm.embeddingTestFailed") + (embTestResult.error ? `: ${embTestResult.error}` : "")
+            }
+          </div>
+        )}
+
+        {/* Action buttons */}
+        <div className="mt-4 flex gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={doTestEmbedding}
+            disabled={embTesting}
+          >
+            {embTesting ? t("llm.testTesting") : t("llm.testConnection")}
+          </Button>
+          <Button
+            size="sm"
+            onClick={doSaveEmbedding}
+            disabled={embSaving}
+          >
+            {embSaving ? t("llm.savingEndpoint") : t("common.save")}
+          </Button>
+        </div>
       </div>
 
       {/* ── Add endpoint dialog ── */}

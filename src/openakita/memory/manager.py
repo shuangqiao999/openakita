@@ -69,7 +69,7 @@ class MemoryManager:
         embedding_device: str = "cpu",
         model_download_source: str = "auto",
         # v2 params
-        search_backend: str = "fts5",
+        search_backend: str = "zvec",
         embedding_api_provider: str = "",
         embedding_api_key: str = "",
         embedding_api_model: str = "",

@@ -416,10 +416,26 @@ def create_search_backend(
         if backend.available:
             logger.info(f"[SearchBackend] Using API Embedding backend ({api_provider})")
             return backend
-        logger.warning("[SearchBackend] API Embedding not available, falling back to FTS5")
+        logger.warning("[SearchBackend] API Embedding not available, falling back")
+
+    if backend_type == "zvec":
+        try:
+            from .zvec_backend import ZvecBackend
+
+            backend = ZvecBackend(
+                persist_dir=str(storage.db_path.parent / "zvec") if storage and hasattr(storage, "db_path") else "data/zvec",
+            )
+            if backend.available:
+                logger.info("[SearchBackend] Using Zvec backend")
+                return backend
+            logger.warning("[SearchBackend] Zvec not available, falling back")
+        except ImportError:
+            logger.warning("[SearchBackend] Zvec not installed, falling back")
+        except Exception as e:
+            logger.warning(f"[SearchBackend] Zvec init failed: {e}, falling back")
 
     if storage is None:
         raise ValueError("FTS5Backend requires a storage instance")
 
-    logger.info("[SearchBackend] Using FTS5 backend (default)")
+    logger.info("[SearchBackend] Using FTS5 backend (fallback)")
     return FTS5Backend(storage)

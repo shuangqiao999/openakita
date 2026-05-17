@@ -1345,7 +1345,16 @@
     "hideSecret": "Hide",
     "pricingConfig": "Pricing Config",
     "pricingConfigHint": "(optional, for cost estimation)",
-    "getApiKey": "Get API Key"
+    "getApiKey": "Get API Key",
+    "embeddingModel": "Embedding Model",
+    "embeddingModelHint": "Configure the embedding model for semantic memory search (text vectorization). Supports OpenAI / HuggingFace / Custom API",
+    "embeddingProvider": "Embedding Provider",
+    "embeddingModelName": "Model Name",
+    "embeddingApiBase": "API Base URL",
+    "embeddingDevice": "Device",
+    "embeddingTestSuccess": "Embedding test passed, latency: {{ms}}ms",
+    "embeddingTestFailed": "Embedding test failed",
+    "embeddingSaved": "Embedding config saved"
   },
   "welcome": {
     "title": "Setup Guide",
