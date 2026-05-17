@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 
-from openakita.memory.zvec_backend import ZvecBackend, ZvecNotAvailableError
+from openakita.memory.zvec_backend import ZvecBackend
 
 
 @pytest.fixture

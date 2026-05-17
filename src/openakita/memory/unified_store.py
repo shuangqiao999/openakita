@@ -35,7 +35,7 @@ class UnifiedStore:
         search_backend: SearchBackend | None = None,
         *,
         vector_store: Any = None,
-        backend_type: str = "fts5",
+        backend_type: str = "zvec",
         api_provider: str = "",
         api_key: str = "",
         api_model: str = "",

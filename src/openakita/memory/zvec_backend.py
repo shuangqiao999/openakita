@@ -26,10 +26,6 @@ from .json_utils import coerce_text
 logger = logging.getLogger(__name__)
 
 
-class ZvecNotAvailableError(Exception):
-    """Zvec 未安装或初始化失败"""
-
-
 def _run_embedding_sync(embedder, method_name: str, *args):
     """安全地在同步上下文中调用异步嵌入。"""
     import asyncio

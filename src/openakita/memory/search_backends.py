@@ -447,10 +447,12 @@ def create_search_backend(
                             return backend
                 except Exception as _auto_err:
                     logger.info(
-                        f"[SearchBackend] Cannot auto-create zvec collection (no embedding config): "
-                        f"{_auto_err}"
+                        f"[SearchBackend] Zvec installed but no embedding model configured, "
+                        f"falling back to FTS5 ({_auto_err})"
                     )
-            logger.warning("[SearchBackend] Zvec not available, falling back")
+            logger.warning(
+                "[SearchBackend] Zvec not available (collection not created, "
+                "configure an embedding model in LLM settings to enable vector search)")
         except ImportError:
             logger.warning("[SearchBackend] Zvec not installed, falling back")
         except Exception as e:
