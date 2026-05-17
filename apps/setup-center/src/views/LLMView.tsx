@@ -97,7 +97,8 @@ export interface LLMViewProps {
 
 export function LLMView(props: LLMViewProps) {
   const {
-    savedEndpoints, savedCompilerEndpoints, savedSttEndpoints,
+    savedEndpoints, savedCompilerEndpoints, savedSttEndpoints, savedEmbeddingEndpoints,
+    setSavedEndpoints, setSavedCompilerEndpoints, setSavedSttEndpoints, setSavedEmbeddingEndpoints,
     envDraft, setEnvDraft,
     secretShown, setSecretShown,
     busy, currentWorkspaceId, dataMode,
@@ -768,7 +769,7 @@ export function LLMView(props: LLMViewProps) {
       if (models.length === 0) notifyError("未找到嵌入模型");
       else notifySuccess(t("llm.fetchSuccess", { count: models.length }));
     } catch (e: any) {
-      notifyError(friendlyFetchError(e));
+      notifyError(friendlyFetchError(e?.message || String(e), t));
     } finally {
       dismissLoading(_busyId);
     }
@@ -1290,7 +1291,7 @@ export function LLMView(props: LLMViewProps) {
     }
   }
 
-  async function doToggleEndpointEnabled(name: string, endpointType: "endpoints" | "compiler_endpoints" | "stt_endpoints" = "endpoints") {
+  async function doToggleEndpointEnabled(name: string, endpointType: EndpointType = "endpoints") {
     if (!currentWorkspaceId && dataMode !== "remote") return;
     if (!ensureEndpointConfigApiReady()) return;
     try {
