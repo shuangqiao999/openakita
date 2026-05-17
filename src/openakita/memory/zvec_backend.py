@@ -94,17 +94,7 @@ class ZvecBackend:
             coll_path = str(self._persist_dir / "@openakita_memories")
             collection_exists = self._zvec and Path(coll_path).is_dir()
             if collection_exists:
-                self._collection = self._zvec.open(path=coll_path)
-                self._enabled = True
-                schema = self._collection.schema
-                for vs in schema.vector_schemas:
-                    if vs.name == self._EMBEDDING_FIELD:
-                        self._embedding_dim = vs.dimension
-                        break
-                logger.info(
-                    f"[ZvecBackend] Opened existing collection: dim={self._embedding_dim}, "
-                    f"path={coll_path}"
-                )
+                self._open_collection(coll_path)
             elif embedding_dim > 0:
                 self._ensure_collection(coll_path, embedding_dim)
             else:
@@ -116,6 +106,61 @@ class ZvecBackend:
         except Exception as e:
             logger.warning(f"[ZvecBackend] Init/open failed: {e}")
             self._enabled = False
+
+    def _open_collection(self, coll_path: str) -> None:
+        """打开已有 collection，处理残留 LOCK 文件和 API 兼容性"""
+        lock_path = Path(coll_path) / "LOCK"
+        lock_stale = False
+        try:
+            self._collection = self._zvec.open(path=coll_path)
+        except Exception as e:
+            err_msg = str(e).lower()
+            if "lock" in err_msg and lock_path.exists():
+                lock_stale = True
+                logger.warning(
+                    f"[ZvecBackend] Stale LOCK file detected at {lock_path}, removing and retrying"
+                )
+                try:
+                    lock_path.unlink()
+                except OSError:
+                    pass
+                self._collection = self._zvec.open(path=coll_path)
+            else:
+                raise
+
+        self._enabled = True
+        self._embedding_dim = self._read_schema_dim(
+            self._collection, coll_path, lock_stale
+        )
+
+    @staticmethod
+    def _read_schema_dim(collection, coll_path: str, lock_stale: bool) -> int:
+        """从 collection schema 读取向量维度，兼容多个 zvec API 版本"""
+        schema = getattr(collection, "schema", None)
+        if schema is None:
+            logger.warning(f"[ZvecBackend] Collection has no schema attr at {coll_path}")
+            return 0
+        # 兼容: vector_schemas (新版) / vectors (旧版) / vector_schema (单数别名)
+        for attr in ("vector_schemas", "vectors", "vector_schema"):
+            vs_list = getattr(schema, attr, None)
+            if vs_list is None:
+                continue
+            if not isinstance(vs_list, (list, tuple)):
+                vs_list = [vs_list]
+            for vs in vs_list:
+                name = getattr(vs, "name", "")
+                dim = getattr(vs, "dimension", getattr(vs, "dim", 0))
+                embedding_field = ZvecBackend._EMBEDDING_FIELD
+                if name == embedding_field and dim > 0:
+                    logger.info(
+                        f"[ZvecBackend] Opened existing collection: dim={dim}, "
+                        f"path={coll_path}" + (" (stale LOCK cleaned)" if lock_stale else "")
+                    )
+                    return dim
+        logger.warning(
+            f"[ZvecBackend] Could not determine embedding dim from schema at {coll_path}"
+        )
+        return 0
 
     def _ensure_collection(self, coll_path: str, embedding_dim: int) -> None:
         """创建 collection (幂等)"""
