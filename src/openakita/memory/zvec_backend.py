@@ -414,13 +414,18 @@ class ZvecBackend:
             return []
 
         try:
-            zq = self._zvec.Query(field_name=self._EMBEDDING_FIELD, vector=query_vec)
+            # 兼容两个 zvec API 版本:
+            #   bundled: zvec.Query(name=..., vector=...), queries=kwargs
+            #   pip 0.4.0: zvec.VectorQuery(name=..., vector=...), positional arg
+            query_cls = getattr(self._zvec, "Query", None) or self._zvec.VectorQuery
+            zq = query_cls(field_name=self._EMBEDDING_FIELD, vector=query_vec)
             with self._lock:
-                results = self._collection.query(
-                    queries=zq,
-                    topk=min(limit, 50),
-                    include_vector=False,
-                )
+                try:
+                    results = self._collection.query(
+                        queries=zq, topk=min(limit, 50), include_vector=False
+                    )
+                except TypeError:
+                    results = self._collection.query(zq, topk=min(limit, 50))
             if not results:
                 return []
 
@@ -561,7 +566,12 @@ class ZvecBackend:
         try:
             with self._lock:
                 stats = self._collection.stats
-                return getattr(stats, "row_count", 0) if stats else 0
+                if not stats:
+                    return 0
+                return (
+                    getattr(stats, "row_count", None)
+                    or getattr(stats, "doc_count", 0)
+                )
         except Exception as e:
             logger.warning(f"[ZvecBackend] count failed: {e}")
             return 0
