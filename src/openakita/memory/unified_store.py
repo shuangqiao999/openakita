@@ -61,58 +61,96 @@ class UnifiedStore:
         self._backfill_zvec_if_empty()
 
     def _backfill_zvec_if_empty(self) -> None:
-        """若 zvec 已可用但 vector count 为 0，将 SQLite 中现有记忆回填到 zvec。
+        """若 zvec 已可用但 vector count 为 0，在后台线程中从 SQLite 回填已有记忆。
 
-        zvec 可能因 embedding 模型延迟初始化而在 startup 后激活。
-        该场景下已有 SQLite 记忆缺少向量索引，本方法带回填逻辑补全。
+        不阻塞启动流程。回填期间语义搜索降级到 FTS5。
+        使用 daemon 线程避免阻止进程退出，_backfill_started 标记防止重复触发。
         """
         if self.search.backend_type != "zvec":
             return
         if not self.search.available:
             return
+        if getattr(self, "_backfill_started", False):
+            return
+        self._backfill_started = True
+
+        import threading
+
+        thread = threading.Thread(target=self._backfill_worker, daemon=True, name="zvec-backfill")
+        thread.start()
+        logger.info("[UnifiedStore] Zvec backfill thread started (daemon)")
+
+    def _backfill_worker(self) -> None:
+        """后台回填工作函数：从 SQLite 查询记忆并批量写入 zvec。
+
+        在独立线程中执行，不阻塞主启动流程。
+        batch_add() 内部调用 _run_embedding_sync 桥接到异步嵌入事件循环。
+        """
         try:
             count_fn = getattr(self.search, "count", None)
             if count_fn is None:
                 return
             existing = count_fn()
             if existing > 0:
+                logger.debug(
+                    "[UnifiedStore] Backfill skipped: zvec already has %d vectors", existing
+                )
                 return
         except Exception:
             return
 
         try:
             all_mems = self.db.query(limit=5000, active_only=False)
-            if not all_mems:
-                return
-        except Exception:
+        except Exception as e:
+            logger.warning("[UnifiedStore] Backfill: failed to query SQLite: %s", e)
             return
 
-        items: list[dict] = []
-        for mem in all_mems:
-            mem_id = mem.get("id", "")
-            content = mem.get("content", "")
-            if not mem_id or not content:
+        if not all_mems:
+            return
+
+        logger.info("[UnifiedStore] Backfill started: %d memories to index", len(all_mems))
+
+        batch_size = 50
+        total_indexed = 0
+        for offset in range(0, len(all_mems), batch_size):
+            batch = all_mems[offset : offset + batch_size]
+            items: list[dict] = []
+            for mem in batch:
+                mem_id = mem.get("id", "")
+                content = mem.get("content", "")
+                if not mem_id or not content:
+                    continue
+                items.append(
+                    {
+                        "id": mem_id,
+                        "content": content,
+                        "metadata": {
+                            "type": mem.get("type", "fact"),
+                            "priority": mem.get("priority", "short_term"),
+                            "importance": mem.get("importance_score", 0.5),
+                            "tags": mem.get("tags", []),
+                        },
+                    }
+                )
+            if not items:
                 continue
-            items.append(
-                {
-                    "id": mem_id,
-                    "content": content,
-                    "metadata": {
-                        "type": mem.get("type", "fact"),
-                        "priority": mem.get("priority", "short_term"),
-                        "importance": mem.get("importance_score", 0.5),
-                        "tags": mem.get("tags", []),
-                    },
-                }
-            )
-        if not items:
-            return
+            try:
+                n = self.search.batch_add(items)
+                total_indexed += n
+                if n < len(items):
+                    logger.warning(
+                        "[UnifiedStore] Backfill batch partial: %d/%d (offset=%d)",
+                        n, len(items), offset,
+                    )
+            except Exception as e:
+                logger.error(
+                    "[UnifiedStore] Backfill batch failed (offset=%d): %s", offset, e
+                )
 
-        n = self.search.batch_add(items)
         logger.info(
-            "[UnifiedStore] Backfilled %d/%d existing memories into zvec",
-            n,
-            len(items),
+            "[UnifiedStore] Backfill completed: %d/%d memories indexed into zvec",
+            total_indexed,
+            len(all_mems),
         )
 
     @staticmethod
