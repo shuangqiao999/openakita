@@ -140,7 +140,7 @@ class ZvecBackend:
             coll_path = str(self._persist_dir / "@openakita_memories")
             collection_exists = self._zvec and Path(coll_path).is_dir()
             if collection_exists:
-                self._open_collection(coll_path)
+                self._open_collection(coll_path, embedding_dim)
             elif embedding_dim > 0:
                 self._ensure_collection(coll_path, embedding_dim)
             else:
@@ -153,7 +153,7 @@ class ZvecBackend:
             logger.warning(f"[ZvecBackend] Init/open failed: {e}")
             self._enabled = False
 
-    def _open_collection(self, coll_path: str) -> None:
+    def _open_collection(self, coll_path: str, embedding_dim: int = 0) -> None:
         """打开已有 collection，处理残留 LOCK 文件和 API 兼容性
 
         zvec 内部 lock 获取有 ~60s 阻塞超时（LMDB/MDB_LOCK_TIMEOUT），
@@ -163,6 +163,9 @@ class ZvecBackend:
         Windows 上 zvec LOCK 可能是目录（LMDB），需 rmtree 而非 unlink。
         LMDB LOCK 可能出现在子目录（如 idmap.0/LOCK, 0/LOCK），因此
         递归扫描整个 collection 目录。
+
+        若 zvec.open() 失败且 embedding_dim > 0，说明 collection 已损坏
+        （上次崩溃遗留的 LMDB 环境不兼容），自动删除并重建。
         """
         lock_stale = False
         coll_path_obj = Path(coll_path)
@@ -185,7 +188,25 @@ class ZvecBackend:
         try:
             self._collection = self._zvec.open(path=coll_path)
         except Exception as e:
-            logger.warning(f"[ZvecBackend] Open collection failed: {e}")
+            logger.warning("[ZvecBackend] Open collection failed: %s", e)
+            if embedding_dim > 0 and Path(coll_path).is_dir():
+                import shutil
+
+                logger.warning(
+                    "[ZvecBackend] Collection appears corrupted, "
+                    "deleting and rebuilding: %s",
+                    coll_path,
+                )
+                try:
+                    shutil.rmtree(coll_path, ignore_errors=True)
+                except Exception as rm_err:
+                    logger.error(
+                        "[ZvecBackend] Failed to remove corrupted collection: %s", rm_err
+                    )
+                    self._enabled = False
+                    return
+                self._ensure_collection(coll_path, embedding_dim)
+                return
             raise
 
         self._enabled = True
