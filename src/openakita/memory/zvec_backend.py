@@ -26,8 +26,14 @@ from .json_utils import coerce_text
 logger = logging.getLogger(__name__)
 
 
+_EMBEDDING_TIMEOUT_SEC = 15
+
 def _run_embedding_sync(embedder, method_name: str, *args):
-    """安全地在同步上下文中调用异步嵌入。"""
+    """安全地在同步上下文中调用异步嵌入。
+
+    超时时间由 ``_EMBEDDING_TIMEOUT_SEC`` 控制（默认 15s）。
+    超时时返回 None，由调用方处理降级。
+    """
     import asyncio
 
     method = getattr(embedder, method_name)
@@ -38,7 +44,17 @@ def _run_embedding_sync(embedder, method_name: str, *args):
 
     if loop.is_running():
         future = asyncio.run_coroutine_threadsafe(method(*args), loop)
-        return future.result(timeout=120)
+        try:
+            return future.result(timeout=_EMBEDDING_TIMEOUT_SEC)
+        except TimeoutError:
+            logger.error(
+                "[ZvecBackend] Embedding call timed out after %ds",
+                _EMBEDDING_TIMEOUT_SEC,
+            )
+            return None
+        except Exception as e:
+            logger.error("[ZvecBackend] Embedding call failed: %s", e)
+            return None
     else:
         return asyncio.run(method(*args))
 
@@ -97,6 +113,10 @@ class ZvecBackend:
         self._zvec = None
         self._lock = threading.Lock()
         self._cached_embedder: object | None = None
+        # 嵌入健康门控: 连续失败 N 次后自动跳过 embedding（触发 FTS5 降级）
+        self._embedding_failures = 0
+        self._embedding_healthy = True
+        self._embedding_last_error: str | None = None
 
         try:
             import zvec as _zvec_mod
@@ -259,6 +279,41 @@ class ZvecBackend:
 
     # ── SearchBackend Protocol 实现 (文本接口) ──
 
+    def _check_embedding_health(self) -> bool:
+        """Returns False if embedding is known unhealthy (skip vector search)."""
+        if self._embedding_failures >= 2:
+            self._embedding_healthy = False
+            return False
+        return True
+
+    def _mark_embedding_ok(self) -> None:
+        """Reset failure counter on successful embedding call."""
+        was_unhealthy = not self._embedding_healthy
+        self._embedding_failures = 0
+        self._embedding_healthy = True
+        self._embedding_last_error = None
+        if was_unhealthy:
+            logger.info("[ZvecBackend] Embedding recovered — vector search re-enabled")
+
+    def _mark_embedding_failure(self, reason: str) -> None:
+        """Increment failure counter; disable vector search after 2 consecutive failures."""
+        self._embedding_failures += 1
+        self._embedding_last_error = reason
+        if self._embedding_failures >= 2:
+            self._embedding_healthy = False
+            logger.error(
+                "[ZvecBackend] Embedding unhealthy after %s failures (last: %s) — "
+                "vector search disabled, FTS5 will be used",
+                self._embedding_failures,
+                reason,
+            )
+        else:
+            logger.warning(
+                "[ZvecBackend] Embedding failure %s/2: %s",
+                self._embedding_failures,
+                reason,
+            )
+
     def search(
         self,
         query: str,
@@ -271,15 +326,24 @@ class ZvecBackend:
     ) -> list[tuple[str, float]]:
         if not self.available:
             return []
+        if not self._embedding_healthy:
+            return []
         embedder = self._get_embedder()
         if embedder is None:
-            logger.warning("[ZvecBackend] No embedding model available, skipping vector search")
             return []
         try:
             query_vec = _run_embedding_sync(embedder, "embed_query", query)
         except Exception as e:
-            logger.warning(f"[ZvecBackend] Embedding for search failed: {e}")
+            self._mark_embedding_failure(str(e))
             return []
+
+        if query_vec is None:
+            # Timeout or embedding call failed — mark unhealthy
+            self._mark_embedding_failure("timeout_or_none")
+            return []
+
+        # Embedding succeeded — reset health
+        self._mark_embedding_ok()
 
         if not query_vec:
             return []
@@ -332,11 +396,14 @@ class ZvecBackend:
         try:
             vec = _run_embedding_sync(embedder, "embed_query", content)
         except Exception as e:
-            logger.warning(f"[ZvecBackend] Embedding for add failed: {e}")
+            self._mark_embedding_failure(str(e))
             return False
 
-        if not vec:
+        if vec is None:
+            self._mark_embedding_failure("add_timeout")
             return False
+
+        self._mark_embedding_ok()
 
         with self._lock:
             if not self._collection and vec_dim > 0:
@@ -386,11 +453,14 @@ class ZvecBackend:
         try:
             vecs = _run_embedding_sync(embedder, "embed", contents)
         except Exception as e:
-            logger.warning(f"[ZvecBackend] Batch embedding failed: {e}")
+            self._mark_embedding_failure(str(e))
             return 0
 
-        if not vecs or len(vecs) != len(items) or any(not v for v in vecs):
+        if vecs is None or len(vecs) != len(items) or any(not v for v in vecs):
+            self._mark_embedding_failure("batch_add_failed")
             return 0
+
+        self._mark_embedding_ok()
 
         vec_dim = getattr(embedder, "dimension", 0) or 0
 
