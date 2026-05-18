@@ -229,6 +229,12 @@ class ZvecBackend:
                 )
                 try:
                     shutil.rmtree(coll_path, ignore_errors=True)
+                    # Windows 文件系统异步删除可能未完成，轮询等待
+                    for _ in range(20):
+                        if not Path(coll_path).is_dir():
+                            break
+                        import time
+                        time.sleep(0.5)
                 except Exception as rm_err:
                     logger.error(
                         "[ZvecBackend] Failed to remove corrupted collection: %s", rm_err
