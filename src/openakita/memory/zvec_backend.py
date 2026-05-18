@@ -263,14 +263,46 @@ class ZvecBackend:
         return "zvec"
 
     def _get_embedder(self):
-        if self._cached_embedder is not None:
+        """获取嵌入模型并做轻量探活。
+
+        首次调用时发送轻量 ping 验证 embedding 服务可达，失败则
+        标记 unhealthy 并返回 None（触发 FTS5 降级）。成功后将结果缓存，
+        后续调用直接返回。
+        """
+        if self._cached_embedder is not None and getattr(self, "_embedder_pinged", False):
             return self._cached_embedder
         try:
             from openakita.llm.embeddings import get_embedding_model
 
             model = get_embedding_model()
-            self._cached_embedder = model
-            return model
+            if model is None:
+                return None
+
+            # 启动就绪探活: 发轻量 embedding 验证 LMStudio/embedding 服务可达
+            for _retry in range(3):
+                try:
+                    _ping_vec = _run_embedding_sync(model, "embed_query", "ping")
+                    if _ping_vec and len(_ping_vec) > 0:
+                        self._cached_embedder = model
+                        self._embedder_pinged = True  # type: ignore[attr-defined]
+                        self._mark_embedding_ok()
+                        logger.debug(
+                            "[ZvecBackend] Embedding readiness ping OK (dim=%d)",
+                            len(_ping_vec),
+                        )
+                        return model
+                except Exception:
+                    pass
+                if _retry < 2:
+                    import time
+                    time.sleep(3 + _retry * 2)
+
+            logger.error(
+                "[ZvecBackend] Embedding readiness ping failed after 3 retries — "
+                "vector search will be skipped"
+            )
+            self._mark_embedding_failure("readiness_ping")
+            return None
         except Exception:
             return None
 

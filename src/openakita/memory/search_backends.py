@@ -427,24 +427,38 @@ def create_search_backend(
                 return backend
 
             # 首次运行: zvec 已安装但集合未创建 (embedding_dim=0)
-            # 主动获取嵌入模型维度并初始化集合，否则永久退化为 FTS5
+            # 主动获取嵌入模型维度并初始化集合。加重试避免 LMStudio 启动时
+            # 承载过载导致永久退化。
             if not backend.available and hasattr(backend, "_zvec") and backend._zvec:
-                try:
-                    from openakita.llm.embeddings import get_embedding_model
+                _auto_created = False
+                _last_auto_err = ""
+                for _retry in range(3):
+                    try:
+                        from openakita.llm.embeddings import get_embedding_model
 
-                    model = get_embedding_model()
-                    if model and model.dimension > 0:
-                        backend._init_or_open(model.dimension)
-                        if backend.available:
-                            logger.info(
-                                f"[SearchBackend] Auto-created Zvec collection "
-                                f"(dim={model.dimension})"
+                        model = get_embedding_model()
+                        if model and model.dimension > 0:
+                            backend._init_or_open(model.dimension)
+                            if backend.available:
+                                logger.info(
+                                    f"[SearchBackend] Auto-created Zvec collection "
+                                    f"(dim={model.dimension})"
+                                )
+                                _auto_created = True
+                                break
+                    except Exception as _auto_err:
+                        _last_auto_err = str(_auto_err)
+                        if _retry < 2:
+                            import time
+                            logger.debug(
+                                "[SearchBackend] Zvec auto-create retry %d/3: %s",
+                                _retry + 2, _last_auto_err,
                             )
-                            return backend
-                except Exception as _auto_err:
+                            time.sleep(5 * (_retry + 1))
+                if not _auto_created:
                     logger.info(
                         f"[SearchBackend] Zvec installed but no embedding model configured, "
-                        f"falling back to FTS5 ({_auto_err})"
+                        f"falling back to FTS5 ({_last_auto_err})"
                     )
             logger.warning(
                 "[SearchBackend] Zvec not available (collection not created, "
