@@ -525,6 +525,7 @@ class SkillLoader:
             ParsedSkill 或 None
         """
         try:
+            from ..core.log_health import record_health_event  # 惰性导入避免循环
             skill = self.parser.parse_directory(skill_dir)
 
             # 加载 sidecar 翻译文件
