@@ -217,6 +217,8 @@ class SkillLoader:
         )
         self._loaded_skills: dict[str, ParsedSkill] = {}
         self._last_load_issues: list[SkillLoadIssue] = []
+        self._last_scan_mtime: float = 0.0
+        self._last_scan_count: int = 0
 
     @property
     def last_load_issues(self) -> list[dict[str, str]]:
@@ -280,6 +282,30 @@ class SkillLoader:
         Returns:
             加载的技能数量
         """
+        # mtime 缓存：若所有 SKILL.md / SKILL.yaml 文件均未变更，跳过全量扫描
+        _newest = 0.0
+        directories = self.discover_skill_directories(base_path)
+        for skill_dir in directories:
+            try:
+                for md in skill_dir.rglob("SKILL.md"):
+                    _newest = max(_newest, md.stat().st_mtime)
+                for yaml_file in skill_dir.rglob("SKILL.yaml"):
+                    _newest = max(_newest, yaml_file.stat().st_mtime)
+            except OSError:
+                _newest = float("inf")
+                break
+
+        if (
+            _newest <= self._last_scan_mtime
+            and self._last_scan_count > 0
+            and _newest < float("inf")
+        ):
+            logger.debug(
+                f"[SkillLoader] Skipping full scan: mtime={_newest:.0f} <= "
+                f"cached={self._last_scan_mtime:.0f}, returning cached count={self._last_scan_count}"
+            )
+            return self._last_scan_count
+
         # 每次 load_all 都重置分类注册表，避免被删除的分类残留
         self._last_load_issues = []
         try:
@@ -287,7 +313,6 @@ class SkillLoader:
         except Exception:
             pass
 
-        directories = self.discover_skill_directories(base_path)
         loaded = 0
 
         for skill_dir in directories:
@@ -308,6 +333,9 @@ class SkillLoader:
             )
 
         loaded += self._load_cli_anything_skills()
+
+        self._last_scan_mtime = _newest if _newest < float("inf") else 0.0
+        self._last_scan_count = loaded
 
         return loaded
 

@@ -108,25 +108,32 @@ class ZvecBackend:
             self._enabled = False
 
     def _open_collection(self, coll_path: str) -> None:
-        """打开已有 collection，处理残留 LOCK 文件和 API 兼容性"""
+        """打开已有 collection，处理残留 LOCK 文件和 API 兼容性
+        
+        zvec 内部 lock 获取有 ~60s 阻塞超时（LMDB/MDB_LOCK_TIMEOUT），
+        若上次崩溃遗留 LOCK 文件未清，会白等 60s。此处在调用 zvec.open()
+        之前先主动检测并清除残留 LOCK，将 O(60s) 降为 O(1ms)。
+        """
         lock_path = Path(coll_path) / "LOCK"
         lock_stale = False
+
+        # 前向检测：LOCK 文件存在且集合目录也存在 → 残留 LOCK，直接删除
+        if lock_path.exists():
+            lock_stale = True
+            logger.warning(
+                f"[ZvecBackend] Stale LOCK file detected at {lock_path}, "
+                f"removing before open (avoids ~60s zvec internal lock wait)"
+            )
+            try:
+                lock_path.unlink()
+            except OSError:
+                pass
+
         try:
             self._collection = self._zvec.open(path=coll_path)
         except Exception as e:
-            err_msg = str(e).lower()
-            if "lock" in err_msg and lock_path.exists():
-                lock_stale = True
-                logger.warning(
-                    f"[ZvecBackend] Stale LOCK file detected at {lock_path}, removing and retrying"
-                )
-                try:
-                    lock_path.unlink()
-                except OSError:
-                    pass
-                self._collection = self._zvec.open(path=coll_path)
-            else:
-                raise
+            logger.warning(f"[ZvecBackend] Open collection failed: {e}")
+            raise
 
         self._enabled = True
         self._embedding_dim = self._read_schema_dim(

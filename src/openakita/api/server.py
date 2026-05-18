@@ -512,19 +512,15 @@ def create_app(
         logger.warning("No shutdown_event available, shutdown request ignored")
         return {"status": "error", "message": "shutdown not available in this mode"}
 
-    @app.on_event("startup")
-    async def _startup_org_runtime():
-        loop = asyncio.get_running_loop()
-        loop.slow_callback_duration = 0.5
-        if hasattr(app.state, "org_runtime") and app.state.org_runtime:
-            try:
-                from openakita.core.engine_bridge import to_engine
+    async def _startup_health_checks(app):
+        """Background task: endpoint + compiler health checks.
+        
+        Runs as fire-and-forget after HTTP is ready; failures do not
+        block the server from accepting requests.
+        """
+        await asyncio.sleep(2)  # brief delay to let startup settle
 
-                await to_engine(app.state.org_runtime.start())
-            except Exception as e:
-                logger.warning(f"OrgRuntime startup error (non-fatal): {e}")
-
-        # Endpoint health check: detect stale/broken endpoints early
+        # Endpoint health check
         try:
             _agent = getattr(app.state, "agent", None)
             _brain = getattr(_agent, "brain", None) if _agent else None
@@ -545,15 +541,15 @@ def create_app(
 
         # Compiler endpoint health check
         try:
-            _agent = getattr(app.state, "agent", None)
-            _brain = getattr(_agent, "brain", None) if _agent else None
-            _compiler_client = getattr(_brain, "_compiler_client", None) if _brain else None
+            _agent2 = getattr(app.state, "agent", None)
+            _brain2 = getattr(_agent2, "brain", None) if _agent2 else None
+            _compiler_client = getattr(_brain2, "_compiler_client", None) if _brain2 else None
             if _compiler_client and hasattr(_compiler_client, "startup_health_check"):
                 comp_result = await _compiler_client.startup_health_check()
                 comp_failed = {k: v for k, v in comp_result.items() if v != "ok"}
                 if comp_failed:
                     for ep_name, status in comp_failed.items():
-                        _brain._compiler_on_failure(f"startup: {ep_name}={status}")
+                        _brain2._compiler_on_failure(f"startup: {ep_name}={status}")
                     logger.warning(
                         f"[Startup] Compiler health check failed: "
                         f"{', '.join(f'{k}={v}' for k, v in comp_failed.items())}. "
@@ -565,6 +561,21 @@ def create_app(
                     )
         except Exception as e:
             logger.debug(f"[Startup] Compiler health check skipped: {e}")
+
+    @app.on_event("startup")
+    async def _startup_org_runtime():
+        loop = asyncio.get_running_loop()
+        loop.slow_callback_duration = 0.5
+        if hasattr(app.state, "org_runtime") and app.state.org_runtime:
+            try:
+                from openakita.core.engine_bridge import to_engine
+
+                await to_engine(app.state.org_runtime.start())
+            except Exception as e:
+                logger.warning(f"OrgRuntime startup error (non-fatal): {e}")
+
+        # 健康检查改为后台任务，不阻塞 HTTP 就绪
+        asyncio.create_task(_startup_health_checks(app))
 
     @app.on_event("shutdown")
     async def _shutdown_org_runtime():
