@@ -75,6 +75,16 @@ class Settings(BaseSettings):
         ),
     )
 
+    # --- Zvec 混合检索 & 语义上下文注入开关 ---
+    hybrid_search_enabled: bool = Field(
+        default=True,
+        description="启用 Zvec+FTS5 混合检索加权融合（0.7×语义 + 0.3×关键词）",
+    )
+    semantic_context_injection_enabled: bool = Field(
+        default=True,
+        description="新会话启用语义上下文注入（优先使用 Zvec 检索高重要性记忆）",
+    )
+
     # Anthropic API
     anthropic_api_key: str = Field(default="", description="Anthropic API Key")
     anthropic_base_url: str = Field(
@@ -1215,6 +1225,8 @@ _PERSISTABLE_KEYS: list[str] = [
     "web_search_attempt_timeout_seconds",
     "always_load_tools",
     "always_load_categories",
+    "hybrid_search_enabled",
+    "semantic_context_injection_enabled",
 ]
 
 

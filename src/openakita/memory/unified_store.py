@@ -270,10 +270,13 @@ class UnifiedStore:
     ) -> list[tuple[SemanticMemory, float]]:
         """Like search_semantic but also returns the raw similarity score.
 
-        当主搜索后端为 zvec 时，同时查询 FTS5 并对共同命中的记忆应用
-        加权融合 (0.7×semantic + 0.3×keyword)，兼顾语义理解与精确匹配。
-        非 zvec 后端保持原有 union-by-id 策略（高分者胜）。
+        当主搜索后端为 zvec 且 hybrid_search_enabled 开启时：
+        1. 分别对语义分数和关键词分数做 min-max 归一化到 [0,1]
+        2. 对共同命中的记忆应用加权融合 (0.7×semantic + 0.3×keyword)
+        非 zvec 后端 / 配置关闭时保持原有 union-by-id 策略（高分者胜）。
         """
+        from openakita.config import settings
+
         primary = self.search.search(
             query,
             limit=limit * 3,
@@ -283,7 +286,6 @@ class UnifiedStore:
             user_id=user_id,
             workspace_id=workspace_id,
         )
-        # 语义向量得分
         semantic_scores: dict[str, float] = {mid: float(s) for mid, s in primary}
 
         if self._fts5_fallback is not None:
@@ -297,29 +299,54 @@ class UnifiedStore:
                     user_id=user_id,
                     workspace_id=workspace_id,
                 )
-                keyword_scores = {mid: float(s) for mid, s in fts_results}
+                keyword_scores: dict[str, float] = {mid: float(s) for mid, s in fts_results}
 
-                if self.search.backend_type == "zvec":
-                    # 加权融合: 语义 + 关键词
+                if (
+                    self.search.backend_type == "zvec"
+                    and getattr(settings, "hybrid_search_enabled", True)
+                ):
+                    # ── 归一化 (min-max → [0,1]) ──
+                    def _normalize(scores: dict[str, float]) -> dict[str, float]:
+                        if not scores:
+                            return {}
+                        vals = list(scores.values())
+                        lo, hi = min(vals), max(vals)
+                        if hi - lo < 1e-8:
+                            return {k: 0.5 for k in scores}
+                        return {k: (v - lo) / (hi - lo) for k, v in scores.items()}
+
+                    sem_norm = _normalize(semantic_scores)
+                    kw_norm = _normalize(keyword_scores)
+
+                    # ── 加权融合 ──
                     merged: dict[str, float] = {}
-                    all_ids = set(semantic_scores) | set(keyword_scores)
+                    all_ids = set(sem_norm) | set(kw_norm)
                     for mid in all_ids:
-                        s_score = semantic_scores.get(mid, 0.0)
-                        k_score = keyword_scores.get(mid, 0.0)
+                        s_score = sem_norm.get(mid, 0.0)
+                        k_score = kw_norm.get(mid, 0.0)
                         if s_score > 0 and k_score > 0:
                             merged[mid] = 0.7 * s_score + 0.3 * k_score
                         elif s_score > 0:
                             merged[mid] = s_score
                         else:
                             merged[mid] = k_score * 0.8
+                    logger.debug(
+                        "[HybridSearch] query=%.50s zvec=%d fts5=%d merged=%d (fusion)",
+                        query, len(sem_norm), len(kw_norm), len(merged),
+                    )
                 else:
-                    # 非 zvec 后端: union-by-id, 高分者胜
+                    # 非 zvec 或配置关闭: union-by-id, 高分者胜
                     merged = dict(semantic_scores)
                     for mid, s in fts_results:
                         prev = merged.get(mid)
                         fs = float(s)
                         if prev is None or fs > prev:
                             merged[mid] = fs
+                    if self.search.backend_type == "zvec":
+                        logger.debug(
+                            "[HybridSearch] query=%.50s zvec=%d fts5=%d merged=%d (union, fusion disabled)",
+                            query, len(semantic_scores), len(keyword_scores), len(merged),
+                        )
             except Exception as _e:
                 logger.debug(f"[UnifiedStore] FTS5 union skipped (non-fatal): {_e}")
                 merged = dict(semantic_scores)

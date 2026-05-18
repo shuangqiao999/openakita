@@ -4711,11 +4711,22 @@ class Agent:
                             _user_query = str(_m["content"]).strip()
                             break
 
-                # 当有用户消息时，优先尝试语义检索
-                if _user_query and len(_user_query) >= 3:
+                # 过滤短文本: 有效字符数 >= 5（排除空白和标点）
+                _min_query_len = 5
+                _effective = "".join(c for c in _user_query if c.isalnum() or "\u4e00" <= c <= "\u9fff")
+                _skip_semantic = not _effective or len(_effective) < _min_query_len
+
+                if (
+                    not _skip_semantic
+                    and getattr(settings, "semantic_context_injection_enabled", True)
+                ):
                     try:
                         _engine = getattr(self.memory_manager, "retrieval_engine", None)
                         if _engine and _engine.store and _engine.store.search:
+                            logger.info(
+                                "[SemanticContext] New session, query='%.50s'",
+                                _user_query,
+                            )
                             _now = datetime.now()
                             _scored = _engine.store.search_semantic_scored(
                                 _user_query, limit=15,
@@ -4743,10 +4754,31 @@ class Agent:
                                     break
                             if _count >= 1:
                                 _recent_ctx = "\n".join(_lines)
+                                logger.info(
+                                    "[SemanticContext] Injected %d memories (query='%.50s')",
+                                    _count, _user_query,
+                                )
+                            else:
+                                logger.info(
+                                    "[SemanticContext] No semantic results, "
+                                    "falling back to time-window context (query='%.50s')",
+                                    _user_query,
+                                )
                     except Exception as _e:
                         logger.debug(
                             f"[Session:{session_id}] Semantic context inject "
                             f"failed (non-critical): {_e}"
+                        )
+                else:
+                    if _skip_semantic:
+                        logger.debug(
+                            "[SemanticContext] Skipped: query too short "
+                            "(effective=%d chars, need >= %d)",
+                            len(_effective), _min_query_len,
+                        )
+                    else:
+                        logger.debug(
+                            "[SemanticContext] Skipped: injection disabled via config"
                         )
 
                 # 回退到原时间窗口查询
@@ -4754,6 +4786,11 @@ class Agent:
                     _recent_ctx = self.memory_manager.get_recent_conversation_context(
                         days_back=3, max_turns=20, max_chars=3000
                     )
+                    if _recent_ctx:
+                        logger.info(
+                            "[SemanticContext] Using time-window fallback (%d chars)",
+                            len(_recent_ctx),
+                        )
 
                 if _recent_ctx:
                     _summary_msg = {
