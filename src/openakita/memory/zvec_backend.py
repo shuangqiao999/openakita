@@ -43,6 +43,32 @@ def _run_embedding_sync(embedder, method_name: str, *args):
         return asyncio.run(method(*args))
 
 
+def _remove_lock_path(lock_path: Path) -> bool:
+    """Remove a stale zvec LOCK file/directory with retry.
+
+    On Windows, zvec/LMDB LOCK can be a *directory* rather than a regular
+    file, and ``unlink()`` may fail transiently due to antivirus or FS
+    caching.  Use ``rmtree`` for dirs, and retry up to 3 times with a
+    small backoff.
+    """
+    import shutil
+    import time
+
+    for attempt in range(3):
+        try:
+            if lock_path.is_dir():
+                shutil.rmtree(lock_path)
+            else:
+                lock_path.unlink()
+            if not lock_path.exists():
+                return True
+        except OSError:
+            pass
+        if attempt < 2:
+            time.sleep(0.3 * (attempt + 1))
+    return False
+
+
 class ZvecBackend:
     """Zvec 向量存储后端。
 
@@ -113,6 +139,8 @@ class ZvecBackend:
         zvec 内部 lock 获取有 ~60s 阻塞超时（LMDB/MDB_LOCK_TIMEOUT），
         若上次崩溃遗留 LOCK 文件未清，会白等 60s。此处在调用 zvec.open()
         之前先主动检测并清除残留 LOCK，将 O(60s) 降为 O(1ms)。
+
+        Windows 上 zvec LOCK 可能是目录（LMDB），需 rmtree 而非 unlink。
         """
         lock_path = Path(coll_path) / "LOCK"
         lock_stale = False
@@ -120,14 +148,17 @@ class ZvecBackend:
         # 前向检测：LOCK 文件存在且集合目录也存在 → 残留 LOCK，直接删除
         if lock_path.exists():
             lock_stale = True
-            logger.warning(
-                f"[ZvecBackend] Stale LOCK file detected at {lock_path}, "
-                f"removing before open (avoids ~60s zvec internal lock wait)"
-            )
-            try:
-                lock_path.unlink()
-            except OSError:
-                pass
+            removed = _remove_lock_path(lock_path)
+            if removed:
+                logger.warning(
+                    f"[ZvecBackend] Stale LOCK removed at {lock_path} "
+                    f"(avoids ~60s zvec internal lock wait)"
+                )
+            else:
+                logger.warning(
+                    f"[ZvecBackend] Failed to remove stale LOCK at {lock_path}, "
+                    f"zvec.open() may block up to 60s"
+                )
 
         try:
             self._collection = self._zvec.open(path=coll_path)
