@@ -399,6 +399,18 @@ def get_embedding_model(config: dict | None = None) -> BaseEmbedding:
             )
             return model
 
+    # 检测当前线程是否有运行中的事件循环（会死锁的情况）
+    # 若有，则在独立线程中执行 _locked_init 以脱锁
+    try:
+        asyncio.get_running_loop()
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            future = ex.submit(asyncio.run, _locked_init())
+            return future.result(timeout=60)
+    except RuntimeError:
+        pass  # 无运行中的循环，走原有路径
+
     try:
         loop = asyncio.get_event_loop()
         if loop.is_running():

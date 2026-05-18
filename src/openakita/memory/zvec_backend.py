@@ -33,10 +33,40 @@ def _run_embedding_sync(embedder, method_name: str, *args):
 
     超时时间由 ``_EMBEDDING_TIMEOUT_SEC`` 控制（默认 15s）。
     超时时返回 None，由调用方处理降级。
+
+    处理三种线程上下文：
+    1. 无事件循环（纯同步脚本）→ asyncio.run() 创建临时循环
+    2. 当前线程有运行中的事件循环（如 FastAPI handler）→
+       此时 run_coroutine_threadsafe + future.result() 会死锁，
+       改用 ThreadPoolExecutor 在线程池中创建独立事件循环执行
+    3. 其他线程存在运行中的主事件循环（如 threading.Thread）→
+       run_coroutine_threadsafe 提交到主循环，正确
     """
     import asyncio
+    import concurrent.futures
 
     method = getattr(embedder, method_name)
+
+    # 检测是否在当前线程的运行中事件循环内（会死锁的情况）
+    try:
+        asyncio.get_running_loop()
+        # 当前线程有运行中的事件循环 → 在独立线程中执行以脱锁
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            future = ex.submit(asyncio.run, method(*args))
+            try:
+                return future.result(timeout=_EMBEDDING_TIMEOUT_SEC)
+            except concurrent.futures.TimeoutError:
+                logger.error(
+                    "[ZvecBackend] Embedding call timed out after %ds",
+                    _EMBEDDING_TIMEOUT_SEC,
+                )
+                return None
+            except Exception as e:
+                logger.error("[ZvecBackend] Embedding call failed: %s", e)
+                return None
+    except RuntimeError:
+        pass  # 无运行中的循环，继续走原有路径
+
     try:
         loop = asyncio.get_event_loop()
     except RuntimeError:
