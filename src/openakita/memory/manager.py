@@ -963,7 +963,8 @@ class MemoryManager:
             tags=[item.get("type", "fact").lower()],
         )
         _apply_retention(mem, item.get("duration"))
-        saved_id = self.save_user_memory(
+        saved_id = await asyncio.to_thread(
+            self.save_user_memory,
             mem,
             scope=write_scope,
             scope_owner=write_owner,

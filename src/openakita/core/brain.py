@@ -640,6 +640,11 @@ class Brain:
         - 故障切换
         - 格式转换
 
+        **WARNING**: 本方法是同步方法，内部通过 ``run_until_complete`` 调用异步 API。
+        如果在已有事件循环的异步上下文中直接调用（而非通过 ``asyncio.to_thread()``
+        包装），会导致 ``RuntimeError``。请始终从同步线程/进程调用本方法，或通过
+        ``asyncio.to_thread(brain.messages_create, ...)`` 在异步上下文中安全调用。
+
         Args:
             use_thinking: 是否使用 thinking 模式
             thinking_depth: 思考深度 ('low'/'medium'/'high'/'max'/None)

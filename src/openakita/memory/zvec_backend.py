@@ -115,6 +115,62 @@ def _remove_lock_path(lock_path: Path) -> bool:
     return False
 
 
+def _remove_corrupt_collection(coll_path: str) -> bool:
+    """Remove a corrupted zvec collection directory with retry.
+
+    Windows 文件系统异步删除（antivirus / FS caching）可能导致
+    ``shutil.rmtree`` 返回后目录仍存在。外层循环反复尝试 rmtree +
+    轮询确认，直到目录真正消失或超过最大重试次数。
+
+    Returns:
+        True if the collection directory was successfully removed.
+    """
+    import shutil
+    import time
+
+    coll = Path(coll_path)
+    max_attempts = 5
+    poll_interval = 0.5
+    poll_cycles = 40  # max 20s per rmtree attempt
+
+    for attempt in range(max_attempts):
+        if not coll.is_dir():
+            return True
+
+        try:
+            shutil.rmtree(coll_path, ignore_errors=True)
+        except Exception as e:
+            logger.warning(
+                "[ZvecBackend] rmtree attempt %d/%d threw: %s",
+                attempt + 1,
+                max_attempts,
+                e,
+            )
+
+        # 轮询等待目录消失
+        for _ in range(poll_cycles):
+            if not coll.is_dir():
+                logger.info(
+                    "[ZvecBackend] Corrupt collection removed "
+                    "(attempt %d/%d)",
+                    attempt + 1,
+                    max_attempts,
+                )
+                return True
+            time.sleep(poll_interval)
+
+        if attempt < max_attempts - 1:
+            logger.warning(
+                "[ZvecBackend] Directory still exists after rmtree+poll "
+                "(attempt %d/%d), retrying...",
+                attempt + 1,
+                max_attempts,
+            )
+            time.sleep(1.0)
+
+    return False
+
+
 class ZvecBackend:
     """Zvec 向量存储后端。
 
@@ -220,24 +276,18 @@ class ZvecBackend:
         except Exception as e:
             logger.warning("[ZvecBackend] Open collection failed: %s", e)
             if embedding_dim > 0 and Path(coll_path).is_dir():
-                import shutil
-
                 logger.warning(
                     "[ZvecBackend] Collection appears corrupted, "
                     "deleting and rebuilding: %s",
                     coll_path,
                 )
-                try:
-                    shutil.rmtree(coll_path, ignore_errors=True)
-                    # Windows 文件系统异步删除可能未完成，轮询等待
-                    for _ in range(20):
-                        if not Path(coll_path).is_dir():
-                            break
-                        import time
-                        time.sleep(0.5)
-                except Exception as rm_err:
+                removed = _remove_corrupt_collection(coll_path)
+                if not removed:
                     logger.error(
-                        "[ZvecBackend] Failed to remove corrupted collection: %s", rm_err
+                        "[ZvecBackend] Failed to remove corrupted collection "
+                        "after repeated attempts; zvec will be disabled. "
+                        "To recover, manually delete: %s",
+                        coll_path,
                     )
                     self._enabled = False
                     return

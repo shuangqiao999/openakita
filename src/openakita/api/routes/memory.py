@@ -494,10 +494,11 @@ async def create_memory(request: Request, body: MemoryCreateRequest):
         apply_retention(mem)
         mm = _get_manager(request)
         if mm and hasattr(mm, "save_user_memory"):
-            mem_id = mm.save_user_memory(mem, scope="user")
+            mem_id = await asyncio.to_thread(mm.save_user_memory, mem, scope="user")
         else:
             user_id, workspace_id = _current_owner(request)
-            mem_id = store.save_semantic(
+            mem_id = await asyncio.to_thread(
+                store.save_semantic,
                 mem,
                 scope="user",
                 user_id=user_id,

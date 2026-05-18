@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections import defaultdict
@@ -420,7 +421,7 @@ class LifecycleManager:
                 try:
                     items = await self.extractor.extract_from_turn_v2(turn_obj)
                     for item in items:
-                        self._save_extracted_item(item, episode.id)
+                        await self._save_extracted_item(item, episode.id)
                     total += len(items)
                     self.store.mark_turns_extracted(session_id, [turn_data["turn_index"]])
                 except Exception as e:
@@ -445,14 +446,16 @@ class LifecycleManager:
             extracted = await self.extractor.extract_from_turn_v2(turn)
             success = len(extracted) > 0
             for e in extracted:
-                self._save_extracted_item(e)
+                await self._save_extracted_item(e)
                 total += 1
             self.store.complete_extraction(item["id"], success=success)
 
         logger.info(f"[Lifecycle] Processed {total} memories from unextracted turns")
         return {"processed": total, "partial": False} if deadline_monotonic else total
 
-    def _save_extracted_item(self, item: dict, episode_id: str | None = None) -> None:
+    async def _save_extracted_item(
+        self, item: dict, episode_id: str | None = None
+    ) -> None:
         type_map = {
             "PREFERENCE": MemoryType.PREFERENCE,
             "FACT": MemoryType.FACT,
@@ -542,7 +545,8 @@ class LifecycleManager:
             tags=[item.get("type", "fact").lower()],
         )
         apply_retention(mem, item.get("duration"))
-        self.store.save_semantic(
+        await asyncio.to_thread(
+            self.store.save_semantic,
             mem,
             scope=write_scope,
             scope_owner=write_owner,
@@ -1401,7 +1405,8 @@ class LifecycleManager:
                     importance_score=min(1.0, max(0.7, float(synth.get("importance", 0.85)))),
                     confidence=0.8,
                 )
-                self.store.save_semantic(
+                await asyncio.to_thread(
+                    self.store.save_semantic,
                     mem,
                     scope="legacy_quarantine",
                     user_id="legacy",
