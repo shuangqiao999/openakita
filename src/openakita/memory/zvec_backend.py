@@ -309,6 +309,16 @@ class ZvecBackend:
                         self._cached_embedder = model
                         self._embedder_pinged = True  # type: ignore[attr-defined]
                         self._mark_embedding_ok()
+
+                        # 嵌入模型就绪但 collection 未创建时，惰性初始化
+                        if self._collection is None and model.dimension > 0:
+                            try:
+                                self._ensure_collection(
+                                    self._coll_path(), model.dimension
+                                )
+                            except Exception:
+                                pass
+
                         logger.debug(
                             "[ZvecBackend] Embedding readiness ping OK (dim=%d)",
                             len(_ping_vec),
@@ -473,10 +483,6 @@ class ZvecBackend:
 
             try:
                 doc = self._zvec.Doc(id=memory_id, vectors={self._EMBEDDING_FIELD: vec})
-                if metadata:
-                    for k, v in metadata.items():
-                        if isinstance(v, (str, int, float, bool)):
-                            setattr(doc, k, v)
                 self._collection.insert([doc])
                 self._collection.flush()
                 return True
@@ -540,11 +546,6 @@ class ZvecBackend:
                         id=doc_id,
                         vectors={self._EMBEDDING_FIELD: vecs[i]},
                     )
-                    metadata = it.get("metadata")
-                    if metadata and isinstance(metadata, dict):
-                        for k, v in metadata.items():
-                            if isinstance(v, (str, int, float, bool)):
-                                setattr(doc, k, v)
                     docs.append(doc)
                 if docs:
                     self._collection.insert(docs)
