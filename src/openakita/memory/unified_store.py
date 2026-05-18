@@ -58,6 +58,63 @@ class UnifiedStore:
         if self.search.backend_type != "fts5":
             self._fts5_fallback = FTS5Backend(self.db)
 
+        self._backfill_zvec_if_empty()
+
+    def _backfill_zvec_if_empty(self) -> None:
+        """若 zvec 已可用但 vector count 为 0，将 SQLite 中现有记忆回填到 zvec。
+
+        zvec 可能因 embedding 模型延迟初始化而在 startup 后激活。
+        该场景下已有 SQLite 记忆缺少向量索引，本方法带回填逻辑补全。
+        """
+        if self.search.backend_type != "zvec":
+            return
+        if not self.search.available:
+            return
+        try:
+            count_fn = getattr(self.search, "count", None)
+            if count_fn is None:
+                return
+            existing = count_fn()
+            if existing > 0:
+                return
+        except Exception:
+            return
+
+        try:
+            all_mems = self.db.query(limit=5000, active_only=False)
+            if not all_mems:
+                return
+        except Exception:
+            return
+
+        items: list[dict] = []
+        for mem in all_mems:
+            mem_id = mem.get("id", "")
+            content = mem.get("content", "")
+            if not mem_id or not content:
+                continue
+            items.append(
+                {
+                    "id": mem_id,
+                    "content": content,
+                    "metadata": {
+                        "type": mem.get("type", "fact"),
+                        "priority": mem.get("priority", "short_term"),
+                        "importance": mem.get("importance_score", 0.5),
+                        "tags": mem.get("tags", []),
+                    },
+                }
+            )
+        if not items:
+            return
+
+        n = self.search.batch_add(items)
+        logger.info(
+            "[UnifiedStore] Backfilled %d/%d existing memories into zvec",
+            n,
+            len(items),
+        )
+
     @staticmethod
     def _is_active_dict(memory: dict) -> bool:
         if memory.get("superseded_by"):
@@ -312,7 +369,7 @@ class UnifiedStore:
                         vals = list(scores.values())
                         lo, hi = min(vals), max(vals)
                         if hi - lo < 1e-8:
-                            return {k: 0.5 for k in scores}
+                            return dict.fromkeys(scores, 0.5)
                         return {k: (v - lo) / (hi - lo) for k, v in scores.items()}
 
                     sem_norm = _normalize(semantic_scores)

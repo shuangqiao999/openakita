@@ -155,29 +155,31 @@ class ZvecBackend:
 
     def _open_collection(self, coll_path: str) -> None:
         """打开已有 collection，处理残留 LOCK 文件和 API 兼容性
-        
+
         zvec 内部 lock 获取有 ~60s 阻塞超时（LMDB/MDB_LOCK_TIMEOUT），
         若上次崩溃遗留 LOCK 文件未清，会白等 60s。此处在调用 zvec.open()
         之前先主动检测并清除残留 LOCK，将 O(60s) 降为 O(1ms)。
 
         Windows 上 zvec LOCK 可能是目录（LMDB），需 rmtree 而非 unlink。
+        LMDB LOCK 可能出现在子目录（如 idmap.0/LOCK, 0/LOCK），因此
+        递归扫描整个 collection 目录。
         """
-        lock_path = Path(coll_path) / "LOCK"
         lock_stale = False
+        coll_path_obj = Path(coll_path)
 
-        # 前向检测：LOCK 文件存在且集合目录也存在 → 残留 LOCK，直接删除
-        if lock_path.exists():
+        for lock_path in sorted(coll_path_obj.rglob("LOCK"), reverse=True):
             lock_stale = True
             removed = _remove_lock_path(lock_path)
             if removed:
                 logger.warning(
-                    f"[ZvecBackend] Stale LOCK removed at {lock_path} "
-                    f"(avoids ~60s zvec internal lock wait)"
+                    "[ZvecBackend] Stale LOCK removed at %s (avoids ~60s lock wait)",
+                    lock_path,
                 )
             else:
                 logger.warning(
-                    f"[ZvecBackend] Failed to remove stale LOCK at {lock_path}, "
-                    f"zvec.open() may block up to 60s"
+                    "[ZvecBackend] Failed to remove stale LOCK at %s, "
+                    "zvec.open() may block up to 60s",
+                    lock_path,
                 )
 
         try:
