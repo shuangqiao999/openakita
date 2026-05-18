@@ -270,9 +270,9 @@ class UnifiedStore:
     ) -> list[tuple[SemanticMemory, float]]:
         """Like search_semantic but also returns the raw similarity score.
 
-        当主搜索后端（如 Chroma）启用时，**始终**额外 union 一次 FTS5 结果，
-        避免向量索引尚未补全/异步未刷新时新写入的记忆被静默漏掉。按 id 去重后
-        取最高分，FTS5 结果保留原始分数（FTS5 backend 输出已落在 [0,1]）。
+        当主搜索后端为 zvec 时，同时查询 FTS5 并对共同命中的记忆应用
+        加权融合 (0.7×semantic + 0.3×keyword)，兼顾语义理解与精确匹配。
+        非 zvec 后端保持原有 union-by-id 策略（高分者胜）。
         """
         primary = self.search.search(
             query,
@@ -283,7 +283,8 @@ class UnifiedStore:
             user_id=user_id,
             workspace_id=workspace_id,
         )
-        merged: dict[str, float] = {mid: float(s) for mid, s in primary}
+        # 语义向量得分
+        semantic_scores: dict[str, float] = {mid: float(s) for mid, s in primary}
 
         if self._fts5_fallback is not None:
             try:
@@ -296,13 +297,34 @@ class UnifiedStore:
                     user_id=user_id,
                     workspace_id=workspace_id,
                 )
-                for mid, s in fts_results:
-                    prev = merged.get(mid)
-                    fs = float(s)
-                    if prev is None or fs > prev:
-                        merged[mid] = fs
+                keyword_scores = {mid: float(s) for mid, s in fts_results}
+
+                if self.search.backend_type == "zvec":
+                    # 加权融合: 语义 + 关键词
+                    merged: dict[str, float] = {}
+                    all_ids = set(semantic_scores) | set(keyword_scores)
+                    for mid in all_ids:
+                        s_score = semantic_scores.get(mid, 0.0)
+                        k_score = keyword_scores.get(mid, 0.0)
+                        if s_score > 0 and k_score > 0:
+                            merged[mid] = 0.7 * s_score + 0.3 * k_score
+                        elif s_score > 0:
+                            merged[mid] = s_score
+                        else:
+                            merged[mid] = k_score * 0.8
+                else:
+                    # 非 zvec 后端: union-by-id, 高分者胜
+                    merged = dict(semantic_scores)
+                    for mid, s in fts_results:
+                        prev = merged.get(mid)
+                        fs = float(s)
+                        if prev is None or fs > prev:
+                            merged[mid] = fs
             except Exception as _e:
                 logger.debug(f"[UnifiedStore] FTS5 union skipped (non-fatal): {_e}")
+                merged = dict(semantic_scores)
+        else:
+            merged = dict(semantic_scores)
 
         ordered = sorted(merged.items(), key=lambda kv: kv[1], reverse=True)
 

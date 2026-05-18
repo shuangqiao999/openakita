@@ -4698,14 +4698,63 @@ class Agent:
         except Exception as e:
             logger.warning(f"[Memory] Failed to align memory session: {e}")
 
-        # 1.6 新会话自动注入最近对话摘要（跨会话上下文连贯性）
-        # 当 session 为空或仅有系统消息时，从 conversation_turns 提取最近 3 天的
-        # 对话摘要并注入，让 LLM 在新对话开始时也能了解近期讨论内容。
+        # 1.6 新会话自动注入语义上下文（跨会话连贯性）
+        # 优先使用 Zvec 语义检索高重要性记忆，回退到时间窗口统计。
         if len(session_messages) <= 2 and self.memory_manager:
+            _recent_ctx: str | None = None
             try:
-                _recent_ctx = self.memory_manager.get_recent_conversation_context(
-                    days_back=3, max_turns=20, max_chars=3000
-                )
+                # 提取最后一条用户消息作为语义查询
+                _user_query = message.strip() if message else ""
+                if not _user_query:
+                    for _m in reversed(session_messages):
+                        if _m.get("role") == "user" and _m.get("content"):
+                            _user_query = str(_m["content"]).strip()
+                            break
+
+                # 当有用户消息时，优先尝试语义检索
+                if _user_query and len(_user_query) >= 3:
+                    try:
+                        _engine = getattr(self.memory_manager, "retrieval_engine", None)
+                        if _engine and _engine.store and _engine.store.search:
+                            _now = datetime.now()
+                            _scored = _engine.store.search_semantic_scored(
+                                _user_query, limit=15,
+                            )
+                            _candidate_ids: set[str] = set()
+                            _lines: list[str] = ["[近期重要记忆 — 与当前对话相关]"]
+                            _count = 0
+                            for _mem, _score in _scored:
+                                if _mem.id in _candidate_ids:
+                                    continue
+                                if _mem.importance_score < 0.6:
+                                    continue
+                                if _mem.updated_at:
+                                    try:
+                                        _days = (_now - _mem.updated_at).days  # type: ignore[operator]
+                                        if _days > 7:
+                                            continue
+                                    except Exception:
+                                        pass
+                                _candidate_ids.add(_mem.id)
+                                _text = _mem.to_markdown() if hasattr(_mem, "to_markdown") else _mem.content
+                                _lines.append(f"• {_text[:300]}")
+                                _count += 1
+                                if _count >= 5:
+                                    break
+                            if _count >= 1:
+                                _recent_ctx = "\n".join(_lines)
+                    except Exception as _e:
+                        logger.debug(
+                            f"[Session:{session_id}] Semantic context inject "
+                            f"failed (non-critical): {_e}"
+                        )
+
+                # 回退到原时间窗口查询
+                if not _recent_ctx:
+                    _recent_ctx = self.memory_manager.get_recent_conversation_context(
+                        days_back=3, max_turns=20, max_chars=3000
+                    )
+
                 if _recent_ctx:
                     _summary_msg = {
                         "role": "system",
@@ -4715,8 +4764,8 @@ class Agent:
                     session_messages = list(session_messages)
                     session_messages.insert(0, _summary_msg)
                     logger.info(
-                        f"[Session:{session_id}] Injected recent conversation "
-                        f"summary ({len(_recent_ctx)} chars)"
+                        f"[Session:{session_id}] Injected context summary "
+                        f"({len(_recent_ctx)} chars)"
                     )
             except Exception as _e:
                 logger.debug(
