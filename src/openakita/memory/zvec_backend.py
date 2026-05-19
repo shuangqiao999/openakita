@@ -250,10 +250,13 @@ class ZvecBackend:
         LMDB LOCK 可能出现在子目录（如 idmap.0/LOCK, 0/LOCK），因此
         递归扫描整个 collection 目录。
 
-        若 zvec.open() 失败且 embedding_dim > 0，说明 collection 已损坏
-        （上次崩溃遗留的 LMDB 环境不兼容），自动删除并重建。
+        打开失败时根据 LOCK 清理结果走三条路径：
+        1. 所有 LOCK 已清除但 open 仍失败 → 真正损坏 → 删除+重建
+        2. 有 LOCK 无法清除 → 其他实例正使用此 collection → 跳过，不禁用
+        3. 无 LOCK 文件且 open 成功 → 正常打开
         """
         lock_stale = False
+        any_lock_failed = False
         coll_path_obj = Path(coll_path)
 
         for lock_path in sorted(coll_path_obj.rglob("LOCK"), reverse=True):
@@ -265,6 +268,7 @@ class ZvecBackend:
                     lock_path,
                 )
             else:
+                any_lock_failed = True
                 logger.warning(
                     "[ZvecBackend] Failed to remove stale LOCK at %s, "
                     "zvec.open() may block up to 60s",
@@ -275,10 +279,20 @@ class ZvecBackend:
             self._collection = self._zvec.open(path=coll_path)
         except Exception as e:
             logger.warning("[ZvecBackend] Open collection failed: %s", e)
+            if any_lock_failed:
+                logger.info(
+                    "[ZvecBackend] LOCK removal was blocked — another instance "
+                    "is likely using this collection; zvec will be skipped "
+                    "for this instance (vector search falls back to FTS5). "
+                    "Collection dir: %s",
+                    coll_path,
+                )
+                self._enabled = False
+                return
             if embedding_dim > 0 and Path(coll_path).is_dir():
                 logger.warning(
-                    "[ZvecBackend] Collection appears corrupted, "
-                    "deleting and rebuilding: %s",
+                    "[ZvecBackend] All LOCKs removed but open still failed; "
+                    "collection appears corrupted, deleting and rebuilding: %s",
                     coll_path,
                 )
                 removed = _remove_corrupt_collection(coll_path)
