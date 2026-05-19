@@ -72,7 +72,7 @@ dependencies = [
 
     # Vector database (LanceDB — default embedding backend for memory search)
     # 基于 Lance 列式格式 + pyarrow, 支持零拷贝检索
-    "lancedb>=0.32.0",
+    "lancedb>=0.18.0",
 ]
 
 [project.optional-dependencies]

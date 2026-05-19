@@ -197,7 +197,7 @@ class LanceDBBackend:
             pa.field("metadata", pa.string()),
         ])
         self._table = self._db.create_table(
-            self._table_name(), schema=schema, mode="create",
+            self._table_name(), schema=schema, mode="overwrite",
         )
         self._embedding_dim = embedding_dim
         self._enabled = True
