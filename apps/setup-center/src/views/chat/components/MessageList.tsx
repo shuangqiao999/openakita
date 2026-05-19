@@ -1,20 +1,16 @@
-import { useRef, useCallback, useEffect, useLayoutEffect, forwardRef, useImperativeHandle } from "react";
+import { useRef, useCallback, useEffect, forwardRef, useImperativeHandle, useState } from "react";
 import type { ChatMessage, MdModules, ChatDisplayMode } from "../utils/chatTypes";
 import { MessageBubble } from "./MessageBubble";
 import { FlatMessageItem } from "./FlatMessageItem";
+import { Virtuoso, VirtuosoHandle } from "react-virtuoso";
 
 export interface MessageListHandle {
   scrollToIndex: (index: number, align?: "start" | "center" | "end") => void;
   scrollToBottom: (behavior?: "auto" | "smooth") => void;
-  /** Keep followOutput returning true until cancelFollow is called, even if user scrolled up. */
   forceFollow: () => void;
-  /** Stop forced following (call when streaming ends). */
   cancelFollow: () => void;
-  /** Whether the user is currently scrolled to the bottom. */
   isAtBottom: () => boolean;
-  /** Save current scroll position — call before mutating messages while user is scrolled up. */
   saveScrollPosition: () => void;
-  /** Restore previously saved scroll position. */
   restoreScrollPosition: () => void;
 }
 
@@ -44,29 +40,7 @@ export interface MessageListProps {
   loadingOlder?: boolean;
 }
 
-function applySearchHighlights(container: HTMLElement, query: string) {
-  const css = globalThis.CSS as typeof CSS & { highlights?: Map<string, Highlight> };
-  if (!css?.highlights) return;
-  const q = query.trim().toLowerCase();
-  if (!q) { css.highlights.delete("msg-search"); return; }
-  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
-  const ranges: Range[] = [];
-  while (walker.nextNode()) {
-    const node = walker.currentNode;
-    const text = node.textContent?.toLowerCase() ?? "";
-    let pos = 0;
-    while (pos < text.length) {
-      const idx = text.indexOf(q, pos);
-      if (idx === -1) break;
-      const range = new Range();
-      range.setStart(node, idx);
-      range.setEnd(node, idx + q.length);
-      ranges.push(range);
-      pos = idx + q.length;
-    }
-  }
-  css.highlights.set("msg-search", new Highlight(...ranges));
-}
+const MAX_RENDERED_MESSAGES = 200;
 
 export const MessageList = forwardRef<MessageListHandle, MessageListProps>(function MessageList(
   {
@@ -96,210 +70,177 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
   },
   ref,
 ) {
-  const scrollerElRef = useRef<HTMLDivElement | null>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const itemRefs = useRef(new Map<string, HTMLDivElement>());
-  const forceFollowRef = useRef(false);
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
   const atBottomRef = useRef(true);
-  const savedScrollPositionRef = useRef<{ top: number; height: number } | null>(null);
+  const showAllOverrideRef = useRef(false);
 
-  const emitAtBottomChange = useCallback((atBottom: boolean) => {
-    atBottomRef.current = atBottom;
-    onAtBottomChange?.(atBottom);
-  }, [onAtBottomChange]);
-
-  const computeAtBottom = useCallback(() => {
-    const el = scrollerElRef.current;
-    if (!el) return true;
-    return el.scrollHeight - el.scrollTop - el.clientHeight <= 80;
-  }, []);
-
-  const syncAtBottomState = useCallback(() => {
-    emitAtBottomChange(computeAtBottom());
-  }, [computeAtBottom, emitAtBottomChange]);
+  const [renderCap, setRenderCap] = useState(MAX_RENDERED_MESSAGES);
 
   useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const css = globalThis.CSS as typeof CSS & { highlights?: Map<string, Highlight> };
-    if (!css?.highlights) return;
+    setRenderCap(MAX_RENDERED_MESSAGES);
+    showAllOverrideRef.current = false;
+  }, [conversationId]);
 
-    const q = searchHighlight?.trim().toLowerCase() ?? "";
-    applySearchHighlights(el, q);
+  const hiddenCount = showAllOverrideRef.current ? 0 : Math.max(0, messages.length - renderCap);
 
-    if (!q) return;
+  const effectiveFollowOutput = useCallback(
+    (_atBottom: boolean) => isStreaming ? "smooth" as const : false,
+    [isStreaming],
+  );
 
-    const observer = new MutationObserver(() => applySearchHighlights(el, q));
-    observer.observe(el, { childList: true, subtree: true, characterData: true });
-    return () => {
-      observer.disconnect();
-      css.highlights.delete("msg-search");
-    };
-  }, [searchHighlight, messages]);
+  const emitAtBottomChange = useCallback(
+    (atBottom: boolean) => {
+      atBottomRef.current = atBottom;
+      onAtBottomChange?.(atBottom);
+    },
+    [onAtBottomChange],
+  );
 
-  const scrollToAbsoluteBottom = useCallback((behavior: ScrollBehavior = "auto") => {
-    const el = scrollerElRef.current;
-    if (el) {
-      el.scrollTo({ top: el.scrollHeight, behavior });
-    }
-  }, []);
+  const scrollToBottom = useCallback((behavior: "auto" | "smooth" = "auto") => {
+    virtuosoRef.current?.scrollToIndex({
+      index: messages.length - 1,
+      align: "end",
+      behavior,
+    });
+  }, [messages.length]);
 
   useImperativeHandle(ref, () => ({
     scrollToIndex: (index: number, align: "start" | "center" | "end" = "center") => {
-      const msg = messages[index];
-      if (!msg) return;
-      const target = itemRefs.current.get(msg.id);
-      if (!target) return;
-      target.scrollIntoView({
-        block: align === "end" ? "end" : align === "center" ? "center" : "start",
+      virtuosoRef.current?.scrollToIndex({ index, align, behavior: "smooth" });
+    },
+    scrollToBottom,
+    forceFollow: () => {
+      virtuosoRef.current?.scrollToIndex({
+        index: messages.length - 1,
+        align: "end",
         behavior: "smooth",
       });
     },
-    scrollToBottom: scrollToAbsoluteBottom,
-    forceFollow: () => {
-      forceFollowRef.current = true;
-      requestAnimationFrame(() => scrollToAbsoluteBottom());
-    },
-    cancelFollow: () => { forceFollowRef.current = false; },
+    cancelFollow: () => {},
     isAtBottom: () => atBottomRef.current,
-    saveScrollPosition: () => {
-      const el = scrollerElRef.current;
-      if (el) savedScrollPositionRef.current = { top: el.scrollTop, height: el.scrollHeight };
+    saveScrollPosition: () => {},
+    restoreScrollPosition: () => {},
+  }), [scrollToBottom, messages.length]);
+
+  const handleAtBottomStateChange = useCallback(
+    (atBottom: boolean) => {
+      atBottomRef.current = atBottom;
+      onAtBottomChange?.(atBottom);
     },
-    restoreScrollPosition: () => {
-      const el = scrollerElRef.current;
-      if (el && savedScrollPositionRef.current !== null) {
-        const prev = savedScrollPositionRef.current;
-        el.scrollTop = prev.top + (el.scrollHeight - prev.height);
-        savedScrollPositionRef.current = null;
-        syncAtBottomState();
-      }
-    },
-  }), [messages, scrollToAbsoluteBottom, syncAtBottomState]);
+    [onAtBottomChange],
+  );
 
-  useEffect(() => {
-    if (!isStreaming) {
-      forceFollowRef.current = false;
+  const handleStartReached = useCallback(() => {
+    if (hasMoreBefore && !loadingOlder) {
+      onLoadOlder?.();
     }
-  }, [isStreaming]);
+  }, [hasMoreBefore, loadingOlder, onLoadOlder]);
 
-  useEffect(() => {
-    const el = scrollerElRef.current;
-    if (!el) return;
-
-    const onScroll = () => {
-      syncAtBottomState();
-    };
-
-    el.addEventListener("scroll", onScroll, { passive: true });
-    syncAtBottomState();
-    return () => el.removeEventListener("scroll", onScroll);
-  }, [syncAtBottomState]);
-
-  useLayoutEffect(() => {
-    if (forceFollowRef.current || atBottomRef.current) {
-      scrollToAbsoluteBottom();
-      emitAtBottomChange(true);
-      return;
-    }
-    syncAtBottomState();
-  }, [messages, scrollToAbsoluteBottom, syncAtBottomState, emitAtBottomChange]);
-
-  useEffect(() => {
-    const el = scrollerElRef.current;
-    if (!el || typeof ResizeObserver === "undefined") return;
-
-    const observer = new ResizeObserver(() => {
-      if (forceFollowRef.current || atBottomRef.current) {
-        scrollToAbsoluteBottom();
-        emitAtBottomChange(true);
-      } else {
-        syncAtBottomState();
-      }
-    });
-
-    observer.observe(el);
-    const firstChild = el.firstElementChild;
-    if (firstChild instanceof HTMLElement) observer.observe(firstChild);
-    return () => observer.disconnect();
-  }, [messages.length, scrollToAbsoluteBottom, syncAtBottomState, emitAtBottomChange]);
+  const handleShowAll = useCallback(() => {
+    showAllOverrideRef.current = true;
+    setRenderCap(messages.length);
+  }, [messages.length]);
 
   const computeItemKey = useCallback((_index: number, msg: ChatMessage) => msg.id, []);
 
-  const itemContent = useCallback((index: number, msg: ChatMessage) => {
-    const isLast = index === messages.length - 1;
-    const Component = displayMode === "flat" ? FlatMessageItem : MessageBubble;
-    return (
-      <div data-msg-idx={index}>
-        <Component
-          msg={msg}
-          isLast={isLast}
-          apiBaseUrl={apiBaseUrl}
-          showChain={showChain}
-          mdModules={mdModules}
-          onAskAnswer={onAskAnswer}
-          onRetry={onRetry}
-          onEdit={onEdit}
-          onRegenerate={onRegenerate}
-          onRewind={onRewind}
-          onSkipStep={onSkipStep}
-          onImagePreview={onImagePreview}
-          conversationId={conversationId}
-          httpApiBase={httpApiBase}
-          onPlanStepAction={onPlanStepAction}
-        />
-      </div>
-    );
-  }, [
-    messages.length, displayMode, apiBaseUrl, showChain, mdModules,
-    onAskAnswer, onRetry, onEdit, onRegenerate, onRewind, onSkipStep, onImagePreview,
-    conversationId, httpApiBase, onPlanStepAction,
-  ]);
+  const itemContent = useCallback(
+    (index: number, msg: ChatMessage) => {
+      const isLast = index === messages.length - 1;
+      const Component = displayMode === "flat" ? FlatMessageItem : MessageBubble;
+      return (
+        <div style={{ paddingTop: 4, paddingBottom: 4 }}>
+          <Component
+            msg={msg}
+            isLast={isLast}
+            apiBaseUrl={apiBaseUrl}
+            showChain={showChain}
+            mdModules={mdModules}
+            onAskAnswer={onAskAnswer}
+            onRetry={onRetry}
+            onEdit={onEdit}
+            onRegenerate={onRegenerate}
+            onRewind={onRewind}
+            onSkipStep={onSkipStep}
+            onImagePreview={onImagePreview}
+            conversationId={conversationId}
+            httpApiBase={httpApiBase}
+            onPlanStepAction={onPlanStepAction}
+          />
+        </div>
+      );
+    },
+    [
+      messages.length, displayMode, apiBaseUrl, showChain, mdModules,
+      onAskAnswer, onRetry, onEdit, onRegenerate, onRewind, onSkipStep, onImagePreview,
+      conversationId, httpApiBase, onPlanStepAction,
+    ],
+  );
 
-  const Footer = useCallback(() => <div style={{ height: 32 }} />, []);
+  const Header = useCallback(() => {
+    if (hiddenCount > 0) {
+      return (
+        <div style={{ display: "flex", justifyContent: "center", padding: "10px 0 6px" }}>
+          <button
+            type="button"
+            onClick={handleShowAll}
+            style={{
+              border: "1px solid var(--border)",
+              background: "var(--surface)",
+              color: "var(--text-muted)",
+              borderRadius: 999,
+              padding: "6px 14px",
+              fontSize: 12,
+              cursor: "pointer",
+            }}
+          >
+            {`已隐藏 ${hiddenCount} 条历史消息，点击展开全部`}
+          </button>
+        </div>
+      );
+    }
+    if (hasMoreBefore) {
+      return (
+        <div style={{ display: "flex", justifyContent: "center", padding: "12px 0 8px" }}>
+          <button
+            type="button"
+            onClick={onLoadOlder}
+            disabled={loadingOlder}
+            style={{
+              border: "1px solid var(--border)",
+              background: "var(--surface)",
+              color: "var(--text-muted)",
+              borderRadius: 999,
+              padding: "6px 14px",
+              fontSize: 12,
+              cursor: loadingOlder ? "default" : "pointer",
+              opacity: loadingOlder ? 0.7 : 1,
+            }}
+          >
+            {loadingOlder ? "正在加载更早消息..." : "加载更早消息"}
+          </button>
+        </div>
+      );
+    }
+    return null;
+  }, [hiddenCount, hasMoreBefore, loadingOlder, onLoadOlder, handleShowAll]);
+
+  const Footer = useCallback(() => <div style={{ height: 24 }} />, []);
+
+  if (messages.length === 0) return null;
 
   return (
-    <div ref={containerRef} style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
-      <div
-        ref={scrollerElRef}
-        style={{ flex: 1, minHeight: 0, overflowY: "auto", overscrollBehavior: "contain" }}
-      >
-        <div>
-          {hasMoreBefore && (
-            <div style={{ display: "flex", justifyContent: "center", padding: "12px 0 8px" }}>
-              <button
-                type="button"
-                onClick={onLoadOlder}
-                disabled={loadingOlder}
-                style={{
-                  border: "1px solid var(--border)",
-                  background: "var(--surface)",
-                  color: "var(--text-muted)",
-                  borderRadius: 999,
-                  padding: "6px 12px",
-                  fontSize: 12,
-                  cursor: loadingOlder ? "default" : "pointer",
-                  opacity: loadingOlder ? 0.7 : 1,
-                }}
-              >
-                {loadingOlder ? "正在加载更早消息..." : "加载更早消息"}
-              </button>
-            </div>
-          )}
-          {messages.map((msg, index) => (
-            <div
-              key={computeItemKey(index, msg)}
-              ref={(el) => {
-                if (el) itemRefs.current.set(msg.id, el);
-                else itemRefs.current.delete(msg.id);
-              }}
-            >
-              {itemContent(index, msg)}
-            </div>
-          ))}
-          <Footer />
-        </div>
-      </div>
-    </div>
+    <Virtuoso
+      ref={virtuosoRef}
+      firstItemIndex={hiddenCount}
+      data={messages}
+      computeItemKey={computeItemKey}
+      itemContent={itemContent}
+      followOutput={effectiveFollowOutput}
+      atBottomStateChange={handleAtBottomStateChange}
+      startReached={handleStartReached}
+      components={{ Header, Footer }}
+      style={{ flex: 1, minHeight: 0 }}
+      increaseViewportBy={{ top: 400, bottom: 400 }}
+    />
   );
 });

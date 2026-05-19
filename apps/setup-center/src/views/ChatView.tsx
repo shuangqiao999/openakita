@@ -854,6 +854,13 @@ export function ChatView({
       return;
     }
 
+    // Clean up stale stream contexts for inactive conversations (reduce memory pressure)
+    for (const [cid, sctx] of streamContexts.current) {
+      if (cid !== activeConvId && !sctx.isStreaming) {
+        streamContexts.current.delete(cid);
+      }
+    }
+
     // If a StreamContext is actively streaming for this conv, restore its state directly
     const ctx = streamContexts.current.get(activeConvId);
     if (ctx?.isStreaming) {
