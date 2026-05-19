@@ -1943,7 +1943,6 @@ class ContextManager:
 
     @staticmethod
     def _log_compression(
-        self,
         conversation_id: str | None,
         before_tokens: int,
         after_tokens: int,
