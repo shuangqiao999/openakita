@@ -45,13 +45,19 @@ class UnifiedStore:
         if search_backend is not None:
             self.search = search_backend
         else:
+            # 注册维度变更重建回调：旧向量表被删除后，从 SQLite 重新索引
+            def _on_rebuild_trigger():
+                self._backfill_started = False
+                self._backfill_semantic_if_empty()
+
             self.search = create_search_backend(
                 backend_type,
-                storage=self.db,  # now self.db is already initialized
+                storage=self.db,
                 vector_store=vector_store,
                 api_provider=api_provider,
                 api_key=api_key,
                 api_model=api_model,
+                on_rebuild=_on_rebuild_trigger,
             )
 
         self._fts5_fallback: FTS5Backend | None = None

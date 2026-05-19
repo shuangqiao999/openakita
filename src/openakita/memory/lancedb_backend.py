@@ -107,6 +107,7 @@ class LanceDBBackend:
         self,
         persist_dir: str = "data/lancedb",
         embedding_dim: int = 0,
+        on_rebuild: object = None,
     ):
         self._persist_dir = Path(persist_dir)
         self._embedding_dim = embedding_dim
@@ -120,6 +121,7 @@ class LanceDBBackend:
         self._embedding_failures = 0
         self._embedding_healthy = True
         self._embedding_last_error: str | None = None
+        self._on_rebuild = on_rebuild
 
         try:
             import lancedb as _mod
@@ -237,6 +239,14 @@ class LanceDBBackend:
                 old_dim,
                 new_dim,
             )
+            # 通知调用方（UnifiedStore）触发重新回填
+            if self._on_rebuild is not None:
+                try:
+                    self._on_rebuild()
+                except Exception as e:
+                    logger.warning(
+                        "[LanceDBBackend] on_rebuild callback failed: %s", e
+                    )
 
     # ── Embedding Model ──
 

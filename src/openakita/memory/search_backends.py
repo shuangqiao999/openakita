@@ -391,6 +391,7 @@ def create_search_backend(
     api_key: str = "",
     api_model: str = "",
     api_dimensions: int = 1024,
+    on_rebuild: object = None,
 ) -> SearchBackend:
     """Create a search backend by type, with automatic fallback to FTS5."""
 
@@ -421,7 +422,7 @@ def create_search_backend(
             _persist = "data/lancedb"
             if storage and hasattr(storage, "_db_path"):
                 _persist = str(storage._db_path.parent / "lancedb")
-            backend = LanceDBBackend(persist_dir=_persist)
+            backend = LanceDBBackend(persist_dir=_persist, on_rebuild=on_rebuild)
             if backend.available:
                 logger.info("[SearchBackend] Using LanceDB backend")
                 return backend
