@@ -335,6 +335,23 @@ class LanceDBBackend:
                 reason,
             )
 
+    # ── Warmup ──
+
+    def warmup(self) -> bool:
+        if self.available:
+            return True
+        if not self._lancedb:
+            return False
+        if self._get_embedder() is not None:
+            self._enabled = True
+            logger.info(
+                "[LanceDBBackend] Warmup OK — embedding loaded, dim=%d",
+                self._embedding_dim,
+            )
+            return True
+        logger.warning("[LanceDBBackend] Warmup failed — embedding model not available")
+        return False
+
     # ── SearchBackend Protocol ──
 
     @property

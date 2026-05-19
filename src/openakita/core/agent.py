@@ -4518,6 +4518,19 @@ class Agent:
             logger.debug(f"[Prewarm] Vector store skipped: {e}")
 
         try:
+            # LanceDB embedding warm-up (load embedding model + auto-create table)
+            search_backend = self.memory_manager.store.search
+            if getattr(search_backend, "warmup", None) is not None:
+                ok = await asyncio.to_thread(search_backend.warmup)
+                if ok:
+                    logger.info("[Prewarm] LanceDB embedding warmed in background")
+                    self.memory_manager.store._backfill_semantic_if_empty()
+                else:
+                    logger.debug("[Prewarm] LanceDB warmup deferred — embedding model not ready")
+        except Exception as e:
+            logger.debug(f"[Prewarm] LanceDB warmup skipped: {e}")
+
+        try:
             # Sticker engine
             if self.sticker_engine:
                 await self.sticker_engine.initialize()
