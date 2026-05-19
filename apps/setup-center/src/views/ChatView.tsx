@@ -857,6 +857,8 @@ export function ChatView({
     // Clean up stale stream contexts for inactive conversations (reduce memory pressure)
     for (const [cid, sctx] of streamContexts.current) {
       if (cid !== activeConvId && !sctx.isStreaming) {
+        if (sctx.pollingTimer) clearInterval(sctx.pollingTimer);
+        if (sctx._finalPollingTimer) clearInterval(sctx._finalPollingTimer);
         streamContexts.current.delete(cid);
       }
     }
@@ -1473,6 +1475,7 @@ export function ChatView({
         try { ctx.abort.abort(); } catch {}
         try { ctx.reader?.cancel().catch(() => {}); } catch {}
         if (ctx.pollingTimer) clearInterval(ctx.pollingTimer);
+        if (ctx._finalPollingTimer) clearInterval(ctx._finalPollingTimer);
       }
       streamContexts.current.clear();
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
@@ -1744,16 +1747,18 @@ export function ChatView({
     }},
     { id: "help", label: "帮助", description: "显示可用命令列表", action: () => {} },
   ];
-    const helpCmd = cmds.find((c) => c.id === "help");
-    if (helpCmd) {
-      helpCmd.action = () => {
-        const lines = cmds.map((c) => `- \`/${c.id}\` — ${c.description}`).join("\n");
-        setMessages((prev) => [...prev, {
-          id: genId(), role: "system", content: `**可用命令：**\n${lines}`, timestamp: Date.now(),
-        }]);
+    return cmds.map((c) => {
+      if (c.id !== "help") return c;
+      return {
+        ...c,
+        action: () => {
+          const lines = cmds.map((sc) => `- \`/${sc.id}\` — ${sc.description}`).join("\n");
+          setMessages((prev) => [...prev, {
+            id: genId(), role: "system", content: `**可用命令：**\n${lines}`, timestamp: Date.now(),
+          }]);
+        },
       };
-    }
-    return cmds;
+    });
   }, [endpoints, chatMode, orgList, orgMode, thinkingMode, thinkingDepth, activeConvId, apiBase]);
 
   // ── 新建对话 ──
@@ -2242,6 +2247,8 @@ export function ChatView({
       subAgentTasks: [],
       isDelegating: false,
       pollingTimer: null,
+      _finalPollingTimer: null,
+      _parseErrors: [],
       _hadError: false,
     };
     streamContexts.current.set(thisConvId, sctx);
@@ -2553,7 +2560,13 @@ export function ChatView({
 
         if (value) {
           buffer += decoder.decode(value, { stream: true });
-          resetIdleTimer(); // 收到数据，重置空闲计时
+          resetIdleTimer();
+
+          const MAX_BUFFER_CHARS = 5 * 1024 * 1024;
+          if (buffer.length > MAX_BUFFER_CHARS) {
+            reader.cancel("buffer_overflow").catch(() => {});
+            throw new Error("SSE buffer overflow — single event line exceeds 5MB limit");
+          }
         }
 
         // ── 2. 再次检查 abort（read 可能返回 done:true 而非抛异常） ──
@@ -3290,6 +3303,7 @@ export function ChatView({
             if (event.type === "done") break;
           } catch {
             sseParseFailures++;
+            sctx._parseErrors.push({ raw: data.slice(0, 200), time: Date.now() });
             if (sseParseFailures >= 5) {
               notifyError(t("chat.sseParseError", "SSE 数据解析异常频繁，可能存在通信问题"));
               sseParseFailures = 0;
@@ -3418,9 +3432,11 @@ export function ChatView({
               .catch(() => {});
           };
           let finalPollingTimer: ReturnType<typeof setInterval> | null = setInterval(doFetch, 5000);
+          sctx._finalPollingTimer = finalPollingTimer;
           doFetch();
           setTimeout(() => {
             if (finalPollingTimer) { clearInterval(finalPollingTimer); finalPollingTimer = null; }
+            sctx._finalPollingTimer = null;
           }, 600_000);
         } else if (!hasRunning) {
           if (ctx.pollingTimer) { clearInterval(ctx.pollingTimer); ctx.pollingTimer = null; }

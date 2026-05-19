@@ -180,6 +180,8 @@ export type StreamContext = {
   subAgentTasks: SubAgentTask[];
   isDelegating: boolean;
   pollingTimer: ReturnType<typeof setInterval> | null;
+  _finalPollingTimer: ReturnType<typeof setInterval> | null;
+  _parseErrors: Array<{ raw: string; time: number }>;
   _hadError: boolean;
 };
 
