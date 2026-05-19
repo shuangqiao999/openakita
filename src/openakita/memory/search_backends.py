@@ -383,7 +383,7 @@ class APIEmbeddingBackend:
 
 
 def create_search_backend(
-    backend_type: str = "zvec",
+    backend_type: str = "lancedb",
     *,
     storage: Any = None,
     vector_store: Any = None,
@@ -414,63 +414,29 @@ def create_search_backend(
             return backend
         logger.warning("[SearchBackend] API Embedding not available, falling back")
 
-    if backend_type == "zvec":
+    if backend_type == "lancedb":
         try:
-            from .zvec_backend import ZvecBackend
+            from .lancedb_backend import LanceDBBackend
 
-            _persist = "data/zvec"
+            _persist = "data/lancedb"
             if storage and hasattr(storage, "_db_path"):
-                _persist = str(storage._db_path.parent / "zvec")
-            backend = ZvecBackend(persist_dir=_persist)
+                _persist = str(storage._db_path.parent / "lancedb")
+            backend = LanceDBBackend(persist_dir=_persist)
             if backend.available:
-                logger.info("[SearchBackend] Using Zvec backend")
+                logger.info("[SearchBackend] Using LanceDB backend")
                 return backend
 
-            # zvec package not installed — fall through to FTS5
-            if not (hasattr(backend, "_zvec") and backend._zvec):
-                logger.warning("[SearchBackend] Zvec not installed, falling back")
-            else:
-                # zvec installed but collection not ready (embedding_dim=0
-                # or LOCK error). Try auto-create with retries, then return
-                # the backend in deferred state — it will lazy-activate
-                # when the embedding model initializes later.
-                _activated = False
-                for _retry in range(3):
-                    try:
-                        from openakita.llm.embeddings import get_embedding_model
-
-                        model = get_embedding_model()
-                        if model and model.dimension > 0:
-                            backend._init_or_open(model.dimension)
-                            if backend.available:
-                                logger.info(
-                                    "[SearchBackend] Auto-created Zvec collection (dim=%d)",
-                                    model.dimension,
-                                )
-                                _activated = True
-                                break
-                    except Exception as _auto_err:
-                        if _retry < 2:
-                            import time
-
-                            logger.debug(
-                                "[SearchBackend] Zvec auto-create retry %d/3: %s",
-                                _retry + 2,
-                                _auto_err,
-                            )
-                            time.sleep(5 * (_retry + 1))
-                if _activated:
-                    return backend
-
-                logger.info(
-                    "[SearchBackend] Zvec installed (deferred) — "
-                    "will auto-activate when embedding model initializes"
-                )
-                return backend
+            # table not created yet (embedding_dim=0) — return deferred,
+            # will auto-activate when embedding model initializes
+            logger.info(
+                "[SearchBackend] LanceDB installed (deferred) — "
+                "will auto-activate when embedding model initializes"
+            )
+            return backend
         except ImportError:
-            logger.warning("[SearchBackend] Zvec not installed, falling back")
+            logger.warning("[SearchBackend] lancedb not installed, falling back")
         except Exception as e:
-            logger.warning("[SearchBackend] Zvec init failed: %s, falling back", e)
+            logger.warning("[SearchBackend] LanceDB init failed: %s, falling back", e)
 
     if storage is None:
         raise ValueError("FTS5Backend requires a storage instance")

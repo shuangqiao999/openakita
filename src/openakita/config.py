@@ -75,14 +75,14 @@ class Settings(BaseSettings):
         ),
     )
 
-    # --- Zvec 混合检索 & 语义上下文注入开关 ---
+    # --- 混合检索 & 语义上下文注入开关 ---
     hybrid_search_enabled: bool = Field(
         default=True,
-        description="启用 Zvec+FTS5 混合检索加权融合（0.7×语义 + 0.3×关键词）",
+        description="启用语义+FTS5 混合检索加权融合（0.7×语义 + 0.3×关键词）",
     )
     semantic_context_injection_enabled: bool = Field(
         default=True,
-        description="新会话启用语义上下文注入（优先使用 Zvec 检索高重要性记忆）",
+        description="新会话启用语义上下文注入（优先使用语义后端检索高重要性记忆）",
     )
 
     # Anthropic API
@@ -374,11 +374,11 @@ class Settings(BaseSettings):
 
     # === 搜索后端配置 (v2) ===
     # 注意: embedding_api_* 系列用于 search_backend=api_embedding (旧)
-    #       embedding_* 系列用于 zvec 后端 (新, 默认)
-    #       两套配置共存, zvec 后端优先使用 embedding_* 系列
+    #       embedding_* 系列用于语义后端 (新, 默认)
+    #       两套配置共存, 语义后端优先使用 embedding_* 系列
     search_backend: str = Field(
-        default="zvec",
-        description="记忆搜索后端: zvec(默认,零API依赖) | fts5(纯SQLite) | chromadb(本地向量) | api_embedding(在线API)",
+        default="lancedb",
+        description="记忆搜索后端: lancedb(默认) | fts5(纯SQLite) | chromadb(本地向量) | api_embedding(在线API)",
     )
     embedding_api_provider: str = Field(
         default="",
@@ -393,7 +393,7 @@ class Settings(BaseSettings):
         description="在线 Embedding 模型名称 (如 text-embedding-v3, text-embedding-3-small)",
     )
 
-    # === 嵌入模型独立配置 (用于 Zvec / 向量搜索的 embedding 生成) ===
+    # === 嵌入模型独立配置 (用于向量搜索的 embedding 生成) ===
     embedding_provider: str = Field(
         default="",
         description="嵌入模型提供商: openai | huggingface | custom (为空时使用 chat endpoint 推断)",

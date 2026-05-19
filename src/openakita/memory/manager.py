@@ -28,9 +28,9 @@ import logging
 import os
 import re
 import threading
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
-import time
 
 from .consolidator import MemoryConsolidator
 from .extractor import MemoryExtractor
@@ -69,7 +69,7 @@ class MemoryManager:
         embedding_device: str = "cpu",
         model_download_source: str = "auto",
         # v2 params
-        search_backend: str = "zvec",
+        search_backend: str = "lancedb",
         embedding_api_provider: str = "",
         embedding_api_key: str = "",
         embedding_api_model: str = "",

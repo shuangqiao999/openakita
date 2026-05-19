@@ -35,7 +35,7 @@ class UnifiedStore:
         search_backend: SearchBackend | None = None,
         *,
         vector_store: Any = None,
-        backend_type: str = "zvec",
+        backend_type: str = "lancedb",
         api_provider: str = "",
         api_key: str = "",
         api_model: str = "",
@@ -58,15 +58,15 @@ class UnifiedStore:
         if self.search.backend_type != "fts5":
             self._fts5_fallback = FTS5Backend(self.db)
 
-        self._backfill_zvec_if_empty()
+        self._backfill_semantic_if_empty()
 
-    def _backfill_zvec_if_empty(self) -> None:
-        """若 zvec 已可用但 vector count 为 0，在后台线程中从 SQLite 回填已有记忆。
+    def _backfill_semantic_if_empty(self) -> None:
+        """若语义搜索后端已可用但 vector count 为 0，在后台线程中从 SQLite 回填已有记忆。
 
         不阻塞启动流程。回填期间语义搜索降级到 FTS5。
         使用 daemon 线程避免阻止进程退出，_backfill_started 标记防止重复触发。
         """
-        if self.search.backend_type != "zvec":
+        if self.search.backend_type == "fts5":
             return
         if not self.search.available:
             return
@@ -76,12 +76,12 @@ class UnifiedStore:
 
         import threading
 
-        thread = threading.Thread(target=self._backfill_worker, daemon=True, name="zvec-backfill")
+        thread = threading.Thread(target=self._backfill_worker, daemon=True, name="semantic-backfill")
         thread.start()
-        logger.info("[UnifiedStore] Zvec backfill thread started (daemon)")
+        logger.info("[UnifiedStore] Semantic backfill thread started (daemon)")
 
     def _backfill_worker(self) -> None:
-        """后台回填工作函数：从 SQLite 查询记忆并批量写入 zvec。
+        """后台回填工作函数：从 SQLite 查询记忆并批量写入语义搜索后端。
 
         在独立线程中执行，不阻塞主启动流程。
         batch_add() 内部调用 _run_embedding_sync 桥接到异步嵌入事件循环。
@@ -93,7 +93,7 @@ class UnifiedStore:
             existing = count_fn()
             if existing > 0:
                 logger.debug(
-                    "[UnifiedStore] Backfill skipped: zvec already has %d vectors", existing
+                    "[UnifiedStore] Backfill skipped: already has %d vectors", existing
                 )
                 return
         except Exception:
@@ -148,7 +148,7 @@ class UnifiedStore:
                 )
 
         logger.info(
-            "[UnifiedStore] Backfill completed: %d/%d memories indexed into zvec",
+            "[UnifiedStore] Backfill completed: %d/%d memories indexed into semantic backend",
             total_indexed,
             len(all_mems),
         )
@@ -365,10 +365,10 @@ class UnifiedStore:
     ) -> list[tuple[SemanticMemory, float]]:
         """Like search_semantic but also returns the raw similarity score.
 
-        当主搜索后端为 zvec 且 hybrid_search_enabled 开启时：
+        当主搜索后端支持语义搜索且 hybrid_search_enabled 开启时：
         1. 分别对语义分数和关键词分数做 min-max 归一化到 [0,1]
         2. 对共同命中的记忆应用加权融合 (0.7×semantic + 0.3×keyword)
-        非 zvec 后端 / 配置关闭时保持原有 union-by-id 策略（高分者胜）。
+        非语义后端 / 配置关闭时保持原有 union-by-id 策略（高分者胜）。
         """
         from openakita.config import settings
 
@@ -397,7 +397,7 @@ class UnifiedStore:
                 keyword_scores: dict[str, float] = {mid: float(s) for mid, s in fts_results}
 
                 if (
-                    self.search.backend_type == "zvec"
+                    self.search.backend_type != "fts5"
                     and getattr(settings, "hybrid_search_enabled", True)
                 ):
                     # ── 归一化 (min-max → [0,1]) ──
@@ -426,7 +426,7 @@ class UnifiedStore:
                         else:
                             merged[mid] = k_score * 0.8
                     logger.debug(
-                        "[HybridSearch] query=%.50s zvec=%d fts5=%d merged=%d (fusion)",
+                        "[HybridSearch] query=%.50s semantic=%d fts5=%d merged=%d (fusion)",
                         query, len(sem_norm), len(kw_norm), len(merged),
                     )
                 else:
@@ -437,9 +437,9 @@ class UnifiedStore:
                         fs = float(s)
                         if prev is None or fs > prev:
                             merged[mid] = fs
-                    if self.search.backend_type == "zvec":
+                    if self.search.backend_type != "fts5":
                         logger.debug(
-                            "[HybridSearch] query=%.50s zvec=%d fts5=%d merged=%d (union, fusion disabled)",
+                            "[HybridSearch] query=%.50s semantic=%d fts5=%d merged=%d (union, fusion disabled)",
                             query, len(semantic_scores), len(keyword_scores), len(merged),
                         )
             except Exception as _e:

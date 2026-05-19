@@ -70,9 +70,9 @@ dependencies = [
     # Image processing
     "Pillow>=10.0.0",
 
-    # Vector database (Zvec — default embedding backend for memory search)
-    # C++ 核心 + SWIG Python 绑定, v0.4.0+ 提供 Windows/macOS/Linux 预编译 wheel
-    "zvec>=0.4.0",
+    # Vector database (LanceDB — default embedding backend for memory search)
+    # 基于 Lance 列式格式 + pyarrow, 支持零拷贝检索
+    "lancedb>=0.32.0",
 ]
 
 [project.optional-dependencies]

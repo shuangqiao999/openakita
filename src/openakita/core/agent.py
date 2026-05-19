@@ -4699,7 +4699,7 @@ class Agent:
             logger.warning(f"[Memory] Failed to align memory session: {e}")
 
         # 1.6 新会话自动注入语义上下文（跨会话连贯性）
-        # 优先使用 Zvec 语义检索高重要性记忆，回退到时间窗口统计。
+        # 优先使用语义后端检索高重要性记忆，回退到时间窗口统计。
         if len(session_messages) <= 2 and self.memory_manager:
             _recent_ctx: str | None = None
             try:
