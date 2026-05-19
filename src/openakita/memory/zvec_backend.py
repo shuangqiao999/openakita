@@ -377,6 +377,57 @@ class ZvecBackend:
             f"metric={self._metric}, path={coll_path}"
         )
 
+    def _rebuild_for_dimension(self, new_dim: int) -> None:
+        """删除旧 collection 并以新维度重建。
+
+        调用方已通过 logger.warning 报告维度变更。
+        重建后 self._collection / self._embedding_dim / self._enabled
+        由 self._ensure_collection 设置。
+        失败时禁用 zvec，后续请求回退到 FTS5。
+        """
+        import shutil
+
+        coll_path = self._coll_path()
+        old_dim = self._embedding_dim
+        try:
+            with self._lock:
+                if self._collection is not None:
+                    self._collection.destroy()
+                    self._collection = None
+                self._enabled = False
+        except Exception as e:
+            logger.warning("[ZvecBackend] destroy() failed during rebuild: %s", e)
+            self._collection = None
+            self._enabled = False
+
+        # 轮询删除目录（Windows 异步删除可能延迟）
+        if Path(coll_path).is_dir():
+            try:
+                shutil.rmtree(coll_path, ignore_errors=True)
+            except Exception:
+                pass
+            for _ in range(40):
+                if not Path(coll_path).is_dir():
+                    break
+                import time
+                time.sleep(0.5)
+
+        try:
+            self._ensure_collection(coll_path, new_dim)
+        except Exception as e:
+            logger.error(
+                "[ZvecBackend] Rebuild collection failed for dim=%d: %s", new_dim, e
+            )
+            self._enabled = False
+            return
+
+        if self._collection is not None:
+            logger.info(
+                "[ZvecBackend] Collection rebuilt for new dimension: %d → %d",
+                old_dim,
+                new_dim,
+            )
+
     @property
     def available(self) -> bool:
         return self._enabled and self._collection is not None
@@ -418,6 +469,22 @@ class ZvecBackend:
                                 )
                             except Exception:
                                 pass
+
+                        # 维度变更检测：已有 collection 但 schema 维度与新模型不匹配
+                        # 自动删除旧 collection 并重建；UnifiedStore backfill 线程会从 SQLite 重新索引
+                        if (
+                            self._collection is not None
+                            and self._embedding_dim > 0
+                            and model.dimension != self._embedding_dim
+                        ):
+                            logger.warning(
+                                "[ZvecBackend] Embedding dimension changed "
+                                "(collection=%d, model=%d); "
+                                "rebuilding collection...",
+                                self._embedding_dim,
+                                model.dimension,
+                            )
+                            self._rebuild_for_dimension(model.dimension)
 
                         logger.debug(
                             "[ZvecBackend] Embedding readiness ping OK (dim=%d)",
