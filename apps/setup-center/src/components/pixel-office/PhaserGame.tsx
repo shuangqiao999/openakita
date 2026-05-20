@@ -76,7 +76,7 @@ export const PhaserGame = forwardRef<GameRef, PhaserGameProps>(function PhaserGa
         backgroundColor: '#1e1e2e',
         scene: [OfficeScene],
         fps: {
-          target: 120,
+          target: 60,
           min: 30,
         },
         scale: {
@@ -117,7 +117,7 @@ export const PhaserGame = forwardRef<GameRef, PhaserGameProps>(function PhaserGa
       sceneRef.current = null;
       gameRef.current = null;
       try { sc?.shutdown(); } catch { /* already destroyed */ }
-      try { g?.destroy(true, false); } catch { /* already destroyed */ }
+      try { g?.destroy(true, true); } catch { /* already destroyed */ }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

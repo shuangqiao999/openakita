@@ -1,4 +1,4 @@
-import { useRef, useCallback, useEffect, useLayoutEffect, forwardRef, useImperativeHandle } from "react";
+import { useRef, useCallback, useEffect, useLayoutEffect, useMemo, forwardRef, useImperativeHandle } from "react";
 import type { ChatMessage, MdModules, ChatDisplayMode } from "../utils/chatTypes";
 import { MessageBubble } from "./MessageBubble";
 import { FlatMessageItem } from "./FlatMessageItem";
@@ -251,12 +251,19 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
       </div>
     );
   }, [
-    messages.length, displayMode, apiBaseUrl, showChain, mdModules,
+    displayMode, apiBaseUrl, showChain, mdModules,
     onAskAnswer, onRetry, onEdit, onRegenerate, onRewind, onSkipStep, onImagePreview,
     conversationId, httpApiBase, onPlanStepAction,
   ]);
 
   const Footer = useCallback(() => <div style={{ height: 32 }} />, []);
+
+  const RENDER_WINDOW = isStreaming ? 800 : 250;
+  const renderWindow = useMemo(() => {
+    if (messages.length <= RENDER_WINDOW) return { msgs: messages, offset: 0 };
+    return { msgs: messages.slice(-RENDER_WINDOW), offset: messages.length - RENDER_WINDOW };
+  }, [messages, RENDER_WINDOW]);
+  const windowed = renderWindow.offset > 0;
 
   return (
     <div ref={containerRef} style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
@@ -265,38 +272,63 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
         style={{ flex: 1, minHeight: 0, overflowY: "auto", overscrollBehavior: "contain" }}
       >
         <div>
-          {hasMoreBefore && (
+          {windowed && (
             <div style={{ display: "flex", justifyContent: "center", padding: "12px 0 8px" }}>
               <button
                 type="button"
-                onClick={onLoadOlder}
+                onClick={() => {
+                  if (onLoadOlder) onLoadOlder();
+                }}
                 disabled={loadingOlder}
                 style={{
                   border: "1px solid var(--border)",
                   background: "var(--surface)",
                   color: "var(--text-muted)",
                   borderRadius: 999,
-                  padding: "6px 12px",
+                  padding: "6px 16px",
                   fontSize: 12,
                   cursor: loadingOlder ? "default" : "pointer",
                   opacity: loadingOlder ? 0.7 : 1,
                 }}
               >
-                {loadingOlder ? "正在加载更早消息..." : "加载更早消息"}
+                {loadingOlder ? "加载中..." : `显示更早消息 (隐藏了 ${renderWindow.offset} 条)`}
               </button>
             </div>
           )}
-          {messages.map((msg, index) => (
-            <div
-              key={computeItemKey(index, msg)}
-              ref={(el) => {
-                if (el) itemRefs.current.set(msg.id, el);
-                else itemRefs.current.delete(msg.id);
-              }}
-            >
-              {itemContent(index, msg)}
-            </div>
-          ))}
+          {renderWindow.msgs.map((msg, index) => {
+            const realIndex = renderWindow.offset + index;
+            const isLast = realIndex === messages.length - 1;
+            const Component = displayMode === "flat" ? FlatMessageItem : MessageBubble;
+            return (
+              <div
+                key={computeItemKey(realIndex, msg)}
+                ref={(el) => {
+                  if (el) itemRefs.current.set(msg.id, el);
+                  else itemRefs.current.delete(msg.id);
+                }}
+              >
+                <div data-msg-idx={realIndex}>
+                  <Component
+                    msg={msg}
+                    isLast={isLast}
+                    apiBaseUrl={apiBaseUrl}
+                    showChain={showChain}
+                    mdModules={mdModules}
+                    onAskAnswer={onAskAnswer}
+                    onRetry={onRetry}
+                    onEdit={onEdit}
+                    onRegenerate={onRegenerate}
+                    onRewind={onRewind}
+                    onSkipStep={onSkipStep}
+                    onImagePreview={onImagePreview}
+                    conversationId={conversationId}
+                    httpApiBase={httpApiBase}
+                    onPlanStepAction={onPlanStepAction}
+                  />
+                </div>
+              </div>
+            );
+          })}
           <Footer />
         </div>
       </div>

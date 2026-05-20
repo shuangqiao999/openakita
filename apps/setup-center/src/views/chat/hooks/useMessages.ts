@@ -7,6 +7,8 @@ import {
 
 // ── Message Actions ──
 
+const MAX_MESSAGES = 500;
+
 export type MessageAction =
   | { type: "SET_ALL"; messages: ChatMessage[] }
   | { type: "APPEND"; message: ChatMessage }
@@ -25,12 +27,19 @@ function messageReducer(state: ChatMessage[], action: MessageAction): ChatMessag
   switch (action.type) {
     case "SET_ALL":
       return action.messages;
-    case "APPEND":
-      return [...state, action.message];
-    case "APPEND_MANY":
-      return [...state, ...action.messages];
-    case "APPEND_SYSTEM":
-      return [...state, { id: action.id, role: "system", content: action.content, timestamp: Date.now() }];
+    case "APPEND": {
+      const next = [...state, action.message];
+      return next.length > MAX_MESSAGES ? next.slice(-MAX_MESSAGES) : next;
+    }
+    case "APPEND_MANY": {
+      const next = [...state, ...action.messages];
+      return next.length > MAX_MESSAGES ? next.slice(-MAX_MESSAGES) : next;
+    }
+    case "APPEND_SYSTEM": {
+      const sysMsg = { id: action.id, role: "system" as const, content: action.content, timestamp: Date.now() };
+      const next = [...state, sysMsg];
+      return next.length > MAX_MESSAGES ? next.slice(-MAX_MESSAGES) : next;
+    }
     case "UPDATE_BY_ID":
       return state.map((m) => m.id === action.id ? action.updater(m) : m);
     case "MAP_ALL":

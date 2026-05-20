@@ -218,6 +218,15 @@ export function MemoryGraph3D({ apiBaseUrl = "", searchQuery = "", refreshKey = 
     return () => clearTimeout(timer);
   }, [graphData, preset.bloom]);
 
+  // Dispose bloom pass on unmount to release GPU render targets
+  useEffect(() => {
+    return () => {
+      if (bloomRef.current) {
+        try { bloomRef.current.dispose(); } catch { /* already disposed */ }
+        bloomRef.current = null;
+      }
+    };
+  }, []);
   // Update bloom resolution on container resize
   useEffect(() => {
     if (bloomRef.current) {
@@ -505,7 +514,7 @@ export function MemoryGraph3D({ apiBaseUrl = "", searchQuery = "", refreshKey = 
       <div className="graph-viewport flex-1 w-full h-full min-w-0 min-h-0 relative">
         {dimensions.width > 0 && dimensions.height > 0 ? (
           <ForceGraph3D
-            key={`${dimensions.width}x${dimensions.height}`}
+            key="memory-graph"
             ref={fgRef}
             graphData={graphData}
             width={dimensions.width}

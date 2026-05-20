@@ -23,6 +23,7 @@ export class ActivitySystem {
   private busyNodes = new Set<string>();
   private rooms: RoomDef[] = [];
   private activityIdCounter = 0;
+  private _timeoutIds = new Set<ReturnType<typeof setTimeout>>();
 
   constructor(rooms: RoomDef[]) {
     this.rooms = rooms;
@@ -39,6 +40,8 @@ export class ActivitySystem {
 
   destroy() {
     EventBus.off('org-event', this.handleOrgEvent, this);
+    for (const id of this._timeoutIds) clearTimeout(id);
+    this._timeoutIds.clear();
     this.queue = [];
     this.activeActivities.clear();
     this.busyNodes.clear();
@@ -116,9 +119,11 @@ export class ActivitySystem {
 
     EventBus.emit('activity-start', activity);
 
-    setTimeout(() => {
+    const tid = setTimeout(() => {
+      this._timeoutIds.delete(tid);
       this.endActivity(activity.id);
     }, activity.duration);
+    this._timeoutIds.add(tid);
   }
 
   private endActivity(activityId: string) {

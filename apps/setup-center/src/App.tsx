@@ -5473,7 +5473,9 @@ function MainApp() {
           <p style={{ color: "#94a3b8", fontSize: 13 }}>此模块已禁用，请在「灵魂与意志」配置中启用</p>
         </div>
       ) : (
-        <MemoryView serviceRunning={serviceStatus?.running ?? false} apiBaseUrl={apiBaseUrl} />
+        <ErrorBoundary>
+          <MemoryView serviceRunning={serviceStatus?.running ?? false} apiBaseUrl={apiBaseUrl} />
+        </ErrorBoundary>
       );
     }
     if (view === "identity") {
@@ -5494,10 +5496,12 @@ function MainApp() {
     }
     if (view === "pixel_office") {
       return (
-        <PixelOfficeView
-          apiBaseUrl={apiBaseUrl}
-          visible={view === "pixel_office"}
-        />
+        <ErrorBoundary>
+          <PixelOfficeView
+            apiBaseUrl={apiBaseUrl}
+            visible={view === "pixel_office"}
+          />
+        </ErrorBoundary>
       );
     }
     if (view === "agent_manager") {

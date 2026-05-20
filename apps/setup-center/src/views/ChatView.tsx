@@ -321,6 +321,15 @@ export function ChatView({
   const [msgSearchQuery, setMsgSearchQuery] = useState("");
   const [msgSearchIdx, setMsgSearchIdx] = useState(0);
   const msgSearchRef = useRef<HTMLInputElement | null>(null);
+  const msgSearchMatches = useMemo(() => {
+    const q = msgSearchQuery.trim().toLowerCase();
+    if (!q) return [];
+    const matches: number[] = [];
+    for (let i = 0; i < messages.length; i++) {
+      if (messages[i].content.toLowerCase().includes(q)) matches.push(i);
+    }
+    return matches;
+  }, [msgSearchQuery, messages]);
   const messageListRef = useRef<MessageListHandle>(null);
   const isMessageListAtBottomRef = useRef(true);
   const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([]);
@@ -4431,10 +4440,7 @@ export function ChatView({
         {/* 消息搜索栏 */}
         {msgSearchOpen && (() => {
           const q = msgSearchQuery.trim().toLowerCase();
-          const matches = q ? messages.reduce<number[]>((acc, m, idx) => {
-            if (m.content.toLowerCase().includes(q)) acc.push(idx);
-            return acc;
-          }, []) : [];
+          const matches = msgSearchMatches;
           const total = matches.length;
           return (
             <div className="flex items-center gap-2 border-b border-border/60 bg-muted/20 px-4 py-2 text-sm">
