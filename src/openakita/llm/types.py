@@ -736,7 +736,7 @@ class EndpointConfig:
     def from_dict(cls, data: dict) -> "EndpointConfig":
         ctx_raw = data.get("context_window")
         ctx_explicit = "context_window" in data
-        return cls(
+        endpoint = cls(
             name=data["name"],
             provider=data["provider"],
             api_type=data["api_type"],
@@ -762,6 +762,14 @@ class EndpointConfig:
             enabled=data.get("enabled", True),
             stream_only=data.get("stream_only", False),
         )
+        if ctx_explicit:
+            endpoint.context_window = normalize_context_window(
+                ctx_raw,
+                provider=data.get("provider", ""),
+                base_url=data.get("base_url", ""),
+                explicit=True,
+            )
+        return endpoint
 
     def to_dict(self) -> dict:
         result = {
