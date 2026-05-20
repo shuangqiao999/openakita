@@ -102,6 +102,9 @@ class LanceDBBackend:
     """
 
     _METRIC = "cosine"
+    _MIN_ROWS_FOR_INDEX = 500
+    _INDEX_TYPE = "IVF_PQ"
+    _INDEX_NUM_SUB_VECTORS = 48  # 768 / 48 = 16 dims per sub-vector
 
     def __init__(
         self,
@@ -122,6 +125,8 @@ class LanceDBBackend:
         self._embedding_healthy = True
         self._embedding_last_error: str | None = None
         self._on_rebuild = on_rebuild
+        self._index_created = False
+        self._creating_index = False
 
         try:
             import lancedb as _mod
@@ -149,7 +154,7 @@ class LanceDBBackend:
         try:
             db = self._lancedb.connect(str(self._persist_dir))
             self._db = db
-            table_names = db.table_names()
+            table_names = db.list_tables()
             if self._table_name() in table_names:
                 self._table = db.open_table(self._table_name())
                 self._embedding_dim = self._read_table_dim()
@@ -159,6 +164,7 @@ class LanceDBBackend:
                     self._embedding_dim,
                     self._table.count_rows(),
                 )
+                self._create_index_async()
             elif embedding_dim > 0:
                 self._ensure_table(embedding_dim)
             else:
@@ -183,6 +189,69 @@ class LanceDBBackend:
         except Exception:
             pass
         return 0
+
+    # ── Vector Index ──
+
+    def _should_create_index(self) -> bool:
+        if self._creating_index or self._index_created:
+            return False
+        if self._table is None or not self._enabled:
+            return False
+        try:
+            row_count = self._table.count_rows()
+        except Exception:
+            return False
+        if row_count < self._MIN_ROWS_FOR_INDEX:
+            logger.debug(
+                "[LanceDBBackend] Rows %d below index threshold %d, skipping",
+                row_count,
+                self._MIN_ROWS_FOR_INDEX,
+            )
+            return False
+        try:
+            existing = list(self._table.list_indices())
+            if existing:
+                self._index_created = True
+                logger.info(
+                    "[LanceDBBackend] Index already exists (%d index(es)), skipping",
+                    len(existing),
+                )
+                return False
+        except Exception:
+            return False
+        return True
+
+    def _create_index_sync(self) -> None:
+        try:
+            row_count = self._table.count_rows()
+            num_partitions = max(2, min(256, int(row_count ** 0.5)))
+            logger.info(
+                "[LanceDBBackend] Index creation started (type=%s, rows=%d, partitions=%d)",
+                self._INDEX_TYPE,
+                row_count,
+                num_partitions,
+            )
+            self._table.create_index(
+                metric=self._INDEX_METRIC,
+                num_partitions=num_partitions,
+                num_sub_vectors=self._INDEX_NUM_SUB_VECTORS,
+                index_type=self._INDEX_TYPE,
+                replace=True,
+            )
+            self._index_created = True
+            logger.info("[LanceDBBackend] Index creation completed")
+        except Exception as e:
+            logger.warning("[LanceDBBackend] Index creation failed: %s", e)
+        finally:
+            self._creating_index = False
+
+    def _create_index_async(self) -> None:
+        if not self._should_create_index():
+            return
+        self._creating_index = True
+        t = threading.Thread(target=self._create_index_sync, daemon=True)
+        t.start()
+        logger.debug("[LanceDBBackend] Index creation dispatched to background thread")
 
     def _ensure_table(self, embedding_dim: int) -> None:
         """创建表 (幂等)"""
@@ -217,7 +286,7 @@ class LanceDBBackend:
             with self._lock:
                 self._table = None
                 self._enabled = False
-                if self._db and table_name in self._db.table_names():
+                if self._db and table_name in self._db.list_tables():
                     self._db.drop_table(table_name)
         except Exception as e:
             logger.warning("[LanceDBBackend] drop_table() during rebuild: %s", e)
@@ -464,6 +533,7 @@ class LanceDBBackend:
                     "content": content,
                     "metadata": meta_str,
                 }])
+                self._create_index_async()
                 return True
             except Exception as e:
                 logger.warning(
@@ -534,6 +604,7 @@ class LanceDBBackend:
                     })
                 if rows:
                     self._table.add(rows)
+                self._create_index_async()
                 return len(rows)
             except Exception as e:
                 logger.warning(f"[LanceDBBackend] batch_add failed: {e}")
@@ -555,7 +626,7 @@ class LanceDBBackend:
         try:
             with self._lock:
                 table_name = self._table_name()
-                if self._db and table_name in self._db.table_names():
+                if self._db and table_name in self._db.list_tables():
                     self._db.drop_table(table_name)
                     self._table = None
                     self._enabled = False
