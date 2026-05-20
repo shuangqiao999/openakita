@@ -1,4 +1,4 @@
-import { useRef, useCallback, useEffect, forwardRef, useImperativeHandle, useState } from "react";
+import { useRef, useCallback, forwardRef, useImperativeHandle } from "react";
 import type { ChatMessage, MdModules, ChatDisplayMode } from "../utils/chatTypes";
 import { MessageBubble } from "./MessageBubble";
 import { FlatMessageItem } from "./FlatMessageItem";
@@ -40,8 +40,6 @@ export interface MessageListProps {
   loadingOlder?: boolean;
 }
 
-const MAX_RENDERED_MESSAGES = 200;
-
 export const MessageList = forwardRef<MessageListHandle, MessageListProps>(function MessageList(
   {
     messages,
@@ -50,7 +48,6 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
     apiBaseUrl,
     mdModules,
     isStreaming,
-    searchHighlight,
     onAskAnswer,
     onRetry,
     onEdit,
@@ -72,29 +69,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
 ) {
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const atBottomRef = useRef(true);
-  const showAllOverrideRef = useRef(false);
-
-  const [renderCap, setRenderCap] = useState(MAX_RENDERED_MESSAGES);
-
-  useEffect(() => {
-    setRenderCap(MAX_RENDERED_MESSAGES);
-    showAllOverrideRef.current = false;
-  }, [conversationId]);
-
-  const hiddenCount = showAllOverrideRef.current ? 0 : Math.max(0, messages.length - renderCap);
-
-  const effectiveFollowOutput = useCallback(
-    (_atBottom: boolean) => isStreaming ? "smooth" as const : false,
-    [isStreaming],
-  );
-
-  const emitAtBottomChange = useCallback(
-    (atBottom: boolean) => {
-      atBottomRef.current = atBottom;
-      onAtBottomChange?.(atBottom);
-    },
-    [onAtBottomChange],
-  );
+  const forceFollowRef = useRef(false);
 
   const scrollToBottom = useCallback((behavior: "auto" | "smooth" = "auto") => {
     virtuosoRef.current?.scrollToIndex({
@@ -110,13 +85,16 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
     },
     scrollToBottom,
     forceFollow: () => {
+      forceFollowRef.current = true;
       virtuosoRef.current?.scrollToIndex({
         index: messages.length - 1,
         align: "end",
         behavior: "smooth",
       });
     },
-    cancelFollow: () => {},
+    cancelFollow: () => {
+      forceFollowRef.current = false;
+    },
     isAtBottom: () => atBottomRef.current,
     saveScrollPosition: () => {},
     restoreScrollPosition: () => {},
@@ -126,8 +104,20 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
     (atBottom: boolean) => {
       atBottomRef.current = atBottom;
       onAtBottomChange?.(atBottom);
+      if (!atBottom) {
+        forceFollowRef.current = false;
+      }
     },
     [onAtBottomChange],
+  );
+
+  const followOutput = useCallback(
+    (isAtBottom: boolean) => {
+      if (forceFollowRef.current) return "smooth" as const;
+      if (isStreaming && isAtBottom) return "smooth" as const;
+      return false;
+    },
+    [isStreaming],
   );
 
   const handleStartReached = useCallback(() => {
@@ -135,11 +125,6 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
       onLoadOlder?.();
     }
   }, [hasMoreBefore, loadingOlder, onLoadOlder]);
-
-  const handleShowAll = useCallback(() => {
-    showAllOverrideRef.current = true;
-    setRenderCap(messages.length);
-  }, [messages.length]);
 
   const computeItemKey = useCallback((_index: number, msg: ChatMessage) => msg.id, []);
 
@@ -177,27 +162,6 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
   );
 
   const Header = useCallback(() => {
-    if (hiddenCount > 0) {
-      return (
-        <div style={{ display: "flex", justifyContent: "center", padding: "10px 0 6px" }}>
-          <button
-            type="button"
-            onClick={handleShowAll}
-            style={{
-              border: "1px solid var(--border)",
-              background: "var(--surface)",
-              color: "var(--text-muted)",
-              borderRadius: 999,
-              padding: "6px 14px",
-              fontSize: 12,
-              cursor: "pointer",
-            }}
-          >
-            {`已隐藏 ${hiddenCount} 条历史消息，点击展开全部`}
-          </button>
-        </div>
-      );
-    }
     if (hasMoreBefore) {
       return (
         <div style={{ display: "flex", justifyContent: "center", padding: "12px 0 8px" }}>
@@ -222,7 +186,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
       );
     }
     return null;
-  }, [hiddenCount, hasMoreBefore, loadingOlder, onLoadOlder, handleShowAll]);
+  }, [hasMoreBefore, loadingOlder, onLoadOlder]);
 
   const Footer = useCallback(() => <div style={{ height: 24 }} />, []);
 
@@ -231,11 +195,10 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
   return (
     <Virtuoso
       ref={virtuosoRef}
-      firstItemIndex={hiddenCount}
       data={messages}
       computeItemKey={computeItemKey}
       itemContent={itemContent}
-      followOutput={effectiveFollowOutput}
+      followOutput={followOutput}
       atBottomStateChange={handleAtBottomStateChange}
       startReached={handleStartReached}
       components={{ Header, Footer }}
