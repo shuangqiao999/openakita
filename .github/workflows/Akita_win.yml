@@ -598,6 +598,9 @@ jobs:
           rm -rf "${OUT_DIR}"
           mkdir -p "${OUT_DIR}"
 
+          BUILD_TS=$(date -u +"%Y%m%dT%H%M%SZ")
+          SUFFIX="_${BUILD_TS}_windows-x64-avx2-bmi2"
+
           found=0
           while IFS= read -r -d '' f; do
             case "$f" in
@@ -605,9 +608,7 @@ jobs:
                 if [ "$(basename "$f")" = "uninstall.exe" ]; then
                   continue
                 fi
-                base_name="$(basename "$f" .exe)"
-                # 重命名包含 AVX2/BMI2 标识
-                cp -f "$f" "${OUT_DIR}/${base_name}_windows-x64-avx2-bmi2.exe"
+                cp -f "$f" "${OUT_DIR}/OpenAkita${SUFFIX}.exe"
                 found=$((found+1))
                 ;;
             esac
