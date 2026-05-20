@@ -1037,7 +1037,11 @@ function MainApp() {
     const handler = () => {
       const visible = !document.hidden;
       setPageVisible(visible);
-      document.body.dataset.pageHidden = visible ? "" : "1";
+      if (visible) {
+        document.body.removeAttribute("data-page-hidden");
+      } else {
+        document.body.dataset.pageHidden = "1";
+      }
       if (visible) handleAppResumed();
     };
     handler();
