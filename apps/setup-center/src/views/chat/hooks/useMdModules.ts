@@ -42,36 +42,6 @@ function buildSanitizeSchema(defaultSchema: any) {
   return schema;
 }
 
-function rehypeSkipLargeCodeBlocks(maxChars = 5000) {
-  return () => (tree: any) => {
-    function walk(node: any) {
-      if (node.type === "element" && node.tagName === "code" && node.properties?.className) {
-        const langs = Array.isArray(node.properties.className)
-          ? node.properties.className
-          : [node.properties.className];
-        const hasLang = langs.some((c: string) =>
-          typeof c === "string" && c.startsWith("language-"));
-        if (hasLang) {
-          let textLen = 0;
-          for (const child of node.children || []) {
-            if (child.type === "text") textLen += (child.value || "").length;
-          }
-          if (textLen > maxChars) {
-            node.properties.className = langs.filter(
-              (c: string) => typeof c !== "string" || !c.startsWith("language-"),
-            );
-            node.properties.title = `代码块过大 (${textLen} 字符)，已跳过语法高亮`;
-          }
-        }
-      }
-      if (node.children) {
-        for (const child of node.children) walk(child);
-      }
-    }
-    try { walk(tree); } catch { /* 不阻断渲染 */ }
-  };
-}
-
 function loadMdModules(): Promise<MdModules | null> {
   if (_cached) return Promise.resolve(_cached);
   if (_loading) return _loading;
@@ -92,7 +62,6 @@ function loadMdModules(): Promise<MdModules | null> {
       rehypePlugins: [
         raw.default,
         [sanitize.default, schema] as any,
-        rehypeSkipLargeCodeBlocks(5000),
         hl.default,
       ],
     };

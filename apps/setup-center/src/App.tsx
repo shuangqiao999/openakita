@@ -3,15 +3,6 @@ import { useTranslation } from "react-i18next";
 import { invoke, listen, IS_TAURI, IS_WEB, IS_CAPACITOR, IS_LOCAL_WEB, getAppVersion, onWsEvent, reconnectWsNow, setWsApiBaseUrl, logger, registerGlobalShortcut } from "./platform";
 import { getActiveServer, getActiveServerId } from "./platform/servers";
 import { checkAuth, installFetchInterceptor, AUTH_EXPIRED_EVENT, isPasswordUserSet, clearAccessToken, setTauriRemoteMode, isTauriRemoteMode } from "./platform/auth";
-
-function safeInvoke<T>(cmd: string, args?: Record<string, unknown>, timeoutMs = 30000): Promise<T> {
-  return Promise.race([
-    invoke<T>(cmd, args),
-    new Promise<T>((_, reject) =>
-      setTimeout(() => reject(new Error(`IPC timeout: ${cmd}`)), timeoutMs),
-    ),
-  ]);
-}
 import { LoginView } from "./views/LoginView";
 import { ServerManagerView } from "./views/ServerManagerView";
 import { ChatView } from "./views/ChatView";
@@ -556,11 +547,11 @@ function MainApp() {
     if (!IS_TAURI) return;
     try {
       // 1. 确保有默认工作区
-      const wsList = await safeInvoke<WorkspaceSummary[]>("list_workspaces");
+      const wsList = await invoke<WorkspaceSummary[]>("list_workspaces");
       if (!wsList.length) {
         const wsId = "default";
-        await safeInvoke("create_workspace", { name: t("onboarding.defaultWorkspace"), id: wsId, setCurrent: true });
-        await safeInvoke("set_current_workspace", { id: wsId });
+        await invoke("create_workspace", { name: t("onboarding.defaultWorkspace"), id: wsId, setCurrent: true });
+        await invoke("set_current_workspace", { id: wsId });
         setCurrentWorkspaceId(wsId);
         setWorkspaces([{ id: wsId, name: t("onboarding.defaultWorkspace"), path: "", isCurrent: true }]);
       } else {
@@ -1086,7 +1077,6 @@ function MainApp() {
           if (heartbeatStateRef.current !== "alive" && !needTwoToRecover) {
             heartbeatStateRef.current = "alive";
             setHeartbeatState("alive");
-            reconnectWsNow();
             if (IS_TAURI) try { await invoke("set_tray_backend_status", { status: "alive" }); } catch { /* ignore */ }
           }
           // /api/health 200 只代表 HTTP API 可达，不再等同于业务完全启动完成。

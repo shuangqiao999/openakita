@@ -95,9 +95,6 @@ export function installLocalFetchOverride(): void {
     channel.onmessage = (msg: FetchStreamEvent) => {
       try {
         if (msg.event === "chunk") {
-          if (streamController.desiredSize !== null && streamController.desiredSize <= 0) {
-            return;
-          }
           streamController.enqueue(encoder.encode(msg.data.text));
         } else if (msg.event === "done") {
           streamController.close();

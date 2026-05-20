@@ -606,8 +606,8 @@ jobs:
                   continue
                 fi
                 base_name="$(basename "$f" .exe)"
-                timestamp=$(date -u +"%Y%m%d-%H%M%S")
-                cp -f "$f" "${OUT_DIR}/${base_name}_${timestamp}_avx2-bmi2.exe"
+                # 重命名包含 AVX2/BMI2 标识
+                cp -f "$f" "${OUT_DIR}/${base_name}_windows-x64-avx2-bmi2.exe"
                 found=$((found+1))
                 ;;
             esac
@@ -620,7 +620,7 @@ jobs:
             sig_count=$((sig_count+1))
           done < <(find "${BUNDLE_DIR}" -type f -name "*.sig" -print0)
           
-          echo "✅ 已收集 ${found} 个 Windows 安装包 (时间戳命名)"
+          echo "✅ 已收集 ${found} 个 Windows 安装包 (AVX2 + BMI2 双重优化)"
           echo "✅ 已收集 ${sig_count} 个签名文件"
           echo ""
           echo "📂 输出目录内容:"

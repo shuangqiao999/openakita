@@ -25,10 +25,10 @@ let _handlers: WsEventHandler[] = [];
 let _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let _reconnectDelay = 1000;
 let _reconnectAttempts = 0;
-// PR-F1: 重连上限 20 次 (≈ 5 分钟后放弃)，避免 WebView2 后台无限重连消耗 CPU。
-// 每轮重连以指数退避到 60s + jitter，不会对后端造成冲击。
-// 恢复可见或重连成功时重置计数。
-const MAX_RECONNECT_ATTEMPTS = 20;
+// PR-F1: 后端崩溃自愈窗口可能很久（Tauri 心跳 + 重启需要 30s+）；
+// 上限 120 次（≈ 1h）会让用户看到"放弃重连"的死状态。改成无限重连，
+// 但用指数退避到 60s + jitter，防止后端起来时被一波重连风暴冲击。
+const MAX_RECONNECT_ATTEMPTS = Number.POSITIVE_INFINITY;
 const MAX_RECONNECT_DELAY = 60000;
 let _connected = false;
 let _intentionallyClosed = false;
@@ -178,7 +178,6 @@ function _connect(): void {
 
 function _scheduleReconnect(): void {
   if (_reconnectTimer || _intentionallyClosed) return;
-  if (typeof navigator !== "undefined" && !navigator.onLine) return;
   _reconnectAttempts++;
   if (Number.isFinite(MAX_RECONNECT_ATTEMPTS) && _reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
     logger.warn("WS", `Gave up reconnecting after ${MAX_RECONNECT_ATTEMPTS} attempts`);
@@ -222,13 +221,6 @@ export function onWsEvent(handler: WsEventHandler): () => void {
       disconnectWs();
     }
   };
-}
-
-if (typeof window !== "undefined") {
-  window.addEventListener("online", () => {
-    _reconnectAttempts = 0;
-    if (!_connected && !_intentionallyClosed) _scheduleReconnect();
-  });
 }
 
 export function disconnectWs(): void {

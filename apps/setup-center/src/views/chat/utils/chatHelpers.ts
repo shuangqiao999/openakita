@@ -114,53 +114,11 @@ export const SVG_PATHS: Record<string, string> = {
 
 // ── 对话导出 ──
 
-async function exportConversationAsync(msgs: ChatMessage[], title: string) {
-  const CHUNK_SIZE = 50;
-  const stripped = msgs.map(({ streaming, streamStatus, ...rest }) => rest);
-  const totalChunks = Math.ceil(stripped.length / CHUNK_SIZE);
-  const parts: string[] = [];
-
-  for (let i = 0; i < totalChunks; i++) {
-    const chunk = stripped.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
-    parts.push(JSON.stringify(chunk, null, i === 0 ? 2 : undefined));
-    if (i < totalChunks - 1) {
-      await new Promise<void>((resolve) => {
-        if (typeof requestIdleCallback === "function") {
-          requestIdleCallback(() => resolve(), { timeout: 100 });
-        } else {
-          setTimeout(resolve, 0);
-        }
-      });
-    }
-  }
-
-  let content: string;
-  if (totalChunks === 1) {
-    content = parts[0];
-  } else {
-    content = "[\n" + parts.map((p, i) => {
-      const inner = p.slice(1, p.length - 1);
-      return i === 0 ? "  " + inner : "  " + inner.slice(0);
-    }).join(",\n") + "\n]";
-  }
-
-  const blob = new Blob([content], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `${title.replace(/[/\\?%*:|"<>]/g, "_").slice(0, 50)}.json`;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 5000);
-}
-
 export function exportConversation(msgs: ChatMessage[], title: string, format: "md" | "json") {
   let content: string;
   let mimeType: string;
   let ext: string;
   if (format === "json") {
-    if (msgs.length > 100) {
-      return exportConversationAsync(msgs, title);
-    }
     content = JSON.stringify(msgs.map(({ streaming, streamStatus, ...rest }) => rest), null, 2);
     mimeType = "application/json";
     ext = "json";
