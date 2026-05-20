@@ -104,7 +104,6 @@ class LanceDBBackend:
     _METRIC = "cosine"
     _MIN_ROWS_FOR_INDEX = 500
     _INDEX_TYPE = "IVF_PQ"
-    _INDEX_NUM_SUB_VECTORS = 48  # 768 / 48 = 16 dims per sub-vector
 
     def __init__(
         self,
@@ -225,16 +224,21 @@ class LanceDBBackend:
         try:
             row_count = self._table.count_rows()
             num_partitions = max(2, min(256, int(row_count ** 0.5)))
+            dim = self._embedding_dim
+            num_sub = 1
+            for d in (16, 8, 32, 4, 64):
+                if dim % d == 0:
+                    num_sub = dim // d
+                    break
             logger.info(
-                "[LanceDBBackend] Index creation started (type=%s, rows=%d, partitions=%d)",
-                self._INDEX_TYPE,
-                row_count,
-                num_partitions,
+                "[LanceDBBackend] Index creation started "
+                "(type=%s, rows=%d, dim=%d, partitions=%d, sub_vectors=%d)",
+                self._INDEX_TYPE, row_count, dim, num_partitions, num_sub,
             )
             self._table.create_index(
                 metric=self._INDEX_METRIC,
                 num_partitions=num_partitions,
-                num_sub_vectors=self._INDEX_NUM_SUB_VECTORS,
+                num_sub_vectors=num_sub,
                 index_type=self._INDEX_TYPE,
                 replace=True,
             )
@@ -292,6 +296,9 @@ class LanceDBBackend:
             logger.warning("[LanceDBBackend] drop_table() during rebuild: %s", e)
             self._table = None
             self._enabled = False
+
+        self._index_created = False
+        self._creating_index = False
 
         try:
             self._ensure_table(new_dim)
