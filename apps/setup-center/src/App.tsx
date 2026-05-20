@@ -1037,14 +1037,8 @@ function MainApp() {
     const handler = () => {
       const visible = !document.hidden;
       setPageVisible(visible);
-      if (visible) {
-        document.body.removeAttribute("data-page-hidden");
-      } else {
-        document.body.dataset.pageHidden = "1";
-      }
       if (visible) handleAppResumed();
     };
-    handler();
     document.addEventListener("visibilitychange", handler);
     return () => document.removeEventListener("visibilitychange", handler);
   }, [handleAppResumed]);

@@ -408,18 +408,13 @@ export function AgentDashboardView({
     darkRef.current = isDark();
     const themeObs = setInterval(() => { darkRef.current = isDark(); }, 2000);
 
-    const onVisChange = () => {
-      pageHiddenRef.current = document.hidden;
-      if (!document.hidden && animRef.current === 0) {
-        animRef.current = requestAnimationFrame(step);
-      }
-    };
+    const onVisChange = () => { pageHiddenRef.current = document.hidden; };
     document.addEventListener("visibilitychange", onVisChange);
     pageHiddenRef.current = document.hidden;
 
     const step = () => {
       if (pageHiddenRef.current) {
-        animRef.current = 0;
+        animRef.current = requestAnimationFrame(step);
         return;
       }
 

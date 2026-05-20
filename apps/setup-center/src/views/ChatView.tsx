@@ -550,7 +550,6 @@ export function ChatView({
 
   useEffect(() => {
     const iv = setInterval(() => {
-      if (document.hidden) return;
       const idle = Date.now() - lastActivityRef.current;
       if (idle >= IDLE_THRESHOLD_MS && contextTokensRef.current >= IDLE_TOKEN_THRESHOLD) {
         setIdleReturnPrompt(true);
@@ -583,9 +582,7 @@ export function ChatView({
   // Force re-render every 30s to refresh relative timestamps
   const [, setTimeTick] = useState(0);
   useEffect(() => {
-    const iv = setInterval(() => {
-      if (!document.hidden) setTimeTick((t) => t + 1);
-    }, 30_000);
+    const iv = setInterval(() => setTimeTick((t) => t + 1), 30_000);
     return () => clearInterval(iv);
   }, []);
 
@@ -1251,7 +1248,7 @@ export function ChatView({
     if (!serviceRunning) return;
     let cancelled = false;
     const poll = async () => {
-      if (cancelled || document.hidden) return;
+      if (cancelled) return;
       try {
         const res = await safeFetch(`${apiBaseUrl}/api/chat/busy`);
         if (cancelled) return;

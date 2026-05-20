@@ -4947,14 +4947,6 @@ button.btnApplyRestart:hover {
   animation: none !important;
 }
 
-/* ── Page hidden: pause all CSS animations to reduce GPU/CPU load ──
-   Controlled by App.tsx visibilitychange handler → document.body.dataset.pageHidden */
-[data-page-hidden] *,
-[data-page-hidden] *::before,
-[data-page-hidden] *::after {
-  animation-play-state: paused !important;
-}
-
 /* ── CAPTCHA popup: force above Radix Dialog (z-50, modal pointer-events:none) ── */
 body > div[id*="captcha" i],
 body > div[class*="captcha" i],
