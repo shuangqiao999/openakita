@@ -104,6 +104,7 @@ class LanceDBBackend:
     _METRIC = "cosine"
     _MIN_ROWS_FOR_INDEX = 500
     _INDEX_TYPE = "IVF_PQ"
+    _INDEX_FTS_FIELD = "content"
 
     def __init__(
         self,
@@ -126,6 +127,8 @@ class LanceDBBackend:
         self._on_rebuild = on_rebuild
         self._index_created = False
         self._creating_index = False
+        self._fts_index_created = False
+        self._creating_fts_index = False
 
         try:
             import lancedb as _mod
@@ -164,6 +167,7 @@ class LanceDBBackend:
                     self._table.count_rows(),
                 )
                 self._create_index_async()
+                self._create_fts_index_async()
             elif embedding_dim > 0:
                 self._ensure_table(embedding_dim)
             else:
@@ -257,6 +261,52 @@ class LanceDBBackend:
         t.start()
         logger.debug("[LanceDBBackend] Index creation dispatched to background thread")
 
+    # ── Full-Text Search Index ──
+
+    def _has_fts_index(self) -> bool:
+        if self._fts_index_created:
+            return True
+        if self._table is None:
+            return False
+        try:
+            for idx in self._table.list_indices():
+                if getattr(idx, "index_type", "") == "FTS":
+                    self._fts_index_created = True
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _create_fts_index_sync(self) -> None:
+        try:
+            logger.info("[LanceDBBackend] FTS index creation started")
+            self._table.create_fts_index(
+                self._INDEX_FTS_FIELD,
+                replace=True,
+                language="English",
+                lower_case=True,
+                stem=True,
+                remove_stop_words=True,
+                ascii_folding=True,
+                max_token_length=40,
+            )
+            self._fts_index_created = True
+            logger.info("[LanceDBBackend] FTS index creation completed")
+        except Exception as e:
+            logger.warning("[LanceDBBackend] FTS index creation failed: %s", e)
+        finally:
+            self._creating_fts_index = False
+
+    def _create_fts_index_async(self) -> None:
+        if self._creating_fts_index or self._fts_index_created:
+            return
+        if self._table is None or not self._enabled:
+            return
+        self._creating_fts_index = True
+        t = threading.Thread(target=self._create_fts_index_sync, daemon=True)
+        t.start()
+        logger.debug("[LanceDBBackend] FTS index creation dispatched to background thread")
+
     def _ensure_table(self, embedding_dim: int) -> None:
         """创建表 (幂等)"""
         if self._table is not None:
@@ -299,6 +349,8 @@ class LanceDBBackend:
 
         self._index_created = False
         self._creating_index = False
+        self._fts_index_created = False
+        self._creating_fts_index = False
 
         try:
             self._ensure_table(new_dim)
@@ -447,6 +499,8 @@ class LanceDBBackend:
         scope_owner: str | None = None,
         user_id: str | None = None,
         workspace_id: str | None = None,
+        *,
+        hybrid: bool = False,
     ) -> list[tuple[str, float]]:
         if not self.available:
             return []
@@ -472,27 +526,46 @@ class LanceDBBackend:
             return []
 
         try:
-            with self._lock:
-                results = (
-                    self._table.search(query_vec)
-                    .metric(self._METRIC)
-                    .limit(min(limit, 50))
-                    .to_list()
-                )
-            if not results:
-                return []
-
-            scored: list[tuple[str, float]] = []
-            for row in results:
-                doc_id = row.get("id", "")
-                if not doc_id:
-                    continue
-                distance = row.get("_distance", 1.0)
-                score = float(1.0 - distance / 2.0)
-                score = max(0.0, min(1.0, score))
-                if math.isfinite(score):
-                    scored.append((coerce_text(doc_id), score))
-            return scored
+            if hybrid and self._has_fts_index():
+                with self._lock:
+                    results = (
+                        self._table.search(query_type="hybrid")
+                        .text(query)
+                        .vector(query_vec)
+                        .metric(self._METRIC)
+                        .limit(min(limit, 50))
+                        .to_list()
+                    )
+                scored: list[tuple[str, float]] = []
+                for row in results:
+                    doc_id = row.get("id", "")
+                    if not doc_id:
+                        continue
+                    rrf = float(row.get("_score", 0))
+                    if math.isfinite(rrf):
+                        scored.append((coerce_text(doc_id), rrf))
+                return scored
+            else:
+                with self._lock:
+                    results = (
+                        self._table.search(query_vec)
+                        .metric(self._METRIC)
+                        .limit(min(limit, 50))
+                        .to_list()
+                    )
+                if not results:
+                    return []
+                scored: list[tuple[str, float]] = []
+                for row in results:
+                    doc_id = row.get("id", "")
+                    if not doc_id:
+                        continue
+                    distance = row.get("_distance", 1.0)
+                    score = float(1.0 - distance / 2.0)
+                    score = max(0.0, min(1.0, score))
+                    if math.isfinite(score):
+                        scored.append((coerce_text(doc_id), score))
+                return scored
         except Exception as e:
             logger.warning(f"[LanceDBBackend] search failed: {e}")
             return []
@@ -541,6 +614,7 @@ class LanceDBBackend:
                     "metadata": meta_str,
                 }])
                 self._create_index_async()
+                self._create_fts_index_async()
                 return True
             except Exception as e:
                 logger.warning(
@@ -612,6 +686,7 @@ class LanceDBBackend:
                 if rows:
                     self._table.add(rows)
                 self._create_index_async()
+                self._create_fts_index_async()
                 return len(rows)
             except Exception as e:
                 logger.warning(f"[LanceDBBackend] batch_add failed: {e}")
