@@ -65,7 +65,9 @@ class SystemHandler:
 
     def _enable_thinking(self, params: dict) -> str:
         """控制深度思考模式"""
-        enabled = params["enabled"]
+        enabled = params.get("enabled")
+        if enabled is None:
+            return "❌ enable_thinking 缺少必要参数 'enabled'"
         reason = params.get("reason", "")
 
         self.agent.brain.set_thinking_mode(enabled)
@@ -107,7 +109,9 @@ class SystemHandler:
 
     def _get_tool_info(self, params: dict) -> str:
         """获取工具信息"""
-        tool_name_to_query = params["tool_name"]
+        tool_name_to_query = params.get("tool_name")
+        if not tool_name_to_query:
+            return "❌ get_tool_info 缺少必要参数 'tool_name'"
         return self.agent.tool_catalog.get_tool_info_formatted(tool_name_to_query)
 
     def _set_task_timeout(self, params: dict) -> str:

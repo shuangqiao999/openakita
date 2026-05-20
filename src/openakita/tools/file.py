@@ -710,7 +710,7 @@ class FileTool:
                 dst_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src_path, dst_path)
             else:
-                shutil.copytree(src_path, dst_path)
+                shutil.copytree(src_path, dst_path, dirs_exist_ok=True)
             return True
         except Exception as e:
             logger.error(f"Failed to copy {src_path} to {dst_path}: {e}")

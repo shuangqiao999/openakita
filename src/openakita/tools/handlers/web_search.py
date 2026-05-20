@@ -38,7 +38,7 @@ def _resolve_timeout(params: dict[str, Any]) -> float:
 async def _run_search_attempt(func, *, timeout_seconds: float, **kwargs) -> list[dict[str, Any]]:
     task = asyncio.to_thread(func, **kwargs)
     if timeout_seconds <= 0:
-        return await task
+        timeout_seconds = 60.0
     return await asyncio.wait_for(task, timeout=timeout_seconds)
 
 

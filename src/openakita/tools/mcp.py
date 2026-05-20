@@ -1062,7 +1062,7 @@ class MCPClient:
                 )
                 return MCPCallResult(success=False, error=f"{type(e).__name__}: {e}")
 
-        return MCPCallResult(success=False, error="Unexpected: retry loop exhausted")
+        raise RuntimeError("Unexpected: retry loop exhausted")
 
     async def read_resource(
         self,
@@ -1131,7 +1131,7 @@ class MCPClient:
                 )
                 return MCPCallResult(success=False, error=f"{type(e).__name__}: {e}")
 
-        return MCPCallResult(success=False, error="Unexpected: retry loop exhausted")
+        raise RuntimeError("Unexpected: retry loop exhausted")
 
     async def get_prompt(
         self,
@@ -1203,7 +1203,7 @@ class MCPClient:
                 )
                 return MCPCallResult(success=False, error=f"{type(e).__name__}: {e}")
 
-        return MCPCallResult(success=False, error="Unexpected: retry loop exhausted")
+        raise RuntimeError("Unexpected: retry loop exhausted")
 
     # ==================== 公共状态查询 / 管理 ====================
 

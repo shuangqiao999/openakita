@@ -145,14 +145,16 @@ class SubprocessBridge:
             result = module.func(*args, **kwargs)
             print(json.dumps(result))
         """
-        args_repr = json.dumps(args or [], ensure_ascii=False)
-        kwargs_repr = json.dumps(kwargs or {}, ensure_ascii=False)
+        import base64 as _b64
+
+        args_repr = _b64.b64encode(json.dumps(args or [], ensure_ascii=False).encode()).decode()
+        kwargs_repr = _b64.b64encode(json.dumps(kwargs or {}, ensure_ascii=False).encode()).decode()
 
         script = f"""
-import json
+import json, base64
 import {module}
-_args = json.loads('{args_repr}')
-_kwargs = json.loads('{kwargs_repr}')
+_args = json.loads(base64.b64decode("{args_repr}").decode())
+_kwargs = json.loads(base64.b64decode("{kwargs_repr}").decode())
 result = {module}.{func}(*_args, **_kwargs)
 print(json.dumps(result, ensure_ascii=False, default=str))
 """

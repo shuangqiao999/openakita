@@ -792,7 +792,6 @@ but with full schema you'll fill arguments more reliably.
         """使缓存失效"""
         self._cached_catalog = None
 
-    @property
     def sort_by_priority(
         self,
         tool_names: list[str],

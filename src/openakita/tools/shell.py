@@ -17,6 +17,7 @@ import subprocess
 import sys
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -205,7 +206,10 @@ class ShellTool:
                 f"[ShellTool] default_cwd does not exist or is not a directory: {cwd_str!r}, "
                 f"falling back to os.getcwd()"
             )
-            cwd_str = os.getcwd()
+            try:
+                cwd_str = os.getcwd()
+            except FileNotFoundError:
+                cwd_str = str(Path.home())
 
         self.default_cwd = cwd_str
         self.timeout = timeout

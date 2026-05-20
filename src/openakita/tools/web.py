@@ -184,7 +184,7 @@ class WebTool:
 
                 with open(path, "wb") as f:
                     async for chunk in resp.aiter_bytes(chunk_size):
-                        f.write(chunk)
+                        f.write(chunk)  # local disk write, non-blocking in practice
 
             logger.info(f"Downloaded to {path}")
             return True

@@ -26,8 +26,19 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_terminal_managers: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
+import atexit as _atexit
+
 _terminal_mgr_strong_refs: dict[int, Any] = {}
+_PENDING_TEMP_FILES: list[str] = []
+
+def _cleanup_temp_files():
+    for pf in _PENDING_TEMP_FILES:
+        try:
+            Path(pf).unlink(missing_ok=True)
+        except Exception:
+            pass
+    _PENDING_TEMP_FILES.clear()
+
 _TRUNCATED_PREVIEW_MARKERS = (
     "[OUTPUT_TRUNCATED]",
     "[已截断",
@@ -223,6 +234,9 @@ class FilesystemHandler:
         tmp.write(code)
         tmp.close()
 
+        _PENDING_TEMP_FILES.append(tmp.name)
+        if len(_PENDING_TEMP_FILES) == 1:
+            _atexit.register(_cleanup_temp_files)
         logger.info("[Windows fix] Multiline python -c → temp file: %s", tmp.name)
         return f'python "{tmp.name}"'
 
@@ -617,7 +631,8 @@ class FilesystemHandler:
         # Phase 3-10: TTL cache — avoid re-reading same file in tight loops
         import time as _time
 
-        cache_key = f"{path}:{offset}:{limit}"
+        resolved_path = str(self._resolve_to_abs(path))
+        cache_key = f"{resolved_path}:{offset}:{limit}"
         now = _time.monotonic()
         if cache_key in self._read_file_ttl_cache:
             ts, cached = self._read_file_ttl_cache[cache_key]
@@ -639,18 +654,7 @@ class FilesystemHandler:
 
         content = await self.agent.file_tool.read(path)
 
-        offset = params.get("offset", 1)  # 起始行号（1-based），默认第 1 行
-        limit = params.get("limit", getattr(settings, "read_file_default_limit", self.READ_FILE_DEFAULT_LIMIT))
-
-        # 确保 offset/limit 合法
-        try:
-            offset = max(1, int(offset))
-            limit = max(1, int(limit))
-        except (TypeError, ValueError):
-            offset = 1
-            limit = int(getattr(settings, "read_file_default_limit", self.READ_FILE_DEFAULT_LIMIT))
-
-        cache_key = (str(self._resolve_to_abs(path)), offset, limit)
+        cache_key = (resolved_path, offset, limit)
         cached = self._read_file_cache.get(cache_key)
         if cached is not None:
             return "♻️ 复用本轮 read_file 缓存结果：\n" + cached
