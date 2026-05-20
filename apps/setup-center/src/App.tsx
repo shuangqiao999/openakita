@@ -1037,8 +1037,10 @@ function MainApp() {
     const handler = () => {
       const visible = !document.hidden;
       setPageVisible(visible);
+      document.body.dataset.pageHidden = visible ? "" : "1";
       if (visible) handleAppResumed();
     };
+    handler();
     document.addEventListener("visibilitychange", handler);
     return () => document.removeEventListener("visibilitychange", handler);
   }, [handleAppResumed]);

@@ -4946,13 +4946,13 @@ button.btnApplyRestart:hover {
 [data-perf-mode="low"] .agentOrbitPulse {
   animation: none !important;
 }
-[data-perf-mode="low"] .dotProcessing::after {
-  animation: none !important;
-}
-[data-perf-mode="low"] .sidebar,
-[data-perf-mode="low"] .chainPanel {
-  backdrop-filter: none !important;
-  -webkit-backdrop-filter: none !important;
+
+/* ── Page hidden: pause all CSS animations to reduce GPU/CPU load ──
+   Controlled by App.tsx visibilitychange handler → document.body.dataset.pageHidden */
+[data-page-hidden] *,
+[data-page-hidden] *::before,
+[data-page-hidden] *::after {
+  animation-play-state: paused !important;
 }
 
 /* ── CAPTCHA popup: force above Radix Dialog (z-50, modal pointer-events:none) ── */
