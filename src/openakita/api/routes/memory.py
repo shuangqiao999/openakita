@@ -731,9 +731,9 @@ async def trigger_review(request: Request):
 
                 try:
                     if lifecycle.identity_dir:
-                        lifecycle.refresh_memory_md(lifecycle.identity_dir)
-                    lifecycle._sync_vector_store()
-                    _sync_json(request)
+                        await asyncio.to_thread(lifecycle.refresh_memory_md, lifecycle.identity_dir)
+                    await asyncio.to_thread(lifecycle._sync_vector_store)
+                    await asyncio.to_thread(_sync_json, request)
                 except Exception as e:
                     logger.warning(f"[MemoryAPI] Post-review sync failed: {e}")
             except Exception as e:

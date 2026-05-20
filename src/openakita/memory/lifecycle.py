@@ -975,9 +975,10 @@ class LifecycleManager:
         Returns:
             审查报告 {deleted, updated, merged, kept, errors}
         """
+        import asyncio
         import math
 
-        all_memories = self.store.load_all_memories()
+        all_memories = await asyncio.to_thread(self.store.load_all_memories)
         if not all_memories:
             return {"deleted": 0, "updated": 0, "merged": 0, "kept": 0, "partial": False}
 
@@ -1011,7 +1012,7 @@ class LifecycleManager:
         # ── Pre-clustering: group similar memories together so the LLM sees
         #    potential duplicates in the same batch ──
         if not isinstance(checkpoint, dict) or not checkpoint:
-            memory_ids = self._cluster_similar_memories(all_memories)
+            memory_ids = await asyncio.to_thread(self._cluster_similar_memories, all_memories)
         else:
             memory_ids = list(checkpoint.get("memory_ids") or [m.id for m in all_memories])
 
@@ -1186,7 +1187,7 @@ class LifecycleManager:
                         action = coerce_text(dec.get("action", "keep")).lower()
 
                         if action == "delete":
-                            self.store.delete_semantic(mem.id)
+                            await asyncio.to_thread(self.store.delete_semantic, mem.id)
                             report["deleted"] += 1
                             logger.debug(
                                 f"[Lifecycle] Review DELETE: {coerce_text(mem.content)[:50]} "
@@ -1200,7 +1201,7 @@ class LifecycleManager:
                             if dec.get("new_importance"):
                                 updates["importance_score"] = float(dec["new_importance"])
                             if updates:
-                                self.store.update_semantic(mem.id, updates)
+                                await asyncio.to_thread(self.store.update_semantic, mem.id, updates)
                                 report["updated"] += 1
                             else:
                                 report["kept"] += 1
@@ -1209,8 +1210,8 @@ class LifecycleManager:
                             target_id = dec.get("merged_with")
                             new_content = dec.get("new_content")
                             if target_id and new_content:
-                                self.store.update_semantic(target_id, {"content": new_content})
-                                self.store.delete_semantic(mem.id)
+                                await asyncio.to_thread(self.store.update_semantic, target_id, {"content": new_content})
+                                await asyncio.to_thread(self.store.delete_semantic, mem.id)
                                 report["merged"] += 1
                             else:
                                 report["kept"] += 1

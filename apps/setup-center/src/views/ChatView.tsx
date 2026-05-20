@@ -1804,8 +1804,8 @@ export function ChatView({
       try { ctx.abort.abort("user_stop"); } catch {}
       try { ctx.reader?.cancel().catch(() => {}); } catch {}
       if (ctx.pollingTimer) clearInterval(ctx.pollingTimer);
+      if (ctx._finalPollingTimer) clearInterval(ctx._finalPollingTimer);
       streamContexts.current.delete(convId);
-      setStreamingTick(t => t + 1);
     }
 
     // Atomic delete: call backend first, only clean local data on success
@@ -1827,24 +1827,22 @@ export function ChatView({
     try { localStorage.removeItem(STORAGE_KEY_MSGS_PREFIX + convId); } catch {}
     setMessageQueue(prev => prev.filter(m => m.convId !== convId));
     setBusyConversations((prev) => { const m = new Map(prev); m.delete(convId); return m; });
+    setStreamingTick(t => t + 1);
 
     const curActiveId = activeConvIdRef.current;
+    const updatedConversations = conversations.filter((c) => c.id !== convId);
+    setConversations(updatedConversations);
+
     if (convId === curActiveId) {
-      setConversations((prev) => {
-        const remaining = prev.filter((c) => c.id !== convId);
-        if (remaining.length > 0) {
-          setActiveConvId(remaining[0].id);
-          setMessages(loadMessagesFromStorage(STORAGE_KEY_MSGS_PREFIX + remaining[0].id));
-        } else {
-          setActiveConvId(null);
-          setMessages([]);
-        }
-        return remaining;
-      });
-    } else {
-      setConversations((prev) => prev.filter((c) => c.id !== convId));
+      if (updatedConversations.length > 0) {
+        setActiveConvId(updatedConversations[0].id);
+        setMessages(loadMessagesFromStorage(STORAGE_KEY_MSGS_PREFIX + updatedConversations[0].id));
+      } else {
+        setActiveConvId(null);
+        setMessages([]);
+      }
     }
-  }, [serviceRunning]);
+  }, [serviceRunning, conversations]);
 
   // ── 删除对话（弹窗确认） ──
   const deleteConversation = useCallback((convId: string, e?: React.MouseEvent) => {
