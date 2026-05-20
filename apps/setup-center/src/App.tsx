@@ -1088,6 +1088,7 @@ function MainApp() {
           if (heartbeatStateRef.current !== "alive" && !needTwoToRecover) {
             heartbeatStateRef.current = "alive";
             setHeartbeatState("alive");
+            reconnectWsNow();
             if (IS_TAURI) try { await invoke("set_tray_backend_status", { status: "alive" }); } catch { /* ignore */ }
           }
           // /api/health 200 只代表 HTTP API 可达，不再等同于业务完全启动完成。
