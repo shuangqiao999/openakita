@@ -240,7 +240,7 @@ class LanceDBBackend:
                 self._INDEX_TYPE, row_count, dim, num_partitions, num_sub,
             )
             self._table.create_index(
-                metric=self._INDEX_METRIC,
+                metric=self._METRIC,
                 num_partitions=num_partitions,
                 num_sub_vectors=num_sub,
                 index_type=self._INDEX_TYPE,
