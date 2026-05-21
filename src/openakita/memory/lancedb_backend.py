@@ -102,7 +102,7 @@ class LanceDBBackend:
     """
 
     _METRIC = "cosine"
-    _MIN_ROWS_FOR_INDEX = 500
+    _MIN_ROWS_FOR_INDEX = 200
     _INDEX_TYPE = "IVF_PQ"
     _INDEX_FTS_FIELD = "content"
 
@@ -716,3 +716,32 @@ class LanceDBBackend:
         except Exception as e:
             logger.warning(f"[LanceDBBackend] clear failed: {e}")
             return False
+
+    def get_all_ids(self) -> set[str]:
+        if not self.available:
+            return set()
+        try:
+            with self._lock:
+                tbl = self._table.to_arrow()
+                ids_col = tbl.column("id")
+                return {ids_col[i].as_py() for i in range(len(ids_col))}
+        except Exception as e:
+            logger.warning(f"[LanceDBBackend] get_all_ids failed: {e}")
+            return set()
+
+    def delete_not_in(self, keep_ids: set[str]) -> int:
+        if not self.available:
+            return 0
+        try:
+            existing = self.get_all_ids()
+            stale = existing - keep_ids
+            if not stale:
+                return 0
+            with self._lock:
+                ids_str = ", ".join(f"'{id}'" for id in stale)
+                self._table.delete(f"id IN ({ids_str})")
+            logger.info(f"[LanceDBBackend] Removed {len(stale)} stale vectors")
+            return len(stale)
+        except Exception as e:
+            logger.warning(f"[LanceDBBackend] delete_not_in failed: {e}")
+            return 0

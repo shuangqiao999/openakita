@@ -299,6 +299,11 @@ class LifecycleManager:
                     existing_ids = set(search._collection.get()["ids"])
                 except Exception:
                     existing_ids = None
+            elif hasattr(search, "get_all_ids"):
+                try:
+                    existing_ids = search.get_all_ids()
+                except Exception:
+                    existing_ids = None
 
             if hasattr(search, "delete_not_in"):
                 search.delete_not_in(mem_ids)

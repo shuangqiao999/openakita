@@ -48,6 +48,7 @@ class UnifiedStore:
             # 注册维度变更重建回调：旧向量表被删除后，从 SQLite 重新索引
             def _on_rebuild_trigger():
                 self._backfill_started = False
+                self._needs_full_backfill = True
                 self._backfill_semantic_if_empty()
 
             self.search = create_search_backend(
@@ -91,13 +92,16 @@ class UnifiedStore:
 
         在独立线程中执行，不阻塞主启动流程。
         batch_add() 内部调用 _run_embedding_sync 桥接到异步嵌入事件循环。
+
+        支持断点续传：通过 get_all_ids() 跳过已存在的记录，避免维度重建中断后重复工作。
         """
         try:
             count_fn = getattr(self.search, "count", None)
             if count_fn is None:
                 return
             existing = count_fn()
-            if existing > 0:
+            needs_full = getattr(self, "_needs_full_backfill", False)
+            if existing > 0 and not needs_full:
                 logger.debug(
                     "[UnifiedStore] Backfill skipped: already has %d vectors", existing
                 )
@@ -113,6 +117,19 @@ class UnifiedStore:
 
         if not all_mems:
             return
+
+        # 断点续传：跳过已存在于向量库中的记录
+        skip_ids: set[str] = set()
+        if needs_full and hasattr(self.search, "get_all_ids"):
+            try:
+                skip_ids = self.search.get_all_ids()
+                if skip_ids:
+                    logger.info(
+                        "[UnifiedStore] Backfill resume: %d already indexed, skipping",
+                        len(skip_ids),
+                    )
+            except Exception:
+                pass
 
         logger.info("[UnifiedStore] Backfill started: %d memories to index", len(all_mems))
 
@@ -138,6 +155,9 @@ class UnifiedStore:
                         },
                     }
                 )
+            # 断点续传：跳过已存在的记录
+            if skip_ids:
+                items = [it for it in items if it["id"] not in skip_ids]
             if not items:
                 continue
             try:
@@ -158,6 +178,7 @@ class UnifiedStore:
             total_indexed,
             len(all_mems),
         )
+        self._needs_full_backfill = False
 
     @staticmethod
     def _is_active_dict(memory: dict) -> bool:
@@ -389,8 +410,8 @@ class UnifiedStore:
         )
         merged: dict[str, float] = {mid: float(s) for mid, s in primary}
 
-        # FTS5 fallback: only when LanceDB is NOT the active backend
-        if self._fts5_fallback is not None and self.search.backend_type != "lancedb":
+        # FTS5 fallback: always merge for CJK tokenization coverage
+        if self._fts5_fallback is not None:
             try:
                 fts_results = self._fts5_fallback.search(
                     query,
