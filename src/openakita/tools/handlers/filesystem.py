@@ -652,6 +652,12 @@ class FilesystemHandler:
                 logger.warning(msg)
                 return msg
 
+        target = self._resolve_to_abs(path)
+        if not target.exists():
+            return f"❌ read_file 读取失败: 文件不存在 ({path})"
+        if target.is_dir():
+            return f"❌ read_file 读取失败: 路径是目录而非文件 ({path})"
+
         content = await self.agent.file_tool.read(path)
 
         cache_key = (resolved_path, offset, limit)
