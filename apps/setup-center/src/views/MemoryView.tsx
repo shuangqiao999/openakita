@@ -293,6 +293,7 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
           setLastExtractionTime(newTime);
           loadStats();
           loadMemories();
+          setGraphRefreshKey((v) => v + 1);
         }
       } catch { /* ignore polling errors */ }
     }, 5_000);
@@ -306,6 +307,7 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
       setMemories(prev => prev.filter(m => m.id !== id));
       setSelected(prev => { const n = new Set(prev); n.delete(id); return n; });
       loadStats();
+      setGraphRefreshKey((v) => v + 1);
     } catch (e: any) {
       toast.error(e.message);
     }
@@ -330,6 +332,7 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
       setMemories(prev => prev.filter(m => !new Set(ids).has(m.id)));
       setSelected(new Set());
       loadStats();
+      setGraphRefreshKey((v) => v + 1);
     } catch (e: any) {
       toast.error(e.message);
     }
@@ -427,6 +430,7 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
           }
           loadMemories();
           loadStats();
+          setGraphRefreshKey((v) => v + 1);
         }
       } catch {
         /* transient network error, keep polling */
@@ -492,6 +496,7 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
     try {
       loadStats();
       loadMemories();
+      setGraphRefreshKey((v) => v + 1);
       toast.success(t("memory.refreshed"));
     } catch {
       toast.error(t("memory.loadFailed"));
