@@ -66,9 +66,9 @@
         "height": 860,
         "minWidth": 800,
         "minHeight": 600,
-        "resizable": true
+        "resizable": true,
+        "additionalBrowserArgs": "--disable-gpu --disable-software-rasterizer"
       }
     ]
-  }
   }
 }

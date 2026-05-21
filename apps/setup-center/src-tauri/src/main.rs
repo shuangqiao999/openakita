@@ -5415,9 +5415,8 @@ fn setup_tray(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
     let menu = Menu::with_items(app, &[&open_status, &open_web, &show, &hide, &quit])?;
 
-    let tray_icon = app.default_window_icon().cloned().unwrap_or_else(|| {
-        include_bytes!("../icons/icon.png").to_vec().into()
-    });
+    let tray_icon = app.default_window_icon().cloned()
+        .ok_or("default window icon not found — check icons/icon.png")?;
 
     TrayIconBuilder::with_id("main_tray")
         .icon(tray_icon)
