@@ -47,19 +47,28 @@ const AUTO_START_TIMEOUT_MS: u64 = 180_000;
 const DEFAULT_API_PORT: u16 = 18900;
 
 const HB_HTTP_TIMEOUT_SECS: u64 = 2;
+#[allow(dead_code)]
 const GRACEFUL_STOP_MAX_WAIT_ITER: u32 = 25;
+#[allow(dead_code)]
 const GRACEFUL_STOP_POLL_MS: u64 = 200;
+#[allow(dead_code)]
 const FORCE_STOP_MAX_WAIT_ITER: u32 = 10;
+#[allow(dead_code)]
 const LOG_TAIL_DEFAULT_BYTES: u64 = 40_000;
+#[allow(dead_code)]
 const LOG_TAIL_MAX_BYTES: u64 = 400_000;
+#[allow(dead_code)]
 const ERROR_TAIL_BYTES: usize = 6000;
+#[allow(dead_code)]
 const SPAWN_LIVENESS_CHECKS: u32 = 6;
 const WINDOWS_RESERVED_NAMES: &[&str] = &[
     "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6",
     "com7", "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7",
     "lpt8", "lpt9",
 ];
+#[allow(dead_code)]
 const HEARTBEAT_STALE_SECS: u64 = 30;
+#[allow(dead_code)]
 const ATOMIC_WRITE_MAX_RETRIES: u64 = 3;
 const VERSION_CHECK_RETRIES: u32 = 5;
 const VERSION_CHECK_BACKOFF_MS: u64 = 1500;
@@ -862,6 +871,7 @@ struct BootstrapManifest {
     python_version: String,
     wheel: BootstrapWheel,
     #[serde(default)]
+    #[allow(dead_code)]
     default_pip_index: Option<RuntimePipIndex>,
 }
 
@@ -4684,6 +4694,7 @@ fn ensure_bundled_pth_file(internal_dir: &std::path::Path) {
 /// 根据 Python 路径自动选择正确的环境配置。
 /// bundled（_internal）Python 需要 apply_bundled_python_env，
 /// venv Python 只需 strip_harmful_python_env。
+#[allow(dead_code)]
 fn apply_python_env_for(cmd: &mut Command, py: &std::path::Path) {
     let internal_dir = bundled_backend_dir().join("_internal");
     if py.starts_with(&internal_dir) {
@@ -4694,6 +4705,7 @@ fn apply_python_env_for(cmd: &mut Command, py: &std::path::Path) {
 }
 
 /// 判断 .env 中的键是否会污染 Python 运行时（应在启动后端时忽略）。
+#[allow(dead_code)]
 fn is_harmful_python_env_key(key: &str) -> bool {
     key.eq_ignore_ascii_case("PYTHONPATH")
         || key.eq_ignore_ascii_case("PYTHONHOME")
@@ -5916,7 +5928,7 @@ fn import_workspace_backup_native(
     workspace_id: &str,
     zip_path: &str,
 ) -> Result<serde_json::Value, String> {
-    use std::io::{Read as _, Write as _};
+    use std::io::Read as _;
 
     let zp = PathBuf::from(zip_path);
     if !zp.exists() {
@@ -6008,6 +6020,7 @@ fn chrono_like_timestamp() -> String {
 fn time_from_epoch(epoch_secs: u64) -> (u32, u32, u32, u32, u32, u32) {
     // Simple epoch-to-datetime conversion (UTC-based, good enough for filenames)
     const SECS_PER_DAY: u64 = 86400;
+    #[allow(dead_code)]
     const DAYS_PER_YEAR: u64 = 365;
 
     let total_days = epoch_secs / SECS_PER_DAY;
