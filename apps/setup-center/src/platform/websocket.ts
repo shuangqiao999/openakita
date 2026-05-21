@@ -28,7 +28,7 @@ let _reconnectAttempts = 0;
 // PR-F1: 后端崩溃自愈窗口可能很久（Tauri 心跳 + 重启需要 30s+）；
 // 上限 120 次（≈ 1h）会让用户看到"放弃重连"的死状态。改成无限重连，
 // 但用指数退避到 60s + jitter，防止后端起来时被一波重连风暴冲击。
-const MAX_RECONNECT_ATTEMPTS = Number.POSITIVE_INFINITY;
+const MAX_RECONNECT_ATTEMPTS = 50;
 const MAX_RECONNECT_DELAY = 60000;
 let _connected = false;
 let _intentionallyClosed = false;

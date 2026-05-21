@@ -68,6 +68,13 @@
         "minHeight": 600,
         "resizable": true
       }
-    ]
+    ],
+    "webview": {
+      "dataFolder": "./webview-data",
+      "browserArguments": [
+        "--disable-gpu",
+        "--disable-software-rasterizer"
+      ]
+    }
   }
 }

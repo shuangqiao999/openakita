@@ -434,8 +434,9 @@ function MainApp() {
 
   useEffect(() => {
     if (!IS_TAURI) return;
-    setWsApiBaseUrl(dataMode === "remote" ? apiBaseUrl : DEFAULT_LOCAL_API_BASE);
-    reconnectWsNow();
+    const newBaseUrl = dataMode === "remote" ? apiBaseUrl : DEFAULT_LOCAL_API_BASE;
+    setWsApiBaseUrl(newBaseUrl);
+    void Promise.resolve().then(() => reconnectWsNow());
   }, [apiBaseUrl, dataMode]);
 
   const [stepId, setStepId] = useState<StepId>(() => {
@@ -699,6 +700,13 @@ function MainApp() {
   const backendStartupHoldUntilRef = useRef(IS_TAURI ? Date.now() + BACKEND_STARTUP_PROBE_HOLD_MS : 0);
   const [pageVisible, setPageVisible] = useState(true);
   const visibilityGraceRef = useRef(false); // 休眠恢复宽限期
+  const doneRetryTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  useEffect(() => {
+    return () => {
+      doneRetryTimersRef.current.forEach(clearTimeout);
+      doneRetryTimersRef.current = [];
+    };
+  }, []);
   const lastPluginAppsReadyEventRef = useRef(0);
   const holdBackendStarting = useCallback((durationMs = BACKEND_STARTUP_HOLD_MS) => {
     if (!IS_TAURI) return;
@@ -1220,9 +1228,11 @@ function MainApp() {
 
   // tray/menu bar -> open status panel
   useEffect(() => {
+    let cancelled = false;
     let unlisten: null | (() => void) = null;
     (async () => {
-      unlisten = await listen("open_status", async () => {
+      const fn = await listen("open_status", async () => {
+        if (cancelled) return;
         navigateToView("status");
         try {
           await refreshStatus(undefined, undefined, true);
@@ -1230,8 +1240,11 @@ function MainApp() {
           // ignore
         }
       });
+      if (cancelled) { fn(); return; }
+      unlisten = fn;
     })();
     return () => {
+      cancelled = true;
       if (unlisten) unlisten();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1240,25 +1253,34 @@ function MainApp() {
   // ── Global shortcut: Ctrl+Shift+A to summon window ──
   useEffect(() => {
     if (!IS_TAURI) return;
+    let cancelled = false;
     let unregister: (() => void) | null = null;
     (async () => {
       try {
         const { getCurrentWindow } = await import("@tauri-apps/api/window");
         const win = getCurrentWindow();
-        unregister = await registerGlobalShortcut("CmdOrCtrl+Shift+A", () => {
+        const fn = await registerGlobalShortcut("CmdOrCtrl+Shift+A", () => {
+          if (cancelled) return;
           win.show().catch(() => {});
           win.setFocus().catch(() => {});
         });
+        if (cancelled) { fn(); return; }
+        unregister = fn;
       } catch { /* global-shortcut not available */ }
     })();
-    return () => { if (unregister) unregister(); };
+    return () => {
+      cancelled = true;
+      if (unregister) unregister();
+    };
   }, []);
 
   // streaming pip logs (install step)
   useEffect(() => {
+    let cancelled = false;
     let unlisten: null | (() => void) = null;
     (async () => {
-      unlisten = await listen("pip_install_event", (ev) => {
+      const fn = await listen("pip_install_event", (ev) => {
+        if (cancelled) return;
         const p = ev.payload as any;
         if (!p || typeof p !== "object") return;
         if (p.kind === "stage") {
@@ -1278,17 +1300,22 @@ function MainApp() {
           });
         }
       });
+      if (cancelled) { fn(); return; }
+      unlisten = fn;
     })();
     return () => {
+      cancelled = true;
       if (unlisten) unlisten();
     };
   }, []);
 
   // tray quit failed: service still running
   useEffect(() => {
+    let cancelled = false;
     let unlisten: null | (() => void) = null;
     (async () => {
-      unlisten = await listen("quit_failed", async (ev) => {
+      const fn = await listen("quit_failed", async (ev) => {
+        if (cancelled) return;
         const p = ev.payload as any;
         const msg = String(p?.message || "退出失败：后台服务仍在运行。请先停止服务。");
         navigateToView("status");
@@ -1299,8 +1326,11 @@ function MainApp() {
           // ignore
         }
       });
+      if (cancelled) { fn(); return; }
+      unlisten = fn;
     })();
     return () => {
+      cancelled = true;
       if (unlisten) unlisten();
     };
   }, []);
@@ -1346,7 +1376,13 @@ function MainApp() {
         }
       }
     });
-    return unsub;
+    return () => {
+      if (wsRefreshDebounceRef.current) {
+        clearTimeout(wsRefreshDebounceRef.current);
+        wsRefreshDebounceRef.current = null;
+      }
+      unsub();
+    };
   }, [webAuthed]);
 
   const canUsePython = useMemo(() => {
@@ -5340,11 +5376,15 @@ function MainApp() {
                 size="lg"
                 className="mt-2 px-10 rounded-xl text-[15px]"
                 onClick={async () => {
+                  // 清除之前可能残留的重试定时器
+                  doneRetryTimersRef.current.forEach(clearTimeout);
+                  doneRetryTimersRef.current = [];
                   // 设置短暂宽限期：onboarding 结束后 HTTP 服务可能还在启动中
                   // 避免心跳检测立刻报"不可达"导致闪烁
                   visibilityGraceRef.current = true;
                   heartbeatFailCount.current = 0;
-                  setTimeout(() => { visibilityGraceRef.current = false; }, 15000);
+                  const t1 = setTimeout(() => { visibilityGraceRef.current = false; }, 15000);
+                  doneRetryTimersRef.current.push(t1);
                   navigateToView("status");
                   await refreshAll();
                   // 关键：刷新端点列表、IM 状态等（forceAliveCheck=true 绕过 serviceStatus 闭包）
@@ -5352,13 +5392,15 @@ function MainApp() {
                   try { await refreshStatus("local", "http://127.0.0.1:18900", true); } catch { /* ignore */ }
                   autoCheckEndpoints("http://127.0.0.1:18900");
                   // 延迟重试：后端 API 可能还在初始化，3 秒后再拉一次端点列表
-                  setTimeout(async () => {
+                  const t2 = setTimeout(async () => {
                     try { await refreshStatus("local", "http://127.0.0.1:18900", true); } catch { /* ignore */ }
                   }, 3000);
+                  doneRetryTimersRef.current.push(t2);
                   // 8 秒后最终重试
-                  setTimeout(async () => {
+                  const t3 = setTimeout(async () => {
                     try { await refreshStatus("local", "http://127.0.0.1:18900", true); } catch { /* ignore */ }
                   }, 8000);
+                  doneRetryTimersRef.current.push(t3);
                 }}
               >
                 {t("onboarding.done.enter")}

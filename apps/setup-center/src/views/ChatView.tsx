@@ -330,6 +330,24 @@ export function ChatView({
     }
     return matches;
   }, [msgSearchQuery, messages]);
+
+  const activePlans = useMemo(() => {
+    let approvalPlan: ChatTodo | null = null;
+    let floatingPlan: ChatTodo | null = null;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.todo) {
+        if (!approvalPlan && pendingApproval && m.todo.id === pendingApproval.plan_id) {
+          approvalPlan = m.todo;
+        }
+        if (!floatingPlan && m.todo.status !== "completed" && m.todo.status !== "failed" && m.todo.status !== "cancelled") {
+          floatingPlan = m.todo;
+        }
+        if (approvalPlan && floatingPlan) break;
+      }
+    }
+    return { approvalPlan, floatingPlan };
+  }, [messages, pendingApproval?.plan_id]);
   const messageListRef = useRef<MessageListHandle>(null);
   const isMessageListAtBottomRef = useRef(true);
   const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([]);
@@ -4580,11 +4598,7 @@ export function ChatView({
         {pendingApproval && (
           <PlanApprovalPanel
             approval={pendingApproval}
-            plan={
-              [...messages].reverse().find(
-                (m) => m.todo && m.todo.id === pendingApproval.plan_id
-              )?.todo ?? null
-            }
+            plan={activePlans.approvalPlan}
             onApprove={handlePlanApprove}
             onReject={handlePlanReject}
             onDismiss={handlePlanDismiss}
@@ -4592,10 +4606,7 @@ export function ChatView({
         )}
 
         {/* 浮动 Plan 进度条 —— 贴在输入框上方，仅显示进行中的 plan */}
-        {(() => {
-          const activePlan = [...messages].reverse().find((m) => m.todo && m.todo.status !== "completed" && m.todo.status !== "failed" && m.todo.status !== "cancelled")?.todo;
-          return activePlan ? <FloatingPlanBar plan={activePlan} /> : null;
-        })()}
+        {activePlans.floatingPlan && <FloatingPlanBar plan={activePlans.floatingPlan} />}
 
         {/* Read-only protection banner */}
         {deathSwitchActive && (

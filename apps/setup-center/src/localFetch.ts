@@ -84,7 +84,7 @@ export function installLocalFetchOverride(): void {
     // are enqueued into a ReadableStream that the Response body wraps.
     const channel = new Channel<FetchStreamEvent>();
     const encoder = new TextEncoder();
-    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    let streamController: ReadableStreamDefaultController<Uint8Array> | null = null;
 
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
@@ -94,12 +94,14 @@ export function installLocalFetchOverride(): void {
 
     channel.onmessage = (msg: FetchStreamEvent) => {
       try {
+        const ctrl = streamController;
+        if (!ctrl) return;
         if (msg.event === "chunk") {
-          streamController.enqueue(encoder.encode(msg.data.text));
+          ctrl.enqueue(encoder.encode(msg.data.text));
         } else if (msg.event === "done") {
-          streamController.close();
+          ctrl.close();
         } else if (msg.event === "error") {
-          streamController.error(new Error(msg.data.message));
+          ctrl.error(new Error(msg.data.message));
         }
       } catch {
         // Stream already closed/errored — ignore
@@ -146,9 +148,8 @@ export function installLocalFetchOverride(): void {
         headers: meta.headers,
       });
     } catch (err) {
-      // Close the stream so readers don't hang
       try {
-        streamController.error(err);
+        if (streamController) (streamController as ReadableStreamDefaultController<Uint8Array>).error(err as Error);
       } catch {
         /* already closed */
       }
