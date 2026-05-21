@@ -24,10 +24,11 @@ def store(tmp_path):
     return UnifiedStore(tmp_path / "memory.db")
 
 
-def test_lifecycle_extracted_items_receive_ttl(store, tmp_path):
+@pytest.mark.asyncio
+async def test_lifecycle_extracted_items_receive_ttl(store, tmp_path):
     lifecycle = LifecycleManager(store, MemoryExtractor(brain=None), tmp_path)
 
-    lifecycle._save_extracted_item(
+    await lifecycle._save_extracted_item(
         {
             "type": "FACT",
             "content": "临时项目事实会自动过期",

@@ -383,6 +383,7 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
         m.id === id ? { ...m, content: editContent, importance_score: editScore } : m
       ));
       setEditingId(null);
+      setGraphRefreshKey((v) => v + 1);
     } catch (e: any) {
       toast.error(e.message);
     }
@@ -689,7 +690,7 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
                 </span>
               </Button>
 
-              <Button variant="outline" onClick={loadMemories} disabled={loading} className="h-9 px-3 shrink-0" title={t("memory.refresh")}>
+              <Button variant="outline" onClick={() => { loadMemories(); setGraphRefreshKey((v) => v + 1); }} disabled={loading} className="h-9 px-3 shrink-0" title={t("memory.refresh")}>
                 {loading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
                 {!isMobile && <span className="ml-1.5 hidden xl:inline">{t("memory.refresh")}</span>}
               </Button>

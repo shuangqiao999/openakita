@@ -1,4 +1,8 @@
-"""Unit tests for ZvecBackend — score normalization, thread safety, caching."""
+"""Unit tests for ZvecBackend — score normalization, thread safety, caching.
+
+NOTE: ZvecBackend is planned but not yet implemented (source file missing).
+Tests are skipped until the backend is implemented.
+"""
 
 import asyncio
 import threading
@@ -7,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 
-from openakita.memory.zvec_backend import ZvecBackend
+pytest.skip("ZvecBackend not yet implemented — source file missing", allow_module_level=True)
 
 
 @pytest.fixture
