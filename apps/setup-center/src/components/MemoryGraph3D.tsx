@@ -171,7 +171,7 @@ export function MemoryGraph3D({ apiBaseUrl = "", searchQuery = "", refreshKey = 
     (async () => {
       setLoading(true);
       try {
-        const res = await safeFetch(`${apiBaseUrl}/api/memories/graph?limit=500`);
+        const res = await safeFetch(`${apiBaseUrl}/api/memories/graph`);
         const data: GraphData = await res.json();
         if (!cancelled) setGraphData(data);
       } catch {

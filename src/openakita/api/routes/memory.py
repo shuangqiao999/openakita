@@ -786,7 +786,7 @@ async def batch_delete(request: Request):
 
 
 @router.get("/graph")
-async def get_memory_graph(request: Request, limit: int = 500):
+async def get_memory_graph(request: Request):
     """Return the relational memory graph for 3D visualization."""
     mm = _get_manager(request)
     if not mm:
@@ -801,7 +801,7 @@ async def get_memory_graph(request: Request, limit: int = 500):
         rs = mm.relational_store
         mode = "mode2"
         user_id, workspace_id = _current_owner(request)
-        raw_nodes = rs.get_all_nodes(limit=limit, user_id=user_id, workspace_id=workspace_id)
+        raw_nodes = rs.get_all_nodes(user_id=user_id, workspace_id=workspace_id)
         node_ids = {n.id for n in raw_nodes}
 
         for n in raw_nodes:
@@ -846,7 +846,7 @@ async def get_memory_graph(request: Request, limit: int = 500):
                 scope_owner="",
                 user_id=user_id,
                 workspace_id=workspace_id,
-            )[:limit]
+            )
             subject_map: dict[str, list[str]] = defaultdict(list)
             for m in all_mems:
                 nodes_out.append(

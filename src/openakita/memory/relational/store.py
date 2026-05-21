@@ -584,7 +584,6 @@ class RelationalMemoryStore:
 
     def get_all_nodes(
         self,
-        limit: int = 2000,
         *,
         user_id: str | None = None,
         workspace_id: str | None = None,
@@ -600,8 +599,8 @@ class RelationalMemoryStore:
             params.append(workspace_id)
         where = " AND ".join(conditions)
         cur = self._conn.execute(
-            f"SELECT * FROM mdrm_nodes WHERE {where} ORDER BY importance DESC LIMIT ?",
-            (*params, limit),
+            f"SELECT * FROM mdrm_nodes WHERE {where} ORDER BY importance DESC",
+            params,
         )
         return [self._row_to_node(cur.description, r) for r in cur.fetchall()]
 
