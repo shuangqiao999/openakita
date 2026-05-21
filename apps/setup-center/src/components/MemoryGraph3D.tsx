@@ -514,7 +514,7 @@ export function MemoryGraph3D({ apiBaseUrl = "", searchQuery = "", refreshKey = 
       <div className="graph-viewport flex-1 w-full h-full min-w-0 min-h-0 relative">
         {dimensions.width > 0 && dimensions.height > 0 ? (
           <ForceGraph3D
-            key="memory-graph"
+            key={`mg-${graphData?.meta?.total_nodes ?? 0}-${refreshKey}`}
             ref={fgRef}
             graphData={graphData}
             width={dimensions.width}
