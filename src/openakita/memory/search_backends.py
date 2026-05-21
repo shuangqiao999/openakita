@@ -60,6 +60,32 @@ class SearchBackend(Protocol):
 # FTS5 Backend (default)
 # =========================================================================
 
+_jieba_cutter = None
+_jieba_checked = False
+
+
+def segment_text(text: str) -> str:
+    """jieba 中文分词，空格连接。未安装 jieba 则返回原文。
+
+    共享函数：FTS5Backend 查询端 和 MemoryStorage 索引端 共用，
+    保证查询词与索引词同一切分策略。
+    """
+    global _jieba_cutter, _jieba_checked
+    if not text:
+        return ""
+    if not _jieba_checked:
+        try:
+            import jieba
+
+            jieba.setLogLevel(logging.WARNING)
+            _jieba_cutter = jieba
+        except ImportError:
+            pass
+        _jieba_checked = True
+    if _jieba_cutter is not None:
+        return " ".join(_jieba_cutter.cut_for_search(text))
+    return text
+
 
 class FTS5Backend:
     """
@@ -75,8 +101,6 @@ class FTS5Backend:
 
     def __init__(self, storage: Any) -> None:
         self._storage = storage
-        self._jieba = None
-        self._jieba_available: bool | None = None
 
     @property
     def available(self) -> bool:
@@ -123,20 +147,7 @@ class FTS5Backend:
 
     def _segment(self, text: str) -> str:
         """jieba 中文分词, 回退到原文"""
-        if self._jieba_available is None:
-            try:
-                import jieba
-
-                self._jieba = jieba
-                self._jieba_available = True
-                self._jieba.setLogLevel(logging.WARNING)
-            except ImportError:
-                self._jieba_available = False
-                logger.info("[FTS5] jieba not installed, using raw text for search")
-
-        if self._jieba_available and self._jieba is not None:
-            return " ".join(self._jieba.cut_for_search(text))
-        return text
+        return segment_text(text)
 
 
 # =========================================================================

@@ -26,11 +26,12 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from .search_backends import segment_text
 from .types import normalize_tags
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
 
 # Process-level singleton registry: same db_path → same MemoryStorage instance
 _instance_registry: dict[str, MemoryStorage] = {}
@@ -135,6 +136,8 @@ class MemoryStorage:
                 self._migrate_v1_to_v2()
             if from_version < 3:
                 self._migrate_v2_to_v3()
+            if from_version < 4:
+                self._migrate_v3_to_v4()
 
             self._set_schema_version(_SCHEMA_VERSION)
             logger.info("[MemoryStorage] Schema migration complete")
@@ -224,6 +227,119 @@ class MemoryStorage:
         except sqlite3.OperationalError:
             pass
         self._conn.commit()
+
+    def _migrate_v3_to_v4(self) -> None:
+        """v3→v4: 添加 content_fts 列，FTS5 触发器改用 jieba 分词列。
+
+        - 新增 content_fts TEXT 列存储 jieba 分词结果
+        - 分批回填现有记忆的分词列（每批 500 条，独立 COMMIT）
+        - 删除旧 FTS5 表 + 触发器，用 content_fts 列重建
+        - 迁移后 OPTIMIZE 优化索引
+        """
+        c = self._conn
+        logger.info("[MemoryStorage] v3→v4: 开始 jieba 分词索引迁移")
+
+        # 1. 新增 content_fts 列（不可回滚 DDL，单独执行）
+        try:
+            c.execute("ALTER TABLE memories ADD COLUMN content_fts TEXT DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass  # 列已存在（幂等）
+
+        # 2. 分批回填 content_fts（在事务内，可回滚）
+        try:
+            c.execute("BEGIN")
+            rows = c.execute(
+                "SELECT rowid, content FROM memories WHERE content_fts = '' OR content_fts IS NULL"
+            ).fetchall()
+            total = len(rows)
+            if total > 0:
+                logger.info("[MemoryStorage] v3→v4: 正在回填 %d 条记忆的分词列...", total)
+                batch_size = 500
+                for i in range(0, total, batch_size):
+                    batch = rows[i : i + batch_size]
+                    for rowid, content in batch:
+                        segmented = segment_text(content or "")
+                        c.execute(
+                            "UPDATE memories SET content_fts = ? WHERE rowid = ?",
+                            (segmented, rowid),
+                        )
+                    c.execute("COMMIT")
+                    progress = min(i + batch_size, total)
+                    logger.info(
+                        "[MemoryStorage] v3→v4: 分词回填进度 %d/%d (%.1f%%)",
+                        progress, total, 100.0 * progress / total,
+                    )
+                    if i + batch_size < total:
+                        c.execute("BEGIN")
+            else:
+                c.execute("COMMIT")
+        except Exception:
+            try:
+                c.execute("ROLLBACK")
+            except Exception:
+                pass
+            logger.warning(
+                "[MemoryStorage] v3→v4: content_fts 回填失败，将保留空列"
+            )
+
+        # 3. 删除旧 FTS5 触发器
+        for trigger in ["memories_fts_ai", "memories_fts_ad", "memories_fts_au"]:
+            try:
+                c.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+            except sqlite3.OperationalError:
+                pass
+
+        # 4. 删除旧 FTS5 表
+        try:
+            c.execute("DROP TABLE IF EXISTS memories_fts")
+        except sqlite3.OperationalError:
+            pass
+
+        # 5. 创建新 FTS5 表 — 无 external content，手动写入分词列
+        try:
+            c.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+                    content, subject, predicate, tags,
+                    content=memories, content_rowid=rowid,
+                    tokenize='unicode61'
+                )
+            """)
+        except sqlite3.OperationalError as e:
+            logger.warning("[MemoryStorage] FTS5 creation skipped: %s", e)
+            return
+
+        # 6. 创建新触发器 — 读取 content_fts 而非 content
+        for trigger_sql in [
+            """CREATE TRIGGER IF NOT EXISTS memories_fts_ai AFTER INSERT ON memories BEGIN
+                INSERT INTO memories_fts(rowid, content, subject, predicate, tags)
+                VALUES (new.rowid, COALESCE(new.content_fts, new.content), new.subject, new.predicate, new.tags);
+            END""",
+            """CREATE TRIGGER IF NOT EXISTS memories_fts_ad AFTER DELETE ON memories BEGIN
+                INSERT INTO memories_fts(memories_fts, rowid, content, subject, predicate, tags)
+                VALUES ('delete', old.rowid, COALESCE(old.content_fts, old.content), old.subject, old.predicate, old.tags);
+            END""",
+            """CREATE TRIGGER IF NOT EXISTS memories_fts_au AFTER UPDATE ON memories BEGIN
+                INSERT INTO memories_fts(memories_fts, rowid, content, subject, predicate, tags)
+                VALUES ('delete', old.rowid, COALESCE(old.content_fts, old.content), old.subject, old.predicate, old.tags);
+                INSERT INTO memories_fts(rowid, content, subject, predicate, tags)
+                VALUES (new.rowid, COALESCE(new.content_fts, new.content), new.subject, new.predicate, new.tags);
+            END""",
+        ]:
+            try:
+                c.execute(trigger_sql)
+            except sqlite3.OperationalError:
+                pass
+
+        # 7. 重建 + 优化索引
+        try:
+            c.execute("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")
+            c.execute("INSERT INTO memories_fts(memories_fts) VALUES('optimize')")
+            logger.info("[MemoryStorage] v3→v4: FTS5 重建 + OPTIMIZE 完成")
+        except Exception as e:
+            logger.warning("[MemoryStorage] v3→v4: FTS5 rebuild/optimize failed: %s", e)
+
+        self._conn.commit()
+        logger.info("[MemoryStorage] v3→v4: jieba 分词索引迁移完成")
 
     def _create_tables(self) -> None:
         """Create all tables, indexes, FTS virtual tables and triggers.
@@ -537,17 +653,17 @@ class MemoryStorage:
         for trigger_sql in [
             """CREATE TRIGGER IF NOT EXISTS memories_fts_ai AFTER INSERT ON memories BEGIN
                 INSERT INTO memories_fts(rowid, content, subject, predicate, tags)
-                VALUES (new.rowid, new.content, new.subject, new.predicate, new.tags);
+                VALUES (new.rowid, COALESCE(new.content_fts, new.content), new.subject, new.predicate, new.tags);
             END""",
             """CREATE TRIGGER IF NOT EXISTS memories_fts_ad AFTER DELETE ON memories BEGIN
                 INSERT INTO memories_fts(memories_fts, rowid, content, subject, predicate, tags)
-                VALUES ('delete', old.rowid, old.content, old.subject, old.predicate, old.tags);
+                VALUES ('delete', old.rowid, COALESCE(old.content_fts, old.content), old.subject, old.predicate, old.tags);
             END""",
             """CREATE TRIGGER IF NOT EXISTS memories_fts_au AFTER UPDATE ON memories BEGIN
                 INSERT INTO memories_fts(memories_fts, rowid, content, subject, predicate, tags)
-                VALUES ('delete', old.rowid, old.content, old.subject, old.predicate, old.tags);
+                VALUES ('delete', old.rowid, COALESCE(old.content_fts, old.content), old.subject, old.predicate, old.tags);
                 INSERT INTO memories_fts(rowid, content, subject, predicate, tags)
-                VALUES (new.rowid, new.content, new.subject, new.predicate, new.tags);
+                VALUES (new.rowid, COALESCE(new.content_fts, new.content), new.subject, new.predicate, new.tags);
             END""",
             """CREATE TRIGGER IF NOT EXISTS attachments_fts_ai AFTER INSERT ON attachments BEGIN
                 INSERT INTO attachments_fts(rowid, description, transcription, extracted_text, filename, tags)
@@ -588,8 +704,8 @@ class MemoryStorage:
                      access_count, tags, created_at, updated_at, expires_at, metadata,
                      subject, predicate, confidence, decay_rate,
                      last_accessed_at, superseded_by, source_episode_id,
-                     scope, scope_owner, agent_id, user_id, workspace_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     scope, scope_owner, agent_id, user_id, workspace_id, content_fts)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         memory.get("id", ""),
@@ -616,6 +732,7 @@ class MemoryStorage:
                         memory.get("agent_id", ""),
                         memory.get("user_id", "default"),
                         memory.get("workspace_id", "default"),
+                        segment_text(memory.get("content", "")),
                     ),
                 )
                 self._conn.commit()
@@ -637,8 +754,8 @@ class MemoryStorage:
                      access_count, tags, created_at, updated_at, expires_at, metadata,
                      subject, predicate, confidence, decay_rate,
                      last_accessed_at, superseded_by, source_episode_id,
-                     scope, scope_owner, agent_id, user_id, workspace_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     scope, scope_owner, agent_id, user_id, workspace_id, content_fts)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     [
                         (
@@ -666,6 +783,7 @@ class MemoryStorage:
                             m.get("agent_id", ""),
                             m.get("user_id", "default"),
                             m.get("workspace_id", "default"),
+                            segment_text(m.get("content", "")),
                         )
                         for m in memories
                     ],
