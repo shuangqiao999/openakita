@@ -3334,7 +3334,8 @@
     "invalidFileType": "Unsupported file type: {{ext}}",
     "fileTooLarge": "File exceeds 20MB limit",
     "resultCount": "{{count}} results",
-    "semanticTimeout": "Semantic edge computation timed out, cross-document links may be incomplete",
+          "semanticTimeout": "Semantic edge computation timed out, cross-document links may be incomplete",
+      "noContent": "(no content)",
     "tabManage": "Documents",
     "tabGraph": "Graph View",
     "graph": {

@@ -397,7 +397,7 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
             {selectedNode.doc_name} · #{selectedNode.chunk_index ?? ""}
           </div>
           <div style={{ lineHeight: 1.5, maxHeight: 120, overflow: "auto" }}>
-            {selectedNode.content?.slice(0, 200) || selectedNode.name || "(无内容)"}
+            {selectedNode.content?.slice(0, 200) || selectedNode.name || t("kb.graph.noContent")}
           </div>
           <button
             onClick={() => setShowPreview(false)}

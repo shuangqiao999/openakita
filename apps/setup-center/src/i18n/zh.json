@@ -3334,7 +3334,8 @@
     "invalidFileType": "不支持的文件类型: {{ext}}",
     "fileTooLarge": "文件超过 20MB 限制",
     "resultCount": "{{count}} 条结果",
-    "semanticTimeout": "语义边计算超时，跨文档关联可能不完整",
+          "semanticTimeout": "语义边计算超时，跨文档关联可能不完整",
+      "noContent": "(无内容)",
     "tabManage": "文档管理",
     "tabGraph": "图谱视图",
     "graph": {
