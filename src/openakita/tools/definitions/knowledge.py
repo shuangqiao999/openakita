@@ -112,4 +112,49 @@ KNOWLEDGE_BASE_TOOLS = [
             "required": ["name"],
         },
     },
+    {
+        "name": "repair_knowledge_base_document",
+        "category": "Knowledge Base",
+        "description": "修复知识库中指定文档的向量索引（从分块重建 LanceDB 向量）。适用于文档搜索异常时恢复。",
+        "detail": """从 SQLite 分块重建指定文档的向量索引。
+
+**适用场景**：
+- 用户说"修复红楼梦的索引"
+- 某个文档搜索不到时应先尝试修复
+- 系统提示文档数据不一致时
+
+**参数**：
+- name: 文档名称（支持模糊匹配），修复匹配的第一个文档""",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "要修复的文档名称"},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "overwrite_knowledge_base_document",
+        "category": "Knowledge Base",
+        "description": "用新文本内容覆盖知识库中已存在的文档。先删除旧文档，再将新内容保存为同名文档。",
+        "detail": """用新文本覆盖已有文档。
+
+**适用场景**：
+- 用户说"用这段新内容更新红楼梦"
+- 用户修改了文档内容需要重新入库
+
+**参数**：
+- name: 要被覆盖的文档名称（支持模糊匹配，覆盖匹配的第一个）
+- content: 新的文本内容
+
+**注意**：会先删除旧文档及其所有分块，再保存新内容。旧文档的向量索引会被完全替换。""",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "要覆盖的文档名称"},
+                "content": {"type": "string", "description": "新的文本内容"},
+            },
+            "required": ["name", "content"],
+        },
+    },
 ]

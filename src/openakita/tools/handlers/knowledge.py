@@ -17,6 +17,8 @@ class KnowledgeBaseHandler:
         "get_knowledge_base_status",
         "list_knowledge_base_documents",
         "delete_knowledge_base_document",
+        "repair_knowledge_base_document",
+        "overwrite_knowledge_base_document",
     ]
 
     def __init__(self, agent: Any) -> None:
@@ -31,6 +33,10 @@ class KnowledgeBaseHandler:
             return await self._handle_list(params)
         if tool_name == "delete_knowledge_base_document":
             return await self._handle_delete(params)
+        if tool_name == "repair_knowledge_base_document":
+            return await self._handle_repair(params)
+        if tool_name == "overwrite_knowledge_base_document":
+            return await self._handle_overwrite(params)
         if tool_name != "search_knowledge_base":
             return f"未知知识库工具: {tool_name}"
         return await self._handle_search(params)
@@ -127,6 +133,52 @@ class KnowledgeBaseHandler:
             return f"✅ 已删除《{target['name']}》（{target.get('total_chunks', 0)} 个分块）"
         except Exception as e:
             return f"❌ 删除失败: {e}"
+
+    async def _handle_repair(self, params: dict) -> str:
+        name = params.get("name", "").strip()
+        if not name:
+            return "❌ 请指定要修复的文档名称。"
+
+        kb = getattr(self.agent, "kb_manager", None)
+        if kb is None:
+            return "知识库功能未初始化。"
+
+        docs = kb.find_document_by_name(name)
+        if not docs:
+            return f"未找到名称包含「{name}」的文档。"
+
+        target = docs[0]
+        try:
+            result = await kb.repair_document(target["id"])
+            if result.get("repaired"):
+                return f"✅ 已修复《{target['name']}》（重建 {result['chunks']} 个向量）"
+            return f"⚠️ 修复跳过：{result.get('reason', '未知原因')}"
+        except Exception as e:
+            return f"❌ 修复失败: {e}"
+
+    async def _handle_overwrite(self, params: dict) -> str:
+        name = params.get("name", "").strip()
+        content = params.get("content", "").strip()
+        if not name:
+            return "❌ 请指定要覆盖的文档名称。"
+        if not content:
+            return "❌ 请提供新的文本内容。"
+
+        kb = getattr(self.agent, "kb_manager", None)
+        if kb is None:
+            return "知识库功能未初始化。"
+
+        docs = kb.find_document_by_name(name)
+        if not docs:
+            return f"未找到名称包含「{name}」的文档，将作为新文档保存。"
+
+        target = docs[0]
+        try:
+            await kb.delete_document(target["id"])
+            result = await kb.ingest_text(target["name"], content)
+            return f"✅ 已覆盖更新《{target['name']}》（新文档 ID: {result.get('doc_id', '?')}）"
+        except Exception as e:
+            return f"❌ 覆盖失败: {e}"
 
     async def _handle_search(self, params: dict) -> str:
 
