@@ -618,18 +618,24 @@ class KnowledgeBaseManager:
         self,
         doc_id: str | None = None,
         include_semantic: bool = False,
+        similarity_threshold: float = 0.75,
         max_nodes: int = 2000,
     ) -> dict[str, Any]:
         """获取图谱数据：节点（chunk）+ 边（顺序 + 可选语义）。
 
         Args:
             doc_id: 可选，过滤特定文档
-            include_semantic: 是否包含语义相似边（会增加计算负载）
+            include_semantic: 是否包含语义相似边
+            similarity_threshold: 语义边相似度阈值 (0.5~0.95)
             max_nodes: 最大节点数
 
         Returns:
             {"nodes": [...], "links": [...], "meta": {...}}
         """
+        import random as _random
+
+        threshold = max(0.5, min(0.95, similarity_threshold))
+
         def _query_chunks():
             with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
                 if doc_id:
@@ -638,11 +644,17 @@ class KnowledgeBaseManager:
                            FROM knowledge_chunks kc
                            JOIN knowledge_documents kd ON kc.document_id = kd.id
                            WHERE kc.document_id = ?
-                           ORDER BY kc.chunk_index
-                           LIMIT ?""",
-                        (doc_id, max_nodes),
+                           ORDER BY kc.chunk_index""",
+                        (doc_id,),
                     ).fetchall()
+                    total = len(rows)
+                    rows = rows[:max_nodes]
                 else:
+                    total = conn.execute(
+                        """SELECT COUNT(*) FROM knowledge_chunks kc
+                           JOIN knowledge_documents kd ON kc.document_id = kd.id
+                           WHERE kd.status = 'ready'"""
+                    ).fetchone()[0]
                     rows = conn.execute(
                         """SELECT kc.id, kc.content, kc.chunk_index, kc.document_id, kd.name as doc_name
                            FROM knowledge_chunks kc
@@ -652,15 +664,14 @@ class KnowledgeBaseManager:
                            LIMIT ?""",
                         (max_nodes,),
                     ).fetchall()
-                return [(r[0], r[1] or "", r[2], r[3], r[4]) for r in rows]
+                return [(r[0], r[1] or "", r[2], r[3], r[4]) for r in rows], total
 
-        chunks = await asyncio.to_thread(_query_chunks)
+        chunks, total_candidates = await asyncio.to_thread(_query_chunks)
         if not chunks:
-            return {"nodes": [], "links": [], "meta": {"total_nodes": 0, "total_edges": 0}}
+            return {"nodes": [], "links": [], "meta": {"total_nodes": 0, "total_edges": 0, "truncated": False, "total_candidates": 0}}
 
         nodes: list[dict] = []
         nodes_by_id: dict[str, dict] = {}
-        doc_groups: dict[str, str] = {}
 
         for cid, content, idx, did, dname in chunks:
             name = content[:80].replace("\n", " ").strip()
@@ -676,7 +687,6 @@ class KnowledgeBaseManager:
             }
             nodes.append(node)
             nodes_by_id[cid] = node
-            doc_groups[did] = dname
 
         links: list[dict] = []
         seen_pairs: set[tuple[str, str]] = set()
@@ -695,10 +705,19 @@ class KnowledgeBaseManager:
                     seen_pairs.add(key)
                     links.append({"source": s, "target": t, "value": 1})
 
+        semantic_sampled = 0
         if include_semantic and self._lance_table is not None:
             try:
                 embedder = await self._get_embedder()
-                sample_nodes = nodes[:min(len(nodes), 200)]
+                if doc_id:
+                    sample_nodes = nodes[:min(len(nodes), 200)]
+                else:
+                    sample_indices = _random.sample(
+                        range(len(nodes)), min(200, len(nodes))
+                    )
+                    sample_nodes = [nodes[i] for i in sorted(sample_indices)]
+
+                semantic_sampled = len(sample_nodes)
                 for node in sample_nodes:
                     try:
                         vec = await embedder.embed_query(node["content"][:300])
@@ -712,7 +731,7 @@ class KnowledgeBaseManager:
                         )
                         for r in lance_results:
                             score = 1.0 - r.get("_distance", 1.0) / 2.0
-                            if score >= 0.75:
+                            if score >= threshold:
                                 tid = r.get("id", "")
                                 if tid not in nodes_by_id:
                                     continue
@@ -729,11 +748,17 @@ class KnowledgeBaseManager:
             except Exception as e:
                 logger.warning("[KB] Semantic edges computation failed: %s", e)
 
+        truncated = len(chunks) < total_candidates
+
         return {
             "nodes": nodes,
             "links": links,
             "meta": {
                 "total_nodes": len(nodes),
                 "total_edges": len(links),
+                "truncated": truncated,
+                "max_nodes": max_nodes,
+                "total_candidates": total_candidates,
+                "semantic_sampled_count": semantic_sampled,
             },
         }

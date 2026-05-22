@@ -202,6 +202,7 @@ async def get_graph(
     request: Request,
     doc_id: str | None = None,
     include_semantic: bool = False,
+    similarity_threshold: float = 0.75,
     max_nodes: int = 2000,
 ):
     """获取图谱节点和边数据，供 3D 力导向图渲染。"""
@@ -209,6 +210,7 @@ async def get_graph(
     data = await kb.get_graph_data(
         doc_id=doc_id,
         include_semantic=include_semantic,
+        similarity_threshold=similarity_threshold,
         max_nodes=min(max_nodes, 5000),
     )
     return data
