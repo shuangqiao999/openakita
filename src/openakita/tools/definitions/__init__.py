@@ -54,6 +54,7 @@ from .code_quality import CODE_QUALITY_TOOLS
 from .config import CONFIG_TOOLS
 from .filesystem import FILESYSTEM_TOOLS
 from .im_channel import IM_CHANNEL_TOOLS
+from .knowledge import KNOWLEDGE_BASE_TOOLS
 from .lsp import LSP_TOOLS
 from .mcp import MCP_TOOLS
 from .memory import MEMORY_TOOLS
@@ -84,6 +85,7 @@ BASE_TOOLS = (
     FILESYSTEM_TOOLS
     + SKILLS_TOOLS
     + MEMORY_TOOLS
+    + KNOWLEDGE_BASE_TOOLS
     + BROWSER_TOOLS
     + SCHEDULED_TOOLS
     + IM_CHANNEL_TOOLS
@@ -162,6 +164,7 @@ __all__ = [
     "SCHEDULED_TOOLS",
     "SEARCH_TOOLS",
     "IM_CHANNEL_TOOLS",
+    "KNOWLEDGE_BASE_TOOLS",
     "PROFILE_TOOLS",
     "SYSTEM_TOOLS",
     "MCP_TOOLS",

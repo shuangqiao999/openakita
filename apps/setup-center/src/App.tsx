@@ -17,6 +17,7 @@ const PluginManagerView = lazy(() => import("./views/PluginManagerView"));
 const PluginAppHost = lazy(() => import("./views/PluginAppHost"));
 const SchedulerView = lazy(() => import("./views/SchedulerView").then(m => ({ default: m.SchedulerView })));
 const MemoryView = lazy(() => import("./views/MemoryView").then(m => ({ default: m.MemoryView })));
+const KnowledgeBaseView = lazy(() => import("./views/KnowledgeBaseView").then(m => ({ default: m.KnowledgeBaseView })));
 const IdentityView = lazy(() => import("./views/IdentityView").then(m => ({ default: m.IdentityView })));
 const AgentDashboardView = lazy(() => import("./views/AgentDashboardView").then(m => ({ default: m.AgentDashboardView })));
 const AgentManagerView = lazy(() => import("./views/AgentManagerView").then(m => ({ default: m.AgentManagerView })));
@@ -136,6 +137,7 @@ const _HASH_TO_VIEW: Record<string, ViewId> = {
   "agent-manager": "agent_manager", "agent-store": "agent_store",
   "skill-store": "skill_store", "wizard": "wizard", "docs": "docs",
   "security": "security", "plugins": "plugins", "my_feedback": "my_feedback",
+  "knowledge-base": "knowledge_base",
 };
 
 const _VIEW_TO_HASH: Record<string, string> = Object.fromEntries(
@@ -5517,6 +5519,15 @@ function MainApp() {
       ) : (
         <ErrorBoundary>
           <MemoryView serviceRunning={serviceStatus?.running ?? false} apiBaseUrl={apiBaseUrl} />
+        </ErrorBoundary>
+      );
+    }
+    if (view === "knowledge_base") {
+      return (
+        <ErrorBoundary>
+          <Suspense fallback={<div className="spinner" />}>
+            <KnowledgeBaseView serviceRunning={serviceStatus?.running ?? false} apiBaseUrl={apiBaseUrl} />
+          </Suspense>
         </ErrorBoundary>
       );
     }

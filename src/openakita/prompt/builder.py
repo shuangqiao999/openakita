@@ -489,6 +489,7 @@ def build_system_prompt(
     mcp_catalog: Optional["MCPCatalog"] = None,
     plugin_catalog: Optional["PluginCatalog"] = None,
     memory_manager: Optional["MemoryManager"] = None,
+    kb_manager: Optional["Any"] = None,
     task_description: str = "",
     budget_config: BudgetConfig | None = None,
     include_tools_guide: bool = False,
@@ -831,6 +832,12 @@ def build_system_prompt(
             )
         if memory_section:
             developer_parts.append(memory_section)
+
+    # 10.5 知识库检索（独立于记忆系统）
+    if kb_manager and prompt_mode in (PromptMode.FULL, PromptMode.MINIMAL):
+        kb_section = _build_knowledge_section(kb_manager, task_description, max_tokens=500)
+        if kb_section:
+            developer_parts.append(kb_section)
 
     # 11. User 层（仅 FULL 模式）
     user_core_section = _build_user_core_profile_section(
@@ -2197,6 +2204,57 @@ def _build_memory_section(
             parts.append(f"## 关系型记忆（图检索）\n\n{relational}")
 
     return "\n\n".join(parts)
+
+
+def _build_knowledge_section(
+    kb_manager: Any,
+    task_description: str,
+    max_tokens: int = 500,
+) -> str:
+    """构建知识库自动检索部分（独立于记忆系统）。"""
+    if not kb_manager:
+        return ""
+    if not kb_manager.is_ready():
+        return ""
+
+    try:
+        import asyncio
+
+        async def _search():
+            return await kb_manager.search(task_description[:500], top_k=3)
+
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                import concurrent.futures
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                    future = ex.submit(asyncio.run, _search())
+                    results = future.result(timeout=5)
+            else:
+                results = asyncio.run(_search())
+        except RuntimeError:
+            results = asyncio.run(_search())
+    except Exception:
+        return ""
+
+    if not results:
+        return ""
+
+    lines: list[str] = ["## 来自知识库的相关信息\n"]
+    total_chars = 0
+    max_chars = max_tokens * 3
+    for r in results:
+        content = r.get("content", "")
+        doc_name = r.get("document_name", "未知文档")
+        snippet = content[:300].replace("\n", " ").strip()
+        line = f"- [《{doc_name}》]：{snippet}"
+        if total_chars + len(line) > max_chars:
+            break
+        lines.append(line)
+        total_chars += len(line)
+
+    return "\n".join(lines)
 
 
 def _retrieve_by_query(

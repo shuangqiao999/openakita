@@ -1206,6 +1206,12 @@ class Agent:
         self.profile_manager = get_profile_manager()
         self.memory_manager.profile_manager = self.profile_manager
 
+        # 知识库管理器（独立于记忆系统）
+        from ..knowledge.manager import KnowledgeBaseManager
+
+        self.kb_manager = KnowledgeBaseManager(settings.project_root)
+        logger.info("KnowledgeBaseManager initialized")
+
         # ==================== 人格系统 + 活人感 + 表情包 ====================
         from ..tools.sticker import StickerEngine
         from .persona import PersonaManager
@@ -2205,6 +2211,11 @@ class Agent:
 
         # Tool Search（工具搜索）
         self.handler_registry.register("tool_search", create_tool_search_handler(self))
+
+        # Knowledge Base（知识库检索）
+        from ..tools.handlers.knowledge import create_handler as create_knowledge_handler
+
+        self.handler_registry.register("knowledge", create_knowledge_handler(self))
 
         # Worktree（Git 工作树）
         self.handler_registry.register("worktree", create_worktree_handler(self))

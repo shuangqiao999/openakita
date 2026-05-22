@@ -183,7 +183,7 @@ export function Sidebar({
     };
   }, [httpApiBase, serviceRunning]);
 
-  const capViews: ViewId[] = ["skills", "mcp", "plugins", "memory", "scheduler"];
+  const capViews: ViewId[] = ["skills", "mcp", "plugins", "knowledge_base", "memory", "scheduler"];
   const monViews: ViewId[] = ["token_stats", "security"];
   const maViews: ViewId[] = ["dashboard", "org_editor", "pixel_office", "agent_manager"];
   const stViews: ViewId[] = ["agent_store", "skill_store"];
@@ -263,6 +263,9 @@ export function Sidebar({
             </div>
             <div className={`navItem ${view === "memory" ? "navItemActive" : ""}`} onClick={() => onViewChange("memory")} role="button" tabIndex={0} title={t("sidebar.memory")} style={disabledViews.includes("memory") ? { opacity: 0.4 } : undefined}>
               <IconBrain size={16} /> {!collapsed && <span>{t("sidebar.memory")} {BETA_SUP}</span>}
+            </div>
+            <div className={`navItem ${view === "knowledge_base" ? "navItemActive" : ""}`} onClick={() => onViewChange("knowledge_base")} role="button" tabIndex={0} title={t("sidebar.knowledgeBase")}>
+              <IconBook size={16} /> {!collapsed && <span>{t("sidebar.knowledgeBase")}</span>}
             </div>
             <div className={`navItem ${view === "scheduler" ? "navItemActive" : ""}`} onClick={() => onViewChange("scheduler")} role="button" tabIndex={0} title={t("sidebar.scheduler")} style={disabledViews.includes("scheduler") ? { opacity: 0.4 } : undefined}>
               <IconCalendar size={16} /> {!collapsed && <span>{t("sidebar.scheduler")} {BETA_SUP}</span>}

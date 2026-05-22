@@ -30,7 +30,8 @@
     "groupMultiAgent": "Agents",
     "groupStore": "Store",
     "plugins": "Plugins",
-    "pixelOffice": "Pixel Office"
+    "pixelOffice": "Pixel Office",
+    "knowledgeBase": "Knowledge Base"
   },
   "topbar": {
     "workspace": "Workspace",
@@ -3286,6 +3287,36 @@
       "edgeTarget": "Target",
       "edgeTypeLabel": "Edge Type"
     }
+  },
+  "kb": {
+    "title": "Knowledge Base",
+    "description": "Upload documents for automatic analysis and searchable knowledge retrieval",
+    "upload": "Upload Document",
+    "uploadHint": "Supports PDF, Word, Markdown, TXT format, max 20MB",
+    "uploading": "Uploading...",
+    "search": "Search Knowledge Base",
+    "searchPlaceholder": "Enter search query...",
+    "noDocuments": "No documents yet",
+    "noResults": "No matching results found",
+    "deleteConfirm": "Are you sure you want to delete this document? All chunks will be removed.",
+    "deleteTitle": "Delete Document",
+    "name": "Name",
+    "type": "Type",
+    "time": "Upload Time",
+    "chunks": "Chunks",
+    "status": "Status",
+    "actions": "Actions",
+    "statusProcessing": "Processing",
+    "statusReady": "Ready",
+    "statusFailed": "Failed",
+    "viewChunks": "View Chunks",
+    "chunksTitle": "Document Chunks",
+    "score": "Score",
+    "document": "Document",
+    "loadFailed": "Failed to load",
+    "deleteFailed": "Failed to delete",
+    "uploadFailed": "Upload failed",
+    "searchFailed": "Search failed"
   }
 }
 

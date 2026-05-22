@@ -30,7 +30,8 @@
     "groupMultiAgent": "Agents",
     "groupStore": "市场",
     "plugins": "插件",
-    "pixelOffice": "像素办公室"
+    "pixelOffice": "像素办公室",
+    "knowledgeBase": "知识库"
   },
   "topbar": {
     "workspace": "工作区",
@@ -3286,6 +3287,36 @@
       "edgeTarget": "终点",
       "edgeTypeLabel": "连线类型"
     }
+  },
+  "kb": {
+    "title": "知识库",
+    "description": "上传文档，自动分析并建立可检索的知识库",
+    "upload": "上传文档",
+    "uploadHint": "支持 PDF、Word、Markdown、TXT 格式，最大 20MB",
+    "uploading": "上传中...",
+    "search": "搜索知识库",
+    "searchPlaceholder": "输入搜索内容...",
+    "noDocuments": "暂无文档",
+    "noResults": "未找到相关内容",
+    "deleteConfirm": "确定要删除此文档吗？所有分块内容将一并删除。",
+    "deleteTitle": "删除文档",
+    "name": "文件名",
+    "type": "类型",
+    "time": "上传时间",
+    "chunks": "分块数",
+    "status": "状态",
+    "actions": "操作",
+    "statusProcessing": "处理中",
+    "statusReady": "就绪",
+    "statusFailed": "失败",
+    "viewChunks": "查看分块",
+    "chunksTitle": "文档分块内容",
+    "score": "相关度",
+    "document": "文档",
+    "loadFailed": "加载失败",
+    "deleteFailed": "删除失败",
+    "uploadFailed": "上传失败",
+    "searchFailed": "搜索失败"
   }
 }
 
