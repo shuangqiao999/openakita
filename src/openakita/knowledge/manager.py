@@ -92,6 +92,8 @@ class KnowledgeBaseManager:
         lance_path = str(self._workspace_root / "data" / "lancedb")
         self._lance_db = lancedb.connect(lance_path)
         self._ensure_lance_table()
+        if self._lance_table is None and self.is_ready():
+            asyncio.create_task(self._proactive_create_table())
         logger.info(
             "[KB] LanceDB initialized at %s, table=%s", lance_path, "knowledge_base"
         )
@@ -115,6 +117,14 @@ class KnowledgeBaseManager:
         )
         self._embedding_dim = dim
         logger.info("[KB] Created knowledge_base table with dim=%d", dim)
+
+    async def _proactive_create_table(self) -> None:
+        """启动时主动创建 LanceDB 表，避免死锁：没表→不能上传→不能建表。"""
+        try:
+            dim = await self._get_embedding_dim()
+            await asyncio.to_thread(self._create_lance_table, dim)
+        except Exception as e:
+            logger.warning("[KB] Proactive table creation failed: %s", e)
 
     async def _get_embedding_dim(self) -> int:
         if self._embedding_dim is not None:
@@ -425,12 +435,12 @@ class KnowledgeBaseManager:
         return await asyncio.to_thread(_query)
 
     def is_ready(self) -> bool:
-        """检查知识库是否完全可用（嵌入模型已配置 + LanceDB 表存在）。"""
+        """检查知识库是否完全可用（嵌入模型已配置）。"""
         from openakita.llm.embeddings import get_embedding_model
 
         try:
             get_embedding_model()
-            return self._lance_table is not None
+            return True
         except Exception:
             return False
 
