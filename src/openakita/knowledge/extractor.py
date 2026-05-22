@@ -100,11 +100,15 @@ def _extract_docx(path: Path) -> str:
 
 def _extract_markdown(path: Path) -> str:
     """读取 Markdown 文件的文本（自动检测编码）。"""
-    import chardet
+    try:
+        import chardet
 
-    raw = path.read_bytes()
-    result = chardet.detect(raw)
-    encoding = result["encoding"] or "utf-8"
+        raw = path.read_bytes()
+        result = chardet.detect(raw)
+        encoding = result["encoding"] or "utf-8"
+    except ImportError:
+        raw = path.read_bytes()
+        encoding = "utf-8"
     try:
         return raw.decode(encoding)
     except (UnicodeDecodeError, LookupError):
@@ -113,11 +117,15 @@ def _extract_markdown(path: Path) -> str:
 
 def _extract_text(path: Path) -> str:
     """读取纯文本文件。"""
-    import chardet
+    try:
+        import chardet
 
-    raw = path.read_bytes()
-    result = chardet.detect(raw)
-    encoding = result["encoding"] or "utf-8"
+        raw = path.read_bytes()
+        result = chardet.detect(raw)
+        encoding = result["encoding"] or "utf-8"
+    except ImportError:
+        raw = path.read_bytes()
+        encoding = "utf-8"
     try:
         return raw.decode(encoding)
     except (UnicodeDecodeError, LookupError):
