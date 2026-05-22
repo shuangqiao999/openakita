@@ -104,6 +104,15 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
   }, [apiBaseUrl]);
 
   useEffect(() => {
+    return () => {
+      if (abortRef.current) abortRef.current.abort();
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      if (previewTimerRef.current) clearTimeout(previewTimerRef.current);
+      try { (fgRef.current as any)?._destructor?.(); } catch { /* ignore */ }
+    };
+  }, []);
+
+  useEffect(() => {
     const onContextLost = () => setWebglError(true);
     const el = containerRef.current;
     if (el) {
