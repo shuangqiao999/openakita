@@ -701,12 +701,15 @@ class KnowledgeBaseManager:
                         """SELECT kc.id, kc.content, kc.chunk_index, kc.document_id, kd.name as doc_name
                            FROM knowledge_chunks kc
                            JOIN knowledge_documents kd ON kc.document_id = kd.id
-                           WHERE kc.document_id = ?
-                           ORDER BY kc.chunk_index""",
-                        (doc_id,),
+                           WHERE kc.document_id = ? AND kd.status = 'ready'
+                           ORDER BY kc.chunk_index
+                           LIMIT ?""",
+                        (doc_id, max_nodes),
                     ).fetchall()
-                    total = len(rows)
-                    rows = rows[:max_nodes]
+                    total = conn.execute(
+                        "SELECT COUNT(*) FROM knowledge_chunks WHERE document_id=?",
+                        (doc_id,),
+                    ).fetchone()[0]
                 else:
                     total = conn.execute(
                         """SELECT COUNT(*) FROM knowledge_chunks kc

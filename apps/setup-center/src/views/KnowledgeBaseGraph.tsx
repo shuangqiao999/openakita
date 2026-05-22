@@ -11,8 +11,6 @@ interface Props {
 
 type DocBrief = { id: string; name: string; status?: string };
 
-const TRUNCATION_DISMISSED_KEY = "kb_graph_truncation_dismissed";
-
 export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
   const { t } = useTranslation();
   const fgRef = useRef<any>(null);
@@ -42,6 +40,7 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
     const controller = new AbortController();
     abortRef.current = controller;
     setLoading(true);
+    const timeoutId = setTimeout(() => controller.abort(), 30_000);
     try {
       const params = new URLSearchParams();
       if (selectedDocId) params.set("doc_id", selectedDocId);
@@ -57,10 +56,17 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
       setGraphData({ nodes: data.nodes || [], links: data.links || [], meta: data.meta });
 
       const meta = data.meta || {};
+      const warnings: string[] = [];
       if (meta.truncated && meta.total_candidates > meta.max_nodes) {
-        const key = `${TRUNCATION_DISMISSED_KEY}_${meta.total_candidates}`;
+        warnings.push(t("kb.graph.truncationMsg", { totalCandidates: meta.total_candidates, maxNodes: meta.max_nodes }));
+      }
+      if (meta.semantic_incomplete) {
+        warnings.push("语义边计算超时，跨文档关联可能不完整");
+      }
+      if (warnings.length) {
+        const key = `kb_graph_warning_${meta.total_candidates ?? 0}_${meta.semantic_incomplete ? 1 : 0}`;
         if (localStorage.getItem(key) !== "1") {
-          setTruncationMsg(t("kb.graph.truncationMsg", { totalCandidates: meta.total_candidates, maxNodes: meta.max_nodes }));
+          setTruncationMsg(warnings.join(" "));
           setShowTruncation(true);
         }
       } else {
@@ -71,6 +77,7 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
         setGraphData({ nodes: [], links: [] });
       }
     } finally {
+      clearTimeout(timeoutId);
       if (controller.signal.aborted) return;
       setLoading(false);
     }
@@ -178,7 +185,7 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
   const dismissTruncation = () => {
     setShowTruncation(false);
     if (graphData.meta?.total_candidates) {
-      const key = `${TRUNCATION_DISMISSED_KEY}_${graphData.meta.total_candidates}`;
+      const key = `kb_graph_warning_${graphData.meta.total_candidates}_${graphData.meta.semantic_incomplete ? 1 : 0}`;
       localStorage.setItem(key, "1");
     }
   };
