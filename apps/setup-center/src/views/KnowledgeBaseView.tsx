@@ -238,86 +238,72 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
         {t("kb.description")}
       </p>
 
-      {kbReady === null && (
-        <Card style={{ marginBottom: 24 }}>
-          <CardContent style={{ padding: 40, textAlign: "center" }}>
-            <Loader2 size={24} style={{ animation: "spin 1s linear infinite", color: "#94a3b8" }} />
-            <p style={{ color: "#94a3b8", fontSize: 13, marginTop: 12 }}>检查知识库状态...</p>
-          </CardContent>
-        </Card>
-      )}
-
       {kbReady === false && (
-        <Card style={{ marginBottom: 24, borderColor: "#f59e0b" }}>
-          <CardContent style={{ padding: 24 }}>
-            <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
-              <div style={{
-                width: 32, height: 32, borderRadius: "50%", background: "#fef3c7",
-                display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0
-              }}>
-                <Clock size={16} style={{ color: "#d97706" }} />
-              </div>
-              <div>
-                <h4 style={{ margin: "0 0 8px 0", fontSize: 14, color: "#92400e" }}>
-                  嵌入模型未配置
-                </h4>
-                <p style={{ margin: 0, fontSize: 13, color: "#a16207", lineHeight: 1.6 }}>
-                  知识库功能需要嵌入模型来生成文本向量。请在「配置 → LLM」页面添加嵌入端点，
-                  或在 <code style={{ background: "#fef3c7", padding: "1px 4px", borderRadius: 3 }}>.env</code> 文件中设置
-                  <code style={{ background: "#fef3c7", padding: "1px 4px", borderRadius: 3 }}>EMBEDDING_API_KEY</code> 环境变量。
-                  配置完成后刷新页面即可使用。
-                </p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+        <div style={{
+          background: "#fef3c7", border: "1px solid #f59e0b", borderRadius: 8,
+          padding: "12px 16px", marginBottom: 16, display: "flex", alignItems: "flex-start", gap: 10
+        }}>
+          <Clock size={16} style={{ color: "#d97706", marginTop: 1, flexShrink: 0 }} />
+          <div>
+            <strong style={{ fontSize: 13, color: "#92400e" }}>嵌入模型未配置 — 上传和搜索功能暂不可用</strong>
+            <p style={{ margin: "4px 0 0", fontSize: 12, color: "#a16207", lineHeight: 1.5 }}>
+              请在「配置 → LLM」添加嵌入端点，或设置 <code style={{ background: "#fde68a", padding: "1px 4px", borderRadius: 3 }}>EMBEDDING_API_KEY</code> 环境变量后刷新页面。
+            </p>
+          </div>
+        </div>
       )}
 
-      {kbReady === true && (
-        <>
-          <Card style={{ marginBottom: 24 }}>
-            <CardContent style={{ padding: 20 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".pdf,.docx,.md,.txt,.markdown"
-                  onChange={handleUpload}
-                  style={{ display: "none" }}
-                />
-                <Button
-                  variant="outline"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={uploading || !serviceRunning}
-                >
-                  {uploading ? (
-                    <Loader2 size={14} style={{ animation: "spin 1s linear infinite", marginRight: 6 }} />
-                  ) : (
-                    <Upload size={14} style={{ marginRight: 6 }} />
-                  )}
-                  {uploading ? t("kb.uploading") : t("kb.upload")}
-                </Button>
-                <span style={{ color: "#64748b", fontSize: 12 }}>
-                  {t("kb.uploadHint")}
-                </span>
-              </div>
-            </CardContent>
-          </Card>
+      {kbReady === null && (
+        <div style={{ textAlign: "center", padding: 12, marginBottom: 16 }}>
+          <Loader2 size={18} style={{ animation: "spin 1s linear infinite", color: "#94a3b8" }} />
+          <span style={{ color: "#94a3b8", fontSize: 12, marginLeft: 8 }}>检查服务状态...</span>
+        </div>
+      )}
 
-          <Card style={{ marginBottom: 24 }}>
-            <CardContent style={{ padding: 20 }}>
-              <div style={{ display: "flex", gap: 8 }}>
-                <Input
-                  value={searchQuery}
-                  onChange={e => setSearchQuery(e.target.value)}
-                  placeholder={t("kb.searchPlaceholder")}
-                  onKeyDown={e => { if (e.key === "Enter") handleSearch(); }}
-                  style={{ flex: 1 }}
-                />
-                <Button onClick={handleSearch} disabled={searching || !searchQuery.trim()}>
-                  {searching ? <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} /> : <Search size={14} />}
-                </Button>
-              </div>
+      <Card style={{ marginBottom: 16 }}>
+        <CardContent style={{ padding: 20 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".pdf,.docx,.md,.txt,.markdown"
+              onChange={handleUpload}
+              style={{ display: "none" }}
+            />
+            <Button
+              variant="outline"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading || !serviceRunning || kbReady !== true}
+            >
+              {uploading ? (
+                <Loader2 size={14} style={{ animation: "spin 1s linear infinite", marginRight: 6 }} />
+              ) : (
+                <Upload size={14} style={{ marginRight: 6 }} />
+              )}
+              {uploading ? t("kb.uploading") : t("kb.upload")}
+            </Button>
+            <span style={{ color: "#64748b", fontSize: 12 }}>
+              {t("kb.uploadHint")}
+            </span>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card style={{ marginBottom: 16 }}>
+        <CardContent style={{ padding: 20 }}>
+          <div style={{ display: "flex", gap: 8 }}>
+            <Input
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              placeholder={kbReady === true ? t("kb.searchPlaceholder") : "嵌入模型未配置，无法搜索"}
+              onKeyDown={e => { if (e.key === "Enter" && kbReady === true) handleSearch(); }}
+              disabled={kbReady !== true}
+              style={{ flex: 1 }}
+            />
+            <Button onClick={handleSearch} disabled={searching || !searchQuery.trim() || kbReady !== true}>
+              {searching ? <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} /> : <Search size={14} />}
+            </Button>
+          </div>
 
           {searchResults.length > 0 && (
             <div style={{ marginTop: 16 }}>
@@ -351,13 +337,10 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
           )}
         </CardContent>
       </Card>
-        </>
-      )}
 
-      {kbReady === true && (
-        <Card>
-          <CardContent style={{ padding: 20 }}>
-            {loading ? (
+      <Card>
+        <CardContent style={{ padding: 20 }}>
+          {loading ? (
             <div style={{ textAlign: "center", padding: 40 }}>
               <Loader2 size={24} style={{ animation: "spin 1s linear infinite", color: "#94a3b8" }} />
             </div>
@@ -475,7 +458,6 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
           )}
         </CardContent>
       </Card>
-      )}
 
       {viewChunks && (
         <AlertDialog open onOpenChange={() => setViewChunks(null)}>
