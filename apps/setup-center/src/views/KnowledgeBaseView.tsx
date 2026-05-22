@@ -137,11 +137,11 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
     const allowedExts = [".pdf", ".docx", ".md", ".txt", ".markdown"];
     const ext = "." + file.name.split(".").pop()?.toLowerCase();
     if (!allowedExts.includes(ext)) {
-      toast.error(`不支持的文件类型: ${ext}`);
+      toast.error(t("kb.invalidFileType", { ext }));
       return;
     }
     if (file.size > 20 * 1024 * 1024) {
-      toast.error("文件超过 20MB 限制");
+      toast.error(t("kb.fileTooLarge"));
       return;
     }
 
@@ -163,7 +163,7 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
         setUploading(false);
         return;
       }
-      toast.success("文件上传成功，正在后台处理...");
+      toast.success(t("kb.uploadSuccess"));
       setPage(0);
       loadDocuments();
       setGraphRefreshKey(k => k + 1);
@@ -308,7 +308,7 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
       {kbReady === null && (
         <div style={{ textAlign: "center", padding: 12, marginBottom: 16 }}>
           <Loader2 size={18} style={{ animation: "spin 1s linear infinite", color: "#94a3b8" }} />
-          <span style={{ color: "#94a3b8", fontSize: 12, marginLeft: 8 }}>检查服务状态...</span>
+          <span style={{ color: "#94a3b8", fontSize: 12, marginLeft: 8 }}>{t("kb.checkingStatus")}</span>
         </div>
       )}
 
@@ -347,7 +347,7 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
             <Input
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
-              placeholder={kbReady === true ? t("kb.searchPlaceholder") : "嵌入模型未配置，无法搜索"}
+              placeholder={kbReady === true ? t("kb.searchPlaceholder") : t("kb.searchDisabled")}
               onKeyDown={e => { if (e.key === "Enter" && kbReady === true) handleSearch(); }}
               disabled={kbReady !== true}
               style={{ flex: 1 }}
@@ -360,7 +360,7 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
           {searchResults.length > 0 && (
             <div style={{ marginTop: 16 }}>
               <div style={{ fontSize: 13, color: "#64748b", marginBottom: 8 }}>
-                {searchResults.length} 条结果
+                {t("kb.resultCount", { count: searchResults.length })}
               </div>
               {searchResults.map((r, i) => (
                 <Card key={i} style={{ marginBottom: 8 }}>
@@ -532,7 +532,7 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
               ))}
             </div>
             <AlertDialogFooter>
-              <AlertDialogCancel onClick={() => setViewChunks(null)}>关闭</AlertDialogCancel>
+              <AlertDialogCancel onClick={() => setViewChunks(null)}>{t("kb.close")}</AlertDialogCancel>
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
@@ -547,7 +547,7 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel onClick={() => { setDuplicateInfo(null); pendingFileRef.current = null; }}>取消</AlertDialogCancel>
+            <AlertDialogCancel onClick={() => { setDuplicateInfo(null); pendingFileRef.current = null; }}>{t("kb.cancel")}</AlertDialogCancel>
             <AlertDialogAction onClick={handleReplace} style={{ background: "#3b82f6", color: "white" }}>
               {t("kb.duplicateReplace")}
             </AlertDialogAction>
@@ -566,9 +566,9 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel onClick={() => setDeleteTarget(null)}>取消</AlertDialogCancel>
+            <AlertDialogCancel onClick={() => setDeleteTarget(null)}>{t("kb.cancel")}</AlertDialogCancel>
             <AlertDialogAction onClick={handleDelete} style={{ background: "#ef4444", color: "white" }}>
-              删除
+              {t("kb.delete")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

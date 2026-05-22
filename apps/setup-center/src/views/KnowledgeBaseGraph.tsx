@@ -61,7 +61,7 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
         warnings.push(t("kb.graph.truncationMsg", { totalCandidates: meta.total_candidates, maxNodes: meta.max_nodes }));
       }
       if (meta.semantic_incomplete) {
-        warnings.push("语义边计算超时，跨文档关联可能不完整");
+        warnings.push(t("kb.semanticTimeout"));
       }
       if (warnings.length) {
         const key = `kb_graph_warning_${meta.total_candidates ?? 0}_${meta.semantic_incomplete ? 1 : 0}`;
