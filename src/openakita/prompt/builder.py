@@ -2221,7 +2221,7 @@ def _build_knowledge_section(
         import asyncio
 
         async def _search():
-            return await kb_manager.search(task_description[:500], top_k=3)
+            return await kb_manager.search(task_description[:500], top_k=3, context_window=1)
 
         try:
             loop = asyncio.get_event_loop()

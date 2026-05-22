@@ -27,6 +27,15 @@ _KB_MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
 _KB_ALLOWED_EXTENSIONS = {".pdf", ".docx", ".md", ".txt", ".markdown"}
 
 
+def _parse_chunk_id(chunk_id: str) -> tuple[str | None, int | None]:
+    """解析结构化 chunk_id，返回 (doc_id, chunk_index)。旧格式返回 (None, None)。"""
+    if "_" in chunk_id:
+        doc_id, idx_str = chunk_id.rsplit("_", 1)
+        if idx_str.isdigit():
+            return doc_id, int(idx_str)
+    return None, None
+
+
 class KnowledgeBaseManager:
     """知识库管理器。
 
@@ -245,7 +254,7 @@ class KnowledgeBaseManager:
 
             with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
                 for i, c in enumerate(chunks):
-                    chunk_id = uuid.uuid4().hex
+                    chunk_id = f"{doc_id}_{i:05d}"
                     conn.execute(
                         "INSERT INTO knowledge_chunks(id, document_id, chunk_index, content, token_count) "
                         "VALUES(?, ?, ?, ?, ?)",
@@ -363,6 +372,7 @@ class KnowledgeBaseManager:
         query: str,
         top_k: int = 5,
         doc_filter: str | None = None,
+        context_window: int = 0,
     ) -> list[dict[str, Any]]:
         """在知识库中搜索相关内容。
 
@@ -370,6 +380,7 @@ class KnowledgeBaseManager:
             query: 搜索查询
             top_k: 返回结果数
             doc_filter: 可选，按文档 ID 过滤
+            context_window: 上下文窗口（±N邻块），0=不扩展
 
         Returns:
             [{chunk_id, document_id, document_name, content, score}, ...]
@@ -402,34 +413,70 @@ class KnowledgeBaseManager:
                 )
 
             distance_multiplier = 2.0
-            cosine_scores: list[tuple[str, float, str]] = []
+            score_map: dict[str, float] = {}
+            needed_ids: set[str] = set()
+            matches: list[tuple[str, float, str | None, int | None]] = []
+
             for r in results:
-                dist = r.get("_distance", 1.0)
-                score = 1.0 - dist / distance_multiplier
                 chunk_id = r.get("id", "")
-                doc_id = r.get("document_id", "")
-                cosine_scores.append((chunk_id, max(0.0, min(1.0, score)), doc_id))
+                dist = r.get("_distance", 1.0)
+                score = max(0.0, min(1.0, 1.0 - dist / distance_multiplier))
+                score_map[chunk_id] = score
+                needed_ids.add(chunk_id)
 
-            chunk_data = {}
+                parsed_doc_id, parsed_idx = _parse_chunk_id(chunk_id)
+                if parsed_doc_id is not None and context_window > 0:
+                    matches.append((chunk_id, score, parsed_doc_id, parsed_idx))
+                    for offset in range(1, context_window + 1):
+                        needed_ids.add(f"{parsed_doc_id}_{parsed_idx - offset:05d}")
+                        needed_ids.add(f"{parsed_doc_id}_{parsed_idx + offset:05d}")
+                else:
+                    matches.append((chunk_id, score, None, None))
+
+            if not matches:
+                return []
+
+            content_map: dict[str, tuple[str, str]] = {}
             with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
-                for chunk_id, score, doc_id in cosine_scores:
-                    row = conn.execute(
-                        """SELECT kc.content, kc.chunk_index, kd.name as document_name
-                               FROM knowledge_chunks kc
-                               JOIN knowledge_documents kd ON kc.document_id = kd.id
-                               WHERE kc.id = ?""",
-                        (chunk_id,),
-                    ).fetchone()
-                    if row:
-                        chunk_data[chunk_id] = {
-                            "chunk_id": chunk_id,
-                            "document_id": doc_id,
-                            "document_name": row[2],
-                            "content": row[0],
-                            "score": score,
-                        }
+                placeholders = ",".join(["?"] * len(needed_ids))
+                rows = conn.execute(
+                    f"""SELECT kc.id, kc.content, kd.id as doc_id, kd.name as document_name
+                        FROM knowledge_chunks kc
+                        JOIN knowledge_documents kd ON kc.document_id = kd.id
+                        WHERE kc.id IN ({placeholders})""",
+                    list(needed_ids),
+                ).fetchall()
+                for row in rows:
+                    content_map[row[0]] = (row[1], row[2], row[3])
 
-            return [chunk_data[cid] for cid, _, _ in cosine_scores if cid in chunk_data]
+            results_out: list[dict[str, Any]] = []
+            for chunk_id, score, parsed_doc_id, parsed_idx in matches:
+                row = content_map.get(chunk_id)
+                if row is None:
+                    continue
+                base_content, lancedb_doc_id, doc_name = row
+
+                if parsed_doc_id is not None and context_window > 0:
+                    parts: list[str] = []
+                    for offset in range(-context_window, context_window + 1):
+                        neighbor_id = f"{parsed_doc_id}_{parsed_idx + offset:05d}"
+                        if neighbor_id == chunk_id:
+                            parts.append(base_content)
+                        elif neighbor_id in content_map:
+                            parts.append(content_map[neighbor_id][0])
+                    expanded_content = "\n\n".join(parts)
+                else:
+                    expanded_content = base_content
+
+                results_out.append({
+                    "chunk_id": chunk_id,
+                    "document_id": lancedb_doc_id,
+                    "document_name": doc_name,
+                    "content": expanded_content,
+                    "score": score,
+                })
+
+            return results_out
 
         results = await asyncio.to_thread(_search)
         return results
