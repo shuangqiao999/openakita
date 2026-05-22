@@ -170,7 +170,11 @@ class KnowledgeBaseHandler:
 
         docs = kb.find_document_by_name(name)
         if not docs:
-            return f"未找到名称包含「{name}」的文档，将作为新文档保存。"
+            try:
+                result = await kb.ingest_text(name, content)
+                return f"✅ 未找到同名文档，已作为新文档保存：{name}（文档 ID: {result.get('doc_id', '?')}）"
+            except Exception as e:
+                return f"❌ 保存失败: {e}"
 
         target = docs[0]
         try:

@@ -450,11 +450,15 @@ class KnowledgeBaseManager:
         os.write(fd, content.encode("utf-8"))
         os.close(fd)
         result = await self.upload_document(tmp_path)
+        asyncio.create_task(self._delayed_unlink(tmp_path))
+        return result
+
+    async def _delayed_unlink(self, path: str) -> None:
+        await asyncio.sleep(5)
         try:
-            os.unlink(tmp_path)
+            os.unlink(path)
         except OSError:
             pass
-        return result
 
     async def search(
         self,
