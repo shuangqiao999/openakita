@@ -9,7 +9,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import sqlite3
+import tempfile
 import threading
 import time
 import uuid
@@ -366,6 +368,31 @@ class KnowledgeBaseManager:
         """覆盖已有文档：删除旧文档后重新上传。"""
         await self.delete_document(existing_doc_id)
         return await self.upload_document(file_path)
+
+    async def ingest_text(self, title: str, content: str, file_type: str = "web") -> dict[str, Any]:
+        """将纯文本内容作为虚拟文档保存到知识库。
+
+        Args:
+            title: 文档标题（将作为文件名）
+            content: 文本内容
+            file_type: 文档类型标签
+
+        Returns:
+            {"doc_id": "...", "duplicate": false}
+        """
+        safe_name = "".join(c for c in title if c.isalnum() or c in "._- ")[:100].strip()
+        if not safe_name:
+            safe_name = "untitled"
+        ext = ".md" if file_type == "web" else ".txt"
+        fd, tmp_path = tempfile.mkstemp(suffix=ext, prefix=f"{safe_name}_", dir=str(self._tmp_dir))
+        os.write(fd, content.encode("utf-8"))
+        os.close(fd)
+        result = await self.upload_document(tmp_path)
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        return result
 
     async def search(
         self,

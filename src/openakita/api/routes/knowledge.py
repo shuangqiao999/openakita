@@ -282,3 +282,17 @@ async def get_graph(
         max_nodes=min(max_nodes, 5000),
     )
     return data
+
+
+class IngestRequest(BaseModel):
+    title: str = Field(..., description="文档标题")
+    content: str = Field(..., min_length=1, description="文本内容")
+    file_type: str = Field("web", description="文档类型标签")
+
+
+@router.post("/ingest", summary="文本入库")
+async def ingest_text(request: Request, body: IngestRequest):
+    """将纯文本内容（网页、对话片段等）直接保存到知识库。"""
+    kb = _get_kb_manager(request)
+    result = await kb.ingest_text(body.title, body.content, body.file_type)
+    return result
