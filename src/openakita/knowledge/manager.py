@@ -716,45 +716,53 @@ class KnowledgeBaseManager:
                     links.append({"source": s, "target": t, "value": 1})
 
         semantic_sampled = 0
+        semantic_incomplete = False
         if include_semantic and self._lance_table is not None:
             try:
-                embedder = await self._get_embedder()
-                if doc_id:
-                    sample_nodes = nodes[:min(len(nodes), 200)]
-                else:
-                    sample_indices = _random.sample(
-                        range(len(nodes)), min(200, len(nodes))
-                    )
-                    sample_nodes = [nodes[i] for i in sorted(sample_indices)]
-
-                semantic_sampled = len(sample_nodes)
-                for node in sample_nodes:
-                    try:
-                        vec = await embedder.embed_query(node["content"][:300])
-                        node_group = node["group"]
-                        lance_results = await asyncio.to_thread(
-                            lambda v=vec, g=node_group: self._lance_table.search(v)
-                            .metric("cosine")
-                            .where(f"document_id != '{g}'")
-                            .limit(3)
-                            .to_list(),
+                async def _compute_semantic():
+                    nonlocal semantic_sampled
+                    embedder = await self._get_embedder()
+                    if doc_id:
+                        sample_nodes = nodes[:min(len(nodes), 200)]
+                    else:
+                        sample_indices = _random.sample(
+                            range(len(nodes)), min(200, len(nodes))
                         )
-                        for r in lance_results:
-                            score = 1.0 - r.get("_distance", 1.0) / 2.0
-                            if score >= threshold:
-                                tid = r.get("id", "")
-                                if tid not in nodes_by_id:
-                                    continue
-                                key = (node["id"], tid) if node["id"] < tid else (tid, node["id"])
-                                if key not in seen_pairs:
-                                    seen_pairs.add(key)
-                                    links.append({
-                                        "source": node["id"],
-                                        "target": tid,
-                                        "value": round(score, 3),
-                                    })
-                    except Exception:
-                        pass
+                        sample_nodes = [nodes[i] for i in sorted(sample_indices)]
+
+                    semantic_sampled = len(sample_nodes)
+                    for node in sample_nodes:
+                        try:
+                            vec = await embedder.embed_query(node["content"][:300])
+                            node_group = node["group"]
+                            lance_results = await asyncio.to_thread(
+                                lambda v=vec, g=node_group: self._lance_table.search(v)
+                                .metric("cosine")
+                                .where(f"document_id != '{g}'")
+                                .limit(3)
+                                .to_list(),
+                            )
+                            for r in lance_results:
+                                score = 1.0 - r.get("_distance", 1.0) / 2.0
+                                if score >= threshold:
+                                    tid = r.get("id", "")
+                                    if tid not in nodes_by_id:
+                                        continue
+                                    key = (node["id"], tid) if node["id"] < tid else (tid, node["id"])
+                                    if key not in seen_pairs:
+                                        seen_pairs.add(key)
+                                        links.append({
+                                            "source": node["id"],
+                                            "target": tid,
+                                            "value": round(score, 3),
+                                        })
+                        except Exception:
+                            pass
+
+                await asyncio.wait_for(_compute_semantic(), timeout=30)
+            except TimeoutError:
+                logger.warning("[KB] Semantic edges computation timed out after 30s")
+                semantic_incomplete = True
             except Exception as e:
                 logger.warning("[KB] Semantic edges computation failed: %s", e)
 
@@ -770,5 +778,6 @@ class KnowledgeBaseManager:
                 "max_nodes": max_nodes,
                 "total_candidates": total_candidates,
                 "semantic_sampled_count": semantic_sampled,
+                "semantic_incomplete": semantic_incomplete,
             },
         }

@@ -155,6 +155,7 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
       toast.success("文件上传成功，正在后台处理...");
       setPage(0);
       loadDocuments();
+      setGraphRefreshKey(k => k + 1);
     } catch {
       toast.error(t("kb.uploadFailed"));
     } finally {
@@ -173,6 +174,7 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
       });
       setDeleteTarget(null);
       loadDocuments();
+      setGraphRefreshKey(k => k + 1);
     } catch {
       toast.error(t("kb.deleteFailed"));
     }
@@ -188,6 +190,7 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
         toast.error(data.reason || t("kb.repairFailed"));
       }
       loadDocuments();
+      setGraphRefreshKey(k => k + 1);
     } catch {
       toast.error(t("kb.repairFailed"));
     }

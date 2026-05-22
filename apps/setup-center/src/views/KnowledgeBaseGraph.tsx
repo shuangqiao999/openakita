@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import ForceGraph3D from "react-force-graph-3d";
 import { useTranslation } from "react-i18next";
 import { safeFetch } from "../providers";
-import { Loader2, Plus, Minus, RotateCw, X } from "lucide-react";
+import { Loader2, Plus, Minus, RotateCw, X, Search, AlertTriangle } from "lucide-react";
 
 interface Props {
   apiBaseUrl: string;
@@ -12,6 +12,12 @@ interface Props {
 type DocBrief = { id: string; name: string; status?: string };
 
 const TRUNCATION_DISMISSED_KEY = "kb_graph_truncation_dismissed";
+
+const LEGEND_ITEMS = [
+  ["节点颜色", "不同文档自动着色"],
+  ["实线边", "同文档 chunk 顺序关联"],
+  ["虚线边", "跨文档语义相似关联"],
+] as const;
 
 export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
   const { t } = useTranslation();
@@ -31,7 +37,11 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
   const [selectedNode, setSelectedNode] = useState<any>(null);
   const [previewPos, setPreviewPos] = useState({ x: 0, y: 0 });
   const [showPreview, setShowPreview] = useState(false);
+  const [webglError, setWebglError] = useState(false);
+  const [docSearch, setDocSearch] = useState("");
+  const [showDocDropdown, setShowDocDropdown] = useState(false);
   const previewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const docDropdownRef = useRef<HTMLDivElement>(null);
 
   const fetchGraph = useCallback(async () => {
     if (abortRef.current) abortRef.current.abort();
@@ -91,6 +101,25 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
       .then(d => setDocs((d.documents || []).filter((dd: DocBrief) => dd.status === "ready")))
       .catch(() => {});
   }, [apiBaseUrl]);
+
+  useEffect(() => {
+    const onContextLost = () => setWebglError(true);
+    const el = containerRef.current;
+    if (el) {
+      el.addEventListener("webglcontextlost", onContextLost);
+      return () => el.removeEventListener("webglcontextlost", onContextLost);
+    }
+  }, []);
+
+  useEffect(() => {
+    const onOutsideClick = (e: MouseEvent) => {
+      if (docDropdownRef.current && !docDropdownRef.current.contains(e.target as Node)) {
+        setShowDocDropdown(false);
+      }
+    };
+    document.addEventListener("mousedown", onOutsideClick);
+    return () => document.removeEventListener("mousedown", onOutsideClick);
+  }, []);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -160,11 +189,35 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
     }
   };
 
+  const filteredDocs = docs.filter(d =>
+    !docSearch || d.name.toLowerCase().includes(docSearch.toLowerCase())
+  );
+
+  if (webglError) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", height: "100%", color: "#f59e0b", gap: 8 }}>
+        <AlertTriangle size={32} />
+        <span style={{ fontSize: 13 }}>WebGL 不可用，无法渲染 3D 图谱</span>
+        <span style={{ fontSize: 11, color: "#94a3b8" }}>请使用支持 WebGL 的浏览器</span>
+      </div>
+    );
+  }
+
   if (loading) {
     return (
       <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100%", color: "#94a3b8" }}>
         <Loader2 size={24} style={{ animation: "spin 1s linear infinite", marginRight: 8 }} />
         加载图谱...
+      </div>
+    );
+  }
+
+  if (!loading && graphData.nodes.length === 0) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", height: "100%", color: "#94a3b8", gap: 8 }}>
+        <Search size={32} style={{ opacity: 0.5 }} />
+        <span style={{ fontSize: 13 }}>暂无知识库内容</span>
+        <span style={{ fontSize: 11 }}>请先在「文档管理」页面上传文档</span>
       </div>
     );
   }
@@ -215,19 +268,62 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
         display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap",
         background: "rgba(0,0,0,0.5)", borderRadius: 8, padding: "6px 10px",
       }}>
-        <select
-          value={selectedDocId}
-          onChange={e => setSelectedDocId(e.target.value)}
-          style={{
-            background: "#1e293b", color: "#e2e8f0", border: "1px solid #334155",
-            borderRadius: 4, padding: "4px 8px", fontSize: 12,
-          }}
-        >
-          <option value="">所有文档 ({graphData.nodes.length} 节点)</option>
-          {docs.map(d => (
-            <option key={d.id} value={d.id}>{d.name}</option>
-          ))}
-        </select>
+        <div ref={docDropdownRef} style={{ position: "relative" }}>
+          <div
+            onClick={() => setShowDocDropdown(v => !v)}
+            style={{
+              background: "#1e293b", color: "#e2e8f0", border: "1px solid #334155",
+              borderRadius: 4, padding: "4px 8px", fontSize: 12, cursor: "pointer",
+              minWidth: 140, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 4,
+            }}
+          >
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {selectedDocId ? docs.find(d => d.id === selectedDocId)?.name || "已选文档" : `所有文档 (${graphData.nodes.length} 节点)`}
+            </span>
+            <span style={{ fontSize: 10, opacity: 0.5 }}>▼</span>
+          </div>
+          {showDocDropdown && (
+            <div style={{
+              position: "absolute", top: "100%", left: 0, zIndex: 20,
+              background: "#1e293b", border: "1px solid #334155", borderRadius: 4,
+              marginTop: 4, maxHeight: 200, overflow: "hidden", width: 220,
+            }}>
+              <input
+                value={docSearch}
+                onChange={e => setDocSearch(e.target.value)}
+                placeholder="搜索文档..."
+                autoFocus
+                style={{
+                  width: "100%", padding: "6px 8px", border: "none", borderBottom: "1px solid #334155",
+                  background: "#0f172a", color: "#e2e8f0", fontSize: 11, outline: "none",
+                  boxSizing: "border-box",
+                }}
+                onClick={e => e.stopPropagation()}
+              />
+              <div style={{ overflow: "auto", maxHeight: 160 }}>
+                <div
+                  onClick={() => { setSelectedDocId(""); setShowDocDropdown(false); setDocSearch(""); }}
+                  style={{ padding: "5px 8px", fontSize: 11, cursor: "pointer", color: selectedDocId ? "#94a3b8" : "#3b82f6" }}
+                >
+                  所有文档 ({graphData.nodes.length} 节点)
+                </div>
+                {filteredDocs.map(d => (
+                  <div
+                    key={d.id}
+                    onClick={() => { setSelectedDocId(d.id); setShowDocDropdown(false); setDocSearch(""); }}
+                    style={{
+                      padding: "5px 8px", fontSize: 11, cursor: "pointer",
+                      color: selectedDocId === d.id ? "#3b82f6" : "#e2e8f0",
+                      background: selectedDocId === d.id ? "rgba(59,130,246,0.1)" : "transparent",
+                    }}
+                  >
+                    {d.name}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
         <label style={{ color: "#e2e8f0", fontSize: 12, display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
           <input
             type="checkbox"
@@ -260,6 +356,19 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
         <button onClick={handleZoomIn} title="放大" style={zoomBtnStyle}><Plus size={16} /></button>
         <button onClick={handleZoomOut} title="缩小" style={zoomBtnStyle}><Minus size={16} /></button>
         <button onClick={handleResetView} title="重置视图" style={zoomBtnStyle}><RotateCw size={14} /></button>
+      </div>
+
+      <div style={{
+        position: "absolute", bottom: 10, left: 10, zIndex: 10,
+        background: "rgba(0,0,0,0.55)", borderRadius: 8, padding: "6px 10px",
+        color: "#94a3b8", fontSize: 10, display: "flex", gap: 12,
+      }}>
+        {LEGEND_ITEMS.map(([label, desc]) => (
+          <div key={label} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <span style={{ color: "#64748b" }}>{label}</span>
+            <span>{desc}</span>
+          </div>
+        ))}
       </div>
 
       {showPreview && selectedNode && (
