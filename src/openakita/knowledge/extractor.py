@@ -53,11 +53,14 @@ def _extract_pdf(path: Path) -> str:
                 page_text = page.extract_text()
                 if page_text:
                     texts.append(page_text)
-        return "\n\n".join(texts).strip()
+        result = "\n\n".join(texts).strip()
+        if result:
+            return result
+        logger.debug("[extractor] pdfplumber returned empty result, falling back to pypdf")
     except ImportError:
         pass
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("[extractor] pdfplumber failed, falling back to pypdf: %s", e)
 
     try:
         from pypdf import PdfReader

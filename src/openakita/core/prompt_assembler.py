@@ -31,6 +31,7 @@ class PromptAssembler:
         profile_manager: Any,
         brain: Any,
         persona_manager: Any = None,
+        kb_manager: Any = None,
     ) -> None:
         self._tool_catalog = tool_catalog
         self._skill_catalog = skill_catalog
@@ -40,6 +41,7 @@ class PromptAssembler:
         self._profile_manager = profile_manager
         self._brain = brain
         self._persona_manager = persona_manager
+        self._kb_manager = kb_manager
 
     def build_system_prompt(
         self,
@@ -117,6 +119,7 @@ class PromptAssembler:
             mcp_catalog=self._mcp_catalog if tools_enabled else None,
             plugin_catalog=self._plugin_catalog if tools_enabled else None,
             memory_manager=self._memory_manager,
+            kb_manager=self._kb_manager,
             task_description=task_description,
             budget_config=budget_config,
             include_tools_guide=tools_enabled,

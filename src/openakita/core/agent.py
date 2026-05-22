@@ -1414,6 +1414,7 @@ class Agent:
             profile_manager=self.profile_manager,
             brain=self.brain,
             persona_manager=self.persona_manager,
+            kb_manager=self.kb_manager,
         )
 
         # 推理引擎（替代 _chat_with_tools_and_context）
