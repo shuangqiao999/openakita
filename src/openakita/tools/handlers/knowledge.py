@@ -178,8 +178,10 @@ class KnowledgeBaseHandler:
 
         target = docs[0]
         try:
-            await kb.delete_document(target["id"])
             result = await kb.ingest_text(target["name"], content)
+            if result.get("duplicate"):
+                return "⚠️ 内容未变更，未重复保存。"
+            await kb.delete_document(target["id"])
             return f"✅ 已覆盖更新《{target['name']}》（新文档 ID: {result.get('doc_id', '?')}）"
         except Exception as e:
             return f"❌ 覆盖失败: {e}"
