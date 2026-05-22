@@ -216,7 +216,7 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
       formData.append("file", file);
       const url = `${apiBaseUrl}/api/kb/replace?existing_doc_id=${duplicateInfo.existingId}`;
       await safeFetch(url, { method: "POST", body: formData });
-      toast.success("文件已覆盖更新，正在后台处理...");
+      toast.success(t("kb.replaceSuccess"));
       setDuplicateInfo(null);
       pendingFileRef.current = null;
       setPage(0);

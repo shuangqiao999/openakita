@@ -130,11 +130,14 @@ class KnowledgeBaseManager:
             pa.field("vector", pa.list_(pa.float32(), dim)),
             pa.field("document_id", pa.string()),
         ])
-        self._lance_table = self._lance_db.create_table(
-            "knowledge_base", schema=schema, mode="overwrite"
-        )
+        try:
+            self._lance_table = self._lance_db.create_table(
+                "knowledge_base", schema=schema, mode="create"
+            )
+        except Exception:
+            self._lance_table = self._lance_db.open_table("knowledge_base")
         self._embedding_dim = dim
-        logger.info("[KB] Created knowledge_base table with dim=%d", dim)
+        logger.info("[KB] knowledge_base table ready, dim=%d", dim)
 
     async def _proactive_create_table(self) -> None:
         """启动时主动创建 LanceDB 表，避免死锁：没表→不能上传→不能建表。"""
@@ -204,7 +207,11 @@ class KnowledgeBaseManager:
             )
             conn.commit()
 
-        asyncio.create_task(self._process_document(doc_id, path))
+        try:
+            self._process_task = asyncio.create_task(self._process_document(doc_id, path))
+        except RuntimeError:
+            self._process_task = None
+            logger.warning("[KB] No event loop, document %s stays in processing", doc_id)
 
         return {"doc_id": doc_id, "duplicate": False}
 
@@ -278,7 +285,7 @@ class KnowledgeBaseManager:
 
     async def list_documents(
         self, limit: int = 20, offset: int = 0
-    ) -> list[dict[str, Any]]:
+    ) -> dict[str, Any]:
         """分页列出文档。"""
         def _query():
             with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:

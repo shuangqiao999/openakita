@@ -3324,6 +3324,7 @@
     "duplicateTitle": "重复文件",
     "duplicateMsg": "已存在同名且内容相似的文件「{{name}}」，是否覆盖？",
     "duplicateReplace": "覆盖",
+    "replaceSuccess": "文件已覆盖更新，正在后台处理...",
     "tabManage": "文档管理",
     "tabGraph": "图谱视图",
     "graph": {

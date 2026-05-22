@@ -41,6 +41,7 @@ class TextChunker:
 
     def _chunk_fixed(self, text: str) -> list[ChunkResult]:
         chunks: list[ChunkResult] = []
+        step = max(1, self.chunk_size - self.overlap)
         start = 0
         i = 0
         while start < len(text):
@@ -53,7 +54,7 @@ class TextChunker:
                     token_estimate=_estimate_tokens(chunk_text),
                 ))
                 i += 1
-            start += self.chunk_size - self.overlap
+            start += step
         return chunks
 
     def _chunk_paragraph(self, text: str) -> list[ChunkResult]:
