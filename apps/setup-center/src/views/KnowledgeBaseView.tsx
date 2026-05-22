@@ -178,9 +178,10 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
   };
 
   const handleDelete = async () => {
-    if (!deleteTarget) return;
+    const target = deleteTarget;
+    if (!target) return;
     try {
-      await safeFetch(`${apiBaseUrl}/api/kb/documents/${deleteTarget.id}`, {
+      await safeFetch(`${apiBaseUrl}/api/kb/documents/${target.id}`, {
         method: "DELETE",
       });
       setDeleteTarget(null);
@@ -209,12 +210,13 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
 
   const handleReplace = async () => {
     const file = pendingFileRef.current;
-    if (!file || !duplicateInfo) return;
+    const dupInfo = duplicateInfo;
+    if (!file || !dupInfo) return;
     setUploading(true);
     try {
       const formData = new FormData();
       formData.append("file", file);
-      const url = `${apiBaseUrl}/api/kb/replace?existing_doc_id=${duplicateInfo.existingId}`;
+      const url = `${apiBaseUrl}/api/kb/replace?existing_doc_id=${dupInfo.existingId}`;
       await safeFetch(url, { method: "POST", body: formData });
       toast.success(t("kb.replaceSuccess"));
       setDuplicateInfo(null);
