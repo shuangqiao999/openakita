@@ -3321,8 +3321,31 @@
     "repairSuccess": "Repaired successfully",
     "repairFailed": "Repair failed",
     "inconsistent": "Data inconsistent",
+    "duplicateTitle": "Duplicate File",
+    "duplicateMsg": "A file with the same name and similar content already exists: \"{{name}}\". Overwrite?",
+    "duplicateReplace": "Overwrite",
     "tabManage": "Documents",
-    "tabGraph": "Graph View"
+    "tabGraph": "Graph View",
+    "graph": {
+      "loading": "Loading graph...",
+      "loadingComponent": "Loading graph component...",
+      "emptyTitle": "No knowledge base content",
+      "emptyHint": "Please upload documents from the Documents tab first",
+      "allDocs": "All Documents",
+      "allDocsWithCount": "All Documents ({{count}} nodes)",
+      "semanticEdges": "Semantic Edges",
+      "threshold": "Threshold",
+      "searchDocs": "Search documents...",
+      "zoomIn": "Zoom In",
+      "zoomOut": "Zoom Out",
+      "resetView": "Reset View",
+      "webglError": "WebGL unavailable, cannot render 3D graph",
+      "webglHint": "Please use a WebGL-compatible browser",
+      "legendNode": "Node colors: auto-assigned per document",
+      "legendSeqEdge": "Solid edges: sequential chunks in same document",
+      "legendSimEdge": "Dashed edges: cross-document semantic similarity",
+      "truncationMsg": "{{totalCandidates}} total nodes, showing first {{maxNodes}}. Use document filter to narrow scope."
+    }
   }
 }
 

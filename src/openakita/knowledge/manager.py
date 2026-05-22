@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import sqlite3
 import threading
@@ -51,7 +52,11 @@ class KnowledgeBaseManager:
 
         self._init_sqlite()
         self._init_lancedb()
-        self._scan_task = asyncio.create_task(self._scan_on_startup())
+        try:
+            self._scan_task = asyncio.create_task(self._scan_on_startup())
+        except RuntimeError:
+            self._scan_task = None
+            logger.debug("[KB] No running event loop, skipping startup scan")
 
     def _init_sqlite(self) -> None:
         with sqlite3.connect(str(self._db_path)) as conn:
@@ -66,7 +71,9 @@ class KnowledgeBaseManager:
                     upload_time REAL NOT NULL,
                     total_chunks INTEGER DEFAULT 0,
                     status TEXT NOT NULL DEFAULT 'processing',
-                    error_msg TEXT
+                    error_msg TEXT,
+                    file_size INTEGER DEFAULT 0,
+                    content_hash TEXT DEFAULT ''
                 )
             """)
             conn.execute("""
@@ -84,6 +91,14 @@ class KnowledgeBaseManager:
             )
             conn.execute("CREATE TABLE IF NOT EXISTS _meta (key TEXT PRIMARY KEY, value TEXT)")
             conn.execute("INSERT OR IGNORE INTO _meta (key, value) VALUES ('schema_version', '1')")
+            try:
+                conn.execute("ALTER TABLE knowledge_documents ADD COLUMN file_size INTEGER DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                conn.execute("ALTER TABLE knowledge_documents ADD COLUMN content_hash TEXT DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass
             conn.commit()
 
     def _init_lancedb(self) -> None:
@@ -93,7 +108,10 @@ class KnowledgeBaseManager:
         self._lance_db = lancedb.connect(lance_path)
         self._ensure_lance_table()
         if self._lance_table is None and self.is_ready():
-            asyncio.create_task(self._proactive_create_table())
+            try:
+                self._proactive_task = asyncio.create_task(self._proactive_create_table())
+            except RuntimeError:
+                self._proactive_task = None
         logger.info(
             "[KB] LanceDB initialized at %s, table=%s", lance_path, "knowledge_base"
         )
@@ -142,18 +160,11 @@ class KnowledgeBaseManager:
 
         return get_embedding_model()
 
-    async def upload_document(self, file_path: str | Path) -> str:
-        """上传并处理文档，返回 doc_id。
-
-        Args:
-            file_path: 文件路径（可以是临时上传路径）
+    async def upload_document(self, file_path: str | Path) -> dict[str, Any]:
+        """上传并处理文档，返回 doc_id 或 duplicate 信息。
 
         Returns:
-            文档 ID (UUID)
-
-        Raises:
-            ValueError: 文件类型不支持
-            FileNotFoundError: 文件不存在
+            {"doc_id": "...", "duplicate": false} 或 {"duplicate": true, "existing_doc_id": "...", "existing_name": "..."}
         """
         path = Path(file_path)
         if not path.exists():
@@ -168,19 +179,34 @@ class KnowledgeBaseManager:
         if path.stat().st_size > _KB_MAX_FILE_SIZE:
             raise ValueError(f"文件超过大小限制 ({_KB_MAX_FILE_SIZE // 1024 // 1024} MB)")
 
+        file_size = path.stat().st_size
+
+        with open(path, "rb") as f:
+            file_head = f.read(8192)
+        content_hash = hashlib.sha256(file_head).hexdigest()[:16]
+
+        existing = self._find_duplicate(path.name, content_hash)
+        if existing:
+            return {
+                "duplicate": True,
+                "existing_doc_id": existing["id"],
+                "existing_name": existing["name"],
+                "existing_status": existing["status"],
+            }
+
         doc_id = uuid.uuid4().hex
 
         with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
             conn.execute(
-                "INSERT INTO knowledge_documents(id, name, file_type, upload_time, status) "
-                "VALUES(?, ?, ?, ?, 'processing')",
-                (doc_id, path.name, suffix.lstrip("."), time.time()),
+                "INSERT INTO knowledge_documents(id, name, file_type, upload_time, status, file_size, content_hash) "
+                "VALUES(?, ?, ?, ?, 'processing', ?, ?)",
+                (doc_id, path.name, suffix.lstrip("."), time.time(), file_size, content_hash),
             )
             conn.commit()
 
         asyncio.create_task(self._process_document(doc_id, path))
 
-        return doc_id
+        return {"doc_id": doc_id, "duplicate": False}
 
     async def _process_document(self, doc_id: str, file_path: Path) -> None:
         """后台处理文档：提取文本 → 分块 → 向量化 → 存储。"""
@@ -204,7 +230,7 @@ class KnowledgeBaseManager:
                 await asyncio.to_thread(self._create_lance_table, dim)
 
             lance_rows = [
-                {"id": chunks[i].content[:50] + "_" + uuid.uuid4().hex[:8],
+                {"id": None,
                  "vector": vectors[i],
                  "document_id": doc_id}
                 for i in range(len(chunks))
@@ -310,6 +336,20 @@ class KnowledgeBaseManager:
                 "SELECT 1 FROM knowledge_documents WHERE id=?", (doc_id,)
             ).fetchone()
             return row is not None
+
+    def _find_duplicate(self, name: str, content_hash: str) -> dict | None:
+        """检查是否存在同名且哈希匹配的文档。"""
+        with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
+            row = conn.execute(
+                "SELECT id, name, status FROM knowledge_documents WHERE name=? AND content_hash=? AND status!='failed'",
+                (name, content_hash),
+            ).fetchone()
+            return {"id": row[0], "name": row[1], "status": row[2]} if row else None
+
+    async def replace_document(self, existing_doc_id: str, file_path: str | Path) -> dict[str, Any]:
+        """覆盖已有文档：删除旧文档后重新上传。"""
+        await self.delete_document(existing_doc_id)
+        return await self.upload_document(file_path)
 
     async def search(
         self,
@@ -527,6 +567,7 @@ class KnowledgeBaseManager:
                     for r in self._lance_table.to_arrow(columns=["document_id"]).to_pylist()
                 }
             )
+            logger.debug("[KB] Loaded %d unique document_ids from LanceDB for orphan check", len(lance_ids))
         except Exception:
             lance_ids = set()
 

@@ -3321,8 +3321,31 @@
     "repairSuccess": "修复成功",
     "repairFailed": "修复失败",
     "inconsistent": "数据不一致",
+    "duplicateTitle": "重复文件",
+    "duplicateMsg": "已存在同名且内容相似的文件「{{name}}」，是否覆盖？",
+    "duplicateReplace": "覆盖",
     "tabManage": "文档管理",
-    "tabGraph": "图谱视图"
+    "tabGraph": "图谱视图",
+    "graph": {
+      "loading": "加载图谱...",
+      "loadingComponent": "加载图谱组件...",
+      "emptyTitle": "暂无知识库内容",
+      "emptyHint": "请先在「文档管理」页面上传文档",
+      "allDocs": "所有文档",
+      "allDocsWithCount": "所有文档 ({{count}} 节点)",
+      "semanticEdges": "语义边",
+      "threshold": "阈值",
+      "searchDocs": "搜索文档...",
+      "zoomIn": "放大",
+      "zoomOut": "缩小",
+      "resetView": "重置视图",
+      "webglError": "WebGL 不可用，无法渲染 3D 图谱",
+      "webglHint": "请使用支持 WebGL 的浏览器",
+      "legendNode": "节点颜色：不同文档自动着色",
+      "legendSeqEdge": "实线边：同文档 chunk 顺序关联",
+      "legendSimEdge": "虚线边：跨文档语义相似关联",
+      "truncationMsg": "知识库共 {{totalCandidates}} 个节点，当前仅显示前 {{maxNodes}} 个，请使用文档过滤缩小范围。"
+    }
   }
 }
 

@@ -85,7 +85,7 @@ async def upload_document(request: Request, file: UploadFile = File(...)):
             os.write(fd, chunk)
         os.close(fd)
 
-        doc_id = await kb.upload_document(tmp_path)
+        upload_result = await kb.upload_document(tmp_path)
 
         async def _cleanup():
             await asyncio.sleep(5)
@@ -96,7 +96,67 @@ async def upload_document(request: Request, file: UploadFile = File(...)):
 
         asyncio.create_task(_cleanup())
 
-        return {"status": "ok", "doc_id": doc_id}
+        if upload_result.get("duplicate"):
+            return {
+                "status": "duplicate",
+                "doc_id": None,
+                "existing_doc_id": upload_result["existing_doc_id"],
+                "existing_name": upload_result["existing_name"],
+                "existing_status": upload_result["existing_status"],
+            }
+        return {"status": "ok", "doc_id": upload_result["doc_id"]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        logger.error("[KB] Upload failed: %s", e)
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/replace", summary="覆盖已存在文档")
+async def replace_document(
+    request: Request,
+    existing_doc_id: str = "",
+    file: UploadFile = File(...),
+):
+    """上传并覆盖已有文档。existing_doc_id 通过 query 参数传入。"""
+    if not existing_doc_id:
+        raise HTTPException(status_code=400, detail="缺少 existing_doc_id 参数")
+
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in _ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"不支持的文件类型: {suffix}")
+
+    kb = _get_kb_manager(request)
+    fd, tmp_path = tempfile.mkstemp(suffix=suffix, dir=str(kb._tmp_dir))
+    try:
+        total = 0
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > _KB_MAX_UPLOAD_SIZE:
+                os.close(fd)
+                os.unlink(tmp_path)
+                raise HTTPException(status_code=400, detail="文件超过大小限制")
+            os.write(fd, chunk)
+        os.close(fd)
+
+        result = await kb.replace_document(existing_doc_id, tmp_path)
+
+        async def _cleanup():
+            await asyncio.sleep(5)
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        asyncio.create_task(_cleanup())
+
+        return {"status": "ok", "doc_id": result["doc_id"]}
     except HTTPException:
         raise
     except Exception as e:

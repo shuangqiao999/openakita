@@ -76,6 +76,8 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
   const [kbReady, setKbReady] = useState<boolean | null>(null);
   const [activeTab, setActiveTab] = useState<"manage" | "graph">("manage");
   const [graphRefreshKey, setGraphRefreshKey] = useState(0);
+  const [duplicateInfo, setDuplicateInfo] = useState<{ existingId: string; existingName: string } | null>(null);
+  const pendingFileRef = useRef<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -151,7 +153,16 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
         method: "POST",
         body: formData,
       });
-      await res.json();
+      const data = await res.json();
+      if (data.status === "duplicate") {
+        pendingFileRef.current = file;
+        setDuplicateInfo({
+          existingId: data.existing_doc_id,
+          existingName: data.existing_name,
+        });
+        setUploading(false);
+        return;
+      }
       toast.success("文件上传成功，正在后台处理...");
       setPage(0);
       loadDocuments();
@@ -193,6 +204,31 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
       setGraphRefreshKey(k => k + 1);
     } catch {
       toast.error(t("kb.repairFailed"));
+    }
+  };
+
+  const handleReplace = async () => {
+    const file = pendingFileRef.current;
+    if (!file || !duplicateInfo) return;
+    setUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const url = `${apiBaseUrl}/api/kb/replace?existing_doc_id=${duplicateInfo.existingId}`;
+      await safeFetch(url, { method: "POST", body: formData });
+      toast.success("文件已覆盖更新，正在后台处理...");
+      setDuplicateInfo(null);
+      pendingFileRef.current = null;
+      setPage(0);
+      loadDocuments();
+      setGraphRefreshKey(k => k + 1);
+    } catch {
+      toast.error(t("kb.uploadFailed"));
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
     }
   };
 
@@ -259,7 +295,7 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
           <Suspense fallback={
             <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100%", color: "#94a3b8" }}>
               <Loader2 size={24} style={{ animation: "spin 1s linear infinite", marginRight: 8 }} />
-              加载图谱组件...
+               {t("kb.graph.loadingComponent")}
             </div>
           }>
             <KnowledgeBaseGraph apiBaseUrl={apiBaseUrl} refreshKey={graphRefreshKey} />
@@ -501,6 +537,23 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
           </AlertDialogContent>
         </AlertDialog>
       )}
+
+      <AlertDialog open={duplicateInfo !== null} onOpenChange={() => { setDuplicateInfo(null); pendingFileRef.current = null; }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("kb.duplicateTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("kb.duplicateMsg", { name: duplicateInfo?.existingName || "" })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => { setDuplicateInfo(null); pendingFileRef.current = null; }}>取消</AlertDialogCancel>
+            <AlertDialogAction onClick={handleReplace} style={{ background: "#3b82f6", color: "white" }}>
+              {t("kb.duplicateReplace")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog open={deleteTarget !== null} onOpenChange={() => setDeleteTarget(null)}>
         <AlertDialogContent>

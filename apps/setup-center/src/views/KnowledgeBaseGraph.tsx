@@ -13,12 +13,6 @@ type DocBrief = { id: string; name: string; status?: string };
 
 const TRUNCATION_DISMISSED_KEY = "kb_graph_truncation_dismissed";
 
-const LEGEND_ITEMS = [
-  ["节点颜色", "不同文档自动着色"],
-  ["实线边", "同文档 chunk 顺序关联"],
-  ["虚线边", "跨文档语义相似关联"],
-] as const;
-
 export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
   const { t } = useTranslation();
   const fgRef = useRef<any>(null);
@@ -66,7 +60,7 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
       if (meta.truncated && meta.total_candidates > meta.max_nodes) {
         const key = `${TRUNCATION_DISMISSED_KEY}_${meta.total_candidates}`;
         if (localStorage.getItem(key) !== "1") {
-          setTruncationMsg(`知识库共 ${meta.total_candidates} 个节点，当前仅显示前 ${meta.max_nodes} 个，请使用文档过滤缩小范围。`);
+          setTruncationMsg(t("kb.graph.truncationMsg", { totalCandidates: meta.total_candidates, maxNodes: meta.max_nodes }));
           setShowTruncation(true);
         }
       } else {
@@ -197,8 +191,8 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
     return (
       <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", height: "100%", color: "#f59e0b", gap: 8 }}>
         <AlertTriangle size={32} />
-        <span style={{ fontSize: 13 }}>WebGL 不可用，无法渲染 3D 图谱</span>
-        <span style={{ fontSize: 11, color: "#94a3b8" }}>请使用支持 WebGL 的浏览器</span>
+        <span style={{ fontSize: 13 }}>{t("kb.graph.webglError")}</span>
+        <span style={{ fontSize: 11, color: "#94a3b8" }}>{t("kb.graph.webglHint")}</span>
       </div>
     );
   }
@@ -207,7 +201,7 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
     return (
       <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100%", color: "#94a3b8" }}>
         <Loader2 size={24} style={{ animation: "spin 1s linear infinite", marginRight: 8 }} />
-        加载图谱...
+        {t("kb.graph.loading")}
       </div>
     );
   }
@@ -216,8 +210,8 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
     return (
       <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", height: "100%", color: "#94a3b8", gap: 8 }}>
         <Search size={32} style={{ opacity: 0.5 }} />
-        <span style={{ fontSize: 13 }}>暂无知识库内容</span>
-        <span style={{ fontSize: 11 }}>请先在「文档管理」页面上传文档</span>
+        <span style={{ fontSize: 13 }}>{t("kb.graph.emptyTitle")}</span>
+        <span style={{ fontSize: 11 }}>{t("kb.graph.emptyHint")}</span>
       </div>
     );
   }
@@ -278,7 +272,7 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
             }}
           >
             <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {selectedDocId ? docs.find(d => d.id === selectedDocId)?.name || "已选文档" : `所有文档 (${graphData.nodes.length} 节点)`}
+              {selectedDocId ? docs.find(d => d.id === selectedDocId)?.name || "" : t("kb.graph.allDocsWithCount", { count: graphData.nodes.length })}
             </span>
             <span style={{ fontSize: 10, opacity: 0.5 }}>▼</span>
           </div>
@@ -291,7 +285,7 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
               <input
                 value={docSearch}
                 onChange={e => setDocSearch(e.target.value)}
-                placeholder="搜索文档..."
+                placeholder={t("kb.graph.searchDocs")}
                 autoFocus
                 style={{
                   width: "100%", padding: "6px 8px", border: "none", borderBottom: "1px solid #334155",
@@ -305,7 +299,7 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
                   onClick={() => { setSelectedDocId(""); setShowDocDropdown(false); setDocSearch(""); }}
                   style={{ padding: "5px 8px", fontSize: 11, cursor: "pointer", color: selectedDocId ? "#94a3b8" : "#3b82f6" }}
                 >
-                  所有文档 ({graphData.nodes.length} 节点)
+                  {t("kb.graph.allDocsWithCount", { count: graphData.nodes.length })}
                 </div>
                 {filteredDocs.map(d => (
                   <div
@@ -331,11 +325,11 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
             onChange={e => setIncludeSemantic(e.target.checked)}
             style={{ cursor: "pointer" }}
           />
-          语义边
+          {t("kb.graph.semanticEdges")}
         </label>
         {includeSemantic && (
           <label style={{ color: "#e2e8f0", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
-            <span>阈值 {similarityThreshold.toFixed(2)}</span>
+            <span>{t("kb.graph.threshold")} {similarityThreshold.toFixed(2)}</span>
             <input
               type="range"
               min="0.5"
@@ -353,9 +347,9 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
         position: "absolute", top: 10, right: 10, zIndex: 10,
         display: "flex", flexDirection: "column", gap: 6,
       }}>
-        <button onClick={handleZoomIn} title="放大" style={zoomBtnStyle}><Plus size={16} /></button>
-        <button onClick={handleZoomOut} title="缩小" style={zoomBtnStyle}><Minus size={16} /></button>
-        <button onClick={handleResetView} title="重置视图" style={zoomBtnStyle}><RotateCw size={14} /></button>
+        <button onClick={handleZoomIn} title={t("kb.graph.zoomIn")} style={zoomBtnStyle}><Plus size={16} /></button>
+        <button onClick={handleZoomOut} title={t("kb.graph.zoomOut")} style={zoomBtnStyle}><Minus size={16} /></button>
+        <button onClick={handleResetView} title={t("kb.graph.resetView")} style={zoomBtnStyle}><RotateCw size={14} /></button>
       </div>
 
       <div style={{
@@ -363,10 +357,13 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
         background: "rgba(0,0,0,0.55)", borderRadius: 8, padding: "6px 10px",
         color: "#94a3b8", fontSize: 10, display: "flex", gap: 12,
       }}>
-        {LEGEND_ITEMS.map(([label, desc]) => (
+        {[
+          [t("kb.graph.legendNode"), ""],
+          [t("kb.graph.legendSeqEdge"), ""],
+          [t("kb.graph.legendSimEdge"), ""],
+        ].map(([label]) => (
           <div key={label} style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            <span style={{ color: "#64748b" }}>{label}</span>
-            <span>{desc}</span>
+            <span>{label}</span>
           </div>
         ))}
       </div>
