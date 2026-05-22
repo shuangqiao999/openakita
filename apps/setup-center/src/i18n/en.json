@@ -3316,7 +3316,11 @@
     "loadFailed": "Failed to load",
     "deleteFailed": "Failed to delete",
     "uploadFailed": "Upload failed",
-    "searchFailed": "Search failed"
+    "searchFailed": "Search failed",
+    "repair": "Repair Index",
+    "repairSuccess": "Repaired successfully",
+    "repairFailed": "Repair failed",
+    "inconsistent": "Data inconsistent"
   }
 }
 

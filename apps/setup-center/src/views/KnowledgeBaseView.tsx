@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import {
   Loader2, Upload, Search, Trash2, FileText,
-  Clock, CheckCircle, XCircle, Eye, ChevronLeft, ChevronRight
+  Clock, CheckCircle, XCircle, Eye, ChevronLeft, ChevronRight, Wrench
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 
@@ -167,6 +167,21 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
       loadDocuments();
     } catch {
       toast.error(t("kb.deleteFailed"));
+    }
+  };
+
+  const handleRepair = async (doc: DocItem) => {
+    try {
+      const res = await safeFetch(`${apiBaseUrl}/api/kb/repair/${doc.id}`, { method: "POST" });
+      const data = await res.json();
+      if (data.status === "ok") {
+        toast.success(`${t("kb.repairSuccess")} (${data.chunks} chunks)`);
+      } else {
+        toast.error(data.reason || t("kb.repairFailed"));
+      }
+      loadDocuments();
+    } catch {
+      toast.error(t("kb.repairFailed"));
     }
   };
 
@@ -405,6 +420,16 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
                                 disabled={viewChunksLoading}
                               >
                                 <Eye size={14} />
+                              </Button>
+                            )}
+                            {(doc.status === "failed") && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => handleRepair(doc)}
+                                title={t("kb.repair")}
+                              >
+                                <Wrench size={14} />
                               </Button>
                             )}
                             <Button

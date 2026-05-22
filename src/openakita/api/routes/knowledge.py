@@ -5,6 +5,10 @@ GET    /api/kb/documents        — 文档列表
 DELETE /api/kb/documents/{id}   — 删除文档
 POST   /api/kb/search           — 搜索知识库
 GET    /api/kb/status/{id}      — 文档处理状态
+GET    /api/kb/ready            — 就绪检查
+POST   /api/kb/repair/{id}      — 修复文档一致性
+GET    /api/kb/verify/{id}      — 验证文档一致性
+GET    /api/kb/inconsistent     — 列出不一致文档
 """
 
 from __future__ import annotations
@@ -150,7 +154,43 @@ async def kb_ready(request: Request):
 async def document_status(request: Request, doc_id: str):
     """查询文档处理状态。"""
     kb = _get_kb_manager(request)
-    status = await kb.get_document_status(doc_id)
-    if status is None:
+    doc_status = await kb.get_document_status(doc_id)
+    if doc_status is None:
         raise HTTPException(status_code=404, detail="文档不存在")
-    return status
+    return doc_status
+
+
+@router.post("/repair/{doc_id}", summary="修复文档一致性")
+async def repair_document(request: Request, doc_id: str):
+    """从 SQLite 分块重建 LanceDB 向量索引。"""
+    kb = _get_kb_manager(request)
+    result = await kb.repair_document(doc_id)
+    if not result.get("repaired"):
+        return {"status": "skipped", "reason": result.get("reason", "未知原因")}
+    return {"status": "ok", "chunks": result["chunks"]}
+
+
+@router.get("/verify/{doc_id}", summary="验证文档一致性")
+async def verify_document(request: Request, doc_id: str):
+    """对比 SQLite 分块数与 LanceDB 向量数。"""
+    kb = _get_kb_manager(request)
+    result = await kb.verify_document(doc_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="文档不存在")
+    return result
+
+
+@router.get("/inconsistent", summary="列出不一致文档")
+async def list_inconsistent(request: Request):
+    """列出 SQLite 与 LanceDB 记录数不匹配的文档。"""
+    kb = _get_kb_manager(request)
+    docs = await kb.get_inconsistent_documents()
+    return {"inconsistent": docs, "count": len(docs)}
+
+
+@router.post("/repair-orphans", summary="清理孤儿向量")
+async def repair_orphans(request: Request):
+    """清理 LanceDB 中无对应 SQLite 文档的孤儿向量。"""
+    kb = _get_kb_manager(request)
+    result = await kb.repair_orphan_vectors()
+    return result

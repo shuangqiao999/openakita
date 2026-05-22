@@ -3316,7 +3316,11 @@
     "loadFailed": "加载失败",
     "deleteFailed": "删除失败",
     "uploadFailed": "上传失败",
-    "searchFailed": "搜索失败"
+    "searchFailed": "搜索失败",
+    "repair": "修复索引",
+    "repairSuccess": "修复成功",
+    "repairFailed": "修复失败",
+    "inconsistent": "数据不一致"
   }
 }
 

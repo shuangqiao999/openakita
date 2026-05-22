@@ -51,6 +51,7 @@ class KnowledgeBaseManager:
 
         self._init_sqlite()
         self._init_lancedb()
+        self._scan_task = asyncio.create_task(self._scan_on_startup())
 
     def _init_sqlite(self) -> None:
         with sqlite3.connect(str(self._db_path)) as conn:
@@ -210,12 +211,19 @@ class KnowledgeBaseManager:
                     lance_rows[i]["id"] = chunk_id
 
                 conn.execute(
-                    "UPDATE knowledge_documents SET status='ready', total_chunks=? WHERE id=?",
+                    "UPDATE knowledge_documents SET total_chunks=? WHERE id=?",
                     (len(chunks), doc_id),
                 )
                 conn.commit()
 
             await asyncio.to_thread(self._lance_table.add, lance_rows)
+
+            with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
+                conn.execute(
+                    "UPDATE knowledge_documents SET status='ready' WHERE id=?",
+                    (doc_id,),
+                )
+                conn.commit()
 
             logger.info(
                 "[KB] Document %s processed: %d chunks",
@@ -425,3 +433,183 @@ class KnowledgeBaseManager:
             return self._lance_table is not None
         except Exception:
             return False
+
+    async def _scan_on_startup(self) -> None:
+        """启动时扫描：超时 processing 文档 → failed。"""
+        try:
+            await asyncio.sleep(2)
+            await self._check_stuck_processing()
+        except Exception as e:
+            logger.warning("[KB] Startup scan failed: %s", e)
+
+    async def _check_stuck_processing(self) -> int:
+        """将超时的 processing 文档标记为 failed。"""
+        def _do():
+            cutoff = time.time() - 600
+            with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
+                c = conn.execute(
+                    "UPDATE knowledge_documents SET status='failed', error_msg=? "
+                    "WHERE status='processing' AND upload_time < ?",
+                    ("处理超时，可能因服务中断未完成", cutoff),
+                )
+                conn.commit()
+                return c.rowcount
+
+        count = await asyncio.to_thread(_do)
+        if count:
+            logger.warning("[KB] Marked %d timed-out processing documents as failed", count)
+        return count
+
+    async def repair_document(self, doc_id: str) -> dict[str, Any]:
+        """修复文档：从 SQLite 分块重建 LanceDB 向量索引。"""
+        def _read_chunks():
+            with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
+                rows = conn.execute(
+                    "SELECT id, content FROM knowledge_chunks WHERE document_id=? ORDER BY chunk_index",
+                    (doc_id,),
+                ).fetchall()
+                return [(r[0], r[1]) for r in rows]
+
+        chunks = await asyncio.to_thread(_read_chunks)
+        if not chunks:
+            return {"repaired": False, "reason": "文档无分块记录"}
+
+        embedder = await self._get_embedder()
+        texts = [c[1] for c in chunks]
+        vectors = await embedder.embed(texts)
+
+        if self._lance_table is None:
+            dim = len(vectors[0]) if vectors else 0
+            await asyncio.to_thread(self._create_lance_table, dim)
+
+        try:
+            await asyncio.to_thread(
+                self._lance_table.delete, f"document_id = '{doc_id}'"
+            )
+        except Exception:
+            pass
+
+        lance_rows = [
+            {"id": chunks[i][0], "vector": vectors[i], "document_id": doc_id}
+            for i in range(len(chunks))
+        ]
+        await asyncio.to_thread(self._lance_table.add, lance_rows)
+
+        with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
+            conn.execute(
+                "UPDATE knowledge_documents SET status='ready', error_msg=NULL WHERE id=?",
+                (doc_id,),
+            )
+            conn.commit()
+
+        logger.info("[KB] Repaired document %s: %d chunks", doc_id, len(chunks))
+        return {"repaired": True, "chunks": len(chunks)}
+
+    async def repair_orphan_vectors(self) -> dict[str, Any]:
+        """清理 LanceDB 中无对应 SQLite 文档的孤儿向量。"""
+        if self._lance_table is None:
+            return {"cleaned": 0}
+
+        try:
+            lance_ids = await asyncio.to_thread(
+                lambda: {
+                    r["document_id"]
+                    for r in self._lance_table.to_arrow(columns=["document_id"]).to_pylist()
+                }
+            )
+        except Exception:
+            lance_ids = set()
+
+        def _get_valid_ids():
+            with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
+                rows = conn.execute("SELECT id FROM knowledge_documents").fetchall()
+                return {r[0] for r in rows}
+
+        valid_ids = await asyncio.to_thread(_get_valid_ids)
+        orphan_ids = lance_ids - valid_ids
+
+        cleaned = 0
+        for oid in orphan_ids:
+            try:
+                await asyncio.to_thread(
+                    self._lance_table.delete, f"document_id = '{oid}'"
+                )
+                cleaned += 1
+            except Exception:
+                pass
+
+        if cleaned:
+            logger.info("[KB] Cleaned %d orphan vector groups", cleaned)
+
+        stuck_count = await self._check_stuck_processing()
+        return {"cleaned": cleaned, "stuck_processing_fixed": stuck_count}
+
+    async def get_inconsistent_documents(self) -> list[dict[str, Any]]:
+        """列出所有不一致的文档（SQLite chunk 数与 LanceDB 向量数不匹配）。"""
+        if self._lance_table is None:
+            return []
+
+        def _get_ready_docs():
+            with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
+                rows = conn.execute(
+                    "SELECT id, name, total_chunks, status "
+                    "FROM knowledge_documents WHERE status='ready'"
+                ).fetchall()
+                return [(r[0], r[1], r[2], r[3]) for r in rows]
+
+        docs = await asyncio.to_thread(_get_ready_docs)
+        inconsistent: list[dict[str, Any]] = []
+
+        for doc_id, name, sqlite_count, status in docs:
+            try:
+                lance_count = await asyncio.to_thread(
+                    lambda d=doc_id: self._lance_table.count_rows(f"document_id = '{d}'")
+                )
+            except Exception:
+                lance_count = 0
+
+            if lance_count != sqlite_count:
+                inconsistent.append({
+                    "doc_id": doc_id,
+                    "name": name,
+                    "status": status,
+                    "sqlite_chunks": sqlite_count,
+                    "lancedb_vectors": lance_count,
+                })
+
+        return inconsistent
+
+    async def verify_document(self, doc_id: str) -> dict[str, Any] | None:
+        """返回文档在 SQLite 和 LanceDB 中的记录数对比。"""
+        def _get_sqlite():
+            with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
+                row = conn.execute(
+                    "SELECT id, name, status, total_chunks FROM knowledge_documents WHERE id=?",
+                    (doc_id,),
+                ).fetchone()
+                if row is None:
+                    return None
+                chunk_count = conn.execute(
+                    "SELECT COUNT(*) FROM knowledge_chunks WHERE document_id=?",
+                    (doc_id,),
+                ).fetchone()[0]
+                return {"id": row[0], "name": row[1], "status": row[2], "total_chunks": row[3], "actual_chunks": chunk_count}
+
+        sqlite_info = await asyncio.to_thread(_get_sqlite)
+        if sqlite_info is None:
+            return None
+
+        lance_count = 0
+        if self._lance_table is not None:
+            try:
+                lance_count = await asyncio.to_thread(
+                    lambda: self._lance_table.count_rows(f"document_id = '{doc_id}'")
+                )
+            except Exception:
+                lance_count = 0
+
+        return {
+            **sqlite_info,
+            "lancedb_vectors": lance_count,
+            "consistent": lance_count == sqlite_info["actual_chunks"],
+        }
