@@ -30,9 +30,9 @@ class TextChunker:
         max_chunk_size: int = 1000,
     ) -> None:
         self.strategy = strategy
-        self.chunk_size = chunk_size
-        self.overlap = overlap
-        self.max_chunk_size = max_chunk_size
+        self.chunk_size = max(1, chunk_size)
+        self.overlap = max(0, min(overlap, chunk_size - 1))
+        self.max_chunk_size = max(128, max_chunk_size)
 
     def chunk(self, text: str) -> list[ChunkResult]:
         if self.strategy == "fixed":
@@ -88,6 +88,8 @@ class TextChunker:
                 _flush()
                 sub_chunks = self._split_long_text(para)
                 for sc in sub_chunks:
+                    if not sc.strip():
+                        continue
                     chunks.append(ChunkResult(
                         index=index,
                         content=sc,
@@ -120,7 +122,7 @@ class TextChunker:
                         end = break_point + 1
             chunks.append(text[start:end].strip())
             start = end
-        return chunks
+        return [c for c in chunks if c]
 
 
 def _split_paragraphs(text: str) -> list[str]:

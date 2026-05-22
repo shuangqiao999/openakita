@@ -21,7 +21,10 @@ class KnowledgeBaseHandler:
             return f"未知知识库工具: {tool_name}"
 
         query = params.get("query", "")
-        top_k = int(params.get("top_k", 5))
+        try:
+            top_k = min(int(params.get("top_k", 5)), 20)
+        except (ValueError, TypeError):
+            top_k = 5
 
         if not query or not query.strip():
             return "❌ search_knowledge_base 缺少必要参数 'query'。"
@@ -30,8 +33,10 @@ class KnowledgeBaseHandler:
         if kb is None:
             return "知识库功能未初始化，请确认嵌入模型已配置。"
 
+        doc_filter = params.get("doc_filter", "") or None
+
         try:
-            results = await kb.search(query=query.strip(), top_k=min(top_k, 10))
+            results = await kb.search(query=query.strip(), top_k=top_k, doc_filter=doc_filter)
         except Exception as e:
             logger.error(f"[KnowledgeBaseHandler] 搜索失败: {e}")
             return f"❌ 搜索知识库时出错: {e}"
@@ -44,8 +49,11 @@ class KnowledgeBaseHandler:
             doc_name = r.get("document_name", "未知文档")
             content = r.get("content", "")
             score = r.get("score", 0)
-            snippet = content[:400].replace("\n", " ").strip()
-            if len(content) > 400:
+            raw_snippet = content[:400].replace("\n", " ").strip()
+            snippet = raw_snippet[:400]
+            if len(raw_snippet) > 400:
+                snippet = snippet[:397] + "..."
+            elif len(content) > 400:
                 snippet += "..."
 
             lines.append(f"### 结果 {i + 1} — 《{doc_name}》（相关度: {score:.0%}）\n\n{snippet}")

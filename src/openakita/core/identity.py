@@ -443,6 +443,7 @@ class Identity:
         skill_catalog: Optional["SkillCatalog"] = None,
         mcp_catalog: Optional["MCPCatalog"] = None,
         memory_manager: Optional["MemoryManager"] = None,
+        kb_manager=None,
         task_description: str = "",
     ) -> str:
         """
@@ -475,6 +476,7 @@ class Identity:
             skill_catalog=skill_catalog,
             mcp_catalog=mcp_catalog,
             memory_manager=memory_manager,
+            kb_manager=kb_manager,
             task_description=task_description,
         )
 

@@ -2236,6 +2236,7 @@ def _build_knowledge_section(
         except RuntimeError:
             results = asyncio.run(_search())
     except Exception:
+        logger.debug("[KB] Auto-injection search failed, skipping knowledge section", exc_info=True)
         return ""
 
     if not results:

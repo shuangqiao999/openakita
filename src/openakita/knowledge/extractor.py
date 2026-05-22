@@ -99,8 +99,16 @@ def _extract_docx(path: Path) -> str:
 
 
 def _extract_markdown(path: Path) -> str:
-    """读取 Markdown 文件的文本（保留原始格式）。"""
-    return path.read_text(encoding="utf-8")
+    """读取 Markdown 文件的文本（自动检测编码）。"""
+    import chardet
+
+    raw = path.read_bytes()
+    result = chardet.detect(raw)
+    encoding = result["encoding"] or "utf-8"
+    try:
+        return raw.decode(encoding)
+    except (UnicodeDecodeError, LookupError):
+        return raw.decode("utf-8", errors="replace")
 
 
 def _extract_text(path: Path) -> str:

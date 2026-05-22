@@ -21,7 +21,8 @@ KNOWLEDGE_BASE_TOOLS = [
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "搜索查询"},
-                "top_k": {"type": "integer", "default": 5, "minimum": 1, "maximum": 10, "description": "返回结果数"},
+                "top_k": {"type": "integer", "default": 5, "minimum": 1, "maximum": 20, "description": "返回结果数"},
+                "doc_filter": {"type": "string", "description": "可选，按文档 ID 过滤搜索范围"},
             },
             "required": ["query"],
         },

@@ -69,21 +69,21 @@ async def upload_document(request: Request, file: UploadFile = File(...)):
 
     fd, tmp_path = tempfile.mkstemp(suffix=suffix, dir=str(kb._tmp_dir))
     try:
-        total = 0
-        while True:
-            chunk = await file.read(1024 * 1024)
-            if not chunk:
-                break
-            total += len(chunk)
-            if total > _KB_MAX_UPLOAD_SIZE:
-                os.close(fd)
-                os.unlink(tmp_path)
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"文件超过大小限制 ({_KB_MAX_UPLOAD_SIZE // 1024 // 1024} MB)",
-                )
-            os.write(fd, chunk)
-        os.close(fd)
+        try:
+            total = 0
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > _KB_MAX_UPLOAD_SIZE:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"文件超过大小限制 ({_KB_MAX_UPLOAD_SIZE // 1024 // 1024} MB)",
+                    )
+                os.write(fd, chunk)
+        finally:
+            os.close(fd)
 
         upload_result = await kb.upload_document(tmp_path)
 
@@ -106,6 +106,10 @@ async def upload_document(request: Request, file: UploadFile = File(...)):
             }
         return {"status": "ok", "doc_id": upload_result["doc_id"]}
     except HTTPException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
         raise
     except Exception as e:
         try:
@@ -133,18 +137,18 @@ async def replace_document(
     kb = _get_kb_manager(request)
     fd, tmp_path = tempfile.mkstemp(suffix=suffix, dir=str(kb._tmp_dir))
     try:
-        total = 0
-        while True:
-            chunk = await file.read(1024 * 1024)
-            if not chunk:
-                break
-            total += len(chunk)
-            if total > _KB_MAX_UPLOAD_SIZE:
-                os.close(fd)
-                os.unlink(tmp_path)
-                raise HTTPException(status_code=400, detail="文件超过大小限制")
-            os.write(fd, chunk)
-        os.close(fd)
+        try:
+            total = 0
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > _KB_MAX_UPLOAD_SIZE:
+                    raise HTTPException(status_code=400, detail="文件超过大小限制")
+                os.write(fd, chunk)
+        finally:
+            os.close(fd)
 
         result = await kb.replace_document(existing_doc_id, tmp_path)
 
@@ -158,6 +162,10 @@ async def replace_document(
 
         return {"status": "ok", "doc_id": result["doc_id"]}
     except HTTPException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
         raise
     except Exception as e:
         try:
@@ -199,7 +207,7 @@ async def search_knowledge(request: Request, body: SearchRequest):
         top_k=body.top_k,
         doc_filter=body.doc_filter,
     )
-    return {"results": results, "query": body.query}
+    return {"status": "ok", "results": results, "query": body.query}
 
 
 @router.get("/ready", summary="知识库就绪检查")

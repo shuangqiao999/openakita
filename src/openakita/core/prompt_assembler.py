@@ -173,6 +173,7 @@ class PromptAssembler:
             mcp_catalog=self._mcp_catalog,
             plugin_catalog=self._plugin_catalog,
             memory_manager=self._memory_manager,
+            kb_manager=self._kb_manager,
             task_description=task_description,
             budget_config=budget_config,
             include_tools_guide=True,
