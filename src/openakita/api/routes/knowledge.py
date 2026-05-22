@@ -9,6 +9,7 @@ GET    /api/kb/ready            — 就绪检查
 POST   /api/kb/repair/{id}      — 修复文档一致性
 GET    /api/kb/verify/{id}      — 验证文档一致性
 GET    /api/kb/inconsistent     — 列出不一致文档
+GET    /api/kb/graph            — 图谱数据（节点+边）
 """
 
 from __future__ import annotations
@@ -194,3 +195,20 @@ async def repair_orphans(request: Request):
     kb = _get_kb_manager(request)
     result = await kb.repair_orphan_vectors()
     return result
+
+
+@router.get("/graph", summary="知识库图谱数据")
+async def get_graph(
+    request: Request,
+    doc_id: str | None = None,
+    include_semantic: bool = False,
+    max_nodes: int = 2000,
+):
+    """获取图谱节点和边数据，供 3D 力导向图渲染。"""
+    kb = _get_kb_manager(request)
+    data = await kb.get_graph_data(
+        doc_id=doc_id,
+        include_semantic=include_semantic,
+        max_nodes=min(max_nodes, 5000),
+    )
+    return data

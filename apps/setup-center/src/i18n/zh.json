@@ -3320,7 +3320,9 @@
     "repair": "修复索引",
     "repairSuccess": "修复成功",
     "repairFailed": "修复失败",
-    "inconsistent": "数据不一致"
+    "inconsistent": "数据不一致",
+    "tabManage": "文档管理",
+    "tabGraph": "图谱视图"
   }
 }
 

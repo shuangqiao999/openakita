@@ -3320,7 +3320,9 @@
     "repair": "Repair Index",
     "repairSuccess": "Repaired successfully",
     "repairFailed": "Repair failed",
-    "inconsistent": "Data inconsistent"
+    "inconsistent": "Data inconsistent",
+    "tabManage": "Documents",
+    "tabGraph": "Graph View"
   }
 }
 

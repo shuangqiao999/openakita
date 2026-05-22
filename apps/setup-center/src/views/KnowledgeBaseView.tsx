@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, lazy, Suspense } from "react";
 import { useTranslation } from "react-i18next";
 import { IconBook } from "../icons";
 import { safeFetch } from "../providers";
@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel,
   AlertDialogContent, AlertDialogDescription, AlertDialogFooter,
@@ -14,9 +15,14 @@ import {
 } from "@/components/ui/alert-dialog";
 import {
   Loader2, Upload, Search, Trash2, FileText,
-  Clock, CheckCircle, XCircle, Eye, ChevronLeft, ChevronRight, Wrench
+  Clock, CheckCircle, XCircle, Eye, ChevronLeft, ChevronRight, Wrench,
+  List, Network
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
+
+const KnowledgeBaseGraph = lazy(() =>
+  import("./KnowledgeBaseGraph").then(m => ({ default: m.KnowledgeBaseGraph }))
+);
 
 interface Props {
   serviceRunning: boolean;
@@ -68,6 +74,8 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
   const [viewChunks, setViewChunks] = useState<{ docName: string; chunks: ChunkItem[] } | null>(null);
   const [viewChunksLoading, setViewChunksLoading] = useState(false);
   const [kbReady, setKbReady] = useState<boolean | null>(null);
+  const [activeTab, setActiveTab] = useState<"manage" | "graph">("manage");
+  const [graphRefreshKey, setGraphRefreshKey] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -233,26 +241,31 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 20 }}>
         <IconBook size={24} />
         <h2 style={{ margin: 0 }}>{t("kb.title")}</h2>
+        <div style={{ flex: 1 }} />
+        <ToggleGroup type="single" value={activeTab} onValueChange={v => { if (v) setActiveTab(v as "manage" | "graph"); }}>
+          <ToggleGroupItem value="manage"><List size={14} /> {t("kb.tabManage")}</ToggleGroupItem>
+          <ToggleGroupItem value="graph"><Network size={14} /> {t("kb.tabGraph")}</ToggleGroupItem>
+        </ToggleGroup>
       </div>
       <p style={{ color: "#94a3b8", fontSize: 13, marginTop: 0, marginBottom: 24 }}>
         {t("kb.description")}
       </p>
 
-      {kbReady === false && (
-        <div style={{
-          background: "#fef3c7", border: "1px solid #f59e0b", borderRadius: 8,
-          padding: "12px 16px", marginBottom: 16, display: "flex", alignItems: "flex-start", gap: 10
-        }}>
-          <Clock size={16} style={{ color: "#d97706", marginTop: 1, flexShrink: 0 }} />
-          <div>
-            <strong style={{ fontSize: 13, color: "#92400e" }}>嵌入模型未配置 — 上传和搜索功能暂不可用</strong>
-            <p style={{ margin: "4px 0 0", fontSize: 12, color: "#a16207", lineHeight: 1.5 }}>
-              请在「配置 → LLM」添加嵌入端点，或设置 <code style={{ background: "#fde68a", padding: "1px 4px", borderRadius: 3 }}>EMBEDDING_API_KEY</code> 环境变量后刷新页面。
-            </p>
-          </div>
+      {activeTab === "graph" && (
+        <div style={{ height: "calc(100vh - 200px)", minHeight: 500 }}>
+          <Suspense fallback={
+            <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100%", color: "#94a3b8" }}>
+              <Loader2 size={24} style={{ animation: "spin 1s linear infinite", marginRight: 8 }} />
+              加载图谱组件...
+            </div>
+          }>
+            <KnowledgeBaseGraph apiBaseUrl={apiBaseUrl} refreshKey={graphRefreshKey} />
+          </Suspense>
         </div>
       )}
 
+      {activeTab === "manage" && (
+        <>
       {kbReady === null && (
         <div style={{ textAlign: "center", padding: 12, marginBottom: 16 }}>
           <Loader2 size={18} style={{ animation: "spin 1s linear infinite", color: "#94a3b8" }} />
@@ -504,6 +517,8 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+        </>
+      )}
     </div>
   );
 }

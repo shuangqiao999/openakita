@@ -613,3 +613,127 @@ class KnowledgeBaseManager:
             "lancedb_vectors": lance_count,
             "consistent": lance_count == sqlite_info["actual_chunks"],
         }
+
+    async def get_graph_data(
+        self,
+        doc_id: str | None = None,
+        include_semantic: bool = False,
+        max_nodes: int = 2000,
+    ) -> dict[str, Any]:
+        """获取图谱数据：节点（chunk）+ 边（顺序 + 可选语义）。
+
+        Args:
+            doc_id: 可选，过滤特定文档
+            include_semantic: 是否包含语义相似边（会增加计算负载）
+            max_nodes: 最大节点数
+
+        Returns:
+            {"nodes": [...], "links": [...], "meta": {...}}
+        """
+        def _query_chunks():
+            with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
+                if doc_id:
+                    rows = conn.execute(
+                        """SELECT kc.id, kc.content, kc.chunk_index, kc.document_id, kd.name as doc_name
+                           FROM knowledge_chunks kc
+                           JOIN knowledge_documents kd ON kc.document_id = kd.id
+                           WHERE kc.document_id = ?
+                           ORDER BY kc.chunk_index
+                           LIMIT ?""",
+                        (doc_id, max_nodes),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        """SELECT kc.id, kc.content, kc.chunk_index, kc.document_id, kd.name as doc_name
+                           FROM knowledge_chunks kc
+                           JOIN knowledge_documents kd ON kc.document_id = kd.id
+                           WHERE kd.status = 'ready'
+                           ORDER BY kc.document_id, kc.chunk_index
+                           LIMIT ?""",
+                        (max_nodes,),
+                    ).fetchall()
+                return [(r[0], r[1] or "", r[2], r[3], r[4]) for r in rows]
+
+        chunks = await asyncio.to_thread(_query_chunks)
+        if not chunks:
+            return {"nodes": [], "links": [], "meta": {"total_nodes": 0, "total_edges": 0}}
+
+        nodes: list[dict] = []
+        nodes_by_id: dict[str, dict] = {}
+        doc_groups: dict[str, str] = {}
+
+        for cid, content, idx, did, dname in chunks:
+            name = content[:80].replace("\n", " ").strip()
+            if len(content) > 80:
+                name += "..."
+            node = {
+                "id": cid,
+                "name": name,
+                "doc_name": dname,
+                "group": did,
+                "chunk_index": idx,
+                "content": content,
+            }
+            nodes.append(node)
+            nodes_by_id[cid] = node
+            doc_groups[did] = dname
+
+        links: list[dict] = []
+        seen_pairs: set[tuple[str, str]] = set()
+
+        chunks_by_doc: dict[str, list[dict]] = {}
+        for node in nodes:
+            chunks_by_doc.setdefault(node["group"], []).append(node)
+
+        for _did, doc_chunks in chunks_by_doc.items():
+            sorted_chunks = sorted(doc_chunks, key=lambda n: n["chunk_index"])
+            for i in range(len(sorted_chunks) - 1):
+                s = sorted_chunks[i]["id"]
+                t = sorted_chunks[i + 1]["id"]
+                key = (s, t) if s < t else (t, s)
+                if key not in seen_pairs:
+                    seen_pairs.add(key)
+                    links.append({"source": s, "target": t, "value": 1})
+
+        if include_semantic and self._lance_table is not None:
+            try:
+                embedder = await self._get_embedder()
+                sample_nodes = nodes[:min(len(nodes), 200)]
+                for node in sample_nodes:
+                    try:
+                        vec = await embedder.embed_query(node["content"][:300])
+                        node_group = node["group"]
+                        lance_results = await asyncio.to_thread(
+                            lambda v=vec, g=node_group: self._lance_table.search(v)
+                            .metric("cosine")
+                            .where(f"document_id != '{g}'")
+                            .limit(3)
+                            .to_list(),
+                        )
+                        for r in lance_results:
+                            score = 1.0 - r.get("_distance", 1.0) / 2.0
+                            if score >= 0.75:
+                                tid = r.get("id", "")
+                                if tid not in nodes_by_id:
+                                    continue
+                                key = (node["id"], tid) if node["id"] < tid else (tid, node["id"])
+                                if key not in seen_pairs:
+                                    seen_pairs.add(key)
+                                    links.append({
+                                        "source": node["id"],
+                                        "target": tid,
+                                        "value": round(score, 3),
+                                    })
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.warning("[KB] Semantic edges computation failed: %s", e)
+
+        return {
+            "nodes": nodes,
+            "links": links,
+            "meta": {
+                "total_nodes": len(nodes),
+                "total_edges": len(links),
+            },
+        }
