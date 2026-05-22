@@ -38,6 +38,7 @@ dependencies = [
     "httpx[socks]>=0.27.0",
     "aiofiles>=24.1.0",
     "nest-asyncio>=1.5.0",
+    "chardet>=5.0",
 
     # Database
     "aiosqlite>=0.20.0",
@@ -141,7 +142,6 @@ plugins = [
 knowledge = [
     "pypdf>=5.0",
     "python-docx>=1.0",
-    "chardet>=5.0",
 ]
 
 # Windows 桌面自动化
