@@ -39,6 +39,9 @@ dependencies = [
     "aiofiles>=24.1.0",
     "nest-asyncio>=1.5.0",
     "chardet>=5.0",
+    "pypdf>=5.0",
+    "pdfplumber>=0.11",
+    "python-docx>=1.0",
 
     # Database
     "aiosqlite>=0.20.0",
@@ -136,12 +139,6 @@ voice = [
 # 旧版本 0.3.x–0.6.x 上的 contrib 调用都已迁出 (见 CHANGELOG)。
 plugins = [
     "openakita-plugin-sdk>=0.7.0",
-]
-
-# 知识库文档解析 (PDF / Word)
-knowledge = [
-    "pypdf>=5.0",
-    "python-docx>=1.0",
 ]
 
 # Windows 桌面自动化
