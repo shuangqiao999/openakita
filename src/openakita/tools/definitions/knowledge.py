@@ -53,4 +53,63 @@ KNOWLEDGE_BASE_TOOLS = [
             "required": ["title", "content"],
         },
     },
+    {
+        "name": "get_knowledge_base_status",
+        "category": "Knowledge Base",
+        "description": "查看知识库整体状态：文档总数、就绪/处理中/失败数量、分块总数、最近上传的文档。",
+        "detail": """获取知识库的统计概览，包括文档数量、状态分布、最近上传列表。
+
+**适用场景**：
+- 用户问"知识库里有什么"、"知识库状态怎么样"
+- 需要了解总共有多少文档和分块
+
+**无需参数**。""",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "list_knowledge_base_documents",
+        "category": "Knowledge Base",
+        "description": "列出知识库中的文档列表，支持搜索和分页。",
+        "detail": """列出知识库中已保存的文档。
+
+**适用场景**：
+- 用户问"知识库里有哪些文档"
+- "列出知识库的文档"
+
+**参数**：
+- search: 可选，按名称模糊搜索
+- limit: 返回数量，默认 10""",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "search": {"type": "string", "description": "可选，按名称模糊搜索"},
+                "limit": {"type": "integer", "default": 10, "minimum": 1, "maximum": 30},
+            },
+        },
+    },
+    {
+        "name": "delete_knowledge_base_document",
+        "category": "Knowledge Base",
+        "description": "从知识库中删除指定文档。支持按名称模糊匹配，删除匹配的第一个文档。",
+        "detail": """从知识库中删除文档及其所有分块。
+
+**适用场景**：
+- 用户说"把红楼梦从知识库删掉"
+- "删除知识库里的某个文档"
+
+**参数**：
+- name: 文档名称（支持模糊匹配）
+
+**注意**：删除操作不可撤销。如匹配到多个文档，仅删除第一个。""",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "要删除的文档名称"},
+            },
+            "required": ["name"],
+        },
+    },
 ]

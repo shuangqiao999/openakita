@@ -364,6 +364,68 @@ class KnowledgeBaseManager:
             ).fetchone()
             return {"id": row[0], "name": row[1], "status": row[2]} if row else None
 
+    async def get_stats(self) -> dict[str, Any]:
+        """返回知识库统计信息。"""
+        def _query():
+            with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
+                total_docs = conn.execute(
+                    "SELECT COUNT(*) FROM knowledge_documents"
+                ).fetchone()[0]
+                ready_docs = conn.execute(
+                    "SELECT COUNT(*) FROM knowledge_documents WHERE status='ready'"
+                ).fetchone()[0]
+                processing_docs = conn.execute(
+                    "SELECT COUNT(*) FROM knowledge_documents WHERE status='processing'"
+                ).fetchone()[0]
+                failed_docs = conn.execute(
+                    "SELECT COUNT(*) FROM knowledge_documents WHERE status='failed'"
+                ).fetchone()[0]
+                total_chunks = conn.execute(
+                    "SELECT COALESCE(SUM(total_chunks), 0) FROM knowledge_documents WHERE status='ready'"
+                ).fetchone()[0]
+                recent = conn.execute(
+                    "SELECT name, upload_time FROM knowledge_documents ORDER BY upload_time DESC LIMIT 3"
+                ).fetchall()
+                now = time.time()
+                recent_docs = []
+                for r in recent:
+                    ago = int(now - r[1])
+                    if ago < 60:
+                        ago_str = f"{ago}秒前"
+                    elif ago < 3600:
+                        ago_str = f"{ago // 60}分钟前"
+                    elif ago < 86400:
+                        ago_str = f"{ago // 3600}小时前"
+                    else:
+                        ago_str = f"{ago // 86400}天前"
+                    recent_docs.append({"name": r[0], "ago": ago_str})
+                return total_docs, ready_docs, processing_docs, failed_docs, total_chunks, recent_docs
+
+        total_docs, ready_docs, processing_docs, failed_docs, total_chunks, recent_docs = (
+            await asyncio.to_thread(_query)
+        )
+        return {
+            "total_documents": total_docs,
+            "ready_documents": ready_docs,
+            "processing_documents": processing_docs,
+            "failed_documents": failed_docs,
+            "total_chunks": total_chunks,
+            "recent_documents": recent_docs,
+        }
+
+    def find_document_by_name(self, name: str) -> list[dict[str, Any]]:
+        """按名称搜索文档（支持模糊匹配）。"""
+        with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
+            rows = conn.execute(
+                "SELECT id, name, file_type, total_chunks, status, upload_time "
+                "FROM knowledge_documents WHERE name LIKE ? ORDER BY upload_time DESC LIMIT 5",
+                (f"%{name}%",),
+            ).fetchall()
+            return [
+                {"id": r[0], "name": r[1], "file_type": r[2], "total_chunks": r[3], "status": r[4], "upload_time": r[5]}
+                for r in rows
+            ]
+
     async def replace_document(self, existing_doc_id: str, file_path: str | Path) -> dict[str, Any]:
         """覆盖已有文档：删除旧文档后重新上传。"""
         await self.delete_document(existing_doc_id)
