@@ -1088,10 +1088,11 @@ class KnowledgeBaseManager:
         if include_semantic and self._lance_table is not None:
             try:
                 embedder = await self._get_embedder()
+                sample_size = max(30, min(200, total_candidates // 10))
                 if doc_id:
-                    sample_nodes = nodes[: min(len(nodes), 30)]
+                    sample_nodes = nodes[: min(len(nodes), sample_size)]
                 else:
-                    sample_indices = _random.sample(range(len(nodes)), min(30, len(nodes)))
+                    sample_indices = _random.sample(range(len(nodes)), min(sample_size, len(nodes)))
                     sample_nodes = [nodes[i] for i in sorted(sample_indices)]
 
                 semantic_sampled = len(sample_nodes)
@@ -1101,11 +1102,10 @@ class KnowledgeBaseManager:
                         async with sem:
                             vec = await embedder.embed_query(n["content"][:300])
                         lance_results = await asyncio.to_thread(
-                            lambda v=vec, g=n["group"]: (
+                            lambda v=vec: (
                                 self._lance_table.search(v)
                                 .metric("cosine")
-                                .where(f"document_id != '{g}'")
-                                .limit(3)
+                                .limit(6)
                                 .to_list()
                             ),
                         )
@@ -1113,7 +1113,7 @@ class KnowledgeBaseManager:
                             sc = 1.0 - r.get("_distance", 1.0) / 2.0
                             if sc >= threshold:
                                 tid = r.get("id", "")
-                                if tid not in nodes_by_id:
+                                if tid not in nodes_by_id or tid == n["id"]:
                                     continue
                                 key = (n["id"], tid) if n["id"] < tid else (tid, n["id"])
                                 if key not in seen_pairs:
