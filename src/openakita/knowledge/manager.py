@@ -66,6 +66,7 @@ class KnowledgeBaseManager:
         self._lance_db = None
         self._lance_table = None
         self._embedding_dim: int | None = None
+        self._index_creating = False
 
         self._init_sqlite()
         self._init_lancedb()
@@ -170,7 +171,7 @@ class KnowledgeBaseManager:
 
     def _create_index_if_needed(self) -> None:
         """向量数超阈值时后台创建 IVF_PQ 索引（非阻塞）。"""
-        if self._lance_table is None:
+        if self._lance_table is None or self._index_creating:
             return
         try:
             row_count = self._lance_table.count_rows()
@@ -180,6 +181,8 @@ class KnowledgeBaseManager:
                 return
         except Exception:
             return
+
+        self._index_creating = True
 
         def _build():
             try:
@@ -195,6 +198,8 @@ class KnowledgeBaseManager:
                 )
             except Exception as e:
                 logger.warning("[KB] LanceDB index creation failed: %s", e)
+            finally:
+                self._index_creating = False
 
         threading.Thread(target=_build, daemon=True).start()
 
