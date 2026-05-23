@@ -31,7 +31,7 @@ _KB_ALLOWED_EXTENSIONS = {".pdf", ".docx", ".md", ".txt", ".markdown"}
 _KB_EMBED_BATCH_SIZE = 10  # 每批发送给嵌入模型的文本数
 _KB_EMBED_CHUNK_TRUNCATE = 300  # 嵌入前单块最大字符数（适配 512 token 模型）
 _KB_EMBED_MAX_RETRIES = 3  # 单批最大重试次数
-_KB_EMBED_BATCH_DELAY = 0.3   # 批次间隔秒（避免压垮本地模型）
+_KB_EMBED_BATCH_DELAY = 0.1  # 批次间隔秒（避免压垮本地模型）
 _KB_INDEX_MIN_ROWS = 1000     # 向量数超此阈值后自动创建索引
 
 
