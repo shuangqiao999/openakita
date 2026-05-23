@@ -28,6 +28,11 @@ logger = logging.getLogger(__name__)
 _KB_MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
 _KB_ALLOWED_EXTENSIONS = {".pdf", ".docx", ".md", ".txt", ".markdown"}
 
+_KB_EMBED_BATCH_SIZE = 10  # 每批发送给嵌入模型的文本数
+_KB_EMBED_CHUNK_TRUNCATE = 300  # 嵌入前单块最大字符数（适配 512 token 模型）
+_KB_EMBED_MAX_RETRIES = 3  # 单批最大重试次数
+_KB_EMBED_BATCH_DELAY = 0.3  # 批次间隔秒（避免压垮本地模型）
+
 
 def _parse_chunk_id(chunk_id: str) -> tuple[str | None, int | None]:
     """解析结构化 chunk_id，返回 (doc_id, chunk_index)。旧格式返回 (None, None)。"""
@@ -103,11 +108,15 @@ class KnowledgeBaseManager:
             conn.execute("CREATE TABLE IF NOT EXISTS _meta (key TEXT PRIMARY KEY, value TEXT)")
             conn.execute("INSERT OR IGNORE INTO _meta (key, value) VALUES ('schema_version', '1')")
             try:
-                conn.execute("ALTER TABLE knowledge_documents ADD COLUMN file_size INTEGER DEFAULT 0")
+                conn.execute(
+                    "ALTER TABLE knowledge_documents ADD COLUMN file_size INTEGER DEFAULT 0"
+                )
             except sqlite3.OperationalError:
                 pass
             try:
-                conn.execute("ALTER TABLE knowledge_documents ADD COLUMN content_hash TEXT DEFAULT ''")
+                conn.execute(
+                    "ALTER TABLE knowledge_documents ADD COLUMN content_hash TEXT DEFAULT ''"
+                )
             except sqlite3.OperationalError:
                 pass
             conn.commit()
@@ -123,9 +132,7 @@ class KnowledgeBaseManager:
                 self._proactive_task = asyncio.create_task(self._proactive_create_table())
             except RuntimeError:
                 self._proactive_task = None
-        logger.info(
-            "[KB] LanceDB initialized at %s, table=%s", lance_path, "knowledge_base"
-        )
+        logger.info("[KB] LanceDB initialized at %s, table=%s", lance_path, "knowledge_base")
 
     def _ensure_lance_table(self) -> None:
         if "knowledge_base" not in self._lance_db.table_names():
@@ -136,11 +143,13 @@ class KnowledgeBaseManager:
                 logger.info("[KB] Opened existing knowledge_base table")
 
     def _create_lance_table(self, dim: int) -> None:
-        schema = pa.schema([
-            pa.field("id", pa.string()),
-            pa.field("vector", pa.list_(pa.float32(), dim)),
-            pa.field("document_id", pa.string()),
-        ])
+        schema = pa.schema(
+            [
+                pa.field("id", pa.string()),
+                pa.field("vector", pa.list_(pa.float32(), dim)),
+                pa.field("document_id", pa.string()),
+            ]
+        )
         try:
             self._lance_table = self._lance_db.create_table(
                 "knowledge_base", schema=schema, mode="create"
@@ -174,7 +183,9 @@ class KnowledgeBaseManager:
 
         return get_embedding_model()
 
-    async def upload_document(self, file_path: str | Path, display_name: str | None = None) -> dict[str, Any]:
+    async def upload_document(
+        self, file_path: str | Path, display_name: str | None = None
+    ) -> dict[str, Any]:
         """上传并处理文档，返回 doc_id 或 duplicate 信息。
 
         Args:
@@ -191,9 +202,7 @@ class KnowledgeBaseManager:
         doc_name = display_name or path.name
         suffix = "".join(Path(doc_name).suffixes).lower() or path.suffix.lower()
         if suffix not in _KB_ALLOWED_EXTENSIONS:
-            raise ValueError(
-                f"不支持的文件类型: {suffix}，支持: {sorted(_KB_ALLOWED_EXTENSIONS)}"
-            )
+            raise ValueError(f"不支持的文件类型: {suffix}，支持: {sorted(_KB_ALLOWED_EXTENSIONS)}")
 
         if path.stat().st_size > _KB_MAX_FILE_SIZE:
             raise ValueError(f"文件超过大小限制 ({_KB_MAX_FILE_SIZE // 1024 // 1024} MB)")
@@ -204,7 +213,9 @@ class KnowledgeBaseManager:
             file_head = f.read(8192)
         content_hash = hashlib.sha256(file_head).hexdigest()[:16]
 
-        existing = self._find_duplicate(doc_name, content_hash) or self._find_duplicate_by_hash(content_hash)
+        existing = self._find_duplicate(doc_name, content_hash) or self._find_duplicate_by_hash(
+            content_hash
+        )
         if existing:
             return {
                 "duplicate": True,
@@ -232,7 +243,7 @@ class KnowledgeBaseManager:
         return {"doc_id": doc_id, "duplicate": False}
 
     async def _process_document(self, doc_id: str, file_path: Path) -> None:
-        """后台处理文档：提取文本 → 分块 → 向量化 → 存储。"""
+        """后台处理文档：提取文本 → 分块 → 分批向量化 → 存储。"""
         try:
             text = await asyncio.to_thread(extract_text, file_path)
             if not text or not text.strip():
@@ -245,17 +256,76 @@ class KnowledgeBaseManager:
                 raise RuntimeError("未能从文档中提取任何内容块")
 
             embedder = await self._get_embedder()
-            chunk_texts = [c.content[:500] for c in chunks]
-            vectors = await embedder.embed(chunk_texts)
+
+            truncate = _KB_EMBED_CHUNK_TRUNCATE
+            chunk_texts = [c.content[:truncate].strip() for c in chunks]
+
+            total_batches = (len(chunk_texts) + _KB_EMBED_BATCH_SIZE - 1) // _KB_EMBED_BATCH_SIZE
+            vectors: list[list[float]] = []
+            failed_batches: list[int] = []
+
+            dim = 0
+            for batch_num in range(1, total_batches + 1):
+                start = (batch_num - 1) * _KB_EMBED_BATCH_SIZE
+                end = start + _KB_EMBED_BATCH_SIZE
+                batch = chunk_texts[start:end]
+
+                embedded = False
+                for attempt in range(_KB_EMBED_MAX_RETRIES):
+                    try:
+                        batch_vecs = await embedder.embed(batch)
+                        vectors.extend(batch_vecs)
+                        if dim == 0 and batch_vecs:
+                            dim = len(batch_vecs[0])
+                        embedded = True
+                        break
+                    except Exception as e:
+                        delay = 2**attempt
+                        if attempt < _KB_EMBED_MAX_RETRIES - 1:
+                            logger.warning(
+                                "[KB] Doc %s batch %d/%d attempt %d failed: %s, retrying in %ds",
+                                doc_id,
+                                batch_num,
+                                total_batches,
+                                attempt + 1,
+                                e,
+                                delay,
+                            )
+                            await asyncio.sleep(delay)
+                        else:
+                            logger.error(
+                                "[KB] Doc %s batch %d/%d failed after %d retries: %s",
+                                doc_id,
+                                batch_num,
+                                total_batches,
+                                _KB_EMBED_MAX_RETRIES,
+                                e,
+                            )
+
+                if not embedded:
+                    failed_batches.append(batch_num)
+                    if dim == 0:
+                        vectors.extend([[0.0]] * len(batch))
+                    else:
+                        vectors.extend([[0.0] * dim] * len(batch))
+                else:
+                    logger.info(
+                        "[KB] Doc %s: embedded %d/%d batches",
+                        doc_id,
+                        batch_num,
+                        total_batches,
+                    )
+
+                if batch_num < total_batches:
+                    await asyncio.sleep(_KB_EMBED_BATCH_DELAY)
 
             if self._lance_table is None:
-                dim = len(vectors[0]) if vectors else 0
+                if dim == 0:
+                    dim = await self._get_embedding_dim()
                 await asyncio.to_thread(self._create_lance_table, dim)
 
             lance_rows = [
-                {"id": None,
-                 "vector": vectors[i],
-                 "document_id": doc_id}
+                {"id": None, "vector": vectors[i], "document_id": doc_id}
                 for i in range(len(chunks))
             ]
 
@@ -277,17 +347,37 @@ class KnowledgeBaseManager:
 
             await asyncio.to_thread(self._lance_table.add, lance_rows)
 
+            fail_rate = len(failed_batches) / max(total_batches, 1)
             with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
-                conn.execute(
-                    "UPDATE knowledge_documents SET status='ready' WHERE id=?",
-                    (doc_id,),
-                )
+                if fail_rate == 0:
+                    conn.execute(
+                        "UPDATE knowledge_documents SET status='ready' WHERE id=?",
+                        (doc_id,),
+                    )
+                elif fail_rate < 0.1:
+                    conn.execute(
+                        "UPDATE knowledge_documents SET status='ready', error_msg=? WHERE id=?",
+                        (
+                            f"部分批次嵌入失败（{len(failed_batches)}/{total_batches}），已用零向量占位",
+                            doc_id,
+                        ),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE knowledge_documents SET status='failed', error_msg=? WHERE id=?",
+                        (
+                            f"嵌入失败 {len(failed_batches)}/{total_batches} 批次",
+                            doc_id,
+                        ),
+                    )
                 conn.commit()
 
             logger.info(
-                "[KB] Document %s processed: %d chunks",
+                "[KB] Document %s processed: %d chunks, %d/%d batches OK",
                 doc_id,
                 len(chunks),
+                total_batches - len(failed_batches),
+                total_batches,
             )
 
         except Exception as e:
@@ -299,10 +389,9 @@ class KnowledgeBaseManager:
                 )
                 conn.commit()
 
-    async def list_documents(
-        self, limit: int = 20, offset: int = 0
-    ) -> dict[str, Any]:
+    async def list_documents(self, limit: int = 20, offset: int = 0) -> dict[str, Any]:
         """分页列出文档。"""
+
         def _query():
             with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
                 conn.row_factory = sqlite3.Row
@@ -311,9 +400,7 @@ class KnowledgeBaseManager:
                     "FROM knowledge_documents ORDER BY upload_time DESC LIMIT ? OFFSET ?",
                     (limit, offset),
                 ).fetchall()
-                total = conn.execute(
-                    "SELECT COUNT(*) FROM knowledge_documents"
-                ).fetchone()[0]
+                total = conn.execute("SELECT COUNT(*) FROM knowledge_documents").fetchone()[0]
                 return rows, total
 
         rows, total = await asyncio.to_thread(_query)
@@ -322,18 +409,15 @@ class KnowledgeBaseManager:
 
     async def delete_document(self, doc_id: str) -> bool:
         """删除文档及其所有分块（SQLite + LanceDB）。"""
+
         def _delete():
             with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
                 cursor = conn.execute(
                     "SELECT id FROM knowledge_chunks WHERE document_id=?", (doc_id,)
                 )
                 chunk_ids = [row[0] for row in cursor.fetchall()]
-                conn.execute(
-                    "DELETE FROM knowledge_chunks WHERE document_id=?", (doc_id,)
-                )
-                conn.execute(
-                    "DELETE FROM knowledge_documents WHERE id=?", (doc_id,)
-                )
+                conn.execute("DELETE FROM knowledge_chunks WHERE document_id=?", (doc_id,))
+                conn.execute("DELETE FROM knowledge_documents WHERE id=?", (doc_id,))
                 conn.commit()
                 return chunk_ids
 
@@ -355,9 +439,7 @@ class KnowledgeBaseManager:
 
     def _document_exists(self, doc_id: str) -> bool:
         with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
-            row = conn.execute(
-                "SELECT 1 FROM knowledge_documents WHERE id=?", (doc_id,)
-            ).fetchone()
+            row = conn.execute("SELECT 1 FROM knowledge_documents WHERE id=?", (doc_id,)).fetchone()
             return row is not None
 
     def _find_duplicate(self, name: str, content_hash: str) -> dict | None:
@@ -380,11 +462,10 @@ class KnowledgeBaseManager:
 
     async def get_stats(self) -> dict[str, Any]:
         """返回知识库统计信息。"""
+
         def _query():
             with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
-                total_docs = conn.execute(
-                    "SELECT COUNT(*) FROM knowledge_documents"
-                ).fetchone()[0]
+                total_docs = conn.execute("SELECT COUNT(*) FROM knowledge_documents").fetchone()[0]
                 ready_docs = conn.execute(
                     "SELECT COUNT(*) FROM knowledge_documents WHERE status='ready'"
                 ).fetchone()[0]
@@ -413,11 +494,23 @@ class KnowledgeBaseManager:
                     else:
                         ago_str = f"{ago // 86400}天前"
                     recent_docs.append({"name": r[0], "ago": ago_str})
-                return total_docs, ready_docs, processing_docs, failed_docs, total_chunks, recent_docs
+                return (
+                    total_docs,
+                    ready_docs,
+                    processing_docs,
+                    failed_docs,
+                    total_chunks,
+                    recent_docs,
+                )
 
-        total_docs, ready_docs, processing_docs, failed_docs, total_chunks, recent_docs = (
-            await asyncio.to_thread(_query)
-        )
+        (
+            total_docs,
+            ready_docs,
+            processing_docs,
+            failed_docs,
+            total_chunks,
+            recent_docs,
+        ) = await asyncio.to_thread(_query)
         return {
             "total_documents": total_docs,
             "ready_documents": ready_docs,
@@ -436,11 +529,20 @@ class KnowledgeBaseManager:
                 (f"%{name}%",),
             ).fetchall()
             return [
-                {"id": r[0], "name": r[1], "file_type": r[2], "total_chunks": r[3], "status": r[4], "upload_time": r[5]}
+                {
+                    "id": r[0],
+                    "name": r[1],
+                    "file_type": r[2],
+                    "total_chunks": r[3],
+                    "status": r[4],
+                    "upload_time": r[5],
+                }
                 for r in rows
             ]
 
-    async def replace_document(self, existing_doc_id: str, file_path: str | Path, display_name: str | None = None) -> dict[str, Any]:
+    async def replace_document(
+        self, existing_doc_id: str, file_path: str | Path, display_name: str | None = None
+    ) -> dict[str, Any]:
         """覆盖已有文档：删除旧文档后重新上传。"""
         await self.delete_document(existing_doc_id)
         return await self.upload_document(file_path, display_name=display_name)
@@ -513,10 +615,7 @@ class KnowledgeBaseManager:
                 )
             else:
                 results = (
-                    self._lance_table.search(query_vec)
-                    .metric("cosine")
-                    .limit(top_k)
-                    .to_list()
+                    self._lance_table.search(query_vec).metric("cosine").limit(top_k).to_list()
                 )
 
             distance_multiplier = 2.0
@@ -575,13 +674,15 @@ class KnowledgeBaseManager:
                 else:
                     expanded_content = base_content
 
-                results_out.append({
-                    "chunk_id": chunk_id,
-                    "document_id": lancedb_doc_id,
-                    "document_name": doc_name,
-                    "content": expanded_content,
-                    "score": score,
-                })
+                results_out.append(
+                    {
+                        "chunk_id": chunk_id,
+                        "document_id": lancedb_doc_id,
+                        "document_name": doc_name,
+                        "content": expanded_content,
+                        "score": score,
+                    }
+                )
 
             return results_out
 
@@ -590,6 +691,7 @@ class KnowledgeBaseManager:
 
     async def get_document_status(self, doc_id: str) -> dict[str, Any] | None:
         """获取文档处理状态。"""
+
         def _query():
             with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
                 row = conn.execute(
@@ -603,6 +705,7 @@ class KnowledgeBaseManager:
 
     async def get_chunk_text(self, chunk_id: str) -> str | None:
         """根据 chunk ID 获取原文内容。"""
+
         def _query():
             with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
                 row = conn.execute(
@@ -615,6 +718,7 @@ class KnowledgeBaseManager:
 
     async def get_document_by_id(self, doc_id: str) -> dict[str, Any] | None:
         """获取单个文档的详细信息。"""
+
         def _query():
             with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
                 row = conn.execute(
@@ -655,6 +759,7 @@ class KnowledgeBaseManager:
 
     async def _check_stuck_processing(self) -> int:
         """将超时的 processing 文档标记为 failed。"""
+
         def _do():
             cutoff = time.time() - 600
             with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
@@ -673,6 +778,7 @@ class KnowledgeBaseManager:
 
     async def repair_document(self, doc_id: str) -> dict[str, Any]:
         """修复文档：从 SQLite 分块重建 LanceDB 向量索引。"""
+
         def _read_chunks():
             with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
                 rows = conn.execute(
@@ -694,9 +800,7 @@ class KnowledgeBaseManager:
             await asyncio.to_thread(self._create_lance_table, dim)
 
         try:
-            await asyncio.to_thread(
-                self._lance_table.delete, f"document_id = '{doc_id}'"
-            )
+            await asyncio.to_thread(self._lance_table.delete, f"document_id = '{doc_id}'")
         except Exception:
             pass
 
@@ -728,7 +832,9 @@ class KnowledgeBaseManager:
                     for r in self._lance_table.to_arrow(columns=["document_id"]).to_pylist()
                 }
             )
-            logger.debug("[KB] Loaded %d unique document_ids from LanceDB for orphan check", len(lance_ids))
+            logger.debug(
+                "[KB] Loaded %d unique document_ids from LanceDB for orphan check", len(lance_ids)
+            )
         except Exception:
             lance_ids = set()
 
@@ -743,9 +849,7 @@ class KnowledgeBaseManager:
         cleaned = 0
         for oid in orphan_ids:
             try:
-                await asyncio.to_thread(
-                    self._lance_table.delete, f"document_id = '{oid}'"
-                )
+                await asyncio.to_thread(self._lance_table.delete, f"document_id = '{oid}'")
                 cleaned += 1
             except Exception:
                 pass
@@ -781,18 +885,21 @@ class KnowledgeBaseManager:
                 lance_count = 0
 
             if lance_count != sqlite_count:
-                inconsistent.append({
-                    "doc_id": doc_id,
-                    "name": name,
-                    "status": status,
-                    "sqlite_chunks": sqlite_count,
-                    "lancedb_vectors": lance_count,
-                })
+                inconsistent.append(
+                    {
+                        "doc_id": doc_id,
+                        "name": name,
+                        "status": status,
+                        "sqlite_chunks": sqlite_count,
+                        "lancedb_vectors": lance_count,
+                    }
+                )
 
         return inconsistent
 
     async def verify_document(self, doc_id: str) -> dict[str, Any] | None:
         """返回文档在 SQLite 和 LanceDB 中的记录数对比。"""
+
         def _get_sqlite():
             with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
                 row = conn.execute(
@@ -805,7 +912,13 @@ class KnowledgeBaseManager:
                     "SELECT COUNT(*) FROM knowledge_chunks WHERE document_id=?",
                     (doc_id,),
                 ).fetchone()[0]
-                return {"id": row[0], "name": row[1], "status": row[2], "total_chunks": row[3], "actual_chunks": chunk_count}
+                return {
+                    "id": row[0],
+                    "name": row[1],
+                    "status": row[2],
+                    "total_chunks": row[3],
+                    "actual_chunks": chunk_count,
+                }
 
         sqlite_info = await asyncio.to_thread(_get_sqlite)
         if sqlite_info is None:
@@ -883,7 +996,16 @@ class KnowledgeBaseManager:
 
         chunks, total_candidates = await asyncio.to_thread(_query_chunks)
         if not chunks:
-            return {"nodes": [], "links": [], "meta": {"total_nodes": 0, "total_edges": 0, "truncated": False, "total_candidates": 0}}
+            return {
+                "nodes": [],
+                "links": [],
+                "meta": {
+                    "total_nodes": 0,
+                    "total_edges": 0,
+                    "truncated": False,
+                    "total_candidates": 0,
+                },
+            }
 
         nodes: list[dict] = []
         nodes_by_id: dict[str, dict] = {}
@@ -924,15 +1046,14 @@ class KnowledgeBaseManager:
         semantic_incomplete = False
         if include_semantic and self._lance_table is not None:
             try:
+
                 async def _compute_semantic():
                     nonlocal semantic_sampled
                     embedder = await self._get_embedder()
                     if doc_id:
-                        sample_nodes = nodes[:min(len(nodes), 200)]
+                        sample_nodes = nodes[: min(len(nodes), 200)]
                     else:
-                        sample_indices = _random.sample(
-                            range(len(nodes)), min(200, len(nodes))
-                        )
+                        sample_indices = _random.sample(range(len(nodes)), min(200, len(nodes)))
                         sample_nodes = [nodes[i] for i in sorted(sample_indices)]
 
                     semantic_sampled = len(sample_nodes)
@@ -941,11 +1062,13 @@ class KnowledgeBaseManager:
                             vec = await embedder.embed_query(node["content"][:300])
                             node_group = node["group"]
                             lance_results = await asyncio.to_thread(
-                                lambda v=vec, g=node_group: self._lance_table.search(v)
-                                .metric("cosine")
-                                .where(f"document_id != '{g}'")
-                                .limit(3)
-                                .to_list(),
+                                lambda v=vec, g=node_group: (
+                                    self._lance_table.search(v)
+                                    .metric("cosine")
+                                    .where(f"document_id != '{g}'")
+                                    .limit(3)
+                                    .to_list()
+                                ),
                             )
                             for r in lance_results:
                                 score = 1.0 - r.get("_distance", 1.0) / 2.0
@@ -953,14 +1076,18 @@ class KnowledgeBaseManager:
                                     tid = r.get("id", "")
                                     if tid not in nodes_by_id:
                                         continue
-                                    key = (node["id"], tid) if node["id"] < tid else (tid, node["id"])
+                                    key = (
+                                        (node["id"], tid) if node["id"] < tid else (tid, node["id"])
+                                    )
                                     if key not in seen_pairs:
                                         seen_pairs.add(key)
-                                        links.append({
-                                            "source": node["id"],
-                                            "target": tid,
-                                            "value": round(score, 3),
-                                        })
+                                        links.append(
+                                            {
+                                                "source": node["id"],
+                                                "target": tid,
+                                                "value": round(score, 3),
+                                            }
+                                        )
                         except Exception:
                             pass
 
