@@ -3336,6 +3336,8 @@
     "resultCount": "{{count}} results",
           "semanticTimeout": "Semantic edge computation timed out, cross-document links may be incomplete",
       "noContent": "(no content)",
+      "graphNodeCount": "{{nodes}} nodes",
+      "graphEdgeCount": "{{edges}} edges",
     "tabManage": "Documents",
     "tabGraph": "Graph View",
     "graph": {

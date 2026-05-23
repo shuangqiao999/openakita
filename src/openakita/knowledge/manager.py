@@ -1147,5 +1147,11 @@ class KnowledgeBaseManager:
                 "total_candidates": total_candidates,
                 "semantic_sampled_count": semantic_sampled,
                 "semantic_incomplete": semantic_incomplete,
+                "doc_groups": [
+                    {"id": did, "name": dname}
+                    for did, dname in sorted(
+                        {(n["group"], n["doc_name"]) for n in nodes}
+                    )
+                ],
             },
         }

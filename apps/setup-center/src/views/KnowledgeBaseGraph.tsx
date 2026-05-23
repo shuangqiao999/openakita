@@ -174,14 +174,22 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
     const fg = fgRef.current as any;
     if (!fg) return;
     const pos = fg.cameraPosition();
-    fg.cameraPosition({ x: pos.x, y: pos.y, z: Math.max(20, pos.z * 0.8) }, pos, 300);
+    fg.cameraPosition(
+      { x: pos.x, y: pos.y, z: Math.max(20, pos.z * 0.8) },
+      { x: 0, y: 0, z: 0 },
+      300,
+    );
   };
 
   const handleZoomOut = () => {
     const fg = fgRef.current as any;
     if (!fg) return;
     const pos = fg.cameraPosition();
-    fg.cameraPosition({ x: pos.x, y: pos.y, z: pos.z * 1.25 }, pos, 300);
+    fg.cameraPosition(
+      { x: pos.x, y: pos.y, z: pos.z * 1.25 },
+      { x: 0, y: 0, z: 0 },
+      300,
+    );
   };
 
   const handleResetView = () => {
@@ -274,6 +282,26 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
 
       <div style={{
         position: "absolute", top: 10, left: 10, zIndex: 10,
+        background: "rgba(0,0,0,0.55)", borderRadius: 8, padding: "6px 10px",
+        color: "#94a3b8", fontSize: 10, display: "flex", flexWrap: "wrap", gap: 8,
+        alignItems: "center", maxWidth: "75%",
+      }}>
+        {(graphData.meta?.doc_groups || []).map((dg: { id: string; name: string }, i: number) => (
+          <span key={dg.id} style={{ display: "flex", alignItems: "center", gap: 4, color: "#e2e8f0" }}>
+            <span style={{
+              width: 8, height: 8, borderRadius: "50%", display: "inline-block",
+              background: `hsl(${(i * 67) % 360}, 60%, 55%)`,
+            }} />
+            {dg.name}
+          </span>
+        ))}
+        <span style={{ borderLeft: "1px solid #334155", paddingLeft: 8, color: "#64748b" }}>
+          {t("kb.graph.graphNodeCount", { nodes: graphData.nodes.length })} · {t("kb.graph.graphEdgeCount", { edges: graphData.links.length })}
+        </span>
+      </div>
+
+      <div style={{
+        position: "absolute", top: 48, left: 10, zIndex: 10,
         display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap",
         background: "rgba(0,0,0,0.5)", borderRadius: 8, padding: "6px 10px",
       }}>
@@ -365,22 +393,6 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
         <button onClick={handleZoomIn} title={t("kb.graph.zoomIn")} style={zoomBtnStyle}><Plus size={16} /></button>
         <button onClick={handleZoomOut} title={t("kb.graph.zoomOut")} style={zoomBtnStyle}><Minus size={16} /></button>
         <button onClick={handleResetView} title={t("kb.graph.resetView")} style={zoomBtnStyle}><RotateCw size={14} /></button>
-      </div>
-
-      <div style={{
-        position: "absolute", bottom: 10, left: 10, zIndex: 10,
-        background: "rgba(0,0,0,0.55)", borderRadius: 8, padding: "6px 10px",
-        color: "#94a3b8", fontSize: 10, display: "flex", gap: 12,
-      }}>
-        {[
-          [t("kb.graph.legendNode"), ""],
-          [t("kb.graph.legendSeqEdge"), ""],
-          [t("kb.graph.legendSimEdge"), ""],
-        ].map(([label]) => (
-          <div key={label} style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            <span>{label}</span>
-          </div>
-        ))}
       </div>
 
       {showPreview && selectedNode && (

@@ -3336,6 +3336,8 @@
     "resultCount": "{{count}} 条结果",
           "semanticTimeout": "语义边计算超时，跨文档关联可能不完整",
       "noContent": "(无内容)",
+      "graphNodeCount": "{{nodes}} 节点",
+      "graphEdgeCount": "{{edges}} 边",
     "tabManage": "文档管理",
     "tabGraph": "图谱视图",
     "graph": {
