@@ -174,17 +174,22 @@ class KnowledgeBaseManager:
 
         return get_embedding_model()
 
-    async def upload_document(self, file_path: str | Path) -> dict[str, Any]:
+    async def upload_document(self, file_path: str | Path, display_name: str | None = None) -> dict[str, Any]:
         """上传并处理文档，返回 doc_id 或 duplicate 信息。
 
+        Args:
+            file_path: 临时文件路径
+            display_name: 可选，显示用的原始文件名（用于去重和展示）
+
         Returns:
-            {"doc_id": "...", "duplicate": false} 或 {"duplicate": true, "existing_doc_id": "...", "existing_name": "..."}
+            {"doc_id": "...", "duplicate": false} 或 {"duplicate": true, ...}
         """
         path = Path(file_path)
         if not path.exists():
             raise FileNotFoundError(f"文件不存在: {file_path}")
 
-        suffix = path.suffix.lower()
+        doc_name = display_name or path.name
+        suffix = "".join(Path(doc_name).suffixes).lower() or path.suffix.lower()
         if suffix not in _KB_ALLOWED_EXTENSIONS:
             raise ValueError(
                 f"不支持的文件类型: {suffix}，支持: {sorted(_KB_ALLOWED_EXTENSIONS)}"
@@ -199,7 +204,7 @@ class KnowledgeBaseManager:
             file_head = f.read(8192)
         content_hash = hashlib.sha256(file_head).hexdigest()[:16]
 
-        existing = self._find_duplicate(path.name, content_hash)
+        existing = self._find_duplicate(doc_name, content_hash)
         if existing:
             return {
                 "duplicate": True,
@@ -214,7 +219,7 @@ class KnowledgeBaseManager:
             conn.execute(
                 "INSERT INTO knowledge_documents(id, name, file_type, upload_time, status, file_size, content_hash) "
                 "VALUES(?, ?, ?, ?, 'processing', ?, ?)",
-                (doc_id, path.name, suffix.lstrip("."), time.time(), file_size, content_hash),
+                (doc_id, doc_name, suffix.lstrip("."), time.time(), file_size, content_hash),
             )
             conn.commit()
 
@@ -426,10 +431,10 @@ class KnowledgeBaseManager:
                 for r in rows
             ]
 
-    async def replace_document(self, existing_doc_id: str, file_path: str | Path) -> dict[str, Any]:
+    async def replace_document(self, existing_doc_id: str, file_path: str | Path, display_name: str | None = None) -> dict[str, Any]:
         """覆盖已有文档：删除旧文档后重新上传。"""
         await self.delete_document(existing_doc_id)
-        return await self.upload_document(file_path)
+        return await self.upload_document(file_path, display_name=display_name)
 
     async def ingest_text(self, title: str, content: str, file_type: str = "web") -> dict[str, Any]:
         """将纯文本内容作为虚拟文档保存到知识库。
@@ -449,7 +454,7 @@ class KnowledgeBaseManager:
         fd, tmp_path = tempfile.mkstemp(suffix=ext, prefix=f"{safe_name}_", dir=str(self._tmp_dir))
         os.write(fd, content.encode("utf-8"))
         os.close(fd)
-        result = await self.upload_document(tmp_path)
+        result = await self.upload_document(tmp_path, display_name=f"{safe_name}{ext}")
         asyncio.create_task(self._delayed_unlink(tmp_path))
         return result
 

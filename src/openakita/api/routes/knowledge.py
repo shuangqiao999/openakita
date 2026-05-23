@@ -85,7 +85,7 @@ async def upload_document(request: Request, file: UploadFile = File(...)):
         finally:
             os.close(fd)
 
-        upload_result = await kb.upload_document(tmp_path)
+        upload_result = await kb.upload_document(tmp_path, display_name=file.filename)
 
         async def _cleanup():
             await asyncio.sleep(5)
@@ -150,7 +150,7 @@ async def replace_document(
         finally:
             os.close(fd)
 
-        result = await kb.replace_document(existing_doc_id, tmp_path)
+        result = await kb.replace_document(existing_doc_id, tmp_path, display_name=file.filename)
 
         async def _cleanup():
             await asyncio.sleep(5)
