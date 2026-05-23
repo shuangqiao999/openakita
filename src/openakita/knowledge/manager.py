@@ -1097,36 +1097,39 @@ class KnowledgeBaseManager:
 
                 semantic_sampled = len(sample_nodes)
 
-                async def _process_one(n: dict):
+                texts = [n["content"][:300].strip() for n in sample_nodes]
+                vecs, _, _ = await self._embed_in_batches(embedder, texts, doc_id + "_sem")
+
+                async def _process_one(n: dict, v: list[float]):
                     try:
                         async with sem:
-                            vec = await embedder.embed_query(n["content"][:300])
-                        lance_results = await asyncio.to_thread(
-                            lambda v=vec: (
-                                self._lance_table.search(v)
-                                .metric("cosine")
-                                .limit(6)
-                                .to_list()
-                            ),
-                        )
-                        for r in lance_results:
-                            sc = 1.0 - r.get("_distance", 1.0) / 2.0
-                            if sc >= threshold:
-                                tid = r.get("id", "")
-                                if tid not in nodes_by_id or tid == n["id"]:
-                                    continue
-                                key = (n["id"], tid) if n["id"] < tid else (tid, n["id"])
-                                if key not in seen_pairs:
-                                    seen_pairs.add(key)
-                                    links.append({
-                                        "source": n["id"], "target": tid, "value": round(sc, 3),
-                                    })
+                            lance_results = await asyncio.to_thread(
+                                lambda: (
+                                    self._lance_table.search(v)
+                                    .metric("cosine")
+                                    .limit(6)
+                                    .to_list()
+                                ),
+                            )
+                            for r in lance_results:
+                                sc = 1.0 - r.get("_distance", 1.0) / 2.0
+                                if sc >= threshold:
+                                    tid = r.get("id", "")
+                                    if tid not in nodes_by_id or tid == n["id"]:
+                                        continue
+                                    key = (n["id"], tid) if n["id"] < tid else (tid, n["id"])
+                                    if key not in seen_pairs:
+                                        seen_pairs.add(key)
+                                        links.append({
+                                            "source": n["id"], "target": tid, "value": round(sc, 3),
+                                        })
                     except Exception:
                         pass
 
                 sem = asyncio.Semaphore(3)
                 await asyncio.wait_for(
-                    asyncio.gather(*[_process_one(n) for n in sample_nodes]), timeout=60,
+                    asyncio.gather(*[_process_one(n, v) for n, v in zip(sample_nodes, vecs, strict=True)]),
+                    timeout=60,
                 )
             except TimeoutError:
                 logger.warning("[KB] Semantic edges computation timed out after 60s")
