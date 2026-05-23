@@ -105,7 +105,7 @@ class OpenAIEmbedding(BaseEmbedding):
         except EmbeddingModelError:
             raise
         except Exception as e:
-            raise EmbeddingModelError(f"OpenAI 嵌入请求失败: {e}") from e
+            raise EmbeddingModelError(f"OpenAI 嵌入请求失败: {type(e).__name__}: {e}") from e
 
     @property
     def dimension(self) -> int:

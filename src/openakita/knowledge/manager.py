@@ -80,6 +80,7 @@ class KnowledgeBaseManager:
         with sqlite3.connect(str(self._db_path)) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute("PRAGMA busy_timeout=5000")
 
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS knowledge_documents (
@@ -488,7 +489,6 @@ class KnowledgeBaseManager:
                     self._lance_table.delete,
                     f"document_id = '{doc_id}'",
                 )
-
             except Exception as e:
                 logger.warning("[KB] Failed to delete LanceDB vectors for %s: %s", doc_id, e)
 
