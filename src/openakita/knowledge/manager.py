@@ -204,7 +204,7 @@ class KnowledgeBaseManager:
             file_head = f.read(8192)
         content_hash = hashlib.sha256(file_head).hexdigest()[:16]
 
-        existing = self._find_duplicate(doc_name, content_hash)
+        existing = self._find_duplicate(doc_name, content_hash) or self._find_duplicate_by_hash(content_hash)
         if existing:
             return {
                 "duplicate": True,
@@ -361,11 +361,20 @@ class KnowledgeBaseManager:
             return row is not None
 
     def _find_duplicate(self, name: str, content_hash: str) -> dict | None:
-        """检查是否存在同名且哈希匹配的文档。"""
+        """检查是否存在同名且哈希匹配的文档（含 failed 状态）。"""
         with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
             row = conn.execute(
-                "SELECT id, name, status FROM knowledge_documents WHERE name=? AND content_hash=? AND status!='failed'",
+                "SELECT id, name, status FROM knowledge_documents WHERE name=? AND content_hash=?",
                 (name, content_hash),
+            ).fetchone()
+            return {"id": row[0], "name": row[1], "status": row[2]} if row else None
+
+    def _find_duplicate_by_hash(self, content_hash: str) -> dict | None:
+        """检查是否存在内容相同的文档（不限名称）。"""
+        with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
+            row = conn.execute(
+                "SELECT id, name, status FROM knowledge_documents WHERE content_hash=? LIMIT 1",
+                (content_hash,),
             ).fetchone()
             return {"id": row[0], "name": row[1], "status": row[2]} if row else None
 
