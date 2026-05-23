@@ -48,7 +48,6 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
         params.set("include_semantic", "true");
         params.set("similarity_threshold", String(similarityThreshold));
       }
-      params.set("max_nodes", "2000");
       const res = await safeFetch(`${apiBaseUrl}/api/kb/graph?${params.toString()}`, {
         signal: controller.signal,
       });

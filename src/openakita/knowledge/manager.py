@@ -1006,22 +1006,13 @@ class KnowledgeBaseManager:
         doc_id: str | None = None,
         include_semantic: bool = False,
         similarity_threshold: float = 0.75,
-        max_nodes: int = 2000,
+        max_nodes: int = 0,
     ) -> dict[str, Any]:
-        """获取图谱数据：节点（chunk）+ 边（顺序 + 可选语义）。
-
-        Args:
-            doc_id: 可选，过滤特定文档
-            include_semantic: 是否包含语义相似边
-            similarity_threshold: 语义边相似度阈值 (0.5~0.95)
-            max_nodes: 最大节点数
-
-        Returns:
-            {"nodes": [...], "links": [...], "meta": {...}}
-        """
+        """获取图谱数据：节点（chunk）+ 边（顺序 + 可选语义）。max_nodes=0 表示不限制。"""
         import random as _random
 
         threshold = max(0.5, min(0.95, similarity_threshold))
+        limit = max_nodes if max_nodes > 0 else 9999999
 
         def _query_chunks():
             with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
@@ -1032,8 +1023,8 @@ class KnowledgeBaseManager:
                            JOIN knowledge_documents kd ON kc.document_id = kd.id
                            WHERE kc.document_id = ? AND kd.status = 'ready'
                            ORDER BY kc.chunk_index
-                           LIMIT ?""",
-                        (doc_id, max_nodes),
+                            LIMIT ?""",
+                        (doc_id, limit),
                     ).fetchall()
                     total = conn.execute(
                         "SELECT COUNT(*) FROM knowledge_chunks WHERE document_id=?",
@@ -1051,8 +1042,8 @@ class KnowledgeBaseManager:
                            JOIN knowledge_documents kd ON kc.document_id = kd.id
                            WHERE kd.status = 'ready'
                            ORDER BY kc.document_id, kc.chunk_index
-                           LIMIT ?""",
-                        (max_nodes,),
+                            LIMIT ?""",
+                        (limit,),
                     ).fetchall()
                 return [(r[0], r[1] or "", r[2], r[3], r[4]) for r in rows], total
 
