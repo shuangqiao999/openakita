@@ -77,10 +77,9 @@ class KnowledgeBaseManager:
             logger.debug("[KB] No running event loop, skipping startup scan")
 
     def _init_sqlite(self) -> None:
-        with sqlite3.connect(str(self._db_path)) as conn:
+        with sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA foreign_keys=ON")
-            conn.execute("PRAGMA busy_timeout=5000")
 
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS knowledge_documents (
@@ -266,7 +265,7 @@ class KnowledgeBaseManager:
 
         doc_id = uuid.uuid4().hex
 
-        with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
+        with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
             conn.execute(
                 "INSERT INTO knowledge_documents(id, name, file_type, upload_time, status, file_size, content_hash) "
                 "VALUES(?, ?, ?, ?, 'processing', ?, ?)",
@@ -315,7 +314,7 @@ class KnowledgeBaseManager:
                 for i in range(len(chunks))
             ]
 
-            with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
+            with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
                 for i, c in enumerate(chunks):
                     chunk_id = f"{doc_id}_{i:05d}"
                     conn.execute(
@@ -338,7 +337,7 @@ class KnowledgeBaseManager:
                 (len(chunk_texts) + _KB_EMBED_BATCH_SIZE - 1) // _KB_EMBED_BATCH_SIZE, 1
             )
             fail_rate = failed_batches / max(total_batches, 1)
-            with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
+            with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
                 if failed_batches == 0:
                     conn.execute(
                         "UPDATE knowledge_documents SET status='ready' WHERE id=?",
@@ -372,7 +371,7 @@ class KnowledgeBaseManager:
 
         except Exception as e:
             logger.error("[KB] Failed to process document %s: %s", doc_id, e)
-            with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
+            with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
                 conn.execute(
                     "UPDATE knowledge_documents SET status='failed', error_msg=? WHERE id=?",
                     (str(e)[:500], doc_id),
@@ -449,9 +448,8 @@ class KnowledgeBaseManager:
 
     async def list_documents(self, limit: int = 20, offset: int = 0) -> dict[str, Any]:
         """分页列出文档。"""
-
         def _query():
-            with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
+            with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
                 conn.row_factory = sqlite3.Row
                 rows = conn.execute(
                     "SELECT id, name, file_type, upload_time, total_chunks, status, error_msg "
@@ -460,48 +458,35 @@ class KnowledgeBaseManager:
                 ).fetchall()
                 total = conn.execute("SELECT COUNT(*) FROM knowledge_documents").fetchone()[0]
                 return rows, total
-
         rows, total = await asyncio.to_thread(_query)
-        documents = [dict(r) for r in rows]
-        return {"documents": documents, "total": total}
+        return {"documents": [dict(r) for r in rows], "total": total}
 
     async def delete_document(self, doc_id: str) -> bool:
         """删除文档及其所有分块（SQLite + LanceDB）。"""
-
         def _delete():
-            with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
-                cursor = conn.execute(
-                    "SELECT id FROM knowledge_chunks WHERE document_id=?", (doc_id,)
-                )
+            with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
+                cursor = conn.execute("SELECT id FROM knowledge_chunks WHERE document_id=?", (doc_id,))
                 chunk_ids = [row[0] for row in cursor.fetchall()]
                 conn.execute("DELETE FROM knowledge_chunks WHERE document_id=?", (doc_id,))
                 conn.execute("DELETE FROM knowledge_documents WHERE id=?", (doc_id,))
                 conn.commit()
                 return chunk_ids
-
         chunk_ids = await asyncio.to_thread(_delete)
         if not chunk_ids and not self._document_exists(doc_id):
             return False
-
         if chunk_ids and self._lance_table is not None:
             try:
-                await asyncio.to_thread(
-                    self._lance_table.delete,
-                    f"document_id = '{doc_id}'",
-                )
+                await asyncio.to_thread(self._lance_table.delete, f"document_id = '{doc_id}'")
             except Exception as e:
                 logger.warning("[KB] Failed to delete LanceDB vectors for %s: %s", doc_id, e)
-
         return True
 
     def _document_exists(self, doc_id: str) -> bool:
-        with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
-            row = conn.execute("SELECT 1 FROM knowledge_documents WHERE id=?", (doc_id,)).fetchone()
-            return row is not None
+        with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
+            return conn.execute("SELECT 1 FROM knowledge_documents WHERE id=?", (doc_id,)).fetchone() is not None
 
     def _find_duplicate(self, name: str, content_hash: str) -> dict | None:
-        """检查是否存在同名且哈希匹配的文档（含 failed 状态）。"""
-        with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
+        with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
             row = conn.execute(
                 "SELECT id, name, status FROM knowledge_documents WHERE name=? AND content_hash=?",
                 (name, content_hash),
@@ -509,8 +494,7 @@ class KnowledgeBaseManager:
             return {"id": row[0], "name": row[1], "status": row[2]} if row else None
 
     def _find_duplicate_by_hash(self, content_hash: str) -> dict | None:
-        """检查是否存在内容相同的文档（不限名称）。"""
-        with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
+        with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
             row = conn.execute(
                 "SELECT id, name, status FROM knowledge_documents WHERE content_hash=? LIMIT 1",
                 (content_hash,),
@@ -521,7 +505,7 @@ class KnowledgeBaseManager:
         """返回知识库统计信息。"""
 
         def _query():
-            with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
+            with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
                 total_docs = conn.execute("SELECT COUNT(*) FROM knowledge_documents").fetchone()[0]
                 ready_docs = conn.execute(
                     "SELECT COUNT(*) FROM knowledge_documents WHERE status='ready'"
@@ -579,7 +563,7 @@ class KnowledgeBaseManager:
 
     def find_document_by_name(self, name: str) -> list[dict[str, Any]]:
         """按名称搜索文档（支持模糊匹配）。"""
-        with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
+        with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
             rows = conn.execute(
                 "SELECT id, name, file_type, total_chunks, status, upload_time "
                 "FROM knowledge_documents WHERE name LIKE ? ORDER BY upload_time DESC LIMIT 5",
@@ -700,7 +684,7 @@ class KnowledgeBaseManager:
                 return []
 
             content_map: dict[str, tuple[str, str]] = {}
-            with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
+            with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
                 placeholders = ",".join(["?"] * len(needed_ids))
                 rows = conn.execute(
                     f"""SELECT kc.id, kc.content, kd.id as doc_id, kd.name as document_name
@@ -750,7 +734,8 @@ class KnowledgeBaseManager:
         """获取文档处理状态。"""
 
         def _query():
-            with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
+            with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
+                conn.row_factory = sqlite3.Row
                 row = conn.execute(
                     "SELECT id, name, file_type, upload_time, total_chunks, status, error_msg "
                     "FROM knowledge_documents WHERE id=?",
@@ -764,7 +749,7 @@ class KnowledgeBaseManager:
         """根据 chunk ID 获取原文内容。"""
 
         def _query():
-            with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
+            with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
                 row = conn.execute(
                     "SELECT content FROM knowledge_chunks WHERE id=?",
                     (chunk_id,),
@@ -777,7 +762,7 @@ class KnowledgeBaseManager:
         """获取单个文档的详细信息。"""
 
         def _query():
-            with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
+            with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
                 row = conn.execute(
                     "SELECT id, name, file_type, upload_time, total_chunks, status, error_msg "
                     "FROM knowledge_documents WHERE id=?",
@@ -819,7 +804,7 @@ class KnowledgeBaseManager:
 
         def _do():
             cutoff = time.time() - 600
-            with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
+            with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
                 c = conn.execute(
                     "UPDATE knowledge_documents SET status='failed', error_msg=? "
                     "WHERE status='processing' AND upload_time < ?",
@@ -837,7 +822,7 @@ class KnowledgeBaseManager:
         """修复文档：从 SQLite 分块重建 LanceDB 向量索引。"""
 
         def _read_chunks():
-            with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
+            with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
                 rows = conn.execute(
                     "SELECT id, content FROM knowledge_chunks WHERE document_id=? ORDER BY chunk_index",
                     (doc_id,),
@@ -869,7 +854,7 @@ class KnowledgeBaseManager:
         await asyncio.to_thread(self._lance_table.add, lance_rows)
         self._create_index_if_needed()
 
-        with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
+        with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
             if failed == 0:
                 conn.execute(
                     "UPDATE knowledge_documents SET status='ready', error_msg=NULL WHERE id=?",
@@ -904,7 +889,7 @@ class KnowledgeBaseManager:
             lance_ids = set()
 
         def _get_valid_ids():
-            with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
+            with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
                 rows = conn.execute("SELECT id FROM knowledge_documents").fetchall()
                 return {r[0] for r in rows}
 
@@ -931,7 +916,7 @@ class KnowledgeBaseManager:
             return []
 
         def _get_ready_docs():
-            with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
+            with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
                 rows = conn.execute(
                     "SELECT id, name, total_chunks, status "
                     "FROM knowledge_documents WHERE status='ready'"
@@ -966,7 +951,7 @@ class KnowledgeBaseManager:
         """返回文档在 SQLite 和 LanceDB 中的记录数对比。"""
 
         def _get_sqlite():
-            with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
+            with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
                 row = conn.execute(
                     "SELECT id, name, status, total_chunks FROM knowledge_documents WHERE id=?",
                     (doc_id,),
@@ -1018,7 +1003,7 @@ class KnowledgeBaseManager:
         limit = max_nodes if max_nodes > 0 else 9999999
 
         def _query_chunks():
-            with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
+            with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
                 if doc_id:
                     rows = conn.execute(
                         """SELECT kc.id, kc.content, kc.chunk_index, kc.document_id, kd.name as doc_name
