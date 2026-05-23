@@ -632,6 +632,27 @@ jobs:
             exit 1
           fi
 
+      - name: 清理旧的 Release Assets（保留最新 5 个）
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RELEASE_TAG="${{ env.RELEASE_TAG }}"
+          MAX_KEEP=5
+          
+          echo "📋 获取发布 $RELEASE_TAG 的 assets 列表..."
+          assets_json=$(gh release view "$RELEASE_TAG" --json assets --jq '.assets')
+          
+          # 提取 asset 名称和创建时间，按创建时间倒序排序，保留最新的 MAX_KEEP 个
+          # 由于 gh release view 返回的 assets 中包含 createdAt 字段
+          echo "$assets_json" | jq -r '.[] | [.createdAt, .name] | @tsv' | sort -r | tail -n +$((MAX_KEEP+1)) | while IFS=$'\t' read -r created_at asset_name; do
+            if [ -n "$asset_name" ]; then
+              echo "🗑️ 删除旧的 asset: $asset_name (创建于 $created_at)"
+              gh release delete-asset "$RELEASE_TAG" "$asset_name" --yes
+            fi
+          done
+
       - name: 上传 Windows 安装包到 GitHub 发布
         shell: bash
         env:
