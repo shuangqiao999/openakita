@@ -276,7 +276,11 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
   const totalPages = Math.ceil(totalDocs / pageSize);
 
   return (
-    <div className="viewContainer" style={{ padding: 24, maxWidth: 900, margin: "0 auto" }}>
+    <div className="viewContainer" style={{
+      padding: 24,
+      maxWidth: activeTab === "graph" ? "100%" : 900,
+      margin: "0 auto",
+    }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 20 }}>
         <IconBook size={24} />
         <h2 style={{ margin: 0 }}>{t("kb.title")}</h2>
@@ -291,7 +295,7 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
       </p>
 
       {activeTab === "graph" && (
-        <div style={{ height: "calc(100vh - 200px)", minHeight: 500 }}>
+        <div style={{ height: "max(500px, calc(100vh - 140px))" }}>
           <Suspense fallback={
             <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100%", color: "#94a3b8" }}>
               <Loader2 size={24} style={{ animation: "spin 1s linear infinite", marginRight: 8 }} />
