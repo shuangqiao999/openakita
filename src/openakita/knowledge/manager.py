@@ -379,20 +379,28 @@ class KnowledgeBaseManager:
                 conn.commit()
 
     async def _embed_in_batches(
-        self, embedder: Any, chunk_texts: list[str], doc_id: str
+        self,
+        embedder: Any,
+        chunk_texts: list[str],
+        doc_id: str,
+        batch_size: int | None = None,
+        batch_delay: float | None = None,
     ) -> tuple[list[list[float]], int, int]:
         """分批嵌入，返回 (vectors, dim, failed_batches)。
 
         内置重试、批次节流、零向量占位（维度确定后填入）。
+        batch_size / batch_delay 为 None 时使用全局默认值。
         """
-        total_batches = (len(chunk_texts) + _KB_EMBED_BATCH_SIZE - 1) // _KB_EMBED_BATCH_SIZE
+        bs = batch_size or _KB_EMBED_BATCH_SIZE
+        delay = batch_delay if batch_delay is not None else _KB_EMBED_BATCH_DELAY
+        total_batches = (len(chunk_texts) + bs - 1) // bs
         vectors: list[list[float]] = []
         failed = 0
 
         dim = 0
         for batch_num in range(1, total_batches + 1):
-            start = (batch_num - 1) * _KB_EMBED_BATCH_SIZE
-            end = start + _KB_EMBED_BATCH_SIZE
+            start = (batch_num - 1) * bs
+            end = start + bs
             batch = chunk_texts[start:end]
 
             ok = False
@@ -405,7 +413,7 @@ class KnowledgeBaseManager:
                     ok = True
                     break
                 except Exception as e:
-                    delay = 2**attempt
+                    retry_delay = 2**attempt
                     if attempt < _KB_EMBED_MAX_RETRIES - 1:
                         logger.warning(
                             "[KB] Doc %s batch %d/%d attempt %d failed: %s, retrying in %ds",
@@ -414,9 +422,9 @@ class KnowledgeBaseManager:
                             total_batches,
                             attempt + 1,
                             e,
-                            delay,
+                            retry_delay,
                         )
-                        await asyncio.sleep(delay)
+                        await asyncio.sleep(retry_delay)
                     else:
                         logger.error(
                             "[KB] Doc %s batch %d/%d failed after %d retries: %s",
@@ -434,7 +442,7 @@ class KnowledgeBaseManager:
                 logger.info("[KB] Doc %s: embedded %d/%d batches", doc_id, batch_num, total_batches)
 
             if batch_num < total_batches:
-                await asyncio.sleep(_KB_EMBED_BATCH_DELAY)
+                await asyncio.sleep(delay)
 
         if failed > 0 and dim == 0:
             dim = await self._get_embedding_dim()
@@ -1098,7 +1106,9 @@ class KnowledgeBaseManager:
                 semantic_sampled = len(sample_nodes)
 
                 texts = [n["content"][:300].strip() for n in sample_nodes]
-                vecs, _, _ = await self._embed_in_batches(embedder, texts, doc_id + "_sem")
+                vecs, _, _ = await self._embed_in_batches(
+                    embedder, texts, doc_id + "_sem", batch_delay=0,
+                )
 
                 async def _process_one(n: dict, v: list[float]):
                     try:
@@ -1126,7 +1136,7 @@ class KnowledgeBaseManager:
                     except Exception:
                         pass
 
-                sem = asyncio.Semaphore(3)
+                sem = asyncio.Semaphore(10)
                 await asyncio.wait_for(
                     asyncio.gather(*[_process_one(n, v) for n, v in zip(sample_nodes, vecs, strict=True)]),
                     timeout=60,
