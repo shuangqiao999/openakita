@@ -632,6 +632,7 @@ jobs:
             exit 1
           fi
 
+      # 修复：使用 curl 调用 GitHub API 删除旧的 assets，避免 gh 命令认证失败
       - name: 清理旧的 Release Assets（保留最新 5 个）
         shell: bash
         env:
@@ -640,18 +641,31 @@ jobs:
           set -euo pipefail
           RELEASE_TAG="${{ env.RELEASE_TAG }}"
           MAX_KEEP=5
+          REPO="${{ github.repository }}"
+          API_URL="https://api.github.com/repos/${REPO}/releases/tags/${RELEASE_TAG}"
           
-          echo "📋 获取发布 $RELEASE_TAG 的 assets 列表..."
-          assets_json=$(gh release view "$RELEASE_TAG" --json assets --jq '.assets')
+          echo "📋 获取发布 ${RELEASE_TAG} 的 assets 列表..."
+          response=$(curl -s -H "Authorization: token ${GH_TOKEN}" "${API_URL}")
+          assets=$(echo "$response" | jq '.assets')
           
-          # 提取 asset 名称和创建时间，按创建时间倒序排序，保留最新的 MAX_KEEP 个
-          # 由于 gh release view 返回的 assets 中包含 createdAt 字段
-          echo "$assets_json" | jq -r '.[] | [.createdAt, .name] | @tsv' | sort -r | tail -n +$((MAX_KEEP+1)) | while IFS=$'\t' read -r created_at asset_name; do
+          # 获取 asset 数量
+          asset_count=$(echo "$assets" | jq 'length')
+          echo "当前共有 ${asset_count} 个 assets"
+          
+          if [ ${asset_count} -le ${MAX_KEEP} ]; then
+            echo "✅ assets 数量未超过 ${MAX_KEEP}，无需清理"
+            exit 0
+          fi
+          
+          echo "$assets" | jq -r '.[] | [.created_at, .name, .id] | @tsv' | sort -r | tail -n +$((MAX_KEEP+1)) | while IFS=$'\t' read -r created_at asset_name asset_id; do
             if [ -n "$asset_name" ]; then
-              echo "🗑️ 删除旧的 asset: $asset_name (创建于 $created_at)"
-              gh release delete-asset "$RELEASE_TAG" "$asset_name" --yes
+              echo "🗑️ 删除旧的 asset: $asset_name (ID: $asset_id, 创建于 $created_at)"
+              curl -X DELETE -H "Authorization: token ${GH_TOKEN}" \
+                "https://api.github.com/repos/${REPO}/releases/assets/${asset_id}"
             fi
           done
+          
+          echo "✅ 清理完成"
 
       - name: 上传 Windows 安装包到 GitHub 发布
         shell: bash
