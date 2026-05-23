@@ -31,7 +31,8 @@ _KB_ALLOWED_EXTENSIONS = {".pdf", ".docx", ".md", ".txt", ".markdown"}
 _KB_EMBED_BATCH_SIZE = 10  # 每批发送给嵌入模型的文本数
 _KB_EMBED_CHUNK_TRUNCATE = 300  # 嵌入前单块最大字符数（适配 512 token 模型）
 _KB_EMBED_MAX_RETRIES = 3  # 单批最大重试次数
-_KB_EMBED_BATCH_DELAY = 0.3  # 批次间隔秒（避免压垮本地模型）
+_KB_EMBED_BATCH_DELAY = 0.3   # 批次间隔秒（避免压垮本地模型）
+_KB_INDEX_MIN_ROWS = 1000     # 向量数超此阈值后自动创建索引
 
 
 def _parse_chunk_id(chunk_id: str) -> tuple[str | None, int | None]:
@@ -167,6 +168,36 @@ class KnowledgeBaseManager:
         except Exception as e:
             logger.warning("[KB] Proactive table creation failed: %s", e)
 
+    def _create_index_if_needed(self) -> None:
+        """向量数超阈值时后台创建 IVF_PQ 索引（非阻塞）。"""
+        if self._lance_table is None:
+            return
+        try:
+            row_count = self._lance_table.count_rows()
+            if row_count < _KB_INDEX_MIN_ROWS:
+                return
+            if list(self._lance_table.list_indices()):
+                return
+        except Exception:
+            return
+
+        def _build():
+            try:
+                num_partitions = max(2, min(256, int(row_count ** 0.5)))
+                self._lance_table.create_index(
+                    metric="cosine",
+                    index_type="IVF_PQ",
+                    num_partitions=num_partitions,
+                )
+                logger.info(
+                    "[KB] LanceDB index created: %d partitions for %d vectors",
+                    num_partitions, row_count,
+                )
+            except Exception as e:
+                logger.warning("[KB] LanceDB index creation failed: %s", e)
+
+        threading.Thread(target=_build, daemon=True).start()
+
     async def _get_embedding_dim(self) -> int:
         if self._embedding_dim is not None:
             return self._embedding_dim
@@ -292,6 +323,7 @@ class KnowledgeBaseManager:
                 conn.commit()
 
             await asyncio.to_thread(self._lance_table.add, lance_rows)
+            self._create_index_if_needed()
 
             total_batches = max(
                 (len(chunk_texts) + _KB_EMBED_BATCH_SIZE - 1) // _KB_EMBED_BATCH_SIZE, 1
@@ -827,6 +859,7 @@ class KnowledgeBaseManager:
             for i in range(len(chunks))
         ]
         await asyncio.to_thread(self._lance_table.add, lance_rows)
+        self._create_index_if_needed()
 
         with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
             if failed == 0:
