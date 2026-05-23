@@ -256,68 +256,14 @@ class KnowledgeBaseManager:
                 raise RuntimeError("未能从文档中提取任何内容块")
 
             embedder = await self._get_embedder()
-
             truncate = _KB_EMBED_CHUNK_TRUNCATE
             chunk_texts = [c.content[:truncate].strip() for c in chunks]
 
-            total_batches = (len(chunk_texts) + _KB_EMBED_BATCH_SIZE - 1) // _KB_EMBED_BATCH_SIZE
-            vectors: list[list[float]] = []
-            failed_batches: list[int] = []
-
-            dim = 0
-            for batch_num in range(1, total_batches + 1):
-                start = (batch_num - 1) * _KB_EMBED_BATCH_SIZE
-                end = start + _KB_EMBED_BATCH_SIZE
-                batch = chunk_texts[start:end]
-
-                embedded = False
-                for attempt in range(_KB_EMBED_MAX_RETRIES):
-                    try:
-                        batch_vecs = await embedder.embed(batch)
-                        vectors.extend(batch_vecs)
-                        if dim == 0 and batch_vecs:
-                            dim = len(batch_vecs[0])
-                        embedded = True
-                        break
-                    except Exception as e:
-                        delay = 2**attempt
-                        if attempt < _KB_EMBED_MAX_RETRIES - 1:
-                            logger.warning(
-                                "[KB] Doc %s batch %d/%d attempt %d failed: %s, retrying in %ds",
-                                doc_id,
-                                batch_num,
-                                total_batches,
-                                attempt + 1,
-                                e,
-                                delay,
-                            )
-                            await asyncio.sleep(delay)
-                        else:
-                            logger.error(
-                                "[KB] Doc %s batch %d/%d failed after %d retries: %s",
-                                doc_id,
-                                batch_num,
-                                total_batches,
-                                _KB_EMBED_MAX_RETRIES,
-                                e,
-                            )
-
-                if not embedded:
-                    failed_batches.append(batch_num)
-                    if dim == 0:
-                        vectors.extend([[0.0]] * len(batch))
-                    else:
-                        vectors.extend([[0.0] * dim] * len(batch))
-                else:
-                    logger.info(
-                        "[KB] Doc %s: embedded %d/%d batches",
-                        doc_id,
-                        batch_num,
-                        total_batches,
-                    )
-
-                if batch_num < total_batches:
-                    await asyncio.sleep(_KB_EMBED_BATCH_DELAY)
+            vectors, dim, failed_batches = await self._embed_in_batches(
+                embedder,
+                chunk_texts,
+                doc_id,
+            )
 
             if self._lance_table is None:
                 if dim == 0:
@@ -347,9 +293,12 @@ class KnowledgeBaseManager:
 
             await asyncio.to_thread(self._lance_table.add, lance_rows)
 
-            fail_rate = len(failed_batches) / max(total_batches, 1)
+            total_batches = max(
+                (len(chunk_texts) + _KB_EMBED_BATCH_SIZE - 1) // _KB_EMBED_BATCH_SIZE, 1
+            )
+            fail_rate = failed_batches / max(total_batches, 1)
             with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
-                if fail_rate == 0:
+                if failed_batches == 0:
                     conn.execute(
                         "UPDATE knowledge_documents SET status='ready' WHERE id=?",
                         (doc_id,),
@@ -358,7 +307,7 @@ class KnowledgeBaseManager:
                     conn.execute(
                         "UPDATE knowledge_documents SET status='ready', error_msg=? WHERE id=?",
                         (
-                            f"部分批次嵌入失败（{len(failed_batches)}/{total_batches}），已用零向量占位",
+                            f"部分批次嵌入失败（{failed_batches}/{total_batches}），已用零向量占位",
                             doc_id,
                         ),
                     )
@@ -366,7 +315,7 @@ class KnowledgeBaseManager:
                     conn.execute(
                         "UPDATE knowledge_documents SET status='failed', error_msg=? WHERE id=?",
                         (
-                            f"嵌入失败 {len(failed_batches)}/{total_batches} 批次",
+                            f"嵌入失败 {failed_batches}/{total_batches} 批次",
                             doc_id,
                         ),
                     )
@@ -376,7 +325,7 @@ class KnowledgeBaseManager:
                 "[KB] Document %s processed: %d chunks, %d/%d batches OK",
                 doc_id,
                 len(chunks),
-                total_batches - len(failed_batches),
+                total_batches - failed_batches,
                 total_batches,
             )
 
@@ -388,6 +337,74 @@ class KnowledgeBaseManager:
                     (str(e)[:500], doc_id),
                 )
                 conn.commit()
+
+    async def _embed_in_batches(
+        self, embedder: Any, chunk_texts: list[str], doc_id: str
+    ) -> tuple[list[list[float]], int, int]:
+        """分批嵌入，返回 (vectors, dim, failed_batches)。
+
+        内置重试、批次节流、零向量占位（维度确定后填入）。
+        """
+        total_batches = (len(chunk_texts) + _KB_EMBED_BATCH_SIZE - 1) // _KB_EMBED_BATCH_SIZE
+        vectors: list[list[float]] = []
+        failed = 0
+
+        dim = 0
+        for batch_num in range(1, total_batches + 1):
+            start = (batch_num - 1) * _KB_EMBED_BATCH_SIZE
+            end = start + _KB_EMBED_BATCH_SIZE
+            batch = chunk_texts[start:end]
+
+            ok = False
+            for attempt in range(_KB_EMBED_MAX_RETRIES):
+                try:
+                    batch_vecs = await embedder.embed(batch)
+                    vectors.extend(batch_vecs)
+                    if dim == 0 and batch_vecs:
+                        dim = len(batch_vecs[0])
+                    ok = True
+                    break
+                except Exception as e:
+                    delay = 2**attempt
+                    if attempt < _KB_EMBED_MAX_RETRIES - 1:
+                        logger.warning(
+                            "[KB] Doc %s batch %d/%d attempt %d failed: %s, retrying in %ds",
+                            doc_id,
+                            batch_num,
+                            total_batches,
+                            attempt + 1,
+                            e,
+                            delay,
+                        )
+                        await asyncio.sleep(delay)
+                    else:
+                        logger.error(
+                            "[KB] Doc %s batch %d/%d failed after %d retries: %s",
+                            doc_id,
+                            batch_num,
+                            total_batches,
+                            _KB_EMBED_MAX_RETRIES,
+                            e,
+                        )
+
+            if not ok:
+                failed += 1
+                vectors.extend([None] * len(batch))
+            else:
+                logger.info("[KB] Doc %s: embedded %d/%d batches", doc_id, batch_num, total_batches)
+
+            if batch_num < total_batches:
+                await asyncio.sleep(_KB_EMBED_BATCH_DELAY)
+
+        if failed > 0 and dim == 0:
+            dim = await self._get_embedding_dim()
+
+        if dim > 0:
+            for i in range(len(vectors)):
+                if vectors[i] is None:
+                    vectors[i] = [0.0] * dim
+
+        return vectors, dim, failed
 
     async def list_documents(self, limit: int = 20, offset: int = 0) -> dict[str, Any]:
         """分页列出文档。"""
@@ -792,11 +809,12 @@ class KnowledgeBaseManager:
             return {"repaired": False, "reason": "文档无分块记录"}
 
         embedder = await self._get_embedder()
-        texts = [c[1][:500] for c in chunks]
-        vectors = await embedder.embed(texts)
+        chunk_texts = [c[1][:_KB_EMBED_CHUNK_TRUNCATE].strip() for c in chunks]
+        vectors, dim, failed = await self._embed_in_batches(embedder, chunk_texts, doc_id)
 
         if self._lance_table is None:
-            dim = len(vectors[0]) if vectors else 0
+            if dim == 0:
+                dim = await self._get_embedding_dim()
             await asyncio.to_thread(self._create_lance_table, dim)
 
         try:
@@ -811,10 +829,16 @@ class KnowledgeBaseManager:
         await asyncio.to_thread(self._lance_table.add, lance_rows)
 
         with self._write_lock, sqlite3.connect(str(self._db_path)) as conn:
-            conn.execute(
-                "UPDATE knowledge_documents SET status='ready', error_msg=NULL WHERE id=?",
-                (doc_id,),
-            )
+            if failed == 0:
+                conn.execute(
+                    "UPDATE knowledge_documents SET status='ready', error_msg=NULL WHERE id=?",
+                    (doc_id,),
+                )
+            else:
+                conn.execute(
+                    "UPDATE knowledge_documents SET status='ready', error_msg=? WHERE id=?",
+                    (f"部分批次嵌入失败（{failed}），已用零向量占位", doc_id),
+                )
             conn.commit()
 
         logger.info("[KB] Repaired document %s: %d chunks", doc_id, len(chunks))
