@@ -2,11 +2,6 @@ name: Android Build (APK)
 
 on:
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Tag to attach artifacts to (e.g. v1.2.7). Leave empty to skip release upload."
-        required: false
-        default: ""
   push:
     tags:
       - 'v*'
@@ -39,13 +34,23 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Get version info
+      - name: Get version info from package.json
         id: version
         run: |
           VERSION=$(node -p "require('./package.json').version")
-          echo "name=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "code=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
           echo "Version: $VERSION, Build: ${{ github.run_number }}"
+
+      - name: Determine release tag
+        id: tag
+        run: |
+          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref_type }}" == "tag" ]]; then
+            TAG="${{ github.ref_name }}"
+          else
+            TAG="v${{ steps.version.outputs.version }}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Build web assets (Capacitor)
         run: npm run build:cap
@@ -79,7 +84,7 @@ jobs:
             -Pandroid.injected.signing.key.alias="$ANDROID_KEY_ALIAS" \
             -Pandroid.injected.signing.key.password="$ANDROID_KEY_PASSWORD" \
             -Pandroid.injected.version.code=${{ steps.version.outputs.code }} \
-            -Pandroid.injected.version.name=${{ steps.version.outputs.name }}
+            -Pandroid.injected.version.name=${{ steps.version.outputs.version }}
 
       - name: Build debug APK (fallback)
         if: steps.keystore.outputs.has_keystore == 'false'
@@ -88,7 +93,7 @@ jobs:
           chmod +x ./gradlew
           ./gradlew assembleDebug \
             -Pandroid.injected.version.code=${{ steps.version.outputs.code }} \
-            -Pandroid.injected.version.name=${{ steps.version.outputs.name }}
+            -Pandroid.injected.version.name=${{ steps.version.outputs.version }}
 
       - name: Find APK
         id: find_apk
@@ -103,24 +108,17 @@ jobs:
           name: android-apk
           path: apps/setup-center/${{ steps.find_apk.outputs.apk_path }}
 
-      - name: Determine release tag
-        id: release_tag
+      - name: Ensure Release Draft exists
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref_type }}" == "tag" ]]; then
-            TAG="${{ github.ref_name }}"
-          elif [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ inputs.tag }}" ]]; then
-            TAG="${{ inputs.tag }}"
-          else
-            TAG=""
-          fi
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          gh release view "${{ steps.tag.outputs.tag }}" || gh release create "${{ steps.tag.outputs.tag }}" --draft --generate-notes
 
       - name: Upload APK to Release
-        if: steps.release_tag.outputs.tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           APK="${{ steps.find_apk.outputs.apk_path }}"
-          BASENAME="OpenAkita-${{ steps.release_tag.outputs.tag }}-android.apk"
+          BASENAME="OpenAkita-${{ steps.tag.outputs.tag }}-android.apk"
           cp "$APK" "$BASENAME"
-          gh release upload "${{ steps.release_tag.outputs.tag }}" "$BASENAME" --clobber || true
+          gh release upload "${{ steps.tag.outputs.tag }}" "$BASENAME" --clobber
