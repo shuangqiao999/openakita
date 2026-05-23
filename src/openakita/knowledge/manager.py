@@ -240,7 +240,7 @@ class KnowledgeBaseManager:
                 raise RuntimeError("未能从文档中提取任何内容块")
 
             embedder = await self._get_embedder()
-            chunk_texts = [c.content for c in chunks]
+            chunk_texts = [c.content[:500] for c in chunks]
             vectors = await embedder.embed(chunk_texts)
 
             if self._lance_table is None:
@@ -672,7 +672,7 @@ class KnowledgeBaseManager:
             return {"repaired": False, "reason": "文档无分块记录"}
 
         embedder = await self._get_embedder()
-        texts = [c[1] for c in chunks]
+        texts = [c[1][:500] for c in chunks]
         vectors = await embedder.embed(texts)
 
         if self._lance_table is None:
