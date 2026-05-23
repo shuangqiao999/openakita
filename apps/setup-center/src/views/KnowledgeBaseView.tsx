@@ -177,8 +177,7 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
     }
   };
 
-  const handleDelete = async () => {
-    const target = deleteTarget;
+  const handleDelete = async (target: DocItem | null) => {
     if (!target) return;
     try {
       await safeFetch(`${apiBaseUrl}/api/kb/documents/${target.id}`, {
@@ -208,9 +207,8 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
     }
   };
 
-  const handleReplace = async () => {
+  const handleReplace = async (dupInfo: typeof duplicateInfo) => {
     const file = pendingFileRef.current;
-    const dupInfo = duplicateInfo;
     if (!file || !dupInfo) return;
     setUploading(true);
     try {
@@ -550,7 +548,7 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel onClick={() => { setDuplicateInfo(null); pendingFileRef.current = null; }}>{t("kb.cancel")}</AlertDialogCancel>
-            <AlertDialogAction onClick={handleReplace} style={{ background: "#3b82f6", color: "white" }}>
+            <AlertDialogAction onClick={() => handleReplace(duplicateInfo)} style={{ background: "#3b82f6", color: "white" }}>
               {t("kb.duplicateReplace")}
             </AlertDialogAction>
           </AlertDialogFooter>
@@ -569,7 +567,7 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel onClick={() => setDeleteTarget(null)}>{t("kb.cancel")}</AlertDialogCancel>
-            <AlertDialogAction onClick={handleDelete} style={{ background: "#ef4444", color: "white" }}>
+            <AlertDialogAction onClick={() => handleDelete(deleteTarget)} style={{ background: "#ef4444", color: "white" }}>
               {t("kb.delete")}
             </AlertDialogAction>
           </AlertDialogFooter>
