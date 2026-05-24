@@ -67,6 +67,8 @@ class KnowledgeBaseManager:
         self._lance_table = None
         self._embedding_dim: int | None = None
         self._index_creating = False
+        self._semantic_cache: dict[str, list[dict]] = {}
+        self._semantic_pending: dict[str, bool] = {}
 
         self._init_sqlite()
         self._init_lancedb()
