@@ -1107,7 +1107,7 @@ class KnowledgeBaseManager:
 
                 texts = [n["content"][:300].strip() for n in sample_nodes]
                 vecs, _, _ = await self._embed_in_batches(
-                    embedder, texts, doc_id + "_sem", batch_delay=0,
+                    embedder, texts, (doc_id or "all") + "_sem", batch_delay=0,
                 )
 
                 async def _process_one(n: dict, v: list[float]):
