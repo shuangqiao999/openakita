@@ -1127,6 +1127,10 @@ class KnowledgeBaseManager:
                                     tid = r.get("id", "")
                                     if tid not in nodes_by_id or tid == n["id"]:
                                         continue
+                                    target = nodes_by_id.get(tid)
+                                    if target and target["group"] == n["group"]:
+                                        if abs(target["chunk_index"] - n["chunk_index"]) <= 3:
+                                            continue
                                     key = (n["id"], tid) if n["id"] < tid else (tid, n["id"])
                                     if key not in seen_pairs:
                                         seen_pairs.add(key)
