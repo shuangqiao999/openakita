@@ -1127,13 +1127,7 @@ class KnowledgeBaseManager:
                         pass
 
                 sem = asyncio.Semaphore(10)
-                await asyncio.wait_for(
-                    asyncio.gather(*[_process_one(n, v) for n, v in zip(sample_nodes, vecs, strict=True)]),
-                    timeout=60,
-                )
-            except TimeoutError:
-                logger.warning("[KB] Semantic edges computation timed out after 60s")
-                semantic_incomplete = True
+                await asyncio.gather(*[_process_one(n, v) for n, v in zip(sample_nodes, vecs, strict=True)])
             except Exception as e:
                 logger.warning("[KB] Semantic edges computation failed: %s", e)
 

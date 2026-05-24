@@ -39,7 +39,6 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
     const controller = new AbortController();
     abortRef.current = controller;
     setLoading(true);
-    const timeoutId = setTimeout(() => controller.abort(), 30_000);
     try {
       const params = new URLSearchParams();
       if (selectedDocId) params.set("doc_id", selectedDocId);
@@ -73,7 +72,6 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
         setGraphData({ nodes: [], links: [] });
       }
     } finally {
-      clearTimeout(timeoutId);
       if (controller.signal.aborted) return;
       setLoading(false);
     }
