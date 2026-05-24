@@ -371,6 +371,8 @@ class KnowledgeBaseManager:
                 total_batches,
             )
 
+            self._semantic_cache.clear()
+
         except Exception as e:
             logger.error("[KB] Failed to process document %s: %s", doc_id, e)
             with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
@@ -489,6 +491,7 @@ class KnowledgeBaseManager:
                 await asyncio.to_thread(self._lance_table.delete, f"document_id = '{doc_id}'")
             except Exception as e:
                 logger.warning("[KB] Failed to delete LanceDB vectors for %s: %s", doc_id, e)
+        self._semantic_cache.clear()
         return True
 
     def _document_exists(self, doc_id: str) -> bool:
@@ -1157,8 +1160,8 @@ class KnowledgeBaseManager:
         if cached_links is not None:
             links = cached_links
         elif self._lance_table is not None and cache_key not in self._semantic_pending:
+            self._semantic_pending[cache_key] = True
             try:
-                self._semantic_pending[cache_key] = True
                 embedder = await self._get_embedder()
                 asyncio.create_task(
                     self._compute_and_cache_semantic(
