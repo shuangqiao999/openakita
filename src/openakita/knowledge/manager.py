@@ -1077,26 +1077,12 @@ class KnowledgeBaseManager:
         links: list[dict] = []
         seen_pairs: set[tuple[str, str]] = set()
 
-        chunks_by_doc: dict[str, list[dict]] = {}
-        for node in nodes:
-            chunks_by_doc.setdefault(node["group"], []).append(node)
-
-        for _did, doc_chunks in chunks_by_doc.items():
-            sorted_chunks = sorted(doc_chunks, key=lambda n: n["chunk_index"])
-            for i in range(len(sorted_chunks) - 1):
-                s = sorted_chunks[i]["id"]
-                t = sorted_chunks[i + 1]["id"]
-                key = (s, t) if s < t else (t, s)
-                if key not in seen_pairs:
-                    seen_pairs.add(key)
-                    links.append({"source": s, "target": t, "value": 1})
-
         semantic_sampled = 0
         semantic_incomplete = False
-        if include_semantic and self._lance_table is not None:
+        if self._lance_table is not None:
             try:
                 embedder = await self._get_embedder()
-                sample_size = max(30, min(200, total_candidates // 10))
+                sample_size = max(30, len(nodes))
                 if doc_id:
                     sample_nodes = nodes[: min(len(nodes), sample_size)]
                 else:

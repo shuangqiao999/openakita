@@ -19,8 +19,7 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [graphData, setGraphData] = useState<{ nodes: any[]; links: any[]; meta?: any }>({ nodes: [], links: [] });
   const [loading, setLoading] = useState(true);
-  const [includeSemantic, setIncludeSemantic] = useState(false);
-  const [similarityThreshold, setSimilarityThreshold] = useState(0.75);
+  const [similarityThreshold, setSimilarityThreshold] = useState(0.6);
   const [selectedDocId, setSelectedDocId] = useState("");
   const [docs, setDocs] = useState<DocBrief[]>([]);
   const [dimensions, setDimensions] = useState({ w: 800, h: 500 });
@@ -44,10 +43,8 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
     try {
       const params = new URLSearchParams();
       if (selectedDocId) params.set("doc_id", selectedDocId);
-      if (includeSemantic) {
-        params.set("include_semantic", "true");
-        params.set("similarity_threshold", String(similarityThreshold));
-      }
+      params.set("include_semantic", "true");
+      params.set("similarity_threshold", String(similarityThreshold));
       const res = await safeFetch(`${apiBaseUrl}/api/kb/graph?${params.toString()}`, {
         signal: controller.signal,
       });
@@ -80,7 +77,7 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
       if (controller.signal.aborted) return;
       setLoading(false);
     }
-  }, [apiBaseUrl, selectedDocId, includeSemantic, similarityThreshold]);
+  }, [apiBaseUrl, selectedDocId, similarityThreshold]);
 
   const fetchGraphDebounced = useCallback(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -349,29 +346,18 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
             </div>
           )}
         </div>
-        <label style={{ color: "#e2e8f0", fontSize: 12, display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+        <label style={{ color: "#e2e8f0", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
+          <span>{t("kb.graph.threshold")} {similarityThreshold.toFixed(2)}</span>
           <input
-            type="checkbox"
-            checked={includeSemantic}
-            onChange={e => setIncludeSemantic(e.target.checked)}
-            style={{ cursor: "pointer" }}
+            type="range"
+            min="0.5"
+            max="0.95"
+            step="0.05"
+            value={similarityThreshold}
+            onChange={e => setSimilarityThreshold(parseFloat(e.target.value))}
+            style={{ width: 60, cursor: "pointer", accentColor: "#3b82f6" }}
           />
-          {t("kb.graph.semanticEdges")}
         </label>
-        {includeSemantic && (
-          <label style={{ color: "#e2e8f0", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
-            <span>{t("kb.graph.threshold")} {similarityThreshold.toFixed(2)}</span>
-            <input
-              type="range"
-              min="0.5"
-              max="0.95"
-              step="0.05"
-              value={similarityThreshold}
-              onChange={e => setSimilarityThreshold(parseFloat(e.target.value))}
-              style={{ width: 60, cursor: "pointer", accentColor: "#3b82f6" }}
-            />
-          </label>
-        )}
       </div>
 
       <div style={{
