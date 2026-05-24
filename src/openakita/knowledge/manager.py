@@ -1082,7 +1082,7 @@ class KnowledgeBaseManager:
         if self._lance_table is not None:
             try:
                 embedder = await self._get_embedder()
-                sample_size = max(30, len(nodes))
+                sample_size = max(30, min(500, len(nodes)))
                 if doc_id:
                     sample_nodes = nodes[: min(len(nodes), sample_size)]
                 else:
