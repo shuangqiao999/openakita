@@ -33,6 +33,7 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
   const [showDocDropdown, setShowDocDropdown] = useState(false);
   const previewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const docDropdownRef = useRef<HTMLDivElement>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchGraph = useCallback(async () => {
     if (abortRef.current) abortRef.current.abort();
@@ -105,6 +106,20 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
       try { (fgRef.current as any)?._destructor?.(); } catch { /* ignore */ }
     };
   }, []);
+
+  useEffect(() => {
+    if (!(graphData.meta?.semantic_pending)) {
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+      return;
+    }
+    if (pollRef.current) return;
+    pollRef.current = setInterval(() => {
+      fetchGraph();
+    }, 3000);
+    return () => {
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    };
+  }, [graphData.meta?.semantic_pending, fetchGraph]);
 
   useEffect(() => {
     const onContextLost = () => setWebglError(true);

@@ -997,6 +997,78 @@ class KnowledgeBaseManager:
             "consistent": lance_count == sqlite_info["actual_chunks"],
         }
 
+    def _semantic_cache_key(
+        self, doc_id: str | None, threshold: float
+    ) -> str:
+        return f"sem_{doc_id or 'all'}_{threshold:.2f}"
+
+    async def _compute_and_cache_semantic(
+        self,
+        key: str,
+        embedder: Any,
+        nodes: list[dict],
+        nodes_by_id: dict[str, dict],
+        seen_pairs: set[tuple[str, str]],
+        threshold: float,
+        doc_id: str | None,
+    ) -> None:
+        """后台计算语义边并写入缓存。"""
+        import random as _random
+
+        try:
+            sample_size = max(30, min(500, len(nodes)))
+            if doc_id:
+                sample_nodes = nodes[: min(len(nodes), sample_size)]
+            else:
+                sample_indices = _random.sample(range(len(nodes)), min(sample_size, len(nodes)))
+                sample_nodes = [nodes[i] for i in sorted(sample_indices)]
+
+            texts = [n["content"][:300].strip() for n in sample_nodes]
+            vecs, _, _ = await self._embed_in_batches(
+                embedder, texts, (doc_id or "all") + "_sem", batch_delay=0,
+            )
+
+            links: list[dict] = []
+
+            async def _process_one(n: dict, v: list[float]):
+                try:
+                    async with asyncio.Semaphore(10):
+                        lance_results = await asyncio.to_thread(
+                            lambda: (
+                                self._lance_table.search(v)
+                                .metric("cosine")
+                                .limit(15)
+                                .to_list()
+                            ),
+                        )
+                        for r in lance_results:
+                            sc = 1.0 - r.get("_distance", 1.0) / 2.0
+                            if sc >= threshold:
+                                tid = r.get("id", "")
+                                if tid not in nodes_by_id or tid == n["id"]:
+                                    continue
+                                target = nodes_by_id.get(tid)
+                                if target and target["group"] == n["group"]:
+                                    if abs(target["chunk_index"] - n["chunk_index"]) <= 3:
+                                        continue
+                                pair_key = (n["id"], tid) if n["id"] < tid else (tid, n["id"])
+                                if pair_key not in seen_pairs:
+                                    seen_pairs.add(pair_key)
+                                    links.append({
+                                        "source": n["id"], "target": tid, "value": round(sc, 3),
+                                    })
+                except Exception:
+                    pass
+
+            await asyncio.gather(*[_process_one(n, v) for n, v in zip(sample_nodes, vecs, strict=True)])
+            self._semantic_cache[key] = links
+            logger.info("[KB] Semantic edges cached for %s: %d edges", key, len(links))
+        except Exception as e:
+            logger.warning("[KB] Semantic edge caching failed for %s: %s", key, e)
+            self._semantic_cache[key] = []
+        finally:
+            self._semantic_pending.pop(key, None)
+
     async def get_graph_data(
         self,
         doc_id: str | None = None,
@@ -1004,11 +1076,13 @@ class KnowledgeBaseManager:
         similarity_threshold: float = 0.75,
         max_nodes: int = 0,
     ) -> dict[str, Any]:
-        """获取图谱数据：节点（chunk）+ 边（顺序 + 可选语义）。max_nodes=0 表示不限制。"""
-        import random as _random
+        """获取图谱数据：节点（chunk）+ 语义边（异步缓存）。max_nodes=0 表示不限制。"""
 
         threshold = max(0.5, min(0.95, similarity_threshold))
         limit = max_nodes if max_nodes > 0 else 9999999
+        cache_key = self._semantic_cache_key(doc_id, threshold)
+
+        cached_links = self._semantic_cache.get(cache_key)
 
         def _query_chunks():
             with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
@@ -1075,61 +1149,27 @@ class KnowledgeBaseManager:
             nodes_by_id[cid] = node
 
         links: list[dict] = []
-        seen_pairs: set[tuple[str, str]] = set()
-
-        semantic_sampled = 0
+        semantic_pending = False
         semantic_incomplete = False
-        if self._lance_table is not None:
+
+        if cached_links is not None:
+            links = cached_links
+        elif self._lance_table is not None and cache_key not in self._semantic_pending:
             try:
+                self._semantic_pending[cache_key] = True
                 embedder = await self._get_embedder()
-                sample_size = max(30, min(500, len(nodes)))
-                if doc_id:
-                    sample_nodes = nodes[: min(len(nodes), sample_size)]
-                else:
-                    sample_indices = _random.sample(range(len(nodes)), min(sample_size, len(nodes)))
-                    sample_nodes = [nodes[i] for i in sorted(sample_indices)]
-
-                semantic_sampled = len(sample_nodes)
-
-                texts = [n["content"][:300].strip() for n in sample_nodes]
-                vecs, _, _ = await self._embed_in_batches(
-                    embedder, texts, (doc_id or "all") + "_sem", batch_delay=0,
+                asyncio.create_task(
+                    self._compute_and_cache_semantic(
+                        cache_key, embedder, nodes, nodes_by_id,
+                        set(), threshold, doc_id,
+                    )
                 )
-
-                async def _process_one(n: dict, v: list[float]):
-                    try:
-                        async with sem:
-                            lance_results = await asyncio.to_thread(
-                                lambda: (
-                                    self._lance_table.search(v)
-                                    .metric("cosine")
-                                    .limit(15)
-                                    .to_list()
-                                ),
-                            )
-                            for r in lance_results:
-                                sc = 1.0 - r.get("_distance", 1.0) / 2.0
-                                if sc >= threshold:
-                                    tid = r.get("id", "")
-                                    if tid not in nodes_by_id or tid == n["id"]:
-                                        continue
-                                    target = nodes_by_id.get(tid)
-                                    if target and target["group"] == n["group"]:
-                                        if abs(target["chunk_index"] - n["chunk_index"]) <= 3:
-                                            continue
-                                    key = (n["id"], tid) if n["id"] < tid else (tid, n["id"])
-                                    if key not in seen_pairs:
-                                        seen_pairs.add(key)
-                                        links.append({
-                                            "source": n["id"], "target": tid, "value": round(sc, 3),
-                                        })
-                    except Exception:
-                        pass
-
-                sem = asyncio.Semaphore(10)
-                await asyncio.gather(*[_process_one(n, v) for n, v in zip(sample_nodes, vecs, strict=True)])
+                semantic_pending = True
             except Exception as e:
-                logger.warning("[KB] Semantic edges computation failed: %s", e)
+                logger.warning("[KB] Failed to start semantic edge task: %s", e)
+                self._semantic_pending.pop(cache_key, None)
+        elif cache_key in self._semantic_pending:
+            semantic_pending = True
 
         truncated = len(chunks) < total_candidates
 
@@ -1142,7 +1182,7 @@ class KnowledgeBaseManager:
                 "truncated": truncated,
                 "max_nodes": max_nodes,
                 "total_candidates": total_candidates,
-                "semantic_sampled_count": semantic_sampled,
+                "semantic_pending": semantic_pending,
                 "semantic_incomplete": semantic_incomplete,
                 "doc_groups": [
                     {"id": did, "name": dname}
