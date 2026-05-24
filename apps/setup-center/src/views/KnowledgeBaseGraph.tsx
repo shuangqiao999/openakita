@@ -283,21 +283,9 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
       <div style={{
         position: "absolute", top: 10, left: 10, zIndex: 10,
         background: "rgba(0,0,0,0.55)", borderRadius: 8, padding: "6px 10px",
-        color: "#94a3b8", fontSize: 10, display: "flex", flexWrap: "wrap", gap: 8,
-        alignItems: "center", maxWidth: "75%",
+        color: "#64748b", fontSize: 11,
       }}>
-        {(graphData.meta?.doc_groups || []).map((dg: { id: string; name: string }, i: number) => (
-          <span key={dg.id} style={{ display: "flex", alignItems: "center", gap: 4, color: "#e2e8f0" }}>
-            <span style={{
-              width: 8, height: 8, borderRadius: "50%", display: "inline-block",
-              background: `hsl(${(i * 67) % 360}, 60%, 55%)`,
-            }} />
-            {dg.name}
-          </span>
-        ))}
-        <span style={{ borderLeft: "1px solid #334155", paddingLeft: 8, color: "#64748b" }}>
-          {t("kb.graph.graphNodeCount", { nodes: graphData.nodes.length })} · {t("kb.graph.graphEdgeCount", { edges: graphData.links.length })}
-        </span>
+        {t("kb.graph.graphNodeCount", { nodes: graphData.nodes.length })} · {t("kb.graph.graphEdgeCount", { edges: graphData.links.length })}
       </div>
 
       <div style={{

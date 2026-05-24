@@ -1117,7 +1117,7 @@ class KnowledgeBaseManager:
                                 lambda: (
                                     self._lance_table.search(v)
                                     .metric("cosine")
-                                    .limit(6)
+                                    .limit(15)
                                     .to_list()
                                 ),
                             )
