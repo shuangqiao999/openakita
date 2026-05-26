@@ -123,13 +123,13 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
   }, [graphData.meta?.semantic_pending, fetchGraph]);
 
   useEffect(() => {
+    if (loading || !graphData.nodes.length) return;
+    const el = containerRef.current?.querySelector("canvas");
+    if (!el) return;
     const onContextLost = () => setWebglError(true);
-    const el = containerRef.current;
-    if (el) {
-      el.addEventListener("webglcontextlost", onContextLost);
-      return () => el.removeEventListener("webglcontextlost", onContextLost);
-    }
-  }, []);
+    el.addEventListener("webglcontextlost", onContextLost);
+    return () => el.removeEventListener("webglcontextlost", onContextLost);
+  }, [loading, graphData.nodes.length]);
 
   useEffect(() => {
     const onOutsideClick = (e: MouseEvent) => {

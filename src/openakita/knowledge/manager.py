@@ -44,6 +44,7 @@ _KB_EMBED_MAX_RETRIES = 3  # 单批最大重试次数
 _KB_EMBED_BATCH_DELAY = 0.1  # 批次间隔秒（本地模型需要节流）
 _KB_EMBED_MAX_CONCURRENT = 1  # 最大并发嵌入请求数（本地模型串行执行）
 _KB_INDEX_MIN_ROWS = 1000     # 向量数超此阈值后自动创建索引
+_SEMANTIC_CACHE_MAX_SIZE = 200  # 语义边缓存最大条目数
 
 
 def _parse_chunk_id(chunk_id: str) -> tuple[str | None, int | None]:
@@ -77,16 +78,16 @@ class KnowledgeBaseManager:
         self._lance_db = None
         self._lance_table = None
         self._embedding_dim: int | None = None
+        self._index_lock = threading.Lock()
         self._index_creating = False
         self._semantic_cache: dict[str, list[dict]] = {}
-        self._semantic_pending: dict[str, bool] = {}
+        self._semantic_pending: dict[str, float] = {}
 
         self._init_sqlite()
         self._init_lancedb()
         try:
-            self._scan_task = asyncio.create_task(self._scan_on_startup())
+            asyncio.create_task(self._scan_on_startup())
         except RuntimeError:
-            self._scan_task = None
             logger.debug("[KB] No running event loop, skipping startup scan")
 
     def _init_sqlite(self) -> None:
@@ -187,18 +188,25 @@ class KnowledgeBaseManager:
 
     def _create_index_if_needed(self) -> None:
         """向量数超阈值时后台创建 IVF_PQ 索引（非阻塞）。"""
-        if self._lance_table is None or self._index_creating:
+        if self._lance_table is None:
+            return
+        if not self._index_lock.acquire(blocking=False):
             return
         try:
-            row_count = self._lance_table.count_rows()
-            if row_count < _KB_INDEX_MIN_ROWS:
+            if self._index_creating:
                 return
-            if list(self._lance_table.list_indices()):
+            try:
+                row_count = self._lance_table.count_rows()
+                if row_count < _KB_INDEX_MIN_ROWS:
+                    return
+                if list(self._lance_table.list_indices()):
+                    return
+            except Exception:
                 return
-        except Exception:
-            return
 
-        self._index_creating = True
+            self._index_creating = True
+        finally:
+            self._index_lock.release()
 
         def _build():
             try:
@@ -342,7 +350,15 @@ class KnowledgeBaseManager:
             )
             conn.commit()
 
-        await asyncio.to_thread(self._lance_table.add, lance_rows)
+        try:
+            await asyncio.to_thread(self._lance_table.add, lance_rows)
+        except Exception:
+            with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
+                conn.execute("DELETE FROM knowledge_chunks WHERE document_id=?", (doc_id,))
+                conn.execute("UPDATE knowledge_documents SET total_chunks=0 WHERE id=?", (doc_id,))
+                conn.commit()
+            raise
+
         self._create_index_if_needed()
 
         total_batches = max(
@@ -433,8 +449,8 @@ class KnowledgeBaseManager:
                 try:
                     async with sem:
                         batch_vecs = await embedder.embed(batch)
-                        if delay > 0:
-                            await asyncio.sleep(delay)
+                    if delay > 0:
+                        await asyncio.sleep(delay)
                     async with dim_lock:
                         nonlocal dim
                         if dim == 0 and batch_vecs:
@@ -1142,16 +1158,17 @@ class KnowledgeBaseManager:
                 sample_indices = _random.sample(range(len(nodes)), min(sample_size, len(nodes)))
                 sample_nodes = [nodes[i] for i in sorted(sample_indices)]
 
-            texts = [n["content"][:300].strip() for n in sample_nodes]
+            texts = [n["content"][:_KB_EMBED_CHUNK_TRUNCATE].strip() for n in sample_nodes]
             vecs, _, _ = await self._embed_in_batches(
-                embedder, texts, (doc_id or "all") + "_sem", batch_delay=0,
+                embedder, texts, (doc_id or "all") + "_sem",
             )
 
             links: list[dict] = []
+            sem = asyncio.Semaphore(10)
 
             async def _process_one(n: dict, v: list[float]):
                 try:
-                    async with asyncio.Semaphore(10):
+                    async with sem:
                         lance_results = await asyncio.to_thread(
                             lambda: (
                                 self._lance_table.search(v)
@@ -1187,6 +1204,8 @@ class KnowledgeBaseManager:
             self._semantic_cache[key] = []
         finally:
             self._semantic_pending.pop(key, None)
+            if len(self._semantic_cache) > _SEMANTIC_CACHE_MAX_SIZE:
+                self._semantic_cache.clear()
 
     async def get_graph_data(
         self,
@@ -1274,8 +1293,8 @@ class KnowledgeBaseManager:
 
         if cached_links is not None:
             links = cached_links
-        elif self._lance_table is not None and cache_key not in self._semantic_pending:
-            self._semantic_pending[cache_key] = True
+        elif include_semantic and self._lance_table is not None and cache_key not in self._semantic_pending:
+            self._semantic_pending[cache_key] = time.time()
             try:
                 embedder = await self._get_embedder()
                 asyncio.create_task(
@@ -1289,7 +1308,11 @@ class KnowledgeBaseManager:
                 logger.warning("[KB] Failed to start semantic edge task: %s", e)
                 self._semantic_pending.pop(cache_key, None)
         elif cache_key in self._semantic_pending:
-            semantic_pending = True
+            elapsed = time.time() - self._semantic_pending[cache_key]
+            if elapsed > 60:
+                semantic_incomplete = True
+            else:
+                semantic_pending = True
 
         truncated = len(chunks) < total_candidates
 

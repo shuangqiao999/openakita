@@ -61,7 +61,7 @@ const STATUS_CONFIG: Record<string, { labelKey: string; color: string; icon: Rea
 };
 
 export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [documents, setDocuments] = useState<DocItem[]>([]);
   const [totalDocs, setTotalDocs] = useState(0);
   const [page, setPage] = useState(0);
@@ -108,11 +108,16 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
     loadDocuments();
   }, [loadDocuments]);
 
+  const hasProcessingRef = useRef(false);
+
+  useEffect(() => {
+    hasProcessingRef.current = documents.some(d => d.status === "processing");
+  });
+
   useEffect(() => {
     if (!serviceRunning) return;
     pollingRef.current = setInterval(() => {
-      const hasProcessing = documents.some(d => d.status === "processing");
-      if (hasProcessing) {
+      if (hasProcessingRef.current) {
         loadDocuments();
       }
     }, 5000);
@@ -122,7 +127,7 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
         pollingRef.current = null;
       }
     };
-  }, [serviceRunning, documents, loadDocuments]);
+  }, [serviceRunning, loadDocuments]);
 
   useEffect(() => {
     if (!serviceRunning) {
@@ -140,7 +145,7 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
     if (!file) return;
 
     const allowedExts = [".pdf", ".docx", ".md", ".txt", ".markdown", ".rst", ".org", ".tex", ".html", ".htm", ".csv", ".log", ".py", ".pyi", ".pyx", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".java", ".kt", ".scala", ".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh", ".hxx", ".cs", ".go", ".rs", ".rb", ".php", ".swift", ".sql", ".r", ".lua", ".dart", ".nim", ".zig", ".ex", ".exs", ".sh", ".bash", ".zsh", ".ps1", ".psm1", ".bat", ".cmd", ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".xml", ".env", ".properties", ".editorconfig"];
-    const ext = "." + file.name.split(".").pop()?.toLowerCase();
+    const ext = file.name.includes(".") ? "." + file.name.split(".").pop()?.toLowerCase() : "";
     if (!allowedExts.includes(ext)) {
       toast.error(t("kb.invalidFileType", { ext }));
       return;
@@ -165,7 +170,6 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
           existingId: data.existing_doc_id,
           existingName: data.existing_name,
         });
-        setUploading(false);
         return;
       }
       toast.success(t("kb.uploadSuccess"));
@@ -228,7 +232,7 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
       loadDocuments();
       setGraphRefreshKey(k => k + 1);
     } catch {
-      toast.error(t("kb.uploadFailed"));
+      toast.error(t("kb.replaceFailed"));
     } finally {
       setUploading(false);
       if (fileInputRef.current) {
@@ -308,10 +312,13 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
 
   const formatTime = (ts: number) => {
     const d = new Date(ts * 1000);
-    return d.toLocaleString();
+    return d.toLocaleString(i18n.language === "zh" ? "zh-CN" : "en-US");
   };
 
-  const formatScore = (score: number) => `${(score * 100).toFixed(0)}%`;
+  const formatScore = (score: number) => {
+    if (score == null || isNaN(score)) return "N/A";
+    return `${(score * 100).toFixed(0)}%`;
+  };
 
   const totalPages = Math.ceil(totalDocs / pageSize);
 

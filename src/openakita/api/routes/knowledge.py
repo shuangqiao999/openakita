@@ -121,13 +121,19 @@ async def upload_document(request: Request, file: UploadFile = File(...)):
         except OSError:
             pass
         raise
+    except (ValueError, FileNotFoundError) as e:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         try:
             os.unlink(tmp_path)
         except OSError:
             pass
         logger.error("[KB] Upload failed: %s", e)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=500, detail="服务器内部错误")
 
 
 @router.post("/replace", summary="覆盖已存在文档")
@@ -177,13 +183,19 @@ async def replace_document(
         except OSError:
             pass
         raise
+    except (ValueError, FileNotFoundError) as e:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         try:
             os.unlink(tmp_path)
         except OSError:
             pass
-        logger.error("[KB] Upload failed: %s", e)
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.error("[KB] Replace failed: %s", e)
+        raise HTTPException(status_code=500, detail="服务器内部错误")
 
 
 @router.get("/documents", summary="文档列表")

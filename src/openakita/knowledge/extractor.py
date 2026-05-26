@@ -108,8 +108,8 @@ def _extract_docx(path: Path) -> str:
         raise RuntimeError(f"Word 文档解析失败: {e}")
 
 
-def _extract_markdown(path: Path) -> str:
-    """读取 Markdown 文件的文本（自动检测编码）。"""
+def _extract_plain_text(path: Path) -> str:
+    """读取纯文本文件（自动检测编码，Markdown/TXT 等通用）。"""
     try:
         import chardet
 
@@ -125,18 +125,6 @@ def _extract_markdown(path: Path) -> str:
         return raw.decode("utf-8", errors="replace")
 
 
-def _extract_text(path: Path) -> str:
-    """读取纯文本文件。"""
-    try:
-        import chardet
-
-        raw = path.read_bytes()
-        result = chardet.detect(raw)
-        encoding = result["encoding"] or "utf-8"
-    except ImportError:
-        raw = path.read_bytes()
-        encoding = "utf-8"
-    try:
-        return raw.decode(encoding)
-    except (UnicodeDecodeError, LookupError):
-        return raw.decode("utf-8", errors="replace")
+# 保留别名以兼容旧引用
+_extract_markdown = _extract_plain_text
+_extract_text = _extract_plain_text
