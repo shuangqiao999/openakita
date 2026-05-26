@@ -38,11 +38,11 @@ _KB_ALLOWED_EXTENSIONS = {
     ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".xml", ".env", ".properties", ".editorconfig",
 }
 
-_KB_EMBED_BATCH_SIZE = 100  # 每批发送给嵌入模型的文本数
-_KB_EMBED_CHUNK_TRUNCATE = 1000  # 嵌入前单块最大字符数（适配 8192 token 模型）
+_KB_EMBED_BATCH_SIZE = 10  # 每批发送给嵌入模型的文本数（本地模型安全上限）
+_KB_EMBED_CHUNK_TRUNCATE = 300  # 嵌入前单块最大字符数（适配 2048 token 本地模型）
 _KB_EMBED_MAX_RETRIES = 3  # 单批最大重试次数
-_KB_EMBED_BATCH_DELAY = 0.0  # 批次间隔秒（并发模式下无需节流）
-_KB_EMBED_MAX_CONCURRENT = 4  # 最大并发嵌入请求数
+_KB_EMBED_BATCH_DELAY = 0.1  # 批次间隔秒（本地模型需要节流）
+_KB_EMBED_MAX_CONCURRENT = 1  # 最大并发嵌入请求数（本地模型串行执行）
 _KB_INDEX_MIN_ROWS = 1000     # 向量数超此阈值后自动创建索引
 
 
@@ -300,7 +300,7 @@ class KnowledgeBaseManager:
         Returns:
             分块数量
         """
-        chunker = TextChunker(strategy="paragraph", max_chunk_size=2000)
+        chunker = TextChunker(strategy="paragraph", max_chunk_size=1000)
         chunks = chunker.chunk(text)
 
         if not chunks:
@@ -416,6 +416,7 @@ class KnowledgeBaseManager:
         batch_size / batch_delay 为 None 时使用全局默认值。
         """
         bs = batch_size or _KB_EMBED_BATCH_SIZE
+        delay = batch_delay if batch_delay is not None else _KB_EMBED_BATCH_DELAY
         total_batches = (len(chunk_texts) + bs - 1) // bs
 
         batches: list[tuple[int, list[str]]] = []
@@ -432,6 +433,8 @@ class KnowledgeBaseManager:
                 try:
                     async with sem:
                         batch_vecs = await embedder.embed(batch)
+                        if delay > 0:
+                            await asyncio.sleep(delay)
                     async with dim_lock:
                         nonlocal dim
                         if dim == 0 and batch_vecs:
@@ -805,6 +808,7 @@ class KnowledgeBaseManager:
 
         def _query():
             with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
+                conn.row_factory = sqlite3.Row
                 row = conn.execute(
                     "SELECT id, name, file_type, upload_time, total_chunks, status, error_msg "
                     "FROM knowledge_documents WHERE id=?",
@@ -828,6 +832,7 @@ class KnowledgeBaseManager:
 
         def _query():
             with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
+                conn.row_factory = sqlite3.Row
                 row = conn.execute(
                     "SELECT id, name, file_type, upload_time, total_chunks, status, error_msg "
                     "FROM knowledge_documents WHERE id=?",
