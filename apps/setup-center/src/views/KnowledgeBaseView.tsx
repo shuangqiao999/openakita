@@ -16,7 +16,7 @@ import {
 import {
   Loader2, Upload, Search, Trash2, FileText,
   Clock, CheckCircle, XCircle, Eye, ChevronLeft, ChevronRight, Wrench,
-  List, Network
+  BookOpen, Edit3, List, Network
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 
@@ -77,6 +77,11 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
   const [activeTab, setActiveTab] = useState<"manage" | "graph">("manage");
   const [graphRefreshKey, setGraphRefreshKey] = useState(0);
   const [duplicateInfo, setDuplicateInfo] = useState<{ existingId: string; existingName: string } | null>(null);
+  const [previewDoc, setPreviewDoc] = useState<{ id: string; name: string; content: string } | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editContent, setEditContent] = useState("");
+  const [saving, setSaving] = useState(false);
   const pendingFileRef = useRef<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -134,7 +139,7 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const allowedExts = [".pdf", ".docx", ".md", ".txt", ".markdown"];
+    const allowedExts = [".pdf", ".docx", ".md", ".txt", ".markdown", ".rst", ".org", ".tex", ".html", ".htm", ".csv", ".log", ".py", ".pyi", ".pyx", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".java", ".kt", ".scala", ".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh", ".hxx", ".cs", ".go", ".rs", ".rb", ".php", ".swift", ".sql", ".r", ".lua", ".dart", ".nim", ".zig", ".ex", ".exs", ".sh", ".bash", ".zsh", ".ps1", ".psm1", ".bat", ".cmd", ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".xml", ".env", ".properties", ".editorconfig"];
     const ext = "." + file.name.split(".").pop()?.toLowerCase();
     if (!allowedExts.includes(ext)) {
       toast.error(t("kb.invalidFileType", { ext }));
@@ -266,6 +271,41 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
     }
   };
 
+  const handlePreview = async (doc: DocItem) => {
+    setPreviewLoading(true);
+    try {
+      const res = await safeFetch(`${apiBaseUrl}/api/kb/documents/${doc.id}/content`);
+      const data = await res.json();
+      setPreviewDoc({ id: data.id, name: data.name, content: data.content || "" });
+      setEditing(false);
+    } catch {
+      toast.error(t("kb.loadFailed"));
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  const handleSaveEdit = async () => {
+    if (!previewDoc) return;
+    setSaving(true);
+    try {
+      await safeFetch(`${apiBaseUrl}/api/kb/documents/${previewDoc.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: editContent }),
+      });
+      toast.success(t("kb.editSuccess"));
+      setPreviewDoc(null);
+      setEditing(false);
+      setGraphRefreshKey(k => k + 1);
+    } catch {
+      toast.error(t("kb.editFailed"));
+    } finally {
+      setSaving(false);
+      loadDocuments();
+    }
+  };
+
   const formatTime = (ts: number) => {
     const d = new Date(ts * 1000);
     return d.toLocaleString();
@@ -322,7 +362,7 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
             <input
               ref={fileInputRef}
               type="file"
-              accept=".pdf,.docx,.md,.txt,.markdown"
+              accept=".pdf,.docx,.md,.txt,.markdown,.rst,.org,.tex,.html,.htm,.csv,.log,.py,.pyi,.pyx,.js,.jsx,.ts,.tsx,.mjs,.cjs,.java,.kt,.scala,.c,.cpp,.cc,.cxx,.h,.hpp,.hh,.hxx,.cs,.go,.rs,.rb,.php,.swift,.sql,.r,.lua,.dart,.nim,.zig,.ex,.exs,.sh,.bash,.zsh,.ps1,.psm1,.bat,.cmd,.json,.yaml,.yml,.toml,.ini,.cfg,.conf,.xml,.env,.properties,.editorconfig"
               onChange={handleUpload}
               style={{ display: "none" }}
             />
@@ -452,14 +492,25 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
                         <td style={tdStyle}>
                           <div style={{ display: "flex", gap: 4 }}>
                             {doc.status === "ready" && (
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => handleViewChunks(doc)}
-                                disabled={viewChunksLoading}
-                              >
-                                <Eye size={14} />
-                              </Button>
+                              <>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => handlePreview(doc)}
+                                  disabled={previewLoading}
+                                  title={t("kb.preview")}
+                                >
+                                  <BookOpen size={14} />
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => handleViewChunks(doc)}
+                                  disabled={viewChunksLoading}
+                                >
+                                  <Eye size={14} />
+                                </Button>
+                              </>
                             )}
                             {(doc.status === "failed") && (
                               <Button
@@ -558,6 +609,75 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {previewDoc && (
+        <AlertDialog open onOpenChange={() => { setPreviewDoc(null); setEditing(false); }}>
+          <AlertDialogContent style={{ maxWidth: 800, maxHeight: "85vh" }}>
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                {editing ? t("kb.editTitle") : t("kb.previewTitle")} — {previewDoc.name}
+              </AlertDialogTitle>
+            </AlertDialogHeader>
+            {editing ? (
+              <textarea
+                value={editContent}
+                onChange={e => setEditContent(e.target.value)}
+                style={{
+                  width: "100%", minHeight: 400, padding: 12,
+                  fontFamily: "monospace", fontSize: 13, lineHeight: 1.6,
+                  background: "#0f172a", color: "#e2e8f0",
+                  border: "1px solid #334155", borderRadius: 8,
+                  resize: "vertical",
+                }}
+              />
+            ) : (
+              <div style={{
+                overflow: "auto", maxHeight: "60vh",
+                background: "#0f172a", borderRadius: 8, padding: 16,
+                border: "1px solid #334155",
+              }}>
+                <pre style={{
+                  whiteSpace: "pre-wrap", wordBreak: "break-word",
+                  fontFamily: "monospace", fontSize: 13, lineHeight: 1.6,
+                  color: "#e2e8f0", margin: 0,
+                }}>
+                  {previewDoc.content}
+                </pre>
+              </div>
+            )}
+            <AlertDialogFooter>
+              {editing ? (
+                <>
+                  <AlertDialogAction
+                    onClick={handleSaveEdit}
+                    disabled={saving}
+                    style={{ background: "#3b82f6", color: "white" }}
+                  >
+                    {saving ? <Loader2 size={14} style={{ animation: "spin 1s linear infinite", marginRight: 4 }} /> : null}
+                    {t("kb.save")}
+                  </AlertDialogAction>
+                  <AlertDialogCancel onClick={() => setEditing(false)} disabled={saving}>
+                    {t("common.cancel")}
+                  </AlertDialogCancel>
+                </>
+              ) : (
+                <>
+                  <AlertDialogAction
+                    onClick={() => { setEditing(true); setEditContent(previewDoc.content); }}
+                    style={{ background: "#3b82f6", color: "white" }}
+                  >
+                    <Edit3 size={14} style={{ marginRight: 4 }} />
+                    {t("kb.edit")}
+                  </AlertDialogAction>
+                  <AlertDialogCancel onClick={() => { setPreviewDoc(null); setEditing(false); }}>
+                    {t("kb.close")}
+                  </AlertDialogCancel>
+                </>
+              )}
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      )}
 
       <AlertDialog open={deleteTarget !== null} onOpenChange={() => setDeleteTarget(null)}>
         <AlertDialogContent>

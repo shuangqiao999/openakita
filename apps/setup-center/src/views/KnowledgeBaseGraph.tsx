@@ -22,7 +22,7 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
   const [similarityThreshold, setSimilarityThreshold] = useState(0.6);
   const [selectedDocId, setSelectedDocId] = useState("");
   const [docs, setDocs] = useState<DocBrief[]>([]);
-  const [dimensions, setDimensions] = useState({ w: 800, h: 500 });
+  const [dimensions, setDimensions] = useState({ w: 0, h: 0 });
   const [showTruncation, setShowTruncation] = useState(false);
   const [truncationMsg, setTruncationMsg] = useState("");
   const [selectedNode, setSelectedNode] = useState<any>(null);
@@ -35,16 +35,17 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
   const docDropdownRef = useRef<HTMLDivElement>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const fetchGraph = useCallback(async () => {
+  const fetchGraph = useCallback(async (silent = false) => {
     if (abortRef.current) abortRef.current.abort();
     const controller = new AbortController();
     abortRef.current = controller;
-    setLoading(true);
+    if (!silent) setLoading(true);
     try {
       const params = new URLSearchParams();
       if (selectedDocId) params.set("doc_id", selectedDocId);
       params.set("include_semantic", "true");
       params.set("similarity_threshold", String(similarityThreshold));
+      params.set("max_nodes", "500");
       const res = await safeFetch(`${apiBaseUrl}/api/kb/graph?${params.toString()}`, {
         signal: controller.signal,
       });
@@ -69,12 +70,12 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
         setShowTruncation(false);
       }
     } catch (e: any) {
-      if (e.name !== "AbortError") {
+      if (e.name !== "AbortError" && !silent) {
         setGraphData({ nodes: [], links: [] });
       }
     } finally {
       if (controller.signal.aborted) return;
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [apiBaseUrl, selectedDocId, similarityThreshold]);
 
@@ -114,7 +115,7 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
     }
     if (pollRef.current) return;
     pollRef.current = setInterval(() => {
-      fetchGraph();
+      fetchGraph(true);
     }, 3000);
     return () => {
       if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
@@ -150,7 +151,7 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
+  }, [loading, graphData.nodes.length]);
 
   useEffect(() => {
     if (!graphData.nodes.length || dimensions.w <= 0 || dimensions.h <= 0) return;
@@ -158,7 +159,7 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
       try {
         (fgRef.current as any)?.zoomToFit?.(400, 60);
       } catch { /* ignore */ }
-    }, 1000);
+    }, 200);
     return () => clearTimeout(timer);
   }, [graphData, dimensions]);
 
@@ -258,18 +259,17 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
           width={dimensions.w}
           height={dimensions.h}
           backgroundColor="#111827"
-          nodeLabel={(node: any) =>
-            `[${node.doc_name || ""}] ${(node.content || node.name || "").slice(0, 100)}`
-          }
-          nodeAutoColorBy="group"
+          nodeLabel="name"
+          nodeRelSize={4}
+          nodeAutoColorBy="type"
           nodeVal={2}
           linkWidth={(l: any) => Math.max(0.3, (l.value || 1) * 1.2)}
           linkOpacity={0.5}
           onNodeClick={handleNodeClick as any}
           enablePointerInteraction={true}
-          d3AlphaDecay={0.05}
-          warmupTicks={30}
-          cooldownTicks={50}
+          d3AlphaDecay={0.1}
+          warmupTicks={10}
+          cooldownTicks={20}
         />
       )}
 

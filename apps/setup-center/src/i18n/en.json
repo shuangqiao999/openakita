@@ -3292,7 +3292,7 @@
     "title": "Knowledge Base",
     "description": "Upload documents for automatic analysis and searchable knowledge retrieval",
     "upload": "Upload Document",
-    "uploadHint": "Supports PDF, Word, Markdown, TXT format, max 20MB",
+    "uploadHint": "Supports PDF/Word/Markdown/TXT and 50+ code, config, script formats, max 20MB",
     "uploading": "Uploading...",
     "search": "Search Knowledge Base",
     "searchPlaceholder": "Enter search query...",
@@ -3359,7 +3359,14 @@
       "legendSeqEdge": "Solid edges: sequential chunks in same document",
       "legendSimEdge": "Dashed edges: cross-document semantic similarity",
       "truncationMsg": "{{totalCandidates}} total nodes, showing first {{maxNodes}}. Use document filter to narrow scope."
-    }
+    },
+    "preview": "Preview",
+    "previewTitle": "Document Preview",
+    "edit": "Edit",
+    "editTitle": "Edit Document",
+    "save": "Save",
+    "editSuccess": "Document updated and re-ingested",
+    "editFailed": "Edit save failed"
   }
 }
 

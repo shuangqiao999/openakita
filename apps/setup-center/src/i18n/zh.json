@@ -3292,7 +3292,7 @@
     "title": "知识库",
     "description": "上传文档，自动分析并建立可检索的知识库",
     "upload": "上传文档",
-    "uploadHint": "支持 PDF、Word、Markdown、TXT 格式，最大 20MB",
+    "uploadHint": "支持 PDF/Word/Markdown/TXT 及 50+ 种代码、配置、脚本格式，最大 20MB",
     "uploading": "上传中...",
     "search": "搜索知识库",
     "searchPlaceholder": "输入搜索内容...",
@@ -3359,7 +3359,14 @@
       "legendSeqEdge": "实线边：同文档 chunk 顺序关联",
       "legendSimEdge": "虚线边：跨文档语义相似关联",
       "truncationMsg": "知识库共 {{totalCandidates}} 个节点，当前仅显示前 {{maxNodes}} 个，请使用文档过滤缩小范围。"
-    }
+    },
+    "preview": "预览",
+    "previewTitle": "全文预览",
+    "edit": "编辑",
+    "editTitle": "编辑文档",
+    "save": "保存",
+    "editSuccess": "文档已更新并重新入库",
+    "editFailed": "编辑保存失败"
   }
 }
 

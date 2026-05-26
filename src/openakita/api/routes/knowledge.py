@@ -28,7 +28,17 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/kb", tags=["知识库"])
 
 _KB_MAX_UPLOAD_SIZE = 20 * 1024 * 1024
-_ALLOWED_EXTENSIONS = {".pdf", ".docx", ".md", ".txt", ".markdown"}
+_ALLOWED_EXTENSIONS = {
+    ".pdf", ".docx", ".md", ".txt", ".markdown",
+    ".rst", ".org", ".tex", ".html", ".htm", ".csv", ".log",
+    ".py", ".pyi", ".pyx", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
+    ".java", ".kt", ".scala",
+    ".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh", ".hxx",
+    ".cs", ".go", ".rs", ".rb", ".php", ".swift", ".sql", ".r",
+    ".lua", ".dart", ".nim", ".zig", ".ex", ".exs",
+    ".sh", ".bash", ".zsh", ".ps1", ".psm1", ".bat", ".cmd",
+    ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".xml", ".env", ".properties", ".editorconfig",
+}
 
 
 def _get_kb_manager(request: Request):
@@ -219,14 +229,42 @@ async def kb_ready(request: Request):
     return {"ready": kb.is_ready()}
 
 
-@router.get("/status/{doc_id}", summary="文档状态")
+@router.get("/status/{doc_id}", summary="文档状态与分块详情")
 async def document_status(request: Request, doc_id: str):
-    """查询文档处理状态。"""
+    """查询文档处理状态及分块内容。"""
     kb = _get_kb_manager(request)
-    doc_status = await kb.get_document_status(doc_id)
+    doc_status = await kb.get_document_by_id(doc_id)
     if doc_status is None:
         raise HTTPException(status_code=404, detail="文档不存在")
     return doc_status
+
+
+@router.get("/documents/{doc_id}/content", summary="文档全文内容")
+async def document_content(request: Request, doc_id: str):
+    """获取文档完整内容（拼接所有分块）。"""
+    kb = _get_kb_manager(request)
+    doc = await kb.get_document_full_content(doc_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="文档不存在")
+    return doc
+
+
+class UpdateDocumentRequest(BaseModel):
+    content: str = Field(..., min_length=1, description="编辑后的文档全文")
+    name: str | None = Field(None, description="可选的新文件名")
+
+
+@router.put("/documents/{doc_id}", summary="编辑文档全文")
+async def update_document(request: Request, doc_id: str, body: UpdateDocumentRequest):
+    """编辑文档全文并重新入库（删除旧分块 → 重新分块 → 嵌入 → 存储）。"""
+    kb = _get_kb_manager(request)
+    try:
+        result = await kb.update_document_content(doc_id, body.content, body.name)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"编辑失败: {e}")
 
 
 @router.post("/repair/{doc_id}", summary="修复文档一致性")

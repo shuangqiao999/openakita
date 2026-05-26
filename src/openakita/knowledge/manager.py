@@ -26,12 +26,23 @@ from .extractor import extract_text
 logger = logging.getLogger(__name__)
 
 _KB_MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
-_KB_ALLOWED_EXTENSIONS = {".pdf", ".docx", ".md", ".txt", ".markdown"}
+_KB_ALLOWED_EXTENSIONS = {
+    ".pdf", ".docx", ".md", ".txt", ".markdown",
+    ".rst", ".org", ".tex", ".html", ".htm", ".csv", ".log",
+    ".py", ".pyi", ".pyx", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
+    ".java", ".kt", ".scala",
+    ".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh", ".hxx",
+    ".cs", ".go", ".rs", ".rb", ".php", ".swift", ".sql", ".r",
+    ".lua", ".dart", ".nim", ".zig", ".ex", ".exs",
+    ".sh", ".bash", ".zsh", ".ps1", ".psm1", ".bat", ".cmd",
+    ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".xml", ".env", ".properties", ".editorconfig",
+}
 
-_KB_EMBED_BATCH_SIZE = 10  # 每批发送给嵌入模型的文本数
-_KB_EMBED_CHUNK_TRUNCATE = 300  # 嵌入前单块最大字符数（适配 512 token 模型）
+_KB_EMBED_BATCH_SIZE = 100  # 每批发送给嵌入模型的文本数
+_KB_EMBED_CHUNK_TRUNCATE = 1000  # 嵌入前单块最大字符数（适配 8192 token 模型）
 _KB_EMBED_MAX_RETRIES = 3  # 单批最大重试次数
-_KB_EMBED_BATCH_DELAY = 0.1  # 批次间隔秒（避免压垮本地模型）
+_KB_EMBED_BATCH_DELAY = 0.0  # 批次间隔秒（并发模式下无需节流）
+_KB_EMBED_MAX_CONCURRENT = 4  # 最大并发嵌入请求数
 _KB_INDEX_MIN_ROWS = 1000     # 向量数超此阈值后自动创建索引
 
 
@@ -283,6 +294,96 @@ class KnowledgeBaseManager:
 
         return {"doc_id": doc_id, "duplicate": False}
 
+    async def _process_chunks(self, doc_id: str, text: str) -> int:
+        """公共方法：分块 → 嵌入 → 存储 SQLite + LanceDB。
+
+        Returns:
+            分块数量
+        """
+        chunker = TextChunker(strategy="paragraph", max_chunk_size=2000)
+        chunks = chunker.chunk(text)
+
+        if not chunks:
+            raise RuntimeError("未能从文档中提取任何内容块")
+
+        embedder = await self._get_embedder()
+        truncate = _KB_EMBED_CHUNK_TRUNCATE
+        chunk_texts = [c.content[:truncate].strip() for c in chunks]
+
+        vectors, dim, failed_batches = await self._embed_in_batches(
+            embedder,
+            chunk_texts,
+            doc_id,
+        )
+
+        if self._lance_table is None:
+            if dim == 0:
+                dim = await self._get_embedding_dim()
+            await asyncio.to_thread(self._create_lance_table, dim)
+
+        lance_rows = [
+            {"id": None, "vector": vectors[i], "document_id": doc_id}
+            for i in range(len(chunks))
+        ]
+
+        with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
+            for i, c in enumerate(chunks):
+                chunk_id = f"{doc_id}_{i:05d}"
+                conn.execute(
+                    "INSERT INTO knowledge_chunks(id, document_id, chunk_index, content, token_count) "
+                    "VALUES(?, ?, ?, ?, ?)",
+                    (chunk_id, doc_id, i, c.content, c.token_estimate),
+                )
+                lance_rows[i]["id"] = chunk_id
+
+            conn.execute(
+                "UPDATE knowledge_documents SET total_chunks=? WHERE id=?",
+                (len(chunks), doc_id),
+            )
+            conn.commit()
+
+        await asyncio.to_thread(self._lance_table.add, lance_rows)
+        self._create_index_if_needed()
+
+        total_batches = max(
+            (len(chunk_texts) + _KB_EMBED_BATCH_SIZE - 1) // _KB_EMBED_BATCH_SIZE, 1
+        )
+        fail_rate = failed_batches / max(total_batches, 1)
+        with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
+            if failed_batches == 0:
+                conn.execute(
+                    "UPDATE knowledge_documents SET status='ready' WHERE id=?",
+                    (doc_id,),
+                )
+            elif fail_rate < 0.1:
+                conn.execute(
+                    "UPDATE knowledge_documents SET status='ready', error_msg=? WHERE id=?",
+                    (
+                        f"部分批次嵌入失败（{failed_batches}/{total_batches}），已用零向量占位",
+                        doc_id,
+                    ),
+                )
+            else:
+                conn.execute(
+                    "UPDATE knowledge_documents SET status='failed', error_msg=? WHERE id=?",
+                    (
+                        f"嵌入失败 {failed_batches}/{total_batches} 批次",
+                        doc_id,
+                    ),
+                )
+            conn.commit()
+
+        logger.info(
+            "[KB] Document %s processed: %d chunks, %d/%d batches OK",
+            doc_id,
+            len(chunks),
+            total_batches - failed_batches,
+            total_batches,
+        )
+
+        self._semantic_cache.clear()
+        return len(chunks)
+
     async def _process_document(self, doc_id: str, file_path: Path) -> None:
         """后台处理文档：提取文本 → 分块 → 分批向量化 → 存储。"""
         try:
@@ -290,88 +391,7 @@ class KnowledgeBaseManager:
             if not text or not text.strip():
                 raise RuntimeError("文档内容为空")
 
-            chunker = TextChunker(strategy="paragraph", max_chunk_size=1000)
-            chunks = chunker.chunk(text)
-
-            if not chunks:
-                raise RuntimeError("未能从文档中提取任何内容块")
-
-            embedder = await self._get_embedder()
-            truncate = _KB_EMBED_CHUNK_TRUNCATE
-            chunk_texts = [c.content[:truncate].strip() for c in chunks]
-
-            vectors, dim, failed_batches = await self._embed_in_batches(
-                embedder,
-                chunk_texts,
-                doc_id,
-            )
-
-            if self._lance_table is None:
-                if dim == 0:
-                    dim = await self._get_embedding_dim()
-                await asyncio.to_thread(self._create_lance_table, dim)
-
-            lance_rows = [
-                {"id": None, "vector": vectors[i], "document_id": doc_id}
-                for i in range(len(chunks))
-            ]
-
-            with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
-                for i, c in enumerate(chunks):
-                    chunk_id = f"{doc_id}_{i:05d}"
-                    conn.execute(
-                        "INSERT INTO knowledge_chunks(id, document_id, chunk_index, content, token_count) "
-                        "VALUES(?, ?, ?, ?, ?)",
-                        (chunk_id, doc_id, i, c.content, c.token_estimate),
-                    )
-                    lance_rows[i]["id"] = chunk_id
-
-                conn.execute(
-                    "UPDATE knowledge_documents SET total_chunks=? WHERE id=?",
-                    (len(chunks), doc_id),
-                )
-                conn.commit()
-
-            await asyncio.to_thread(self._lance_table.add, lance_rows)
-            self._create_index_if_needed()
-
-            total_batches = max(
-                (len(chunk_texts) + _KB_EMBED_BATCH_SIZE - 1) // _KB_EMBED_BATCH_SIZE, 1
-            )
-            fail_rate = failed_batches / max(total_batches, 1)
-            with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
-                if failed_batches == 0:
-                    conn.execute(
-                        "UPDATE knowledge_documents SET status='ready' WHERE id=?",
-                        (doc_id,),
-                    )
-                elif fail_rate < 0.1:
-                    conn.execute(
-                        "UPDATE knowledge_documents SET status='ready', error_msg=? WHERE id=?",
-                        (
-                            f"部分批次嵌入失败（{failed_batches}/{total_batches}），已用零向量占位",
-                            doc_id,
-                        ),
-                    )
-                else:
-                    conn.execute(
-                        "UPDATE knowledge_documents SET status='failed', error_msg=? WHERE id=?",
-                        (
-                            f"嵌入失败 {failed_batches}/{total_batches} 批次",
-                            doc_id,
-                        ),
-                    )
-                conn.commit()
-
-            logger.info(
-                "[KB] Document %s processed: %d chunks, %d/%d batches OK",
-                doc_id,
-                len(chunks),
-                total_batches - failed_batches,
-                total_batches,
-            )
-
-            self._semantic_cache.clear()
+            await self._process_chunks(doc_id, text)
 
         except Exception as e:
             logger.error("[KB] Failed to process document %s: %s", doc_id, e)
@@ -390,39 +410,40 @@ class KnowledgeBaseManager:
         batch_size: int | None = None,
         batch_delay: float | None = None,
     ) -> tuple[list[list[float]], int, int]:
-        """分批嵌入，返回 (vectors, dim, failed_batches)。
+        """分批并发嵌入，返回 (vectors, dim, failed_batches)。
 
-        内置重试、批次节流、零向量占位（维度确定后填入）。
+        内置重试、并发控制（Semaphore）、零向量占位。
         batch_size / batch_delay 为 None 时使用全局默认值。
         """
         bs = batch_size or _KB_EMBED_BATCH_SIZE
-        delay = batch_delay if batch_delay is not None else _KB_EMBED_BATCH_DELAY
         total_batches = (len(chunk_texts) + bs - 1) // bs
-        vectors: list[list[float]] = []
-        failed = 0
 
+        batches: list[tuple[int, list[str]]] = []
+        for i in range(total_batches):
+            start = i * bs
+            batches.append((i, chunk_texts[start:start + bs]))
+
+        sem = asyncio.Semaphore(_KB_EMBED_MAX_CONCURRENT)
         dim = 0
-        for batch_num in range(1, total_batches + 1):
-            start = (batch_num - 1) * bs
-            end = start + bs
-            batch = chunk_texts[start:end]
+        dim_lock = asyncio.Lock()
 
-            ok = False
+        async def _embed_one(batch_idx: int, batch: list[str]) -> tuple[int, list[list[float]], bool]:
             for attempt in range(_KB_EMBED_MAX_RETRIES):
                 try:
-                    batch_vecs = await embedder.embed(batch)
-                    vectors.extend(batch_vecs)
-                    if dim == 0 and batch_vecs:
-                        dim = len(batch_vecs[0])
-                    ok = True
-                    break
+                    async with sem:
+                        batch_vecs = await embedder.embed(batch)
+                    async with dim_lock:
+                        nonlocal dim
+                        if dim == 0 and batch_vecs:
+                            dim = len(batch_vecs[0])
+                    return batch_idx, batch_vecs, True
                 except Exception as e:
-                    retry_delay = 2**attempt
+                    retry_delay = 2 ** attempt
                     if attempt < _KB_EMBED_MAX_RETRIES - 1:
                         logger.warning(
                             "[KB] Doc %s batch %d/%d attempt %d failed: %s, retrying in %ds",
                             doc_id,
-                            batch_num,
+                            batch_idx + 1,
                             total_batches,
                             attempt + 1,
                             e,
@@ -433,20 +454,28 @@ class KnowledgeBaseManager:
                         logger.error(
                             "[KB] Doc %s batch %d/%d failed after %d retries: %s",
                             doc_id,
-                            batch_num,
+                            batch_idx + 1,
                             total_batches,
                             _KB_EMBED_MAX_RETRIES,
                             e,
                         )
+            return batch_idx, [], False
 
-            if not ok:
-                failed += 1
-                vectors.extend([None] * len(batch))
+        results = await asyncio.gather(*[
+            _embed_one(idx, batch) for idx, batch in batches
+        ])
+
+        results.sort(key=lambda x: x[0])
+
+        vectors: list[list[float]] = []
+        failed = 0
+        for batch_idx, vecs, ok in results:
+            if ok:
+                vectors.extend(vecs)
+                logger.info("[KB] Doc %s: embedded %d/%d batches", doc_id, batch_idx + 1, total_batches)
             else:
-                logger.info("[KB] Doc %s: embedded %d/%d batches", doc_id, batch_num, total_batches)
-
-            if batch_num < total_batches:
-                await asyncio.sleep(delay)
+                vectors.extend([None] * len(batches[batch_idx][1]))
+                failed += 1
 
         if failed > 0 and dim == 0:
             dim = await self._get_embedding_dim()
@@ -794,6 +823,86 @@ class KnowledgeBaseManager:
 
         return await asyncio.to_thread(_query)
 
+    async def get_document_full_content(self, doc_id: str) -> dict[str, Any] | None:
+        """获取文档完整内容（拼接所有分块）及元数据。"""
+
+        def _query():
+            with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
+                row = conn.execute(
+                    "SELECT id, name, file_type, upload_time, total_chunks, status, error_msg "
+                    "FROM knowledge_documents WHERE id=?",
+                    (doc_id,),
+                ).fetchone()
+                if row is None:
+                    return None
+                doc = dict(row)
+                chunks = conn.execute(
+                    "SELECT content FROM knowledge_chunks WHERE document_id=? "
+                    "ORDER BY chunk_index",
+                    (doc_id,),
+                ).fetchall()
+                doc["content"] = "\n\n".join(c[0] for c in chunks if c[0])
+                return doc
+
+        return await asyncio.to_thread(_query)
+
+    async def update_document_content(
+        self, doc_id: str, content: str, name: str | None = None
+    ) -> dict[str, Any]:
+        """编辑文档全文：删除旧分块和向量 → 重新分块 → 嵌入 → 入库（同步等待完成）。
+
+        Args:
+            doc_id: 文档 ID
+            content: 编辑后的全文
+            name: 可选的新文件名
+
+        Returns:
+            {"doc_id": "...", "status": "updated", "chunks": N}
+        """
+        if not self._document_exists(doc_id):
+            raise ValueError(f"文档不存在: {doc_id}")
+
+        def _delete_old():
+            with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
+                conn.execute("DELETE FROM knowledge_chunks WHERE document_id=?", (doc_id,))
+                conn.commit()
+
+        await asyncio.to_thread(_delete_old)
+
+        if self._lance_table is not None:
+            try:
+                await asyncio.to_thread(
+                    self._lance_table.delete, f"document_id = '{doc_id}'"
+                )
+            except Exception as e:
+                logger.warning("[KB] Failed to delete old vectors for %s: %s", doc_id, e)
+
+        with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
+            if name:
+                conn.execute(
+                    "UPDATE knowledge_documents SET name=?, status='processing', error_msg=NULL WHERE id=?",
+                    (name, doc_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE knowledge_documents SET status='processing', error_msg=NULL WHERE id=?",
+                    (doc_id,),
+                )
+            conn.commit()
+
+        try:
+            n_chunks = await self._process_chunks(doc_id, content)
+            return {"doc_id": doc_id, "status": "updated", "chunks": n_chunks}
+        except Exception as e:
+            logger.error("[KB] Failed to update document %s: %s", doc_id, e)
+            with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
+                conn.execute(
+                    "UPDATE knowledge_documents SET status='failed', error_msg=? WHERE id=?",
+                    (str(e)[:500], doc_id),
+                )
+                conn.commit()
+            raise
+
     def is_ready(self) -> bool:
         """检查知识库是否完全可用（嵌入模型已配置）。"""
         from openakita.llm.embeddings import get_embedding_model
@@ -1093,7 +1202,7 @@ class KnowledgeBaseManager:
             with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
                 if doc_id:
                     rows = conn.execute(
-                        """SELECT kc.id, kc.content, kc.chunk_index, kc.document_id, kd.name as doc_name
+                        """SELECT kc.id, kc.content, kc.chunk_index, kc.document_id, kd.name as doc_name, kd.file_type
                            FROM knowledge_chunks kc
                            JOIN knowledge_documents kd ON kc.document_id = kd.id
                            WHERE kc.document_id = ? AND kd.status = 'ready'
@@ -1112,7 +1221,7 @@ class KnowledgeBaseManager:
                            WHERE kd.status = 'ready'"""
                     ).fetchone()[0]
                     rows = conn.execute(
-                        """SELECT kc.id, kc.content, kc.chunk_index, kc.document_id, kd.name as doc_name
+                        """SELECT kc.id, kc.content, kc.chunk_index, kc.document_id, kd.name as doc_name, kd.file_type
                            FROM knowledge_chunks kc
                            JOIN knowledge_documents kd ON kc.document_id = kd.id
                            WHERE kd.status = 'ready'
@@ -1120,7 +1229,7 @@ class KnowledgeBaseManager:
                             LIMIT ?""",
                         (limit,),
                     ).fetchall()
-                return [(r[0], r[1] or "", r[2], r[3], r[4]) for r in rows], total
+                return [(r[0], r[1] or "", r[2], r[3], r[4], r[5] or "") for r in rows], total
 
         chunks, total_candidates = await asyncio.to_thread(_query_chunks)
         if not chunks:
@@ -1138,7 +1247,7 @@ class KnowledgeBaseManager:
         nodes: list[dict] = []
         nodes_by_id: dict[str, dict] = {}
 
-        for cid, content, idx, did, dname in chunks:
+        for cid, content, idx, did, dname, file_type in chunks:
             name = content[:80].replace("\n", " ").strip()
             if len(content) > 80:
                 name += "..."
@@ -1147,8 +1256,9 @@ class KnowledgeBaseManager:
                 "name": name,
                 "doc_name": dname,
                 "group": did,
+                "type": file_type,
                 "chunk_index": idx,
-                "content": content,
+                "content": content[:200],
             }
             nodes.append(node)
             nodes_by_id[cid] = node
