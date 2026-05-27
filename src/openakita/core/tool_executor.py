@@ -301,6 +301,7 @@ class ToolExecutor:
         "get_time",
         "read_resource",
         "list_resources",
+        "search_knowledge_base",
     }
 
     # 默认不对工具施加硬超时。长任务由用户停止/跳过、工具自身进度监控、

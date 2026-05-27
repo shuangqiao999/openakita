@@ -833,11 +833,8 @@ def build_system_prompt(
         if memory_section:
             developer_parts.append(memory_section)
 
-    # 10.5 知识库检索（独立于记忆系统）
-    if kb_manager and prompt_mode in (PromptMode.FULL, PromptMode.MINIMAL):
-        kb_section = _build_knowledge_section(kb_manager, task_description, max_tokens=500)
-        if kb_section:
-            developer_parts.append(kb_section)
+    # 10.5 知识库检索 — 由 LLM 显式调用 search_knowledge_base 工具获取，不自动注入
+    # （自动注入每轮浪费嵌入调用 + prompt token，改为工具按需获取）
 
     # 11. User 层（仅 FULL 模式）
     user_core_section = _build_user_core_profile_section(

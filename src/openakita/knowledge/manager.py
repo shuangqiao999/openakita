@@ -87,6 +87,7 @@ class KnowledgeBaseManager:
         self._index_creating = False
         self._semantic_cache: dict[str, list[dict]] = {}
         self._semantic_pending: dict[str, bool] = {}
+        self._search_cache: dict[str, tuple[float, list[dict]]] = {}
 
         self._init_sqlite()
         self._init_lancedb()
@@ -405,6 +406,7 @@ class KnowledgeBaseManager:
         keys_to_remove = [k for k in self._semantic_cache if doc_id in k or "all_" in k]
         for k in keys_to_remove:
             del self._semantic_cache[k]
+        self._search_cache.clear()
         return len(chunks)
 
     async def _process_document(self, doc_id: str, file_path: Path) -> None:
@@ -547,6 +549,7 @@ class KnowledgeBaseManager:
             except Exception as e:
                 logger.warning("[KB] Failed to delete LanceDB vectors for %s: %s", doc_id, e)
         self._semantic_cache.clear()
+        self._search_cache.clear()
         return True
 
     def _document_exists(self, doc_id: str) -> bool:
@@ -706,6 +709,11 @@ class KnowledgeBaseManager:
         if self._lance_table is None:
             return []
 
+        cache_key = hashlib.sha256(f"{query}|{doc_filter}|{top_k}|{context_window}".encode()).hexdigest()
+        cached = self._search_cache.get(cache_key)
+        if cached and time.time() - cached[0] < 60:
+            return cached[1]
+
         try:
             embedder = await self._get_embedder()
             query_vec = await embedder.embed_query(query)
@@ -752,7 +760,7 @@ class KnowledgeBaseManager:
                 return []
 
             content_map: dict[str, tuple[str, str]] = {}
-            with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
+            with sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
                 placeholders = ",".join(["?"] * len(needed_ids))
                 rows = conn.execute(
                     f"""SELECT kc.id, kc.content, kd.id as doc_id, kd.name as document_name
@@ -796,6 +804,9 @@ class KnowledgeBaseManager:
             return results_out
 
         results = await asyncio.to_thread(_search)
+        self._search_cache[cache_key] = (time.time(), results)
+        if len(self._search_cache) > 200:
+            self._search_cache.clear()
         return results
 
     async def get_document_status(self, doc_id: str) -> dict[str, Any] | None:
