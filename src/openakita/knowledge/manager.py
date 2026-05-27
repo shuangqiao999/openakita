@@ -181,11 +181,10 @@ class KnowledgeBaseManager:
                     rows = conn.execute(
                         "SELECT rowid, content FROM knowledge_chunks"
                     ).fetchall()
-                    for rowid, content in rows:
-                        conn.execute(
-                            "INSERT INTO knowledge_chunks_fts(rowid, content) VALUES(?, ?)",
-                            (rowid, _segment_text(content)),
-                        )
+                    conn.executemany(
+                        "INSERT INTO knowledge_chunks_fts(rowid, content) VALUES(?, ?)",
+                        [(rowid, _segment_text(content)) for rowid, content in rows],
+                    )
             except Exception:
                 pass
 
@@ -609,6 +608,9 @@ class KnowledgeBaseManager:
 
         except Exception as e:
             logger.error("[KB] Failed to process document %s: %s", doc_id, e)
+            with self._cache_lock:
+                self._semantic_cache.clear()
+                self._search_cache.clear()
             with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
                 conn.execute(
                     "UPDATE knowledge_documents SET status='failed', error_msg=? WHERE id=?",
@@ -1085,12 +1087,15 @@ class KnowledgeBaseManager:
             return candidates
 
         def _cos_sim(a: list[float], b: list[float]) -> float:
-            dot = sum(x * y for x, y in zip(a, b, strict=True))
-            na = math.sqrt(sum(x * x for x in a))
-            nb = math.sqrt(sum(y * y for y in b))
-            if na == 0 or nb == 0:
+            try:
+                dot = sum(x * y for x, y in zip(a, b, strict=True))
+                na = math.sqrt(sum(x * x for x in a))
+                nb = math.sqrt(sum(y * y for y in b))
+                if na == 0 or nb == 0:
+                    return 0.0
+                return dot / (na * nb)
+            except (ValueError, TypeError):
                 return 0.0
-            return dot / (na * nb)
 
         scored: list[tuple[dict[str, Any], float]] = []
         for c in candidates:
