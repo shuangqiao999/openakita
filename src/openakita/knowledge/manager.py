@@ -1398,6 +1398,8 @@ class KnowledgeBaseManager:
                 conn.commit()
             return {"repaired": False, "reason": f"LanceDB写入失败: {e!s:200}"}
 
+        self._sync_fts5_for_document(doc_id)
+
         self._create_index_if_needed()
         self._create_fts_index_if_needed()
 
