@@ -44,6 +44,7 @@ _KB_EMBED_MAX_RETRIES = 3  # 单批最大重试次数
 _KB_EMBED_BATCH_DELAY = 0.05  # 批次间隔秒（本地模型节流）
 _KB_EMBED_MAX_CONCURRENT = 1  # 最大并发嵌入请求数（本地模型串行执行）
 _KB_INDEX_MIN_ROWS = 1000     # 向量数超此阈值后自动创建索引
+_KB_FTS_MIN_ROWS = 50         # 向量数超此阈值后自动创建 FTS 索引
 _SEMANTIC_CACHE_MAX_SIZE = 200  # 语义边缓存最大条目数
 
 
@@ -89,6 +90,9 @@ class KnowledgeBaseManager:
         self._embedding_dim: int | None = None
         self._index_lock = threading.Lock()
         self._index_creating = False
+        self._fts_lock = threading.Lock()
+        self._fts_index_creating = False
+        self._fts_index_created = False
         self._semantic_cache: dict[str, list[dict]] = {}
         self._semantic_pending: dict[str, bool] = {}
         self._search_cache: dict[str, tuple[float, list[dict]]] = {}
@@ -156,6 +160,7 @@ class KnowledgeBaseManager:
         lance_path = str(self._workspace_root / "data" / "lancedb")
         self._lance_db = lancedb.connect(lance_path)
         self._ensure_lance_table()
+        self._migrate_schema_if_needed()
         if self._lance_table is None and self.is_ready():
             try:
                 self._proactive_task = asyncio.create_task(self._proactive_create_table())
@@ -171,12 +176,94 @@ class KnowledgeBaseManager:
             if self._lance_table.count_rows() > 0:
                 logger.info("[KB] Opened existing knowledge_base table")
 
+    def _migrate_schema_if_needed(self) -> None:
+        if self._lance_table is None:
+            return
+        try:
+            existing_cols = self._lance_table.schema.names
+        except Exception:
+            return
+        if "content" in existing_cols:
+            return
+        logger.info("[KB] LanceDB schema migration triggered: adding content column")
+        threading.Thread(target=self._migrate_with_content, daemon=True).start()
+
+    def _migrate_with_content(self) -> None:
+        try:
+            sqlite_rows = []
+            with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
+                rows = conn.execute(
+                    "SELECT kc.id, kc.content, kc.document_id, kd.status "
+                    "FROM knowledge_chunks kc "
+                    "JOIN knowledge_documents kd ON kc.document_id = kd.id"
+                ).fetchall()
+                sqlite_rows = [(r[0], r[1] or "", r[2], r[3]) for r in rows]
+
+            if not sqlite_rows:
+                return
+
+            import lancedb
+            import pyarrow as pa
+
+            lance_path = str(self._workspace_root / "data" / "lancedb")
+            tmp_db = lancedb.connect(lance_path)
+
+            old_rows = []
+            try:
+                old_rows = self._lance_table.to_arrow(
+                    columns=["id", "vector", "document_id"]
+                ).to_pylist()
+            except Exception:
+                pass
+
+            content_map = {r[0]: r[1] for r in sqlite_rows}
+
+            dim = 0
+            new_rows = []
+            for row in old_rows:
+                vid = row.get("id", "")
+                vec = row.get("vector", [])
+                did = row.get("document_id", "")
+                if not vec:
+                    continue
+                if dim == 0:
+                    dim = len(vec)
+                new_rows.append({
+                    "id": vid,
+                    "vector": vec,
+                    "document_id": did,
+                    "content": content_map.get(vid, ""),
+                })
+
+            if not new_rows:
+                return
+
+            schema = pa.schema([
+                pa.field("id", pa.string()),
+                pa.field("vector", pa.list_(pa.float32(), dim)),
+                pa.field("document_id", pa.string()),
+                pa.field("content", pa.string()),
+            ])
+            try:
+                tmp_db.drop_table("knowledge_base")
+            except Exception:
+                pass
+            new_table = tmp_db.create_table("knowledge_base", schema=schema, mode="create")
+            new_table.add(new_rows)
+            self._lance_table = new_table
+            if dim > 0:
+                self._embedding_dim = dim
+            logger.info("[KB] Schema migration complete: %d rows with content", len(new_rows))
+        except Exception as e:
+            logger.warning("[KB] Schema migration failed: %s", e)
+
     def _create_lance_table(self, dim: int) -> None:
         schema = pa.schema(
             [
                 pa.field("id", pa.string()),
                 pa.field("vector", pa.list_(pa.float32(), dim)),
                 pa.field("document_id", pa.string()),
+                pa.field("content", pa.string()),
             ]
         )
         try:
@@ -187,6 +274,59 @@ class KnowledgeBaseManager:
             self._lance_table = self._lance_db.open_table("knowledge_base")
         self._embedding_dim = dim
         logger.info("[KB] knowledge_base table ready, dim=%d", dim)
+
+    def _has_fts_index(self) -> bool:
+        if self._lance_table is None:
+            return False
+        if self._fts_index_created:
+            return True
+        try:
+            for idx in self._lance_table.list_indices():
+                if "FTS" in str(idx):
+                    self._fts_index_created = True
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _create_fts_index_if_needed(self) -> None:
+        if self._lance_table is None:
+            return
+        if not self._fts_lock.acquire(blocking=False):
+            return
+        try:
+            if self._fts_index_creating or self._fts_index_created:
+                return
+            try:
+                row_count = self._lance_table.count_rows()
+                if row_count < _KB_FTS_MIN_ROWS:
+                    return
+            except Exception:
+                return
+            if self._has_fts_index():
+                return
+            self._fts_index_creating = True
+        finally:
+            self._fts_lock.release()
+
+        def _build():
+            try:
+                self._lance_table.create_fts_index(
+                    "content",
+                    replace=True,
+                    language="Chinese",
+                    lower_case=True,
+                    ascii_folding=True,
+                    max_token_length=64,
+                )
+                self._fts_index_created = True
+                logger.info("[KB] LanceDB FTS index created on content column")
+            except Exception as e:
+                logger.warning("[KB] LanceDB FTS index creation failed: %s", e)
+            finally:
+                self._fts_index_creating = False
+
+        threading.Thread(target=_build, daemon=True).start()
 
     async def _proactive_create_table(self) -> None:
         """启动时主动创建 LanceDB 表，避免死锁：没表→不能上传→不能建表。"""
@@ -353,7 +493,7 @@ class KnowledgeBaseManager:
                         "VALUES(?, ?, ?, ?, ?)",
                         (chunk_id, doc_id, i, c.content, c.token_estimate),
                     )
-                    lance_rows.append({"id": chunk_id, "vector": vectors[i], "document_id": doc_id})
+                    lance_rows.append({"id": chunk_id, "vector": vectors[i], "document_id": doc_id, "content": c.content[:600]})
                 conn.execute(
                     "UPDATE knowledge_documents SET total_chunks=? WHERE id=?",
                     (len(chunks), doc_id),
@@ -373,6 +513,7 @@ class KnowledgeBaseManager:
             raise
 
         self._create_index_if_needed()
+        self._create_fts_index_if_needed()
 
         if not await self._verify_embeddings(doc_id):
             raise RuntimeError("向量完整性验证失败")
@@ -509,6 +650,24 @@ class KnowledgeBaseManager:
                 return rows, total
         rows, total = await asyncio.to_thread(_query)
         return {"documents": [dict(r) for r in rows], "total": total}
+
+    def get_doc_summary(self, max_docs: int = 30) -> str:
+        """同步方法：返回知识库文档摘要列表（名称+类型+块数）。
+
+        供 prompt builder 注入系统提示词，让 LLM 感知知识库中有哪些文档。
+        """
+        with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
+            rows = conn.execute(
+                "SELECT name, file_type, total_chunks FROM knowledge_documents "
+                "WHERE status='ready' ORDER BY upload_time DESC LIMIT ?",
+                (max_docs,),
+            ).fetchall()
+        if not rows:
+            return ""
+        lines: list[str] = [f"知识库中有 {len(rows)} 篇就绪文档："]
+        for name, ftype, chunks in rows:
+            lines.append(f"  - 《{name}》（{ftype}，{chunks}块）")
+        return "\n".join(lines)
 
     async def delete_document(self, doc_id: str) -> bool:
         """删除文档及其所有分块（SQLite + LanceDB）。"""
@@ -674,14 +833,16 @@ class KnowledgeBaseManager:
         top_k: int = 5,
         doc_filter: str | None = None,
         context_window: int = 0,
+        rerank: bool = True,
     ) -> list[dict[str, Any]]:
-        """在知识库中搜索相关内容。
+        """在知识库中搜索相关内容（混合检索 + 可选精排）。
 
         Args:
             query: 搜索查询
             top_k: 返回结果数
             doc_filter: 可选，按文档 ID 过滤
             context_window: 上下文窗口（±N邻块），0=不扩展
+            rerank: 是否启用精排（默认 True）
 
         Returns:
             [{chunk_id, document_id, document_name, content, score}, ...]
@@ -689,7 +850,7 @@ class KnowledgeBaseManager:
         if self._lance_table is None:
             return []
 
-        cache_key = hashlib.sha256(f"{query}|{doc_filter}|{top_k}|{context_window}".encode()).hexdigest()
+        cache_key = hashlib.sha256(f"{query}|{doc_filter}|{top_k}|{context_window}|{rerank}".encode()).hexdigest()
         cached = self._search_cache.get(cache_key)
         if cached and time.time() - cached[0] < 60:
             return cached[1]
@@ -701,93 +862,157 @@ class KnowledgeBaseManager:
             logger.warning("[KB] Embedding model not available, search skipped: %s", e)
             return []
 
+        use_hybrid = self._has_fts_index()
+        coarse_k = max(top_k * 6, 30)
+
         def _search():
-            if doc_filter:
-                results = (
-                    self._lance_table.search(query_vec)
+            if use_hybrid:
+                query_builder = (
+                    self._lance_table.search(query_type="hybrid")
+                    .text(query)
+                    .vector(query_vec)
                     .metric("cosine")
-                    .where(f"document_id = '{self._safe_lance_id(doc_filter)}'")
-                    .limit(top_k)
-                    .to_list()
                 )
             else:
-                results = (
-                    self._lance_table.search(query_vec).metric("cosine").limit(top_k).to_list()
+                query_builder = self._lance_table.search(query_vec).metric("cosine")
+
+            if doc_filter:
+                query_builder = query_builder.where(
+                    f"document_id = '{self._safe_lance_id(doc_filter)}'"
                 )
 
-            distance_multiplier = 2.0
-            score_map: dict[str, float] = {}
-            needed_ids: set[str] = set()
-            matches: list[tuple[str, float, str | None, int | None]] = []
+            raw_results = query_builder.limit(coarse_k).to_list()
+            return raw_results
 
-            for r in results:
-                chunk_id = r.get("id", "")
+        raw_results = await asyncio.to_thread(_search)
+
+        distance_multiplier = 2.0
+        results: list[dict[str, Any]] = []
+        for r in raw_results:
+            chunk_id = r.get("id", "")
+            if use_hybrid:
+                score = float(r.get("_score", 0))
+                score = max(0.0, min(1.0, score))
+            else:
                 dist = r.get("_distance", 1.0)
                 score = max(0.0, min(1.0, 1.0 - dist / distance_multiplier))
-                score_map[chunk_id] = score
-                needed_ids.add(chunk_id)
+            results.append({
+                "chunk_id": chunk_id,
+                "score": score,
+            })
 
-                parsed_doc_id, parsed_idx = _parse_chunk_id(chunk_id)
-                if parsed_doc_id is not None and context_window > 0:
-                    matches.append((chunk_id, score, parsed_doc_id, parsed_idx))
-                    for offset in range(1, context_window + 1):
-                        needed_ids.add(f"{parsed_doc_id}_{parsed_idx - offset:05d}")
-                        needed_ids.add(f"{parsed_doc_id}_{parsed_idx + offset:05d}")
-                else:
-                    matches.append((chunk_id, score, None, None))
+        if rerank and len(results) > top_k:
+            results = self._rerank_sync(query_vec, results, top_k)
 
-            if not matches:
-                return []
+        results = results[:top_k]
 
-            content_map: dict[str, tuple[str, str]] = {}
-            with sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
-                placeholders = ",".join(["?"] * len(needed_ids))
-                rows = conn.execute(
-                    f"""SELECT kc.id, kc.content, kd.id as doc_id, kd.name as document_name
-                        FROM knowledge_chunks kc
-                        JOIN knowledge_documents kd ON kc.document_id = kd.id
-                        WHERE kc.id IN ({placeholders})""",
-                    list(needed_ids),
-                ).fetchall()
-                for row in rows:
-                    content_map[row[0]] = (row[1], row[2], row[3])
+        if not results:
+            self._search_cache[cache_key] = (time.time(), [])
+            return []
 
-            results_out: list[dict[str, Any]] = []
-            for chunk_id, score, parsed_doc_id, parsed_idx in matches:
-                row = content_map.get(chunk_id)
-                if row is None:
-                    continue
-                base_content, lancedb_doc_id, doc_name = row
+        needed_ids: set[str] = set()
+        matches: list[tuple[str, float, str | None, int | None]] = []
 
-                if parsed_doc_id is not None and context_window > 0:
-                    parts: list[str] = []
-                    for offset in range(-context_window, context_window + 1):
-                        neighbor_id = f"{parsed_doc_id}_{parsed_idx + offset:05d}"
-                        if neighbor_id == chunk_id:
-                            parts.append(base_content)
-                        elif neighbor_id in content_map:
-                            parts.append(content_map[neighbor_id][0])
-                    expanded_content = "\n\n".join(parts)
-                else:
-                    expanded_content = base_content
+        for r in results:
+            chunk_id = r["chunk_id"]
+            score = r["score"]
+            needed_ids.add(chunk_id)
+            parsed_doc_id, parsed_idx = _parse_chunk_id(chunk_id)
+            if parsed_doc_id is not None and context_window > 0:
+                matches.append((chunk_id, score, parsed_doc_id, parsed_idx))
+                for offset in range(1, context_window + 1):
+                    needed_ids.add(f"{parsed_doc_id}_{parsed_idx - offset:05d}")
+                    needed_ids.add(f"{parsed_doc_id}_{parsed_idx + offset:05d}")
+            else:
+                matches.append((chunk_id, score, None, None))
 
-                results_out.append(
-                    {
-                        "chunk_id": chunk_id,
-                        "document_id": lancedb_doc_id,
-                        "document_name": doc_name,
-                        "content": expanded_content,
-                        "score": score,
-                    }
-                )
+        content_map: dict[str, tuple[str, str, str]] = {}
+        with sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
+            placeholders = ",".join(["?"] * len(needed_ids))
+            rows = conn.execute(
+                f"""SELECT kc.id, kc.content, kd.id as doc_id, kd.name as document_name
+                    FROM knowledge_chunks kc
+                    JOIN knowledge_documents kd ON kc.document_id = kd.id
+                    WHERE kc.id IN ({placeholders})""",
+                list(needed_ids),
+            ).fetchall()
+            for row in rows:
+                content_map[row[0]] = (row[1], row[2], row[3])
 
-            return results_out
+        results_out: list[dict[str, Any]] = []
+        for chunk_id, score, parsed_doc_id, parsed_idx in matches:
+            row = content_map.get(chunk_id)
+            if row is None:
+                continue
+            base_content, lancedb_doc_id, doc_name = row
 
-        results = await asyncio.to_thread(_search)
-        self._search_cache[cache_key] = (time.time(), results)
+            if parsed_doc_id is not None and context_window > 0:
+                parts: list[str] = []
+                for offset in range(-context_window, context_window + 1):
+                    neighbor_id = f"{parsed_doc_id}_{parsed_idx + offset:05d}"
+                    if neighbor_id == chunk_id:
+                        parts.append(base_content)
+                    elif neighbor_id in content_map:
+                        parts.append(content_map[neighbor_id][0])
+                expanded_content = "\n\n".join(parts)
+            else:
+                expanded_content = base_content
+
+            results_out.append({
+                "chunk_id": chunk_id,
+                "document_id": lancedb_doc_id,
+                "document_name": doc_name,
+                "content": expanded_content,
+                "score": score,
+            })
+
+        self._search_cache[cache_key] = (time.time(), results_out)
         if len(self._search_cache) > 200:
             self._search_cache.clear()
-        return results
+        return results_out
+
+    def _rerank_sync(
+        self, query_vec: list[float],
+        candidates: list[dict[str, Any]],
+        top_k: int,
+    ) -> list[dict[str, Any]]:
+        """精排：用同一 embedding 批量重算余弦相似度（同步，在搜索线程中执行）。"""
+        import math
+
+        chunk_ids = [c["chunk_id"] for c in candidates]
+        try:
+            raw_rows = self._lance_table.search() \
+                .where(f"id IN ({','.join(repr(cid) for cid in chunk_ids)})") \
+                .limit(len(candidates)) \
+                .to_list()
+            vec_map: dict[str, list[float]] = {}
+            for row in raw_rows:
+                vid = row.get("id", "")
+                vec = row.get("vector", [])
+                if vid and vec:
+                    vec_map[vid] = vec
+        except Exception:
+            return candidates
+
+        def _cos_sim(a: list[float], b: list[float]) -> float:
+            dot = sum(x * y for x, y in zip(a, b, strict=True))
+            na = math.sqrt(sum(x * x for x in a))
+            nb = math.sqrt(sum(y * y for y in b))
+            if na == 0 or nb == 0:
+                return 0.0
+            return dot / (na * nb)
+
+        scored: list[tuple[dict[str, Any], float]] = []
+        for c in candidates:
+            vec = vec_map.get(c["chunk_id"])
+            if vec:
+                sim = _cos_sim(query_vec, vec)
+                scored.append((c, (sim + 1.0) / 2.0))
+            else:
+                scored.append((c, c.get("score", 0.0)))
+
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return [c for c, _ in scored[:top_k]]
 
     async def get_document_status(self, doc_id: str) -> dict[str, Any] | None:
         """获取文档处理状态。"""
@@ -1001,7 +1226,7 @@ class KnowledgeBaseManager:
             pass
 
         lance_rows = [
-            {"id": chunks[i][0], "vector": vectors[i], "document_id": doc_id}
+            {"id": chunks[i][0], "vector": vectors[i], "document_id": doc_id, "content": chunks[i][1][:600]}
             for i in range(len(chunks))
         ]
         try:
@@ -1016,6 +1241,7 @@ class KnowledgeBaseManager:
             return {"repaired": False, "reason": f"LanceDB写入失败: {e!s:200}"}
 
         self._create_index_if_needed()
+        self._create_fts_index_if_needed()
 
         if await self._verify_embeddings(doc_id):
             with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:

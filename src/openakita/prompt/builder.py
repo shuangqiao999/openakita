@@ -833,8 +833,11 @@ def build_system_prompt(
         if memory_section:
             developer_parts.append(memory_section)
 
-    # 10.5 知识库检索 — 由 LLM 显式调用 search_knowledge_base 工具获取，不自动注入
-    # （自动注入每轮浪费嵌入调用 + prompt token，改为工具按需获取）
+    # 10.5 知识库文档索引（仅标题摘要，~500 tokens，供 LLM 感知文档列表）
+    if kb_manager and kb_manager.is_ready():
+        kb_summary = _build_kb_doc_summary_sync(kb_manager)
+        if kb_summary:
+            developer_parts.append(kb_summary)
 
     # 11. User 层（仅 FULL 模式）
     user_core_section = _build_user_core_profile_section(
@@ -2252,6 +2255,45 @@ def _build_knowledge_section(
         lines.append(line)
         total_chars += len(line)
 
+    return "\n".join(lines)
+
+
+def _build_kb_doc_summary_sync(kb_manager: Any, max_docs: int = 30) -> str:
+    """同步获取知识库文档摘要（名称+类型+块数），供注入系统提示词。
+
+    与 _build_knowledge_section 不同：此函数不搜索，仅列出文档标题列表，
+    token 开销极低（~500 tokens），让 LLM 知道有哪些文档可供检索。
+    """
+    try:
+        import asyncio as _asyncio
+        import concurrent.futures
+
+        def _run():
+            loop = _asyncio.new_event_loop()
+            try:
+                return loop.run_until_complete(kb_manager.list_documents(limit=max_docs))
+            finally:
+                loop.close()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            future = ex.submit(_run)
+            result = future.result(timeout=3)
+    except Exception:
+        return ""
+
+    if not result or not result.get("documents"):
+        return ""
+
+    ready_docs = [d for d in result["documents"] if d.get("status") == "ready"]
+    if not ready_docs:
+        return ""
+
+    lines: list[str] = [f"知识库中有 {len(ready_docs)} 篇就绪文档："]
+    for d in ready_docs[:max_docs]:
+        name = d.get("name", "未知")
+        ftype = d.get("file_type", "")
+        chunks = d.get("total_chunks", 0)
+        lines.append(f"  - 《{name}》（{ftype}，{chunks}块）")
     return "\n".join(lines)
 
 

@@ -261,7 +261,7 @@ class KnowledgeBaseHandler:
         doc_filter = params.get("doc_filter", "") or None
 
         try:
-            results = await kb.search(query=query.strip(), top_k=top_k, doc_filter=doc_filter)
+            results = await kb.search(query=query.strip(), top_k=top_k, doc_filter=doc_filter, context_window=1)
         except Exception as e:
             logger.error(f"[KnowledgeBaseHandler] 搜索失败: {e}")
             return f"❌ 搜索知识库时出错: {e}"
@@ -274,11 +274,11 @@ class KnowledgeBaseHandler:
             doc_name = r.get("document_name", "未知文档")
             content = r.get("content", "")
             score = r.get("score", 0)
-            raw_snippet = content[:400].replace("\n", " ").strip()
-            snippet = raw_snippet[:400]
-            if len(raw_snippet) > 400:
-                snippet = snippet[:397] + "..."
-            elif len(content) > 400:
+            raw_snippet = content[:800].replace("\n", " ").strip()
+            snippet = raw_snippet[:800]
+            if len(raw_snippet) > 800:
+                snippet = snippet[:797] + "..."
+            elif len(content) > 800:
                 snippet += "..."
 
             lines.append(f"### 结果 {i + 1} — 《{doc_name}》（相关度: {score:.0%}）\n\n{snippet}")
