@@ -140,7 +140,6 @@ jobs:
           ref: ${{ needs.get_version.outputs.ref }}
           fetch-depth: 0
 
-      # ========== 添加 concurrency 控制 ==========
       - name: 显示构建信息
         shell: bash
         run: |
@@ -153,7 +152,6 @@ jobs:
           echo "运行 ID: ${{ github.run_id }}"
           echo "=========================================="
 
-      # ========== 清理所有缓存 ==========
       - name: 🧹 清理所有构建缓存
         shell: bash
         run: |
@@ -631,34 +629,6 @@ jobs:
             echo "❌ 错误: 未找到 Windows 安装包。" >&2
             exit 1
           fi
-
-      # 修复：使用 gh api 删除旧的 assets（避免 Windows 路径重写）
-      - name: 清理旧的 Release Assets（保留最新 5 个）
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          RELEASE_TAG="${{ env.RELEASE_TAG }}"
-          MAX_KEEP=5
-          REPO="${{ github.repository }}"
-          echo "📋 获取发布 ${RELEASE_TAG} 的 assets 列表..."
-          # 注意：不要以斜杠开头，避免 shell 将其解释为文件系统路径
-          assets=$(gh api "repos/${REPO}/releases/tags/${RELEASE_TAG}/assets" --jq '.[] | {id: .id, name: .name, created_at: .created_at}')
-          if [ -z "$assets" ]; then
-            echo "未找到任何 assets"
-            exit 0
-          fi
-          # 按创建时间升序排序，保留最后 MAX_KEEP 个
-          keep_ids=$(echo "$assets" | jq -r 'sort_by(.created_at) | .[-'"$MAX_KEEP"':] | .[].id')
-          all_ids=$(echo "$assets" | jq -r '.id')
-          for id in $all_ids; do
-            if ! echo "$keep_ids" | grep -q "^$id$"; then
-              echo "🗑️ 删除 asset ID: $id"
-              gh api -X DELETE "repos/${REPO}/releases/assets/$id" --silent
-            fi
-          done
-          echo "✅ 清理完成，保留最新 ${MAX_KEEP} 个 assets"
 
       - name: 上传 Windows 安装包到 GitHub 发布
         shell: bash
