@@ -48,6 +48,18 @@ _KB_FTS_MIN_ROWS = 10         # 向量数超此阈值后自动创建 FTS 索引
 _SEMANTIC_CACHE_MAX_SIZE = 200  # 语义边缓存最大条目数
 
 
+def _segment_text(text: str) -> str:
+    """jieba 中文分词，空格连接。用于 FTS5 索引和搜索。"""
+    try:
+        import logging as _logging
+
+        import jieba
+        jieba.setLogLevel(_logging.WARNING)
+        return " ".join(jieba.cut_for_search(text))
+    except ImportError:
+        return text
+
+
 class EmbeddingFailedError(RuntimeError):
     """任一分块嵌入失败时抛出，整个文档处理终止，不产生部分数据。"""
 
@@ -156,8 +168,7 @@ class KnowledgeBaseManager:
             conn.execute("""
                 CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_chunks_fts USING fts5(
                     content,
-                    tokenize='jieba',
-                    prefix='2',
+                    prefix='2'
                 )
             """)
             try:
@@ -165,10 +176,14 @@ class KnowledgeBaseManager:
                     "SELECT COUNT(*) FROM knowledge_chunks_fts"
                 ).fetchone()[0]
                 if existing == 0:
-                    conn.execute("""
-                        INSERT INTO knowledge_chunks_fts(rowid, content)
-                        SELECT rowid, content FROM knowledge_chunks
-                    """)
+                    rows = conn.execute(
+                        "SELECT rowid, content FROM knowledge_chunks"
+                    ).fetchall()
+                    for rowid, content in rows:
+                        conn.execute(
+                            "INSERT INTO knowledge_chunks_fts(rowid, content) VALUES(?, ?)",
+                            (rowid, _segment_text(content)),
+                        )
             except Exception:
                 pass
 
@@ -349,6 +364,23 @@ class KnowledgeBaseManager:
 
         threading.Thread(target=_build, daemon=True).start()
 
+    def _sync_fts5_for_document(self, doc_id: str) -> None:
+        """同步文档分块到 FTS5 表（应用层 jieba 分词后写入）。"""
+        with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
+            rows = conn.execute(
+                "SELECT rowid, content FROM knowledge_chunks "
+                "WHERE document_id = ? AND rowid NOT IN "
+                "(SELECT rowid FROM knowledge_chunks_fts)",
+                (doc_id,),
+            ).fetchall()
+            for rowid, content in rows:
+                conn.execute(
+                    "INSERT INTO knowledge_chunks_fts(rowid, content) VALUES(?, ?)",
+                    (rowid, _segment_text(content)),
+                )
+            if rows:
+                conn.commit()
+
     async def _proactive_create_table(self) -> None:
         """启动时主动创建 LanceDB 表，避免死锁：没表→不能上传→不能建表。"""
         try:
@@ -519,13 +551,6 @@ class KnowledgeBaseManager:
                     "UPDATE knowledge_documents SET total_chunks=? WHERE id=?",
                     (len(chunks), doc_id),
                 )
-                conn.execute(
-                    "INSERT INTO knowledge_chunks_fts(rowid, content) "
-                    "SELECT kc.rowid, kc.content FROM knowledge_chunks kc "
-                    "WHERE kc.document_id = ? AND kc.rowid NOT IN "
-                    "(SELECT rowid FROM knowledge_chunks_fts)",
-                    (doc_id,),
-                )
                 conn.execute("COMMIT")
             except Exception:
                 conn.execute("ROLLBACK")
@@ -544,6 +569,8 @@ class KnowledgeBaseManager:
                 conn.execute("UPDATE knowledge_documents SET total_chunks=0 WHERE id=?", (doc_id,))
                 conn.commit()
             raise
+
+        self._sync_fts5_for_document(doc_id)
 
         self._create_index_if_needed()
         self._create_fts_index_if_needed()
@@ -1091,6 +1118,7 @@ class KnowledgeBaseManager:
                     doc_params = [doc_filter]
 
                 try:
+                    segmented = _segment_text(query)
                     fts_rows = conn.execute(
                         f"""SELECT kc.id, kc.content, kd.id as doc_id, kd.name as doc_name,
                                    rank as bm25_rank
@@ -1101,7 +1129,7 @@ class KnowledgeBaseManager:
                               AND kd.status = 'ready'
                             ORDER BY rank
                             LIMIT ?""",
-                        [query, *doc_params, top_k],
+                        [segmented, *doc_params, top_k],
                     ).fetchall()
                     for row in fts_rows:
                         rank = float(row["bm25_rank"])
