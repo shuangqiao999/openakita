@@ -655,27 +655,27 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
             <AlertDialogFooter>
               {editing ? (
                 <>
-                  <AlertDialogAction
+                  <Button
                     onClick={handleSaveEdit}
                     disabled={saving}
                     style={{ background: "#3b82f6", color: "white" }}
                   >
                     {saving ? <Loader2 size={14} style={{ animation: "spin 1s linear infinite", marginRight: 4 }} /> : null}
                     {t("kb.save")}
-                  </AlertDialogAction>
+                  </Button>
                   <AlertDialogCancel onClick={() => setEditing(false)} disabled={saving}>
                     {t("common.cancel")}
                   </AlertDialogCancel>
                 </>
               ) : (
                 <>
-                  <AlertDialogAction
+                  <Button
                     onClick={() => { setEditing(true); setEditContent(previewDoc.content); }}
                     style={{ background: "#3b82f6", color: "white" }}
                   >
                     <Edit3 size={14} style={{ marginRight: 4 }} />
                     {t("kb.edit")}
-                  </AlertDialogAction>
+                  </Button>
                   <AlertDialogCancel onClick={() => { setPreviewDoc(null); setEditing(false); }}>
                     {t("kb.close")}
                   </AlertDialogCancel>
