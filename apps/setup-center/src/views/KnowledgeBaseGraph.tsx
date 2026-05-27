@@ -260,7 +260,7 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
           backgroundColor="#111827"
           nodeLabel="name"
           nodeRelSize={4}
-          nodeAutoColorBy="type"
+          nodeAutoColorBy="group"
           nodeVal={2}
           linkWidth={(l: any) => Math.max(0.3, (l.value || 1) * 1.2)}
           linkOpacity={0.5}
