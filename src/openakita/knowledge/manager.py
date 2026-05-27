@@ -44,7 +44,7 @@ _KB_EMBED_MAX_RETRIES = 3  # 单批最大重试次数
 _KB_EMBED_BATCH_DELAY = 0.05  # 批次间隔秒（本地模型节流）
 _KB_EMBED_MAX_CONCURRENT = 1  # 最大并发嵌入请求数（本地模型串行执行）
 _KB_INDEX_MIN_ROWS = 1000     # 向量数超此阈值后自动创建索引
-_KB_FTS_MIN_ROWS = 50         # 向量数超此阈值后自动创建 FTS 索引
+_KB_FTS_MIN_ROWS = 10         # 向量数超此阈值后自动创建 FTS 索引
 _SEMANTIC_CACHE_MAX_SIZE = 200  # 语义边缓存最大条目数
 
 
@@ -152,6 +152,26 @@ class KnowledgeBaseManager:
                 )
             except sqlite3.OperationalError:
                 pass
+
+            conn.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_chunks_fts USING fts5(
+                    content,
+                    tokenize='jieba',
+                    prefix='2',
+                )
+            """)
+            try:
+                existing = conn.execute(
+                    "SELECT COUNT(*) FROM knowledge_chunks_fts"
+                ).fetchone()[0]
+                if existing == 0:
+                    conn.execute("""
+                        INSERT INTO knowledge_chunks_fts(rowid, content)
+                        SELECT rowid, content FROM knowledge_chunks
+                    """)
+            except Exception:
+                pass
+
             conn.commit()
 
     def _init_lancedb(self) -> None:
@@ -161,6 +181,7 @@ class KnowledgeBaseManager:
         self._lance_db = lancedb.connect(lance_path)
         self._ensure_lance_table()
         self._migrate_schema_if_needed()
+        self._create_fts_index_if_needed()
         if self._lance_table is None and self.is_ready():
             try:
                 self._proactive_task = asyncio.create_task(self._proactive_create_table())
@@ -498,6 +519,13 @@ class KnowledgeBaseManager:
                     "UPDATE knowledge_documents SET total_chunks=? WHERE id=?",
                     (len(chunks), doc_id),
                 )
+                conn.execute(
+                    "INSERT INTO knowledge_chunks_fts(rowid, content) "
+                    "SELECT kc.rowid, kc.content FROM knowledge_chunks kc "
+                    "WHERE kc.document_id = ? AND kc.rowid NOT IN "
+                    "(SELECT rowid FROM knowledge_chunks_fts)",
+                    (doc_id,),
+                )
                 conn.execute("COMMIT")
             except Exception:
                 conn.execute("ROLLBACK")
@@ -508,6 +536,11 @@ class KnowledgeBaseManager:
         except Exception:
             with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
                 conn.execute("DELETE FROM knowledge_chunks WHERE document_id=?", (doc_id,))
+                conn.execute(
+                    "DELETE FROM knowledge_chunks_fts WHERE rowid IN "
+                    "(SELECT rowid FROM knowledge_chunks WHERE document_id=?)",
+                    (doc_id,),
+                )
                 conn.execute("UPDATE knowledge_documents SET total_chunks=0 WHERE id=?", (doc_id,))
                 conn.commit()
             raise
@@ -676,6 +709,11 @@ class KnowledgeBaseManager:
                 cursor = conn.execute("SELECT id FROM knowledge_chunks WHERE document_id=?", (doc_id,))
                 chunk_ids = [row[0] for row in cursor.fetchall()]
                 conn.execute("DELETE FROM knowledge_chunks WHERE document_id=?", (doc_id,))
+                conn.execute(
+                    "DELETE FROM knowledge_chunks_fts WHERE rowid IN "
+                    "(SELECT rowid FROM knowledge_chunks WHERE document_id=?)",
+                    (doc_id,),
+                )
                 conn.execute("DELETE FROM knowledge_documents WHERE id=?", (doc_id,))
                 conn.commit()
                 return chunk_ids
@@ -835,7 +873,7 @@ class KnowledgeBaseManager:
         context_window: int = 0,
         rerank: bool = True,
     ) -> list[dict[str, Any]]:
-        """在知识库中搜索相关内容（混合检索 + 可选精排）。
+        """在知识库中搜索相关内容（向量 + 关键词双路并行 + RRF 融合）。
 
         Args:
             query: 搜索查询
@@ -855,76 +893,88 @@ class KnowledgeBaseManager:
         if cached and time.time() - cached[0] < 60:
             return cached[1]
 
+        coarse_k = max(top_k * 6, 30)
+
+        query_vec: list[float] | None = None
         try:
             embedder = await self._get_embedder()
             query_vec = await embedder.embed_query(query)
         except Exception as e:
-            logger.warning("[KB] Embedding model not available, search skipped: %s", e)
-            return []
+            logger.warning("[KB] Embedding model unavailable, using keyword-only search: %s", e)
 
         use_hybrid = self._has_fts_index()
-        coarse_k = max(top_k * 6, 30)
 
-        def _search():
-            if use_hybrid:
-                query_builder = (
-                    self._lance_table.search(query_type="hybrid")
-                    .text(query)
-                    .vector(query_vec)
-                    .metric("cosine")
-                )
-            else:
-                query_builder = self._lance_table.search(query_vec).metric("cosine")
-
-            if doc_filter:
-                query_builder = query_builder.where(
-                    f"document_id = '{self._safe_lance_id(doc_filter)}'"
-                )
-
-            raw_results = query_builder.limit(coarse_k).to_list()
-
-            distance_multiplier = 2.0
-            results: list[dict[str, Any]] = []
-            for r in raw_results:
-                chunk_id = r.get("id", "")
+        async def _vector_search() -> list[dict[str, Any]]:
+            if query_vec is None:
+                return []
+            def _do():
                 if use_hybrid:
-                    score = float(r.get("_score", 0))
-                    score = max(0.0, min(1.0, score))
+                    qb = (
+                        self._lance_table.search(query_type="hybrid")
+                        .text(query)
+                        .vector(query_vec)
+                        .metric("cosine")
+                    )
                 else:
-                    dist = r.get("_distance", 1.0)
-                    score = max(0.0, min(1.0, 1.0 - dist / distance_multiplier))
-                results.append({
-                    "chunk_id": chunk_id,
-                    "score": score,
-                })
+                    qb = self._lance_table.search(query_vec).metric("cosine")
+                if doc_filter:
+                    qb = qb.where(f"document_id = '{self._safe_lance_id(doc_filter)}'")
+                raw = qb.limit(coarse_k).to_list()
+                results: list[dict[str, Any]] = []
+                for r in raw:
+                    cid = r.get("id", "")
+                    if use_hybrid:
+                        s = float(r.get("_score", 0))
+                    else:
+                        d = r.get("_distance", 1.0)
+                        s = max(0.0, min(1.0, 1.0 - d / 2.0))
+                    results.append({"chunk_id": cid, "score": s})
+                return results
+            return await asyncio.to_thread(_do)
 
-            if rerank and len(results) > top_k:
-                results = self._rerank_sync(query_vec, results, top_k)
+        keyword_task = self._search_keyword(query, top_k=coarse_k, doc_filter=doc_filter)
+        vector_task = _vector_search()
 
-            results = results[:top_k]
-            return results
+        kw_results, vec_results = await asyncio.gather(keyword_task, vector_task)
 
-        raw_results = await asyncio.to_thread(_search)
+        chunk_scores: dict[str, float] = {}
 
-        if not raw_results:
+        for rank, r in enumerate(kw_results):
+            cid = r["chunk_id"]
+            chunk_scores[cid] = chunk_scores.get(cid, 0.0) + 1.0 / (60.0 + rank)
+
+        for rank, r in enumerate(vec_results):
+            cid = r["chunk_id"]
+            chunk_scores[cid] = chunk_scores.get(cid, 0.0) + 1.0 / (60.0 + rank)
+
+        scored = sorted(chunk_scores.items(), key=lambda x: x[1], reverse=True)
+        fused: list[dict[str, Any]] = [
+            {"chunk_id": cid, "score": s} for cid, s in scored[:coarse_k]
+        ]
+
+        if not fused:
             self._search_cache[cache_key] = (time.time(), [])
             return []
 
+        if rerank and query_vec is not None and len(fused) > top_k:
+            fused = await asyncio.to_thread(self._rerank_sync, query_vec, fused, top_k)
+
+        fused = fused[:top_k]
+
         needed_ids: set[str] = set()
         matches: list[tuple[str, float, str | None, int | None]] = []
-
-        for r in raw_results:
-            chunk_id = r["chunk_id"]
-            score = r["score"]
-            needed_ids.add(chunk_id)
-            parsed_doc_id, parsed_idx = _parse_chunk_id(chunk_id)
+        for r in fused:
+            cid = r["chunk_id"]
+            s = r["score"]
+            needed_ids.add(cid)
+            parsed_doc_id, parsed_idx = _parse_chunk_id(cid)
             if parsed_doc_id is not None and context_window > 0:
-                matches.append((chunk_id, score, parsed_doc_id, parsed_idx))
+                matches.append((cid, s, parsed_doc_id, parsed_idx))
                 for offset in range(1, context_window + 1):
                     needed_ids.add(f"{parsed_doc_id}_{parsed_idx - offset:05d}")
                     needed_ids.add(f"{parsed_doc_id}_{parsed_idx + offset:05d}")
             else:
-                matches.append((chunk_id, score, None, None))
+                matches.append((cid, s, None, None))
 
         def _fetch_content():
             content_map: dict[str, tuple[str, str, str]] = {}
@@ -1018,6 +1068,76 @@ class KnowledgeBaseManager:
 
         scored.sort(key=lambda x: x[1], reverse=True)
         return [c for c, _ in scored[:top_k]]
+
+    async def _search_keyword(
+        self,
+        query: str,
+        top_k: int = 30,
+        doc_filter: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """关键词搜索：SQLite FTS5 BM25 + LIKE 回退。
+
+        独立于向量搜索，确保精确术语匹配在任何情况下都能召回。
+        """
+        def _do():
+            with sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
+                conn.row_factory = sqlite3.Row
+                results: list[dict[str, Any]] = []
+
+                doc_where = ""
+                doc_params: list[Any] = []
+                if doc_filter:
+                    doc_where = "AND kd.id = ?"
+                    doc_params = [doc_filter]
+
+                try:
+                    fts_rows = conn.execute(
+                        f"""SELECT kc.id, kc.content, kd.id as doc_id, kd.name as doc_name,
+                                   rank as bm25_rank
+                            FROM knowledge_chunks_fts fts
+                            JOIN knowledge_chunks kc ON kc.rowid = fts.rowid
+                            JOIN knowledge_documents kd ON kc.document_id = kd.id
+                            WHERE knowledge_chunks_fts MATCH ? {doc_where}
+                              AND kd.status = 'ready'
+                            ORDER BY rank
+                            LIMIT ?""",
+                        [query, *doc_params, top_k],
+                    ).fetchall()
+                    for row in fts_rows:
+                        rank = float(row["bm25_rank"])
+                        score = 1.0 / (1.0 + rank) if rank > 0 else 1.0
+                        results.append({
+                            "chunk_id": row["id"],
+                            "document_id": row["doc_id"],
+                            "document_name": row["doc_name"],
+                            "content": row["content"],
+                            "score": max(0.0, min(1.0, score)),
+                        })
+                    if results:
+                        return results
+                except Exception:
+                    pass
+
+                like_rows = conn.execute(
+                    f"""SELECT kc.id, kc.content, kd.id as doc_id, kd.name as doc_name
+                        FROM knowledge_chunks kc
+                        JOIN knowledge_documents kd ON kc.document_id = kd.id
+                        WHERE kc.content LIKE ? {doc_where}
+                          AND kd.status = 'ready'
+                        LIMIT ?""",
+                    [f"%{query}%", *doc_params, top_k],
+                ).fetchall()
+                for row in like_rows:
+                    results.append({
+                        "chunk_id": row["id"],
+                        "document_id": row["doc_id"],
+                        "document_name": row["doc_name"],
+                        "content": row["content"],
+                        "score": 0.5,
+                    })
+                return results
+
+        return await asyncio.to_thread(_do)
 
     async def get_document_status(self, doc_id: str) -> dict[str, Any] | None:
         """获取文档处理状态。"""
@@ -1114,6 +1234,11 @@ class KnowledgeBaseManager:
         def _delete_old():
             with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
                 conn.execute("DELETE FROM knowledge_chunks WHERE document_id=?", (doc_id,))
+                conn.execute(
+                    "DELETE FROM knowledge_chunks_fts WHERE rowid IN "
+                    "(SELECT rowid FROM knowledge_chunks WHERE document_id=?)",
+                    (doc_id,),
+                )
                 conn.commit()
 
         await asyncio.to_thread(_delete_old)
