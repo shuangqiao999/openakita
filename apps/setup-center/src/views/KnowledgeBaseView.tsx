@@ -522,7 +522,7 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
                                 </Button>
                               </>
                             )}
-                            {(doc.status === "failed") && (
+                            {(doc.status === "failed" || doc.status === "ready") && (
                               <Button
                                 variant="ghost"
                                 size="sm"
