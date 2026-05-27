@@ -65,6 +65,11 @@ class KnowledgeBaseManager:
         results = await kb.search("查询内容", top_k=5)
     """
 
+    @staticmethod
+    def _safe_lance_id(doc_id: str) -> str:
+        """转义单引号，防止 LanceDB filter 字符串注入。"""
+        return doc_id.replace("'", "''")
+
     def __init__(self, workspace_root: Path) -> None:
         self._workspace_root = Path(workspace_root)
         self._kb_dir = self._workspace_root / "data" / "knowledge"
@@ -397,7 +402,9 @@ class KnowledgeBaseManager:
             total_batches,
         )
 
-        self._semantic_cache.clear()
+        keys_to_remove = [k for k in self._semantic_cache if doc_id in k or "all_" in k]
+        for k in keys_to_remove:
+            del self._semantic_cache[k]
         return len(chunks)
 
     async def _process_document(self, doc_id: str, file_path: Path) -> None:
@@ -536,7 +543,7 @@ class KnowledgeBaseManager:
             return False
         if chunk_ids and self._lance_table is not None:
             try:
-                await asyncio.to_thread(self._lance_table.delete, f"document_id = '{doc_id}'")
+                await asyncio.to_thread(self._lance_table.delete, f"document_id = '{self._safe_lance_id(doc_id)}'")
             except Exception as e:
                 logger.warning("[KB] Failed to delete LanceDB vectors for %s: %s", doc_id, e)
         self._semantic_cache.clear()
@@ -711,7 +718,7 @@ class KnowledgeBaseManager:
                 results = (
                     self._lance_table.search(query_vec)
                     .metric("cosine")
-                    .where(f"document_id = '{doc_filter}'")
+                    .where(f"document_id = '{self._safe_lance_id(doc_filter)}'")
                     .limit(top_k)
                     .to_list()
                 )
@@ -893,7 +900,7 @@ class KnowledgeBaseManager:
         if self._lance_table is not None:
             try:
                 await asyncio.to_thread(
-                    self._lance_table.delete, f"document_id = '{doc_id}'"
+                    self._lance_table.delete, f"document_id = '{self._safe_lance_id(doc_id)}'"
                 )
             except Exception as e:
                 logger.warning("[KB] Failed to delete old vectors for %s: %s", doc_id, e)
@@ -986,7 +993,7 @@ class KnowledgeBaseManager:
             await asyncio.to_thread(self._create_lance_table, dim)
 
         try:
-            await asyncio.to_thread(self._lance_table.delete, f"document_id = '{doc_id}'")
+            await asyncio.to_thread(self._lance_table.delete, f"document_id = '{self._safe_lance_id(doc_id)}'")
         except Exception:
             pass
 
@@ -994,7 +1001,17 @@ class KnowledgeBaseManager:
             {"id": chunks[i][0], "vector": vectors[i], "document_id": doc_id}
             for i in range(len(chunks))
         ]
-        await asyncio.to_thread(self._lance_table.add, lance_rows)
+        try:
+            await asyncio.to_thread(self._lance_table.add, lance_rows)
+        except Exception as e:
+            with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
+                conn.execute(
+                    "UPDATE knowledge_documents SET status='failed', error_msg=? WHERE id=?",
+                    (f"修复向量写入失败: {e!s:200}", doc_id),
+                )
+                conn.commit()
+            raise
+
         self._create_index_if_needed()
 
         with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
@@ -1062,7 +1079,7 @@ class KnowledgeBaseManager:
             with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
                 rows = conn.execute(
                     "SELECT id, name, total_chunks, status "
-                    "FROM knowledge_documents WHERE status='ready'"
+                    "FROM knowledge_documents WHERE status IN ('ready', 'failed')"
                 ).fetchall()
                 return [(r[0], r[1], r[2], r[3]) for r in rows]
 
@@ -1121,7 +1138,7 @@ class KnowledgeBaseManager:
         if self._lance_table is not None:
             try:
                 lance_count = await asyncio.to_thread(
-                    lambda: self._lance_table.count_rows(f"document_id = '{doc_id}'")
+                    lambda: self._lance_table.count_rows(f"document_id = '{self._safe_lance_id(doc_id)}'")
                 )
             except Exception:
                 lance_count = 0

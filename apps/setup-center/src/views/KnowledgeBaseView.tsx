@@ -112,13 +112,16 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
 
   useEffect(() => {
     hasProcessingRef.current = documents.some(d => d.status === "processing");
-  });
+  }, [documents]);
+
+  const loadDocumentsRef = useRef(loadDocuments);
+  loadDocumentsRef.current = loadDocuments;
 
   useEffect(() => {
     if (!serviceRunning) return;
     pollingRef.current = setInterval(() => {
       if (hasProcessingRef.current) {
-        loadDocuments();
+        loadDocumentsRef.current();
       }
     }, 5000);
     return () => {
@@ -127,7 +130,7 @@ export function KnowledgeBaseView({ serviceRunning, apiBaseUrl = "" }: Props) {
         pollingRef.current = null;
       }
     };
-  }, [serviceRunning, loadDocuments]);
+  }, [serviceRunning]);
 
   useEffect(() => {
     if (!serviceRunning) {
