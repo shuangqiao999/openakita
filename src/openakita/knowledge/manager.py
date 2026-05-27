@@ -45,6 +45,7 @@ _KB_EMBED_BATCH_DELAY = 0.05  # 批次间隔秒（本地模型节流）
 _KB_EMBED_MAX_CONCURRENT = 1  # 最大并发嵌入请求数（本地模型串行执行）
 _KB_INDEX_MIN_ROWS = 1000     # 向量数超此阈值后自动创建索引
 _KB_FTS_MIN_ROWS = 10         # 向量数超此阈值后自动创建 FTS 索引
+_KB_RRF_K = 60                # RRF 倒数排名融合常数
 _SEMANTIC_CACHE_MAX_SIZE = 200  # 语义边缓存最大条目数
 
 
@@ -108,6 +109,7 @@ class KnowledgeBaseManager:
         self._semantic_cache: dict[str, list[dict]] = {}
         self._semantic_pending: dict[str, bool] = {}
         self._search_cache: dict[str, tuple[float, list[dict]]] = {}
+        self._cache_lock = threading.Lock()
 
         self._init_sqlite()
         self._init_lancedb()
@@ -591,8 +593,9 @@ class KnowledgeBaseManager:
             len(chunks),
         )
 
-        self._semantic_cache.clear()
-        self._search_cache.clear()
+        with self._cache_lock:
+            self._semantic_cache.clear()
+            self._search_cache.clear()
         return len(chunks)
 
     async def _process_document(self, doc_id: str, file_path: Path) -> None:
@@ -645,7 +648,7 @@ class KnowledgeBaseManager:
                 try:
                     async with sem:
                         batch_vecs = await embedder.embed(batch)
-                    if not all(any(v != 0.0 for v in vec) for vec in batch_vecs):
+                    if not all(any(abs(v) > 1e-8 for v in vec) for vec in batch_vecs):
                         raise EmbeddingFailedError(
                             f"批次 {batch_idx + 1}/{total_batches} 返回零向量"
                         )
@@ -752,8 +755,9 @@ class KnowledgeBaseManager:
                 await asyncio.to_thread(self._lance_table.delete, f"document_id = '{self._safe_lance_id(doc_id)}'")
             except Exception as e:
                 logger.warning("[KB] Failed to delete LanceDB vectors for %s: %s", doc_id, e)
-        self._semantic_cache.clear()
-        self._search_cache.clear()
+        with self._cache_lock:
+            self._semantic_cache.clear()
+            self._search_cache.clear()
         return True
 
     def _document_exists(self, doc_id: str) -> bool:
@@ -915,7 +919,11 @@ class KnowledgeBaseManager:
         if self._lance_table is None:
             return []
 
-        cache_key = hashlib.sha256(f"{query}|{doc_filter}|{top_k}|{context_window}|{rerank}".encode()).hexdigest()
+        use_hybrid = self._has_fts_index()
+
+        cache_key = hashlib.sha256(
+            f"{query}|{doc_filter}|{top_k}|{context_window}|{rerank}|h={use_hybrid}".encode()
+        ).hexdigest()
         cached = self._search_cache.get(cache_key)
         if cached and time.time() - cached[0] < 60:
             return cached[1]
@@ -928,8 +936,6 @@ class KnowledgeBaseManager:
             query_vec = await embedder.embed_query(query)
         except Exception as e:
             logger.warning("[KB] Embedding model unavailable, using keyword-only search: %s", e)
-
-        use_hybrid = self._has_fts_index()
 
         async def _vector_search() -> list[dict[str, Any]]:
             if query_vec is None:
@@ -968,11 +974,11 @@ class KnowledgeBaseManager:
 
         for rank, r in enumerate(kw_results):
             cid = r["chunk_id"]
-            chunk_scores[cid] = chunk_scores.get(cid, 0.0) + 1.0 / (60.0 + rank)
+            chunk_scores[cid] = chunk_scores.get(cid, 0.0) + 1.0 / (_KB_RRF_K + rank)
 
         for rank, r in enumerate(vec_results):
             cid = r["chunk_id"]
-            chunk_scores[cid] = chunk_scores.get(cid, 0.0) + 1.0 / (60.0 + rank)
+            chunk_scores[cid] = chunk_scores.get(cid, 0.0) + 1.0 / (_KB_RRF_K + rank)
 
         scored = sorted(chunk_scores.items(), key=lambda x: x[1], reverse=True)
         fused: list[dict[str, Any]] = [
@@ -980,7 +986,8 @@ class KnowledgeBaseManager:
         ]
 
         if not fused:
-            self._search_cache[cache_key] = (time.time(), [])
+            with self._cache_lock:
+                self._search_cache[cache_key] = (time.time(), [])
             return []
 
         if rerank and query_vec is not None and len(fused) > top_k:
@@ -1047,9 +1054,10 @@ class KnowledgeBaseManager:
                 "score": score,
             })
 
-        self._search_cache[cache_key] = (time.time(), results_out)
-        if len(self._search_cache) > 200:
-            self._search_cache.clear()
+        with self._cache_lock:
+            self._search_cache[cache_key] = (time.time(), results_out)
+            if len(self._search_cache) > 200:
+                self._search_cache.clear()
         return results_out
 
     def _rerank_sync(
@@ -1297,6 +1305,9 @@ class KnowledgeBaseManager:
             return {"doc_id": doc_id, "status": "updated", "chunks": n_chunks}
         except Exception as e:
             logger.error("[KB] Failed to update document %s: %s", doc_id, e)
+            with self._cache_lock:
+                self._semantic_cache.clear()
+                self._search_cache.clear()
             with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
                 conn.execute(
                     "UPDATE knowledge_documents SET status='failed', error_msg=? WHERE id=?",
@@ -1583,7 +1594,7 @@ class KnowledgeBaseManager:
             )
             for row in sample_rows:
                 vec = row.get("vector", [])
-                if vec and all(v == 0.0 for v in vec):
+                if vec and all(abs(v) < 1e-8 for v in vec):
                     logger.warning("[KB] Doc %s chunk %s has zero vector", doc_id, row.get("id"))
                     return False
             return True
@@ -1623,7 +1634,8 @@ class KnowledgeBaseManager:
                     embedder, texts, (doc_id or "all") + "_sem",
                 )
             except EmbeddingFailedError:
-                self._semantic_cache[key] = []
+                with self._cache_lock:
+                    self._semantic_cache[key] = []
                 return
 
             links: list[dict] = []
@@ -1660,15 +1672,18 @@ class KnowledgeBaseManager:
                     pass
 
             await asyncio.gather(*[_process_one(n, v) for n, v in zip(sample_nodes, vecs, strict=True)])
-            self._semantic_cache[key] = links
+            with self._cache_lock:
+                self._semantic_cache[key] = links
             logger.info("[KB] Semantic edges cached for %s: %d edges", key, len(links))
         except Exception as e:
             logger.warning("[KB] Semantic edge caching failed for %s: %s", key, e)
-            self._semantic_cache[key] = []
+            with self._cache_lock:
+                self._semantic_cache[key] = []
         finally:
             self._semantic_pending.pop(key, None)
-            if len(self._semantic_cache) > _SEMANTIC_CACHE_MAX_SIZE:
-                self._semantic_cache.clear()
+            with self._cache_lock:
+                if len(self._semantic_cache) > _SEMANTIC_CACHE_MAX_SIZE:
+                    self._semantic_cache.clear()
 
     async def get_graph_data(
         self,
