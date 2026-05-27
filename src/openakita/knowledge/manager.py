@@ -56,7 +56,7 @@ def _segment_text(text: str) -> str:
         import jieba
         jieba.setLogLevel(_logging.WARNING)
         return " ".join(jieba.cut_for_search(text))
-    except ImportError:
+    except Exception:
         return text
 
 
@@ -560,12 +560,12 @@ class KnowledgeBaseManager:
             await asyncio.to_thread(self._lance_table.add, lance_rows)
         except Exception:
             with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
-                conn.execute("DELETE FROM knowledge_chunks WHERE document_id=?", (doc_id,))
                 conn.execute(
                     "DELETE FROM knowledge_chunks_fts WHERE rowid IN "
                     "(SELECT rowid FROM knowledge_chunks WHERE document_id=?)",
                     (doc_id,),
                 )
+                conn.execute("DELETE FROM knowledge_chunks WHERE document_id=?", (doc_id,))
                 conn.execute("UPDATE knowledge_documents SET total_chunks=0 WHERE id=?", (doc_id,))
                 conn.commit()
             raise
@@ -735,12 +735,12 @@ class KnowledgeBaseManager:
             with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
                 cursor = conn.execute("SELECT id FROM knowledge_chunks WHERE document_id=?", (doc_id,))
                 chunk_ids = [row[0] for row in cursor.fetchall()]
-                conn.execute("DELETE FROM knowledge_chunks WHERE document_id=?", (doc_id,))
                 conn.execute(
                     "DELETE FROM knowledge_chunks_fts WHERE rowid IN "
                     "(SELECT rowid FROM knowledge_chunks WHERE document_id=?)",
                     (doc_id,),
                 )
+                conn.execute("DELETE FROM knowledge_chunks WHERE document_id=?", (doc_id,))
                 conn.execute("DELETE FROM knowledge_documents WHERE id=?", (doc_id,))
                 conn.commit()
                 return chunk_ids
@@ -1261,12 +1261,12 @@ class KnowledgeBaseManager:
 
         def _delete_old():
             with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
-                conn.execute("DELETE FROM knowledge_chunks WHERE document_id=?", (doc_id,))
                 conn.execute(
                     "DELETE FROM knowledge_chunks_fts WHERE rowid IN "
                     "(SELECT rowid FROM knowledge_chunks WHERE document_id=?)",
                     (doc_id,),
                 )
+                conn.execute("DELETE FROM knowledge_chunks WHERE document_id=?", (doc_id,))
                 conn.commit()
 
         await asyncio.to_thread(_delete_old)
