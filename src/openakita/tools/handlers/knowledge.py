@@ -19,6 +19,8 @@ class KnowledgeBaseHandler:
         "delete_knowledge_base_document",
         "repair_knowledge_base_document",
         "overwrite_knowledge_base_document",
+        "read_knowledge_base_document",
+        "update_knowledge_base_document",
     ]
 
     def __init__(self, agent: Any) -> None:
@@ -37,6 +39,10 @@ class KnowledgeBaseHandler:
             return await self._handle_repair(params)
         if tool_name == "overwrite_knowledge_base_document":
             return await self._handle_overwrite(params)
+        if tool_name == "read_knowledge_base_document":
+            return await self._handle_read(params)
+        if tool_name == "update_knowledge_base_document":
+            return await self._handle_update(params)
         if tool_name != "search_knowledge_base":
             return f"未知知识库工具: {tool_name}"
         return await self._handle_search(params)
@@ -178,13 +184,64 @@ class KnowledgeBaseHandler:
 
         target = docs[0]
         try:
-            result = await kb.ingest_text(target["name"], content)
-            if result.get("duplicate"):
-                return "⚠️ 内容未变更，未重复保存。"
-            await kb.delete_document(target["id"])
-            return f"✅ 已覆盖更新《{target['name']}》（新文档 ID: {result.get('doc_id', '?')}）"
+            result = await kb.update_document_content(target["id"], content)
+            return f"✅ 已更新《{target['name']}》（{result.get('chunks', 0)} 个分块，文档 ID 不变）"
         except Exception as e:
-            return f"❌ 覆盖失败: {e}"
+            return f"❌ 更新失败: {e}"
+
+    async def _handle_read(self, params: dict) -> str:
+        name = params.get("name", "").strip()
+        if not name:
+            return "❌ 请指定要读取的文档名称。"
+
+        try:
+            max_chars = min(int(params.get("max_chars", 20000)), 100000)
+        except (ValueError, TypeError):
+            max_chars = 20000
+
+        kb = getattr(self.agent, "kb_manager", None)
+        if kb is None:
+            return "知识库功能未初始化。"
+
+        docs = kb.find_document_by_name(name)
+        if not docs:
+            return f"未找到名称包含「{name}」的文档。"
+
+        target = docs[0]
+        try:
+            result = await kb.get_document_full_content(target["id"])
+            if result is None:
+                return f"❌ 文档《{target['name']}》不存在或无法读取。"
+            content = result.get("content", "")
+            if len(content) > max_chars:
+                content = content[:max_chars] + f"\n\n...（截断，共 {len(content)} 字符）"
+            title = f"### 《{result['name']}》（{result.get('file_type', '?')}，{result.get('total_chunks', 0)} 块）"
+            return f"{title}\n\n{content if content else '(空文档)'}"
+        except Exception as e:
+            return f"❌ 读取失败: {e}"
+
+    async def _handle_update(self, params: dict) -> str:
+        name = params.get("name", "").strip()
+        content = params.get("content", "").strip()
+        if not name:
+            return "❌ 请指定要更新的文档名称。"
+        if not content:
+            return "❌ 请提供新的文本内容。"
+
+        kb = getattr(self.agent, "kb_manager", None)
+        if kb is None:
+            return "知识库功能未初始化。"
+
+        docs = kb.find_document_by_name(name)
+        if not docs:
+            return f"未找到名称包含「{name}」的文档。"
+
+        target = docs[0]
+        try:
+            result = await kb.update_document_content(target["id"], content)
+            return f"✅ 已更新《{target['name']}》（{result.get('chunks', 0)} 个分块重新入库，文档 ID 不变）"
+        except Exception as e:
+            return f"❌ 更新失败: {e}"
 
     async def _handle_search(self, params: dict) -> str:
 

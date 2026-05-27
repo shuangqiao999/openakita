@@ -157,4 +157,57 @@ KNOWLEDGE_BASE_TOOLS = [
             "required": ["name", "content"],
         },
     },
+    {
+        "name": "read_knowledge_base_document",
+        "category": "Knowledge Base",
+        "description": "读取知识库中指定文档的完整文本内容。适用场景：用户要求查看某份文档的全文、需要引用文档中的具体段落。",
+        "detail": """读取知识库文档的全文内容。
+
+**适用场景**：
+- 用户说"把知识库里XXX文档的全文显示出来"
+- 需要了解某份文档的完整内容
+- 在修改文档前先查看当前内容
+
+**参数**：
+- name: 文档名称（支持模糊匹配，读取匹配的第一个文档）
+- max_chars: 最大返回字符数，默认 20000
+
+**注意**：内容来自分块拼接，可能与原始文件格式略有差异。""",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "要读取的文档名称"},
+                "max_chars": {"type": "integer", "default": 20000, "minimum": 100, "maximum": 100000, "description": "最大返回字符数"},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "update_knowledge_base_document",
+        "category": "Knowledge Base",
+        "description": "更新知识库中已有文档的文本内容，重新分块并入库。保留原文档 ID，不创建新文档。适用场景：用户要求修改某份文档、用新内容替换旧内容。",
+        "detail": """更新知识库文档的文本内容，原地重新分块→嵌入→入库。
+
+**适用场景**：
+- 用户说"把XXX文档的内容改成..."
+- 用户要求"更新知识库里的某份文档"
+- 修改了文档内容需要重新入库
+
+**参数**：
+- name: 文档名称（支持模糊匹配，更新匹配的第一个）
+- content: 新的完整文本内容
+
+**注意**：
+- 旧分块和向量数据会被删除后重建
+- 文档 ID 保持不变
+- 如未匹配到文档会返回错误""",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "要更新的文档名称"},
+                "content": {"type": "string", "description": "新的完整文本内容"},
+            },
+            "required": ["name", "content"],
+        },
+    },
 ]
