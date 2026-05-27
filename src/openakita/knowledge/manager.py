@@ -173,11 +173,20 @@ class KnowledgeBaseManager:
                     prefix='2'
                 )
             """)
+            conn.commit()
+
+        self._populate_fts5_background()
+
+    def _populate_fts5_background(self) -> None:
+        """后台线程：将 knowledge_chunks 的现有内容逐行分词写入 FTS5 表。"""
+        def _do():
             try:
-                existing = conn.execute(
-                    "SELECT COUNT(*) FROM knowledge_chunks_fts"
-                ).fetchone()[0]
-                if existing == 0:
+                with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
+                    existing = conn.execute(
+                        "SELECT COUNT(*) FROM knowledge_chunks_fts"
+                    ).fetchone()[0]
+                    if existing > 0:
+                        return
                     rows = conn.execute(
                         "SELECT rowid, content FROM knowledge_chunks"
                     ).fetchall()
@@ -185,10 +194,12 @@ class KnowledgeBaseManager:
                         "INSERT INTO knowledge_chunks_fts(rowid, content) VALUES(?, ?)",
                         [(rowid, _segment_text(content)) for rowid, content in rows],
                     )
-            except Exception:
-                pass
+                    conn.commit()
+                logger.info("[KB] FTS5 initial population complete: %d rows", len(rows) if rows else 0)
+            except Exception as e:
+                logger.warning("[KB] FTS5 initial population failed: %s", e)
 
-            conn.commit()
+        threading.Thread(target=_do, daemon=True).start()
 
     def _init_lancedb(self) -> None:
         import lancedb
@@ -366,7 +377,7 @@ class KnowledgeBaseManager:
         threading.Thread(target=_build, daemon=True).start()
 
     def _sync_fts5_for_document(self, doc_id: str) -> None:
-        """同步文档分块到 FTS5 表（应用层 jieba 分词后写入）。"""
+        """同步文档分块到 FTS5 表（应用层 jieba 分词后写入 + 更新已有内容）。"""
         with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
             rows = conn.execute(
                 "SELECT rowid, content FROM knowledge_chunks "
@@ -380,6 +391,28 @@ class KnowledgeBaseManager:
                     (rowid, _segment_text(content)),
                 )
             if rows:
+                conn.commit()
+
+            updates = conn.execute(
+                "SELECT kc.rowid, kc.content FROM knowledge_chunks kc "
+                "JOIN knowledge_chunks_fts fts ON kc.rowid = fts.rowid "
+                "WHERE kc.document_id = ?",
+                (doc_id,),
+            ).fetchall()
+            updated = False
+            for rowid, content in updates:
+                segmented = _segment_text(content)
+                old = conn.execute(
+                    "SELECT content FROM knowledge_chunks_fts WHERE rowid = ?",
+                    (rowid,),
+                ).fetchone()
+                if old and old[0] != segmented:
+                    conn.execute(
+                        "UPDATE knowledge_chunks_fts SET content = ? WHERE rowid = ?",
+                        (segmented, rowid),
+                    )
+                    updated = True
+            if updated:
                 conn.commit()
 
     async def _proactive_create_table(self) -> None:
@@ -833,6 +866,19 @@ class KnowledgeBaseManager:
             total_chunks,
             recent_docs,
         ) = await asyncio.to_thread(_query)
+
+        lancedb_fts = self._has_fts_index()
+        fts5_rows = 0
+        try:
+            def _fts5_count():
+                with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
+                    return conn.execute(
+                        "SELECT COUNT(*) FROM knowledge_chunks_fts"
+                    ).fetchone()[0]
+            fts5_rows = await asyncio.to_thread(_fts5_count)
+        except Exception:
+            pass
+
         return {
             "total_documents": total_docs,
             "ready_documents": ready_docs,
@@ -840,6 +886,9 @@ class KnowledgeBaseManager:
             "failed_documents": failed_docs,
             "total_chunks": total_chunks,
             "recent_documents": recent_docs,
+            "lancedb_fts_enabled": lancedb_fts,
+            "sqlite_fts5_rows": fts5_rows,
+            "keyword_search_available": fts5_rows > 0,
         }
 
     def find_document_by_name(self, name: str) -> list[dict[str, Any]]:
