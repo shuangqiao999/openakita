@@ -632,7 +632,7 @@ jobs:
             exit 1
           fi
 
-      # 修复：使用 curl 调用 GitHub API 删除旧的 assets，避免 gh 命令认证失败
+      # 清理旧的 Release Assets（保留最新 5 个）—— 修复后版本
       - name: 清理旧的 Release Assets（保留最新 5 个）
         shell: bash
         env:
@@ -641,31 +641,24 @@ jobs:
           set -euo pipefail
           RELEASE_TAG="${{ env.RELEASE_TAG }}"
           MAX_KEEP=5
-          REPO="${{ github.repository }}"
-          API_URL="https://api.github.com/repos/${REPO}/releases/tags/${RELEASE_TAG}"
-          
           echo "📋 获取发布 ${RELEASE_TAG} 的 assets 列表..."
-          response=$(curl -s -H "Authorization: token ${GH_TOKEN}" "${API_URL}")
-          assets=$(echo "$response" | jq '.assets')
-          
-          # 获取 asset 数量
-          asset_count=$(echo "$assets" | jq 'length')
-          echo "当前共有 ${asset_count} 个 assets"
-          
-          if [ ${asset_count} -le ${MAX_KEEP} ]; then
-            echo "✅ assets 数量未超过 ${MAX_KEEP}，无需清理"
+          # 获取 asset 列表，按创建时间排序，保留最新 MAX_KEEP 个
+          assets=$(gh api "/repos/${{ github.repository }}/releases/tags/${RELEASE_TAG}/assets" --jq '.[] | {id: .id, name: .name, created_at: .created_at}')
+          if [ -z "$assets" ]; then
+            echo "未找到任何 assets"
             exit 0
           fi
-          
-          echo "$assets" | jq -r '.[] | [.created_at, .name, .id] | @tsv' | sort -r | tail -n +$((MAX_KEEP+1)) | while IFS=$'\t' read -r created_at asset_name asset_id; do
-            if [ -n "$asset_name" ]; then
-              echo "🗑️ 删除旧的 asset: $asset_name (ID: $asset_id, 创建于 $created_at)"
-              curl -X DELETE -H "Authorization: token ${GH_TOKEN}" \
-                "https://api.github.com/repos/${REPO}/releases/assets/${asset_id}"
+          # 按创建时间升序排序，然后取前 MAX_KEEP 个 ID 作为保留，删除其余
+          # 注意：升序时最新的是最后面的，因此升序后保留最后 MAX_KEEP 个
+          keep_ids=$(echo "$assets" | jq -r 'sort_by(.created_at) | .[-'"$MAX_KEEP"':] | .[].id')
+          all_ids=$(echo "$assets" | jq -r '.id')
+          for id in $all_ids; do
+            if ! echo "$keep_ids" | grep -q "^$id$"; then
+              echo "🗑️ 删除 asset ID: $id"
+              gh api -X DELETE "/repos/${{ github.repository }}/releases/assets/$id" --silent
             fi
           done
-          
-          echo "✅ 清理完成"
+          echo "✅ 清理完成，保留最新 ${MAX_KEEP} 个 assets"
 
       - name: 上传 Windows 安装包到 GitHub 发布
         shell: bash
