@@ -882,38 +882,38 @@ class KnowledgeBaseManager:
                 )
 
             raw_results = query_builder.limit(coarse_k).to_list()
-            return raw_results
+
+            distance_multiplier = 2.0
+            results: list[dict[str, Any]] = []
+            for r in raw_results:
+                chunk_id = r.get("id", "")
+                if use_hybrid:
+                    score = float(r.get("_score", 0))
+                    score = max(0.0, min(1.0, score))
+                else:
+                    dist = r.get("_distance", 1.0)
+                    score = max(0.0, min(1.0, 1.0 - dist / distance_multiplier))
+                results.append({
+                    "chunk_id": chunk_id,
+                    "score": score,
+                })
+
+            if rerank and len(results) > top_k:
+                results = self._rerank_sync(query_vec, results, top_k)
+
+            results = results[:top_k]
+            return results
 
         raw_results = await asyncio.to_thread(_search)
 
-        distance_multiplier = 2.0
-        results: list[dict[str, Any]] = []
-        for r in raw_results:
-            chunk_id = r.get("id", "")
-            if use_hybrid:
-                score = float(r.get("_score", 0))
-                score = max(0.0, min(1.0, score))
-            else:
-                dist = r.get("_distance", 1.0)
-                score = max(0.0, min(1.0, 1.0 - dist / distance_multiplier))
-            results.append({
-                "chunk_id": chunk_id,
-                "score": score,
-            })
-
-        if rerank and len(results) > top_k:
-            results = self._rerank_sync(query_vec, results, top_k)
-
-        results = results[:top_k]
-
-        if not results:
+        if not raw_results:
             self._search_cache[cache_key] = (time.time(), [])
             return []
 
         needed_ids: set[str] = set()
         matches: list[tuple[str, float, str | None, int | None]] = []
 
-        for r in results:
+        for r in raw_results:
             chunk_id = r["chunk_id"]
             score = r["score"]
             needed_ids.add(chunk_id)
@@ -926,18 +926,22 @@ class KnowledgeBaseManager:
             else:
                 matches.append((chunk_id, score, None, None))
 
-        content_map: dict[str, tuple[str, str, str]] = {}
-        with sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
-            placeholders = ",".join(["?"] * len(needed_ids))
-            rows = conn.execute(
-                f"""SELECT kc.id, kc.content, kd.id as doc_id, kd.name as document_name
-                    FROM knowledge_chunks kc
-                    JOIN knowledge_documents kd ON kc.document_id = kd.id
-                    WHERE kc.id IN ({placeholders})""",
-                list(needed_ids),
-            ).fetchall()
-            for row in rows:
-                content_map[row[0]] = (row[1], row[2], row[3])
+        def _fetch_content():
+            content_map: dict[str, tuple[str, str, str]] = {}
+            with sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
+                placeholders = ",".join(["?"] * len(needed_ids))
+                rows = conn.execute(
+                    f"""SELECT kc.id, kc.content, kd.id as doc_id, kd.name as document_name
+                        FROM knowledge_chunks kc
+                        JOIN knowledge_documents kd ON kc.document_id = kd.id
+                        WHERE kc.id IN ({placeholders})""",
+                    list(needed_ids),
+                ).fetchall()
+                for row in rows:
+                    content_map[row[0]] = (row[1], row[2], row[3])
+            return content_map
+
+        content_map = await asyncio.to_thread(_fetch_content)
 
         results_out: list[dict[str, Any]] = []
         for chunk_id, score, parsed_doc_id, parsed_idx in matches:
@@ -1414,8 +1418,9 @@ class KnowledgeBaseManager:
             return True
 
         try:
+            dummy_vec = [0.0] * (self._embedding_dim or 1024)
             sample_rows = await asyncio.to_thread(
-                lambda: self._lance_table.search()
+                lambda: self._lance_table.search(dummy_vec)
                 .where(f"document_id = '{safe_id}'")
                 .limit(min(5, chunk_count))
                 .to_list()

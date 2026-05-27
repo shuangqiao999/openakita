@@ -2265,36 +2265,16 @@ def _build_kb_doc_summary_sync(kb_manager: Any, max_docs: int = 30) -> str:
     token 开销极低（~500 tokens），让 LLM 知道有哪些文档可供检索。
     """
     try:
-        import asyncio as _asyncio
         import concurrent.futures
 
         def _run():
-            loop = _asyncio.new_event_loop()
-            try:
-                return loop.run_until_complete(kb_manager.list_documents(limit=max_docs))
-            finally:
-                loop.close()
+            return kb_manager.get_doc_summary(max_docs)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
             future = ex.submit(_run)
-            result = future.result(timeout=3)
+            return future.result(timeout=3)
     except Exception:
         return ""
-
-    if not result or not result.get("documents"):
-        return ""
-
-    ready_docs = [d for d in result["documents"] if d.get("status") == "ready"]
-    if not ready_docs:
-        return ""
-
-    lines: list[str] = [f"知识库中有 {len(ready_docs)} 篇就绪文档："]
-    for d in ready_docs[:max_docs]:
-        name = d.get("name", "未知")
-        ftype = d.get("file_type", "")
-        chunks = d.get("total_chunks", 0)
-        lines.append(f"  - 《{name}》（{ftype}，{chunks}块）")
-    return "\n".join(lines)
 
 
 def _retrieve_by_query(
