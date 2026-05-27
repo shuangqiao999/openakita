@@ -38,10 +38,10 @@ _KB_ALLOWED_EXTENSIONS = {
     ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".xml", ".env", ".properties", ".editorconfig",
 }
 
-_KB_EMBED_BATCH_SIZE = 10  # 每批发送给嵌入模型的文本数（本地模型安全上限）
-_KB_EMBED_CHUNK_TRUNCATE = 300  # 嵌入前单块最大字符数（适配 2048 token 本地模型）
+_KB_EMBED_BATCH_SIZE = 20  # 每批发送给嵌入模型的文本数（本地模型安全上限）
+_KB_EMBED_CHUNK_TRUNCATE = 600  # 嵌入前单块最大字符数（适配 2048 token 本地模型）
 _KB_EMBED_MAX_RETRIES = 3  # 单批最大重试次数
-_KB_EMBED_BATCH_DELAY = 0.1  # 批次间隔秒（本地模型需要节流）
+_KB_EMBED_BATCH_DELAY = 0.05  # 批次间隔秒（本地模型节流）
 _KB_EMBED_MAX_CONCURRENT = 1  # 最大并发嵌入请求数（本地模型串行执行）
 _KB_INDEX_MIN_ROWS = 1000     # 向量数超此阈值后自动创建索引
 _SEMANTIC_CACHE_MAX_SIZE = 200  # 语义边缓存最大条目数
@@ -81,7 +81,7 @@ class KnowledgeBaseManager:
         self._index_lock = threading.Lock()
         self._index_creating = False
         self._semantic_cache: dict[str, list[dict]] = {}
-        self._semantic_pending: dict[str, float] = {}
+        self._semantic_pending: dict[str, bool] = {}
 
         self._init_sqlite()
         self._init_lancedb()
@@ -308,7 +308,7 @@ class KnowledgeBaseManager:
         Returns:
             分块数量
         """
-        chunker = TextChunker(strategy="paragraph", max_chunk_size=1000)
+        chunker = TextChunker(strategy="paragraph", max_chunk_size=2000)
         chunks = chunker.chunk(text)
 
         if not chunks:
@@ -1294,7 +1294,7 @@ class KnowledgeBaseManager:
         if cached_links is not None:
             links = cached_links
         elif include_semantic and self._lance_table is not None and cache_key not in self._semantic_pending:
-            self._semantic_pending[cache_key] = time.time()
+            self._semantic_pending[cache_key] = True
             try:
                 embedder = await self._get_embedder()
                 asyncio.create_task(
@@ -1308,11 +1308,7 @@ class KnowledgeBaseManager:
                 logger.warning("[KB] Failed to start semantic edge task: %s", e)
                 self._semantic_pending.pop(cache_key, None)
         elif cache_key in self._semantic_pending:
-            elapsed = time.time() - self._semantic_pending[cache_key]
-            if elapsed > 60:
-                semantic_incomplete = True
-            else:
-                semantic_pending = True
+            semantic_pending = True
 
         truncated = len(chunks) < total_candidates
 
