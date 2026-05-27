@@ -394,19 +394,15 @@ class KnowledgeBaseManager:
                 conn.commit()
 
             updates = conn.execute(
-                "SELECT kc.rowid, kc.content FROM knowledge_chunks kc "
+                "SELECT kc.rowid, kc.content, fts.content FROM knowledge_chunks kc "
                 "JOIN knowledge_chunks_fts fts ON kc.rowid = fts.rowid "
                 "WHERE kc.document_id = ?",
                 (doc_id,),
             ).fetchall()
             updated = False
-            for rowid, content in updates:
-                segmented = _segment_text(content)
-                old = conn.execute(
-                    "SELECT content FROM knowledge_chunks_fts WHERE rowid = ?",
-                    (rowid,),
-                ).fetchone()
-                if old and old[0] != segmented:
+            for rowid, chunk_content, fts_content in updates:
+                segmented = _segment_text(chunk_content)
+                if fts_content != segmented:
                     conn.execute(
                         "UPDATE knowledge_chunks_fts SET content = ? WHERE rowid = ?",
                         (segmented, rowid),

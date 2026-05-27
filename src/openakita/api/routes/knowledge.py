@@ -228,6 +228,7 @@ async def search_knowledge(request: Request, body: SearchRequest):
         query=body.query,
         top_k=body.top_k,
         doc_filter=body.doc_filter,
+        context_window=1,
     )
     return {"status": "ok", "results": results, "query": body.query}
 
