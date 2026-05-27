@@ -985,7 +985,8 @@ class KnowledgeBaseManager:
 
         chunk_ids = [c["chunk_id"] for c in candidates]
         try:
-            raw_rows = self._lance_table.search() \
+            dummy_vec = [0.0] * len(query_vec)
+            raw_rows = self._lance_table.search(dummy_vec) \
                 .where(f"id IN ({','.join(repr(cid) for cid in chunk_ids)})") \
                 .limit(len(candidates)) \
                 .to_list()
