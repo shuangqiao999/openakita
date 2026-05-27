@@ -21,6 +21,7 @@ import json
 import logging
 import math
 import threading
+from collections import OrderedDict
 from pathlib import Path
 
 from .json_utils import coerce_text
@@ -105,6 +106,7 @@ class LanceDBBackend:
     _MIN_ROWS_FOR_INDEX = 200
     _INDEX_TYPE = "IVF_PQ"
     _INDEX_FTS_FIELD = "content"
+    _QUERY_EMBED_CACHE_SIZE = 256
 
     def __init__(
         self,
@@ -129,6 +131,7 @@ class LanceDBBackend:
         self._creating_index = False
         self._fts_index_created = False
         self._creating_fts_index = False
+        self._query_embed_cache: OrderedDict[str, list[float]] = OrderedDict()
 
         try:
             import lancedb as _mod
@@ -229,8 +232,10 @@ class LanceDBBackend:
             row_count = self._table.count_rows()
             num_partitions = max(2, min(256, int(row_count ** 0.5)))
             dim = self._embedding_dim
+            # Prefer sub-vector size 32-64 for best recall/speed tradeoff.
+            # Try larger divisors first (fewer sub_vectors = less compression, better recall).
             num_sub = 1
-            for d in (16, 8, 32, 4, 64):
+            for d in (64, 32, 16, 96, 48, 8, 128):
                 if dim % d == 0:
                     num_sub = dim // d
                     break
@@ -279,16 +284,14 @@ class LanceDBBackend:
 
     def _create_fts_index_sync(self) -> None:
         try:
-            logger.info("[LanceDBBackend] FTS index creation started")
+            logger.info("[LanceDBBackend] FTS index creation started (language=Chinese)")
             self._table.create_fts_index(
                 self._INDEX_FTS_FIELD,
                 replace=True,
-                language="English",
+                language="Chinese",
                 lower_case=True,
-                stem=True,
-                remove_stop_words=True,
                 ascii_folding=True,
-                max_token_length=40,
+                max_token_length=64,
             )
             self._fts_index_created = True
             logger.info("[LanceDBBackend] FTS index creation completed")
@@ -351,6 +354,7 @@ class LanceDBBackend:
         self._creating_index = False
         self._fts_index_created = False
         self._creating_fts_index = False
+        self._query_embed_cache.clear()
 
         try:
             self._ensure_table(new_dim)
@@ -463,6 +467,23 @@ class LanceDBBackend:
                 reason,
             )
 
+    # ── Query Embedding Cache ──
+
+    def _get_cached_embedding(self, query: str) -> list[float] | None:
+        if query in self._query_embed_cache:
+            self._query_embed_cache.move_to_end(query)
+            return self._query_embed_cache[query]
+        return None
+
+    def _cache_embedding(self, query: str, vec: list[float]) -> None:
+        if query in self._query_embed_cache:
+            self._query_embed_cache.move_to_end(query)
+            self._query_embed_cache[query] = vec
+            return
+        if len(self._query_embed_cache) >= self._QUERY_EMBED_CACHE_SIZE:
+            self._query_embed_cache.popitem(last=False)
+        self._query_embed_cache[query] = vec
+
     # ── Warmup ──
 
     def warmup(self) -> bool:
@@ -510,15 +531,18 @@ class LanceDBBackend:
         if embedder is None:
             return []
 
-        try:
-            query_vec = _run_embedding_sync(embedder, "embed_query", query)
-        except Exception as e:
-            self._mark_embedding_failure(str(e))
-            return []
-
+        query_vec = self._get_cached_embedding(query)
         if query_vec is None:
-            self._mark_embedding_failure("timeout_or_none")
-            return []
+            try:
+                query_vec = _run_embedding_sync(embedder, "embed_query", query)
+            except Exception as e:
+                self._mark_embedding_failure(str(e))
+                return []
+            if query_vec is None:
+                self._mark_embedding_failure("timeout_or_none")
+                return []
+            if query_vec:
+                self._cache_embedding(query, query_vec)
 
         self._mark_embedding_ok()
 

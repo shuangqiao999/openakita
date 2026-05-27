@@ -850,6 +850,21 @@ class MemoryStorage:
             logger.error(f"Failed to get memory {memory_id}: {e}")
             return None
 
+    def get_memories_batch(self, memory_ids: list[str]) -> dict[str, dict]:
+        if not self._conn or not memory_ids:
+            return {}
+        try:
+            placeholders = ", ".join(["?"] * len(memory_ids))
+            cursor = self._conn.execute(
+                f"SELECT * FROM memories WHERE id IN ({placeholders})",
+                memory_ids,
+            )
+            rows = self._rows_to_dicts(cursor)
+            return {r["id"]: r for r in rows}
+        except Exception as e:
+            logger.error(f"Failed to batch-get memories ({len(memory_ids)} ids): {e}")
+            return {}
+
     def delete_memory(self, memory_id: str) -> bool:
         if not self._conn:
             return False

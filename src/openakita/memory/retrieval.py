@@ -545,7 +545,7 @@ class RetrievalEngine:
         """用 LLM (compiler model) 把自然语言拆解为搜索关键词.
 
         返回 {"keywords": [...], "intent": "search_memory|search_file|general"}
-        无 brain 时降级为规则提取。
+        短查询优先走规则提取（零延迟），长查询/复杂查询走 LLM。
         """
         if not query or len(query.strip()) < 3:
             return {"keywords": [query.strip()], "intent": "general"}
@@ -556,10 +556,15 @@ class RetrievalEngine:
 
         # 防止缓存无限增长
         if len(self._decompose_cache) > 500:
-            # 清掉一半（FIFO 近似：dict 保持插入顺序）
             keys = list(self._decompose_cache.keys())
             for k in keys[:250]:
                 del self._decompose_cache[k]
+
+        # 短查询（≤20字符）直接走规则，无需 LLM
+        if len(query) <= 20:
+            result = self._decompose_with_rules(query)
+            self._decompose_cache[cache_key] = result
+            return result
 
         if self.brain:
             result = self._decompose_with_llm(query, recent_messages)

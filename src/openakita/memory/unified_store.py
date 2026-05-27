@@ -263,8 +263,9 @@ class UnifiedStore:
             user_id=user_id,
             workspace_id=workspace_id,
         )
-        if self._fts5_fallback is not None:
-            fts5_hits = self._fts5_fallback.search(
+        # FTS5 fallback only when primary search returned nothing
+        if not hits and self._fts5_fallback is not None:
+            hits = self._fts5_fallback.search(
                 core,
                 limit=5,
                 scope=scope,
@@ -272,12 +273,6 @@ class UnifiedStore:
                 user_id=user_id,
                 workspace_id=workspace_id,
             )
-            # 合并主后端和 FTS5 结果，取每个 ID 的最高分
-            existing_scores = dict(hits)
-            for mid, score in fts5_hits:
-                if mid not in existing_scores or score > existing_scores[mid]:
-                    existing_scores[mid] = score
-            hits = list(existing_scores.items())
         for mid, _score in hits:
             existing = self.db.get_memory(mid)
             if not existing:
@@ -392,9 +387,9 @@ class UnifiedStore:
     ) -> list[tuple[SemanticMemory, float]]:
         """Like search_semantic but also returns the raw similarity score.
 
-        LanceDB backend uses native hybrid search (vector + FTS via RRF) when
-        an FTS index is available.  Other backends fall back to vector-only
-        with optional FTS5 union-by-id.
+        LanceDB backend uses native hybrid search (vector + FTS via RRF) with
+        Chinese-tokenized FTS index for CJK coverage.  FTS5 only activates as
+        fallback when LanceDB is unavailable.
         """
         use_hybrid = self.search.backend_type == "lancedb"
 
@@ -408,10 +403,13 @@ class UnifiedStore:
             workspace_id=workspace_id,
             hybrid=use_hybrid,
         )
-        merged: dict[str, float] = {mid: float(s) for mid, s in primary}
 
-        # FTS5 fallback: always merge for CJK tokenization coverage
-        if self._fts5_fallback is not None:
+        # When LanceDB hybrid returns results, use them directly.
+        # FTS5 is only a fallback when LanceDB is unavailable.
+        if primary:
+            merged: dict[str, float] = {mid: float(s) for mid, s in primary}
+        elif self._fts5_fallback is not None:
+            # LanceDB unavailable → fall back to FTS5
             try:
                 fts_results = self._fts5_fallback.search(
                     query,
@@ -422,39 +420,41 @@ class UnifiedStore:
                     user_id=user_id,
                     workspace_id=workspace_id,
                 )
-                for mid, s in fts_results:
-                    prev = merged.get(mid)
-                    fs = float(s)
-                    if prev is None or fs > prev:
-                        merged[mid] = fs
+                merged = {mid: float(s) for mid, s in fts_results}
                 logger.debug(
-                    "[HybridSearch] query=%.50s lancedb=%d fts5=%d merged=%d (union)",
-                    query, len(primary), len(fts_results), len(merged),
+                    "[HybridSearch] LanceDB unavailable, fts5=%d fallback", len(merged)
                 )
             except Exception as _e:
-                logger.debug(f"[UnifiedStore] FTS5 union skipped (non-fatal): {_e}")
+                logger.debug("[UnifiedStore] FTS5 fallback failed: %s", _e)
+                merged = {}
+        else:
+            merged = {}
+
+        if not merged:
+            return []
 
         ordered = sorted(merged.items(), key=lambda kv: kv[1], reverse=True)
 
+        # Batch-load all candidates from SQLite in a single query
+        candidate_ids = [mid for mid, _s in ordered]
+        mem_map = self.db.get_memories_batch(candidate_ids)
+
         scored: list[tuple[SemanticMemory, float]] = []
         for memory_id, score in ordered:
-            d = self.db.get_memory(memory_id)
-            if d:
-                if not include_inactive and not self._is_active_dict(d):
-                    continue
-                d_scope = d.get("scope") or "global"
-                d_owner = d.get("scope_owner") or ""
-                d_user = d.get("user_id") or "default"
-                d_workspace = d.get("workspace_id") or "default"
-                if (
-                    d_scope == scope
-                    and d_owner == scope_owner
-                    and d_user == user_id
-                    and d_workspace == workspace_id
-                ):
-                    scored.append((SemanticMemory.from_dict(d), float(score)))
-                    if len(scored) >= limit:
-                        break
+            d = mem_map.get(memory_id)
+            if not d:
+                continue
+            if not include_inactive and not self._is_active_dict(d):
+                continue
+            if (
+                (d.get("scope") or "global") == scope
+                and (d.get("scope_owner") or "") == scope_owner
+                and (d.get("user_id") or "default") == user_id
+                and (d.get("workspace_id") or "default") == workspace_id
+            ):
+                scored.append((SemanticMemory.from_dict(d), float(score)))
+                if len(scored) >= limit:
+                    break
         return scored
 
     def query_semantic(self, **kwargs: Any) -> list[SemanticMemory]:

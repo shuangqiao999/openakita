@@ -279,7 +279,7 @@ class TestDecomposeWithLLM:
                 return _Resp(content='{"keywords": ["橘猫", "沙发"], "intent": "search_file"}')
 
         engine = RetrievalEngine(store, brain=_Brain())
-        result = engine._decompose_query("那张橘猫在沙发上的照片")
+        result = engine._decompose_query("请问那张橘猫趴在沙发上的照片文件在哪里能找到")
         assert result["keywords"] == ["橘猫", "沙发"]
         assert result["intent"] == "search_file"
 
@@ -295,7 +295,7 @@ class TestDecomposeWithLLM:
                 return _Resp(content="not json!")
 
         engine = RetrievalEngine(store, brain=_Brain())
-        result = engine._decompose_query("那张橘猫在沙发上的照片")
+        result = engine._decompose_query("请问那张橘猫趴在沙发上的照片文件在哪里能找到")
         assert "keywords" in result
         assert result["intent"] == "search_file"
 
@@ -320,7 +320,7 @@ class TestDecomposeWithLLM:
                 return _Resp(content='{"keywords": ["橘猫", "沙发"], "intent": "search_file"}')
 
         engine = RetrievalEngine(store, brain=_Brain())
-        result = engine.retrieve("那天我发给你的那张猫的照片给我一下")
+        result = engine.retrieve("那天我发给你的那张橘猫照片找一下在哪里能下载")
         assert "cat.jpg" in result
 
 
