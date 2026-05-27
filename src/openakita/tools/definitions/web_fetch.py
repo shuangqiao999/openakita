@@ -26,6 +26,7 @@ WEB_FETCH_TOOLS = [
         "related_tools": [
             {"name": "web_search", "relation": "没有具体 URL 时用 web_search 搜索"},
             {"name": "browser_navigate", "relation": "需要与页面交互时用 browser"},
+            {"name": "save_to_knowledge_base", "relation": "获取网页内容后可保存到知识库供后续检索"},
         ],
         "input_schema": {
             "type": "object",

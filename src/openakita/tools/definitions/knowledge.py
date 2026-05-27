@@ -34,16 +34,26 @@ KNOWLEDGE_BASE_TOOLS = [
         "description": "将文本内容保存到知识库。适用场景：用户要求收藏网页内容、保存参考文档片段、记录重要文本材料。",
         "detail": """将任意文本内容作为文档存入知识库。系统会自动分块、向量化，使其可被后续搜索。
 
+当用户要求将网页内容保存到知识库时，应先用 web_fetch 获取网页正文，再调用本工具保存。
+
 **适用场景**：
 - 用户说"把这个网页保存到知识库"
 - 用户要求"记录下这段内容"
 - 需要持久化保存某个参考材料
+- 将 web_fetch 抓取的网页内容存入知识库供长期检索
 
 **参数**：
 - title: 文档标题（必填），将作为知识库中显示的文件名
 - content: 要保存的完整文本内容（必填）
 
-**注意**：内容过短（<50字符）可能无法有效分块和检索。""",
+**注意**：
+- 内容过短（<50字符）可能无法有效分块和检索
+- 如内容来自 web_fetch，应去除 [OPENAKITA_SOURCE] 元数据头和 URL 信息行，只保留正文""",
+        "related_tools": [
+            {"name": "web_fetch", "relation": "先抓取网页内容，再存入知识库"},
+            {"name": "read_knowledge_base_document", "relation": "读取已保存的文档内容"},
+            {"name": "search_knowledge_base", "relation": "搜索知识库中的内容"},
+        ],
         "input_schema": {
             "type": "object",
             "properties": {
