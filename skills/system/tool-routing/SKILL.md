@@ -73,3 +73,15 @@ priority: high
 - **有 opencli adapter 时总是优先使用** — 比让 LLM 猜测页面操作可靠得多
 - **有 cli-anything CLI 时优先使用** — 比 GUI 自动化可靠 100 倍
 
+## 知识库与记忆检索场景
+
+- 用户询问上传文档中的具体内容 → `search_knowledge_base`
+- 用户问"我之前说过/喜欢什么/上次提到" → `search_memory`
+- 知识库返回空 → 换更宽泛的关键词重试一次，仍空则告知用户
+- 需要了解知识库中有哪些文档 → `list_knowledge_base_documents`
+
+### 示例
+用户：武松是哪个作品里的人物？
+推理：这是事实性知识，应优先从知识库检索。
+动作：search_knowledge_base(query="武松")
+
