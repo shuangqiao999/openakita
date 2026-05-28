@@ -1,6 +1,6 @@
 ---
 name: schedule-task
-description: Create scheduled task or reminder. IMPORTANT - must actually call this tool to create task. Just saying 'OK I will remind you' does NOT create the task. Task types - (1) reminder for simple messages, (2) task for AI operations.
+description: Create scheduled task/reminder. Must actually call tool; saying "OK" does not create. reminder=message, task=AI operations.
 system: true
 handler: scheduled
 tool-name: schedule_task

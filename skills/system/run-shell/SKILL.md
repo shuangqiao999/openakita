@@ -1,6 +1,6 @@
 ---
 name: run-shell
-description: Execute shell commands for system operations, directory creation, and script execution. When you need to run system commands, execute scripts, install packages, or manage processes. Note - if commands fail consecutively, try different approaches.
+description: Execute shell commands for system ops, scripts, packages, process management. If commands fail, try different approaches.
 system: true
 handler: filesystem
 tool-name: run_shell

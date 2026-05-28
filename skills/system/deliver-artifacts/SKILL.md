@@ -1,6 +1,6 @@
 ---
 name: deliver-artifacts
-description: Deliver artifacts (files/images/voice) to current IM chat via gateway, returning a receipt. Use this as the only delivery proof for attachments. Text replies are sent automatically - only use this for file/image/voice attachments.
+description: Deliver files/images/voice to IM chat. Only for attachments; text auto-sent. Returns receipt as delivery proof.
 system: true
 handler: im_channel
 tool-name: deliver_artifacts

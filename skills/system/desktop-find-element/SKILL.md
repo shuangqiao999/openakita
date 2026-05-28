@@ -1,6 +1,6 @@
 ---
 name: desktop-find-element
-description: Find desktop UI elements using UIAutomation (fast, accurate) or vision recognition (fallback). When you need to locate buttons/menus/icons, get element positions before clicking, or verify UI state. For browser webpage elements, use browser_* tools instead.
+description: Find desktop UI elements via UIAutomation or vision. For browser elements, use browser_* tools.
 system: true
 handler: desktop
 tool-name: desktop_find_element

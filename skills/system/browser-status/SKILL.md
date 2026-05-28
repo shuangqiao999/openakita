@@ -1,6 +1,6 @@
 ---
 name: browser-status
-description: Check browser current state including open status, current URL, page title, tab count. Useful for checking current page URL/title. Note - browser_open already includes status check and auto-starts if needed, so you don't need to call browser_status before browser_open.
+description: Check browser state (open/URL/title/tabs). Note: browser_open already includes status check.
 system: true
 handler: browser
 tool-name: browser_status

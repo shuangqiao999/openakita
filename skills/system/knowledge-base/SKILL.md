@@ -1,6 +1,6 @@
 ---
 name: knowledge-base
-description: Manage the built-in knowledge base: search, save documents, read/edit/delete documents, view status. Use when the user asks about knowledge base operations, wants to save web content, or needs to retrieve previously stored documents.
+description: Manage knowledge base: search/save/read/edit/delete documents. Use for KB operations or document retrieval.
 system: true
 handler: knowledge
 tool-name: search_knowledge_base

@@ -1,6 +1,6 @@
 ---
 name: desktop-click
-description: Click desktop elements or coordinates. When you need to click buttons/icons in applications, select menu items, or interact with desktop UI. Supports element description, name prefix, or coordinates. For browser webpage elements, use browser_click instead.
+description: Click desktop UI elements. Supports element description/name/coordinates. For browser click, use browser_click.
 system: true
 handler: desktop
 tool-name: desktop_click

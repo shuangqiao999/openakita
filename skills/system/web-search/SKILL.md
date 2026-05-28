@@ -1,6 +1,6 @@
 ---
 name: web-search
-description: Search the web using 6 engines in parallel (Bing/Baidu/360/Sogou/Shenma/Toutiao), merged & deduped to top 8 results. Use when you need to find current information, verify facts, look up documentation, or answer questions requiring up-to-date knowledge.
+description: Parallel web search (6 engines), merged top 8 results. Use for current info, fact-checking, documentation.
 system: true
 handler: web_search
 tool-name: web_search

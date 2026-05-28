@@ -1,6 +1,6 @@
 ---
 name: desktop-screenshot
-description: Capture Windows desktop screenshot with automatic file saving. When you need to show desktop state, capture application windows, or record operation results. IMPORTANT - must actually call this tool, never say 'screenshot done' without calling. Returns file_path for deliver_artifacts.
+description: Capture Windows desktop screenshot. Must actually call tool; returns file_path for deliver_artifacts.
 system: true
 handler: desktop
 tool-name: desktop_screenshot
