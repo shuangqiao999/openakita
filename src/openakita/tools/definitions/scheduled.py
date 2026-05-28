@@ -14,41 +14,15 @@ SCHEDULED_TOOLS = [
         "name": "schedule_task",
         "category": "Scheduled",
         "description": "Create scheduled task or reminder. IMPORTANT: Must actually call this tool to create task - just saying 'OK I will remind you' does NOT create the task! Task types: (1) reminder - sends message at scheduled time (default, 90%% of cases), (2) task - AI executes operations. NOTIFICATION CHANNEL: By default, reminders/results are automatically sent back to the CURRENT IM channel where the user is chatting (e.g. if user sends message via WeChat, reminder will be pushed to WeChat). NO Webhook URL or extra config needed! Only set target_channel if user explicitly asks to push to a DIFFERENT channel.",
-        "detail": """创建定时任务或提醒。
+        "detail": """创建定时任务或提醒。注意：必须调用此工具！仅说"我会提醒你"不会创建任务。
 
-⚠️ **重要: 必须调用此工具才能创建任务！只是说"好的我会提醒你"不会创建任务！**
+时间规则: trigger_config.run_at 填 YYYY-MM-DD HH:MM 绝对时间，根据 system prompt 中的当前时间推算具体日期。无法确定时先确认用户。
 
-## ⏰ 时间填写规则（最重要！）
+推送通道: 默认推送到当前 IM 对话通道，不需要问 Webhook URL。仅当用户要求其他通道时才设 target_channel。
 
-**trigger_config.run_at 必须填写精确的绝对时间（YYYY-MM-DD HH:MM 格式）！**
+任务类型: reminder=发消息提醒(默认90%)，task=AI 执行操作。
 
-- 系统 prompt 中已给出「当前时间」和「明天日期」，根据这些信息推算用户说的"明天"、"后天"、"下周一"对应的具体日期
-- 用户说"明天晚上7点" → 看 system prompt 中的「明天是 YYYY-MM-DD」→ 填 `run_at: "YYYY-MM-DD 19:00"`
-- 用户说"3分钟后" → 用当前时间 + 3分钟 → 填精确时间
-- **如果无法确定用户想要的具体日期/时间，必须先向用户确认，不要猜测！**
-- 创建后回复中必须明确告知用户设定的**具体日期和时间**（如"2月23日 19:00"），让用户可以核实
-
-## 📢 推送通道规则
-- **默认行为**: 自动推送到用户 **当前正在聊天的 IM 通道**
-- **不需要问用户要 Webhook URL！** 通道已由系统自动配置好
-- 只有用户明确要求推送到 **另一个不同的通道** 时，才设置 target_channel
-
-## 📋 任务类型判断
-✅ **reminder**（默认，90%%）: 只需发送消息的提醒（"提醒我喝水"、"叫我起床"）
-❌ **task**（仅当需要 AI 操作时）: "查询天气告诉我"、"截图发给我"
-
-## 🔧 触发类型（严格区分！）
-- **once**: 一次性提醒（run_at 填绝对时间）—— **"X分钟后提醒我"、"明天8点提醒我" 都是 once！**
-- **interval**: 持续循环重复（"每30分钟提醒我喝水"、"每天提醒我"）—— 仅当用户明确说"每X分钟/每天"时才用
-- **cron**: cron 表达式（"工作日早上9点"）
-
-⚠️ **常见错误**：用户说"5分钟后提醒我" ≠ "每5分钟提醒我"！
-- "5分钟后提醒我洗澡" → trigger_type="once", run_at="当前时间+5分钟"
-- "每5分钟提醒我喝水" → trigger_type="interval", interval_minutes=5
-
-## 📡 target_channel（通常不需要设置！）
-- 默认不传！系统自动用当前 IM 通道
-- 仅当用户明确要求时才设置（如 wework/telegram/dingtalk/feishu/slack）""",
+触发: once=一次性(run_at)，interval=循环(每N分钟/天)，cron=cron 表达式。注意"5分钟后提醒"≠"每5分钟提醒"，前者 once 后者 interval。""",
         "input_schema": {
             "type": "object",
             "properties": {

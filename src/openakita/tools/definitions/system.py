@@ -16,20 +16,12 @@ SYSTEM_TOOLS = [
         "name": "ask_user",
         "category": "System",
         "description": (
-            "Ask the user one or more questions and PAUSE execution until they reply. "
-            "Use when: (1) critical information is missing, (2) task is ambiguous and needs "
-            "clarification, (3) user confirmation is required before proceeding.\n\n"
-            "Do NOT put questions in plain text — only this tool triggers a real pause. "
-            "When questions have choices, ALWAYS provide options. Supports both single-select "
-            "and multi-select via allow_multiple. For multiple related questions, use the "
-            "questions array to ask them all at once.\n\n"
-            "Do NOT ask questions when:\n"
-            "- The task is clear enough to proceed\n"
-            "- You can make a reasonable assumption and proceed\n"
-            "- The question is trivial (e.g., confirming obvious next steps)\n"
-            "- You're in the middle of execution and asking would break flow\n\n"
-            "NEVER put questions in plain text responses — only this tool triggers a real "
-            "pause and waits for user reply. Questions in text will be ignored."
+            "Ask the user questions and PAUSE execution until they reply. "
+            "NEVER put questions in plain text — only this tool triggers a real pause.\n\n"
+            "Use when: info is missing, task is ambiguous, or user confirmation is needed. "
+            "Always provide options when choices exist. Use questions array for multiple questions.\n\n"
+            "Skip: task is clear, reasonable assumption possible, trivial confirmations, "
+            "or mid-execution flow would break."
         ),
         "detail": """向用户提问并暂停执行，等待用户回复。支持单个问题和多个问题。
 

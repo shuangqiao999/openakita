@@ -23,74 +23,20 @@ CONFIG_TOOLS = [
             "ALWAYS use ask_user first to confirm the changes with the user. "
             "If unsure which config key to use, call action=discover first."
         ),
-        "detail": """统一系统配置工具，覆盖所有配置操作。
+        "detail": """统一系统配置工具。
 
-## action 说明
-
-### discover -- 发现可配置项
-列出所有可配置项及其元信息（描述、类型、当前值、默认值）。
-系统新增的配置项会自动出现，无需修改工具代码。
-可通过 category 参数过滤特定分类。
-
-### get -- 查看当前配置
-读取当前配置值，支持按分类或指定 key 查看。
-敏感字段（API Key 等）自动脱敏。
-
-### set -- 修改配置
-更新 .env 文件并热重载到内存。
-- updates 使用**大写环境变量名**作为 key，如 {"LOG_LEVEL": "DEBUG"}
-- 自动做类型校验
-- 只读字段（路径/数据库）会被拒绝
-- 某些字段修改后需重启才能生效，会在响应中标注
-
-### add_endpoint -- 添加 LLM 端点
-根据 provider 自动补全默认 base_url 和 api_type。
-API Key 存入 .env，JSON 中只引用环境变量名。
-添加后自动热重载。
-
-### remove_endpoint -- 删除 LLM 端点
-按名称删除并热重载。
-
-### toggle_endpoint -- 启用/停用 LLM 端点
-按名称切换端点启用状态并热重载。仅在用户明确要求启用或停用某个端点时使用。
-
-### select_endpoint -- 选择当前会话使用的 LLM 端点
-按名称临时切换当前会话的主聊天模型端点，不修改端点配置文件。
-当用户说“切换到某模型/端点”“使用某模型”“改用某端点”时优先使用本 action。
-如果 endpoint_name 为 `auto` / `default` / `默认`，则恢复默认模型选择。
-
-### test_endpoint -- 测试端点连通性
-发送轻量请求验证 API 可达性，返回延迟和状态。
-
-### set_ui -- 设置 UI 偏好
-切换桌面客户端的主题和语言。非 Desktop 通道会提示仅影响桌面端。
-
-### manage_provider -- 管理 LLM 服务商
-管理 LLM 服务商列表（内置 + 自定义）。自定义服务商存储在工作区 data/custom_providers.json。
-- operation=list: 列出所有服务商
-- operation=add: 添加自定义服务商（provider 字段必填: slug, name, api_type, default_base_url）
-- operation=update: 修改服务商配置（可覆盖内置服务商的默认设置）
-- operation=remove: 删除自定义服务商（内置服务商不可删除，但可移除自定义覆盖）
-
-服务商规则:
-- slug: 唯一标识，只允许小写字母、数字、连字符、下划线
-- api_type: 只允许 "openai" 或 "anthropic"
-- default_base_url: 必须以 http:// 或 https:// 开头
-- registry_class: 不填则根据 api_type 自动选择 OpenAIRegistry 或 AnthropicRegistry
-
-### extensions -- 外部扩展模块管理
-查看可选外部 CLI 工具的安装状态、安装/升级命令和致谢信息。
-这些模块无需内嵌打包，由高级用户自行安装，安装后 OpenAkita 自动检测并启用。
-- operation=status: 查看所有外部模块的安装状态和命令
-- operation=credits: 查看致谢信息
-
-## 使用流程
-1. 不确定 key 名 → 先 discover
-2. 查看当前值 → get
-3. 修改前 → 用 ask_user 确认
-4. 确认后 → set / add_endpoint / remove_endpoint / toggle_endpoint / manage_provider
-5. 用户只想切换当前聊天模型 → select_endpoint（无需修改配置）
-""",
+action 说明:
+- discover: 列出所有可配置项，支持 category 过滤
+- get: 读取当前配置值（敏感字段自动脱敏）
+- set: 更新 .env 文件并热重载。key 用大写环境变量名，自动类型校验，只读字段被拒绝
+- add_endpoint: 添加 LLM 端点，自动补全默认 base_url 和 api_type，API Key 存入 .env
+- remove_endpoint: 按名称删除 LLM 端点
+- toggle_endpoint: 按名称启用/停用端点
+- select_endpoint: 临时切换当前会话的聊天模型端点（不改配置文件）。endpoint_name 为 auto/default/默认 时恢复默认
+- test_endpoint: 测试端点连通性，返回延迟和状态
+- set_ui: 切换桌面主题/语言
+- manage_provider: 管理 LLM 服务商列表。list/add/update/remove，slug 只允许小写字母数字连字符，api_type 只允许 openai/anthropic
+- extensions: status=查看外部模块安装状态，credits=致谢信息""",
         "input_schema": {
             "type": "object",
             "properties": {
