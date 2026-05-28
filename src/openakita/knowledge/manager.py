@@ -122,6 +122,7 @@ class KnowledgeBaseManager:
 
         self._lance_db = None
         self._lance_table = None
+        self._lancedb_was_rebuilt = False
         self._embedding_dim: int | None = None
         self._index_lock = threading.Lock()
         self._index_creating = False
@@ -262,6 +263,8 @@ class KnowledgeBaseManager:
         except Exception:
             pass
         return 0
+
+    def _check_lancedb_health(self) -> None:
         """启动时检测 LanceDB 表是否可正常读取。损坏时删表重建。"""
         if self._lance_table is None:
             return
@@ -271,6 +274,7 @@ class KnowledgeBaseManager:
         except Exception as e:
             logger.warning("[KB] LanceDB table corrupted: %s. Dropping and recreating...", e)
             self._lance_table = None
+            self._lancedb_was_rebuilt = True
             try:
                 self._lance_db.drop_table("knowledge_base")
                 logger.info("[KB] Corrupted LanceDB table dropped; will be recreated on next upload. Old documents need re-upload or repair.")
@@ -465,12 +469,21 @@ class KnowledgeBaseManager:
                 conn.commit()
 
     async def _proactive_create_table(self) -> None:
-        """启动时主动创建 LanceDB 表，避免死锁：没表→不能上传→不能建表。"""
+        """启动时主动创建 LanceDB 表，避免死锁：没表→不能上传→不能建表。
+        LanceDB 损坏重建后，自动从 SQLite 恢复所有文档向量。"""
         try:
             dim = await self._get_embedding_dim()
             await asyncio.to_thread(self._create_lance_table, dim)
         except Exception as e:
             logger.warning("[KB] Proactive table creation failed: %s", e)
+            return
+
+        if self._lancedb_was_rebuilt:
+            self._lancedb_was_rebuilt = False
+            try:
+                asyncio.create_task(self._bulk_repair_from_sqlite())
+            except RuntimeError:
+                logger.warning("[KB] No event loop, skipping bulk repair")
 
     def _create_index_if_needed(self) -> None:
         """向量数超阈值时后台创建 IVF_PQ 索引（非阻塞）。"""
@@ -1479,6 +1492,48 @@ class KnowledgeBaseManager:
         if count:
             logger.warning("[KB] Marked %d timed-out processing documents as failed", count)
         return count
+
+    async def _bulk_repair_from_sqlite(self) -> None:
+        """LanceDB 损坏重建后，从 SQLite 批量恢复所有文档的向量索引。
+
+        逐个修复，零容忍：任一分块失败则该文档标记 failed 并跳过。
+        """
+        await asyncio.sleep(3)
+
+        def _get_ready_docs():
+            with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
+                rows = conn.execute(
+                    "SELECT id, name FROM knowledge_documents WHERE status='ready' "
+                    "ORDER BY upload_time"
+                ).fetchall()
+                return [(r[0], r[1]) for r in rows]
+
+        docs = await asyncio.to_thread(_get_ready_docs)
+        if not docs:
+            logger.info("[KB] No documents to repair from SQLite")
+            return
+
+        logger.info("[KB] LanceDB rebuilt: repairing %d documents from SQLite...", len(docs))
+        repaired = 0
+        failed = 0
+        for doc_id, doc_name in docs:
+            try:
+                result = await self.repair_document(doc_id)
+                if result.get("repaired"):
+                    repaired += 1
+                else:
+                    failed += 1
+                    logger.warning(
+                        "[KB] Repair failed for %s (%s): %s",
+                        doc_name, doc_id, result.get("reason", "未知"),
+                    )
+            except Exception as e:
+                failed += 1
+                logger.warning("[KB] Repair exception for %s: %s", doc_id, e)
+        logger.info(
+            "[KB] Bulk repair complete: %d repaired, %d failed out of %d docs",
+            repaired, failed, len(docs),
+        )
 
     async def repair_document(self, doc_id: str) -> dict[str, Any]:
         """修复文档：从 SQLite 分块重建 LanceDB 向量索引。
