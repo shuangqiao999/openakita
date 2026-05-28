@@ -2251,7 +2251,9 @@ fn factory_reset() -> Result<String, String> {
     }
 
     // 清理启动去重窗口记录
-    SERVICE_START_LAST_AT.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    if let Ok(mut m) = SERVICE_START_LAST_AT.lock() {
+        m.clear();
+    }
 
     Ok(msg)
 }
@@ -2747,26 +2749,35 @@ mod win {
 
     /// Safe wrapper: enumerate all running processes, returning (pid, parent_pid, lowercase_exe_name).
     pub fn enumerate_processes() -> Vec<(u32, u32, String)> {
-        let mut result = Vec::new();
         let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
         if snap.is_null() || snap == INVALID_HANDLE_VALUE {
-            return result;
+            return Vec::new();
         }
-        let mut pe: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
-        pe.dw_size = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-        if unsafe { Process32FirstW(snap, &mut pe) } != 0 {
-            loop {
-                let name_end = pe.sz_exe_file.iter().position(|&c| c == 0).unwrap_or(260);
-                let name = String::from_utf16_lossy(&pe.sz_exe_file[..name_end])
-                    .to_ascii_lowercase();
-                result.push((pe.th32_process_id, pe.th32_parent_process_id, name));
-                if unsafe { Process32NextW(snap, &mut pe) } == 0 {
-                    break;
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut result = Vec::new();
+            let mut pe: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+            pe.dw_size = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+            if unsafe { Process32FirstW(snap, &mut pe) } != 0 {
+                loop {
+                    let name_end = pe.sz_exe_file.iter().position(|&c| c == 0).unwrap_or(260);
+                    let name = String::from_utf16_lossy(&pe.sz_exe_file[..name_end])
+                        .to_ascii_lowercase();
+                    result.push((pe.th32_process_id, pe.th32_parent_process_id, name));
+                    if unsafe { Process32NextW(snap, &mut pe) } == 0 {
+                        break;
+                    }
                 }
             }
-        }
+            result
+        }));
+
         unsafe { CloseHandle(snap); }
-        result
+
+        match result {
+            Ok(v) => v,
+            Err(_) => Vec::new(),
+        }
     }
 }
 
@@ -3870,11 +3881,7 @@ fn main() {
         eprintln!("{msg}");
         write_crash_log(&msg, true);
         let panic_str = info.to_string();
-        if panic_str.contains("cannot move state from Destroyed")
-            || panic_str.contains("tao") && panic_str.contains("Destroyed")
-        {
-            try_self_heal_relaunch(&panic_str);
-        }
+        try_self_heal_relaunch(&panic_str);
         default_hook(info);
     }));
 
@@ -4131,98 +4138,101 @@ fn main() {
                     let mut last_starting_log_at: u64 = 0;
                     loop {
                         std::thread::sleep(std::time::Duration::from_secs(5));
-                        let state_snap = read_state_file();
-                        let ws_id = match state_snap.current_workspace_id {
-                            Some(s) => s,
-                            None => continue,
-                        };
-                        let port = read_workspace_api_port(&ws_id).unwrap_or(DEFAULT_API_PORT);
-                        let healthy = is_backend_http_healthy(Some(port));
-                        if healthy {
-                            consecutive_failures = 0;
-                            if last_status_was_healthy != Some(true) {
-                                let _ = app_handle.emit(
-                                    "backend:status",
-                                    serde_json::json!({"healthy": true, "port": port}),
-                                );
-                                if last_status_was_healthy == Some(false) {
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            let state_snap = read_state_file();
+                            let ws_id = match state_snap.current_workspace_id {
+                                Some(s) => s,
+                                None => return,
+                            };
+                            let port = read_workspace_api_port(&ws_id).unwrap_or(DEFAULT_API_PORT);
+                            let healthy = is_backend_http_healthy(Some(port));
+                            if healthy {
+                                consecutive_failures = 0;
+                                if last_status_was_healthy != Some(true) {
                                     let _ = app_handle.emit(
-                                        "backend:back",
-                                        serde_json::json!({"port": port}),
+                                        "backend:status",
+                                        serde_json::json!({"healthy": true, "port": port}),
                                     );
+                                    if last_status_was_healthy == Some(false) {
+                                        let _ = app_handle.emit(
+                                            "backend:back",
+                                            serde_json::json!({"port": port}),
+                                        );
+                                    }
+                                    last_status_was_healthy = Some(true);
                                 }
-                                last_status_was_healthy = Some(true);
+                                return;
                             }
-                            continue;
-                        }
 
-                        if backend_in_boot_grace(&ws_id) {
-                            let now = now_epoch_secs();
-                            if now.saturating_sub(last_starting_log_at) >= 30 {
-                                log_to_file(&format!(
-                                    "[heartbeat] backend in boot-grace (port={}) — skipping down/spawn",
-                                    port
-                                ));
+                            if backend_in_boot_grace(&ws_id) {
+                                let now = now_epoch_secs();
+                                if now.saturating_sub(last_starting_log_at) >= 30 {
+                                    log_to_file(&format!(
+                                        "[heartbeat] backend in boot-grace (port={}) — skipping down/spawn",
+                                        port
+                                    ));
+                                    let _ = app_handle.emit(
+                                        "backend:status",
+                                        serde_json::json!({"healthy": false, "starting": true, "port": port}),
+                                    );
+                                    last_starting_log_at = now;
+                                }
+                                consecutive_failures = 0;
+                                return;
+                            }
+
+                            consecutive_failures = consecutive_failures.saturating_add(1);
+                            if consecutive_failures < 3 {
+                                return;
+                            }
+                            if last_status_was_healthy != Some(false) {
                                 let _ = app_handle.emit(
-                                    "backend:status",
-                                    serde_json::json!({"healthy": false, "starting": true, "port": port}),
+                                    "backend:lost",
+                                    serde_json::json!({
+                                        "port": port,
+                                        "consecutive_failures": consecutive_failures,
+                                    }),
                                 );
-                                last_starting_log_at = now;
+                                log_to_file(&format!(
+                                    "[heartbeat] backend down for {}s, attempting auto spawn (port={})",
+                                    consecutive_failures * 5,
+                                    port,
+                                ));
+                                last_status_was_healthy = Some(false);
                             }
-                            consecutive_failures = 0;
-                            continue;
-                        }
-
-                        consecutive_failures = consecutive_failures.saturating_add(1);
-                        if consecutive_failures < 3 {
-                            continue;
-                        }
-                        if last_status_was_healthy != Some(false) {
-                            let _ = app_handle.emit(
-                                "backend:lost",
-                                serde_json::json!({
-                                    "port": port,
-                                    "consecutive_failures": consecutive_failures,
-                                }),
-                            );
-                            log_to_file(&format!(
-                                "[heartbeat] backend down for {}s, attempting auto spawn (port={})",
-                                consecutive_failures * 5,
-                                port,
-                            ));
-                            last_status_was_healthy = Some(false);
-                        }
-                        // 原子 compare_exchange：同时在一次操作中检查并设置，
-                        // 避免 TOCTOU 窗口期内的重复 spawn。
-                        if AUTO_START_IN_PROGRESS
-                            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-                            .is_err()
-                        {
-                            continue;
-                        }
-                        let check_result = startup_version_check(&hb_version, port);
-                        let need_start = !matches!(check_result, VersionCheckResult::RunningOk);
-                        if !need_start {
+                            if AUTO_START_IN_PROGRESS
+                                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                                .is_err()
+                            {
+                                return;
+                            }
+                            let check_result = startup_version_check(&hb_version, port);
+                            let need_start = !matches!(check_result, VersionCheckResult::RunningOk);
+                            if !need_start {
+                                AUTO_START_IN_PROGRESS.store(false, Ordering::Release);
+                                consecutive_failures = 0;
+                                return;
+                            }
+                            AUTO_START_STARTED_AT_MS.store(now_ms(), Ordering::Release);
+                            let venv_dir = openakita_root_dir()
+                                .join("venv")
+                                .to_string_lossy()
+                                .to_string();
+                            let ws_clone = ws_id.clone();
+                            match openakita_service_start_impl(venv_dir, ws_clone) {
+                                Ok(status) => log_to_file(&format!(
+                                    "[heartbeat] auto-spawn returned: running={}, pid={:?}",
+                                    status.running, status.pid
+                                )),
+                                Err(e) => log_to_file(&format!("[heartbeat] auto-spawn FAILED: {}", e)),
+                            }
                             AUTO_START_IN_PROGRESS.store(false, Ordering::Release);
+                            AUTO_START_STARTED_AT_MS.store(0, Ordering::Release);
                             consecutive_failures = 0;
-                            continue;
+                        }));
+                        if result.is_err() {
+                            log_to_file("[heartbeat] iteration panicked, continuing in 5s");
                         }
-                        AUTO_START_STARTED_AT_MS.store(now_ms(), Ordering::Release);
-                        let venv_dir = openakita_root_dir()
-                            .join("venv")
-                            .to_string_lossy()
-                            .to_string();
-                        let ws_clone = ws_id.clone();
-                        match openakita_service_start_impl(venv_dir, ws_clone) {
-                            Ok(status) => log_to_file(&format!(
-                                "[heartbeat] auto-spawn returned: running={}, pid={:?}",
-                                status.running, status.pid
-                            )),
-                            Err(e) => log_to_file(&format!("[heartbeat] auto-spawn FAILED: {}", e)),
-                        }
-                        AUTO_START_IN_PROGRESS.store(false, Ordering::Release);
-                        AUTO_START_STARTED_AT_MS.store(0, Ordering::Release);
-                        consecutive_failures = 0;
                     }
                 });
             }
@@ -4460,18 +4470,19 @@ fn openakita_service_status(workspace_id: String) -> Result<ServiceStatus, Strin
 
     // ── 1. 优先用 MANAGED_CHILDREN（精确 try_wait）──
     {
-        let mut guard = MANAGED_CHILDREN.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(mp) = guard.get_mut(&workspace_id) {
-            match mp.child.try_wait() {
-                Ok(None) => {
-                    return Ok(build_service_status(&workspace_id, true, Some(mp.pid), pf));
-                }
-                _ => {
-                    // 进程已退出，清理 handle、PID 文件和心跳文件
-                    guard.remove(&workspace_id);
-                    let _ = fs::remove_file(&pid_file);
-                    remove_heartbeat_file(&workspace_id);
-                    return Ok(build_service_status(&workspace_id, false, None, pf));
+        if let Ok(mut guard) = MANAGED_CHILDREN.lock() {
+            if let Some(mp) = guard.get_mut(&workspace_id) {
+                match mp.child.try_wait() {
+                    Ok(None) => {
+                        return Ok(build_service_status(&workspace_id, true, Some(mp.pid), pf));
+                    }
+                    _ => {
+                        // 进程已退出，清理 handle、PID 文件和心跳文件
+                        guard.remove(&workspace_id);
+                        let _ = fs::remove_file(&pid_file);
+                        remove_heartbeat_file(&workspace_id);
+                        return Ok(build_service_status(&workspace_id, false, None, pf));
+                    }
                 }
             }
         }
@@ -4504,16 +4515,17 @@ fn openakita_service_status(workspace_id: String) -> Result<ServiceStatus, Strin
 fn openakita_check_pid_alive(workspace_id: String) -> Result<bool, String> {
     // 优先 MANAGED_CHILDREN（由 Tauri 直接管理的子进程，不需要额外校验身份）
     {
-        let mut guard = MANAGED_CHILDREN.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(mp) = guard.get_mut(&workspace_id) {
-            let alive = mp.child.try_wait().ok().flatten().is_none();
-            if !alive {
-                // 进程已退出，清理
-                guard.remove(&workspace_id);
-                let _ = fs::remove_file(service_pid_file(&workspace_id));
-                remove_heartbeat_file(&workspace_id);
+        if let Ok(mut guard) = MANAGED_CHILDREN.lock() {
+            if let Some(mp) = guard.get_mut(&workspace_id) {
+                let alive = mp.child.try_wait().ok().flatten().is_none();
+                if !alive {
+                    // 进程已退出，清理
+                    guard.remove(&workspace_id);
+                    let _ = fs::remove_file(service_pid_file(&workspace_id));
+                    remove_heartbeat_file(&workspace_id);
+                }
+                return Ok(alive);
             }
-            return Ok(alive);
         }
     }
     // 回退到 PID 文件：检查 PID 存活 + 验证进程身份
@@ -4808,25 +4820,26 @@ fn openakita_service_start_impl(
     // 短暂失效窗，需要在更外层加一层时间窗去重。命中时直接返回当前已知
     // ServiceStatus（让前端继续轮询 health 即可），不抛错避免触发 toast。
     {
-        let mut last_map = SERVICE_START_LAST_AT.lock().unwrap_or_else(|e| e.into_inner());
-        let now = now_ms();
-        if let Some(&last) = last_map.get(&workspace_id) {
-            let elapsed = now.saturating_sub(last);
-            if elapsed < SERVICE_START_DEDUPE_MS {
-                log_to_file(&format!(
-                    "[service_start] dedupe-skip ws={} elapsed_ms={}",
-                    workspace_id, elapsed
-                ));
-                let pid_file = service_pid_file(&workspace_id);
-                let pf = pid_file.to_string_lossy().to_string();
-                let pid_opt = read_pid_file(&workspace_id).map(|d| d.pid);
-                let running = read_pid_file(&workspace_id)
-                    .map(|d| is_pid_file_valid(&d))
-                    .unwrap_or(false);
-                return Ok(build_service_status(&workspace_id, running, pid_opt, pf));
+        if let Ok(mut last_map) = SERVICE_START_LAST_AT.lock() {
+            let now = now_ms();
+            if let Some(&last) = last_map.get(&workspace_id) {
+                let elapsed = now.saturating_sub(last);
+                if elapsed < SERVICE_START_DEDUPE_MS {
+                    log_to_file(&format!(
+                        "[service_start] dedupe-skip ws={} elapsed_ms={}",
+                        workspace_id, elapsed
+                    ));
+                    let pid_file = service_pid_file(&workspace_id);
+                    let pf = pid_file.to_string_lossy().to_string();
+                    let pid_opt = read_pid_file(&workspace_id).map(|d| d.pid);
+                    let running = read_pid_file(&workspace_id)
+                        .map(|d| is_pid_file_valid(&d))
+                        .unwrap_or(false);
+                    return Ok(build_service_status(&workspace_id, running, pid_opt, pf));
+                }
             }
+            last_map.insert(workspace_id.clone(), now);
         }
-        last_map.insert(workspace_id.clone(), now);
     }
 
     fs::create_dir_all(run_dir()).map_err(|e| {
@@ -4856,14 +4869,15 @@ fn openakita_service_start_impl(
     // ── 1. 检查是否已在运行（通过 MANAGED_CHILDREN 或 PID 文件）──
     // 在锁内重新检查，防止并发调用的时间窗口内另一个线程已经 spawn 成功。
     {
-        let mut guard = MANAGED_CHILDREN.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(mp) = guard.get_mut(&workspace_id) {
-            match mp.child.try_wait() {
-                Ok(None) => {
-                    return Ok(build_service_status(&workspace_id, true, Some(mp.pid), pf));
-                }
-                _ => {
-                    guard.remove(&workspace_id);
+        if let Ok(mut guard) = MANAGED_CHILDREN.lock() {
+            if let Some(mp) = guard.get_mut(&workspace_id) {
+                match mp.child.try_wait() {
+                    Ok(None) => {
+                        return Ok(build_service_status(&workspace_id, true, Some(mp.pid), pf));
+                    }
+                    _ => {
+                        guard.remove(&workspace_id);
+                    }
                 }
             }
         }
@@ -5037,14 +5051,15 @@ fn openakita_service_start_impl(
 
     // ── 4. 存入 MANAGED_CHILDREN ──
     {
-        let mut guard = MANAGED_CHILDREN.lock().unwrap_or_else(|e| e.into_inner());
-        guard.insert(
-            workspace_id.clone(),
-            ManagedProcess {
-                child,
-                pid,
-            },
-        );
+        if let Ok(mut guard) = MANAGED_CHILDREN.lock() {
+            guard.insert(
+                workspace_id.clone(),
+                ManagedProcess {
+                    child,
+                    pid,
+                },
+            );
+        }
     }
 
     // Confirm the process is still alive after spawning.
@@ -5063,8 +5078,9 @@ fn openakita_service_start_impl(
     }
     if !alive {
         {
-            let mut guard = MANAGED_CHILDREN.lock().unwrap_or_else(|e| e.into_inner());
-            guard.retain(|_, mp| mp.pid != pid);
+            if let Ok(mut guard) = MANAGED_CHILDREN.lock() {
+                guard.retain(|_, mp| mp.pid != pid);
+            }
         }
         let _ = fs::remove_file(&pid_file);
         let tail = fs::read_to_string(&log_path)
@@ -5099,8 +5115,8 @@ fn openakita_service_stop(workspace_id: String) -> Result<ServiceStatus, String>
 
     // ── 1. MANAGED_CHILDREN handle ──
     {
-        let mut guard = MANAGED_CHILDREN.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(mut mp) = guard.remove(&workspace_id) {
+        if let Ok(mut guard) = MANAGED_CHILDREN.lock() {
+            if let Some(mut mp) = guard.remove(&workspace_id) {
             let _ = graceful_stop_pid(mp.pid, port);
             if is_pid_running(mp.pid) {
                 let _ = mp.child.kill();
@@ -5116,6 +5132,7 @@ fn openakita_service_stop(workspace_id: String) -> Result<ServiceStatus, String>
                 None,
                 pid_file.to_string_lossy().to_string(),
             ));
+        }
         }
     }
 
@@ -5441,15 +5458,16 @@ fn setup_tray(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
                 // 1. 先停 MANAGED_CHILDREN（Tauri 自己启动的进程）
                 {
-                    let mut guard = MANAGED_CHILDREN.lock().unwrap_or_else(|e| e.into_inner());
-                    for (ws_id, mut mp) in guard.drain() {
-                        let port = read_workspace_api_port(&ws_id);
-                        let _ = graceful_stop_pid(mp.pid, port);
-                        if is_pid_running(mp.pid) {
-                            let _ = mp.child.kill();
-                            let _ = mp.child.wait();
+                    if let Ok(mut guard) = MANAGED_CHILDREN.lock() {
+                        for (ws_id, mut mp) in guard.drain() {
+                            let port = read_workspace_api_port(&ws_id);
+                            let _ = graceful_stop_pid(mp.pid, port);
+                            if is_pid_running(mp.pid) {
+                                let _ = mp.child.kill();
+                                let _ = mp.child.wait();
+                            }
+                            let _ = fs::remove_file(service_pid_file(&ws_id));
                         }
-                        let _ = fs::remove_file(service_pid_file(&ws_id));
                     }
                 }
 
