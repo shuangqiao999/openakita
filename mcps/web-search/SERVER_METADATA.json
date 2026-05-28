@@ -1,8 +1,0 @@
-{
-    "serverIdentifier": "web-search",
-    "serverName": "Web Search (6引擎并行)",
-    "serverDescription": "六引擎并行搜索 (Bing/百度/360/搜狗/神马/头条)，DDG 兜底，支持网页搜索和新闻搜索，无需 API Key",
-    "command": "python",
-    "args": ["-m", "openakita.mcp_servers.web_search"]
-}
-
