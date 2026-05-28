@@ -403,6 +403,33 @@ class Settings(BaseSettings):
         description="嵌入模型名称 (如 text-embedding-3-small, BAAI/bge-small-zh)",
     )
 
+    # === 知识库嵌入性能调优 (Knowledge Base Embedding Tuning) ===
+    kb_embed_batch_size: int = Field(
+        default=20,
+        ge=1, le=100,
+        description="KB 嵌入每批分块数 (本地模型建议 10-30，OpenAI API 可设 50-100)",
+    )
+    kb_embed_max_concurrent: int = Field(
+        default=4,
+        ge=1, le=8,
+        description="KB 嵌入最大并发请求数 (LM Studio 支持 4，Ollama 建议 1-2，OpenAI API 可设 8)",
+    )
+    kb_embed_max_retries: int = Field(
+        default=3,
+        ge=0, le=10,
+        description="KB 嵌入单批最大重试次数",
+    )
+    kb_embed_batch_delay: float = Field(
+        default=0.0,
+        ge=0.0, le=5.0,
+        description="KB 嵌入批次间隔秒 (本地模型可设 0.02-0.1 节流，API 设 0)",
+    )
+    kb_embed_chunk_truncate: int = Field(
+        default=600,
+        ge=100, le=4000,
+        description="KB 嵌入前单块最大字符数 (2K token 模型 600，8K+ 模型 2000)",
+    )
+
     # === 记忆系统配置 ===
     memory_history_days: int = Field(default=30, description="记忆保留天数")
     memory_max_history_files: int = Field(default=1000, description="最大历史文件数")

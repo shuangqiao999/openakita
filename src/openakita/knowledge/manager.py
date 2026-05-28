@@ -38,15 +38,36 @@ _KB_ALLOWED_EXTENSIONS = {
     ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".xml", ".env", ".properties", ".editorconfig",
 }
 
-_KB_EMBED_BATCH_SIZE = 20  # 每批发送给嵌入模型的文本数（本地模型安全上限）
-_KB_EMBED_CHUNK_TRUNCATE = 600  # 嵌入前单块最大字符数（适配 2048 token 本地模型）
-_KB_EMBED_MAX_RETRIES = 3  # 单批最大重试次数
-_KB_EMBED_BATCH_DELAY = 0.05  # 批次间隔秒（本地模型节流）
-_KB_EMBED_MAX_CONCURRENT = 1  # 最大并发嵌入请求数（本地模型串行执行）
+_KB_EMBED_BATCH_SIZE = 20  # 每批发送给嵌入模型的文本数（.env: KB_EMBED_BATCH_SIZE）
+_KB_EMBED_CHUNK_TRUNCATE = 600  # 嵌入前单块最大字符数（.env: KB_EMBED_CHUNK_TRUNCATE）
+_KB_EMBED_MAX_RETRIES = 3  # 单批最大重试次数（.env: KB_EMBED_MAX_RETRIES）
+_KB_EMBED_BATCH_DELAY = 0.0  # 批次间隔秒（.env: KB_EMBED_BATCH_DELAY）
+_KB_EMBED_MAX_CONCURRENT = 4  # 最大并发嵌入请求数（.env: KB_EMBED_MAX_CONCURRENT）
 _KB_INDEX_MIN_ROWS = 1000     # 向量数超此阈值后自动创建索引
 _KB_FTS_MIN_ROWS = 10         # 向量数超此阈值后自动创建 FTS 索引
 _KB_RRF_K = 60                # RRF 倒数排名融合常数
 _SEMANTIC_CACHE_MAX_SIZE = 200  # 语义边缓存最大条目数
+
+
+def _load_embed_settings() -> None:
+    """从 config.settings 加载知识库嵌入参数，覆盖模块级默认值。
+
+    无法导入或无字段时保持硬编码默认值，确保向后兼容。
+    """
+    global _KB_EMBED_BATCH_SIZE, _KB_EMBED_CHUNK_TRUNCATE
+    global _KB_EMBED_MAX_RETRIES, _KB_EMBED_BATCH_DELAY, _KB_EMBED_MAX_CONCURRENT
+    try:
+        from openakita.config import settings
+        _KB_EMBED_BATCH_SIZE = getattr(settings, "kb_embed_batch_size", _KB_EMBED_BATCH_SIZE)
+        _KB_EMBED_CHUNK_TRUNCATE = getattr(settings, "kb_embed_chunk_truncate", _KB_EMBED_CHUNK_TRUNCATE)
+        _KB_EMBED_MAX_RETRIES = getattr(settings, "kb_embed_max_retries", _KB_EMBED_MAX_RETRIES)
+        _KB_EMBED_BATCH_DELAY = getattr(settings, "kb_embed_batch_delay", _KB_EMBED_BATCH_DELAY)
+        _KB_EMBED_MAX_CONCURRENT = getattr(settings, "kb_embed_max_concurrent", _KB_EMBED_MAX_CONCURRENT)
+    except Exception:
+        pass
+
+
+_load_embed_settings()
 
 
 def _segment_text(text: str) -> str:
