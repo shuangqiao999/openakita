@@ -230,6 +230,7 @@ class KnowledgeBaseManager:
         self._ensure_lance_table()
         self._migrate_schema_if_needed()
         self._create_fts_index_if_needed()
+        self._check_lancedb_health()
         if self._lance_table is None and self.is_ready():
             try:
                 self._proactive_task = asyncio.create_task(self._proactive_create_table())
@@ -244,6 +245,17 @@ class KnowledgeBaseManager:
             self._lance_table = self._lance_db.open_table("knowledge_base")
             if self._lance_table.count_rows() > 0:
                 logger.info("[KB] Opened existing knowledge_base table")
+
+    def _check_lancedb_health(self) -> None:
+        """启动时检测 LanceDB 表是否可正常读取。损坏时标记为不可用。"""
+        if self._lance_table is None:
+            return
+        try:
+            total = self._lance_table.count_rows()
+            logger.info("[KB] LanceDB health check: %d rows OK", total)
+        except Exception as e:
+            logger.warning("[KB] LanceDB table may be corrupted: %s. Marking as unavailable.", e)
+            self._lance_table = None
 
     def _migrate_schema_if_needed(self) -> None:
         if self._lance_table is None:
@@ -620,6 +632,14 @@ class KnowledgeBaseManager:
                 conn.execute("UPDATE knowledge_documents SET total_chunks=0 WHERE id=?", (doc_id,))
                 conn.commit()
             raise
+
+        written = await asyncio.to_thread(
+            lambda: self._lance_table.count_rows(f"document_id = '{self._safe_lance_id(doc_id)}'")
+        )
+        if written != len(chunks):
+            raise RuntimeError(
+                f"LanceDB write incomplete: expected {len(chunks)} vectors, got {written}"
+            )
 
         self._sync_fts5_for_document(doc_id)
 
@@ -1480,6 +1500,18 @@ class KnowledgeBaseManager:
                 conn.commit()
             return {"repaired": False, "reason": f"LanceDB写入失败: {e!s:200}"}
 
+        written = await asyncio.to_thread(
+            lambda: self._lance_table.count_rows(f"document_id = '{self._safe_lance_id(doc_id)}'")
+        )
+        if written != len(chunks):
+            with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
+                conn.execute(
+                    "UPDATE knowledge_documents SET status='failed', error_msg=? WHERE id=?",
+                    (f"LanceDB write incomplete: expected {len(chunks)} vectors, got {written}", doc_id),
+                )
+                conn.commit()
+            return {"repaired": False, "reason": f"写入不完整: expected {len(chunks)}, got {written}"}
+
         self._sync_fts5_for_document(doc_id)
 
         self._create_index_if_needed()
@@ -1643,7 +1675,8 @@ class KnowledgeBaseManager:
             lance_count = await asyncio.to_thread(
                 lambda: self._lance_table.count_rows(f"document_id = '{safe_id}'")
             )
-        except Exception:
+        except Exception as e:
+            logger.warning("[KB] LanceDB count_rows failed for %s: %s", doc_id, e)
             return False
 
         if chunk_count != lance_count:
