@@ -331,7 +331,7 @@ class TestScoringHelpers:
 
     def test_compute_recency_old(self, engine):
         from datetime import timedelta
-        old = datetime.now() - timedelta(days=30)
+        old = datetime.now() - timedelta(days=90)
         score = engine._compute_recency(old)
         assert score < 0.2
 

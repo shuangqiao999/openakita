@@ -9535,6 +9535,22 @@ class Agent:
         except Exception as e:
             logger.warning(f"Failed to await memory pending tasks: {e}")
 
+        # 关闭知识库管理器（compact LanceDB 防止 Windows 重启后数据丢失）
+        kb_mgr = getattr(self, "kb_manager", None)
+        if kb_mgr is not None and hasattr(kb_mgr, "close"):
+            try:
+                kb_mgr.close()
+            except Exception as e:
+                logger.warning(f"KB manager close failed: {e}")
+
+        # 关闭记忆系统的 LanceDB 后端
+        mem_mgr = getattr(self, "memory_manager", None)
+        if mem_mgr is not None and hasattr(mem_mgr, "close"):
+            try:
+                mem_mgr.close()
+            except Exception as e:
+                logger.warning(f"Memory manager close failed: {e}")
+
         # Flush TodoStore 并停止防抖循环
         try:
             todo_save_task = getattr(self, "_todo_save_task", None)

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import hashlib
 import logging
 import os
@@ -245,17 +246,36 @@ class KnowledgeBaseManager:
             self._lance_table = self._lance_db.open_table("knowledge_base")
             if self._lance_table.count_rows() > 0:
                 logger.info("[KB] Opened existing knowledge_base table")
+            self._embedding_dim = self._read_table_vector_dim()
 
-    def _check_lancedb_health(self) -> None:
-        """启动时检测 LanceDB 表是否可正常读取。损坏时标记为不可用。"""
+    def _read_table_vector_dim(self) -> int:
+        """从 LanceDB 表 schema 读取向量维度，失败返回 0。"""
+        if self._lance_table is None:
+            return 0
+        try:
+            schema = self._lance_table.schema
+            vec_field = schema.field("vector")
+            if vec_field is not None:
+                dim = getattr(vec_field.type, "list_size", 0)
+                if dim > 0:
+                    return dim
+        except Exception:
+            pass
+        return 0
+        """启动时检测 LanceDB 表是否可正常读取。损坏时删表重建。"""
         if self._lance_table is None:
             return
         try:
             total = self._lance_table.count_rows()
             logger.info("[KB] LanceDB health check: %d rows OK", total)
         except Exception as e:
-            logger.warning("[KB] LanceDB table may be corrupted: %s. Marking as unavailable.", e)
+            logger.warning("[KB] LanceDB table corrupted: %s. Dropping and recreating...", e)
             self._lance_table = None
+            try:
+                self._lance_db.drop_table("knowledge_base")
+                logger.info("[KB] Corrupted LanceDB table dropped; will be recreated on next upload. Old documents need re-upload or repair.")
+            except Exception as de:
+                logger.warning("[KB] Failed to drop corrupted table: %s", de)
 
     def _migrate_schema_if_needed(self) -> None:
         if self._lance_table is None:
@@ -633,6 +653,8 @@ class KnowledgeBaseManager:
                 conn.commit()
             raise
 
+        await asyncio.to_thread(self._flush_lance_table)
+
         written = await asyncio.to_thread(
             lambda: self._lance_table.count_rows(f"document_id = '{self._safe_lance_id(doc_id)}'")
         )
@@ -768,6 +790,20 @@ class KnowledgeBaseManager:
         for batch_idx, vecs in results:
             vectors.extend(vecs)
             logger.info("[KB] Doc %s: embedded %d/%d batches", doc_id, batch_idx + 1, total_batches)
+
+        if dim <= 0:
+            raise EmbeddingFailedError("无法获取嵌入向量维度，所有批次维度均为 0")
+
+        expected = self._embedding_dim
+        if expected and expected > 0 and dim != expected:
+            raise EmbeddingFailedError(
+                f"嵌入维度不匹配: 模型输出 dim={dim}, LanceDB 表 dim={expected}。"
+                f" LM Studio embedding 模型可能已变更维度，"
+                f"请删除 data/lancedb/ 后重启以重建向量库。"
+            )
+
+        if not self._embedding_dim:
+            self._embedding_dim = dim
 
         return vectors, dim
 
@@ -1500,6 +1536,8 @@ class KnowledgeBaseManager:
                 conn.commit()
             return {"repaired": False, "reason": f"LanceDB写入失败: {e!s:200}"}
 
+        await asyncio.to_thread(self._flush_lance_table)
+
         written = await asyncio.to_thread(
             lambda: self._lance_table.count_rows(f"document_id = '{self._safe_lance_id(doc_id)}'")
         )
@@ -1689,7 +1727,13 @@ class KnowledgeBaseManager:
             return True
 
         try:
-            dummy_vec = [0.0] * (self._embedding_dim or 1024)
+            table_dim = self._read_table_vector_dim()
+            if table_dim <= 0:
+                logger.warning("[KB] Cannot get LanceDB vector dim for doc %s", doc_id)
+                self._embedding_dim = None
+                return False
+            self._embedding_dim = table_dim
+            dummy_vec = [0.0] * table_dim
             sample_rows = await asyncio.to_thread(
                 lambda: self._lance_table.search(dummy_vec)
                 .where(f"document_id = '{safe_id}'")
@@ -1913,3 +1957,39 @@ class KnowledgeBaseManager:
                 ],
             },
         }
+
+    def _flush_lance_table(self) -> None:
+        """每次 add 后调用，立即清理旧版本确保数据持久化到磁盘。"""
+        table = self._lance_table
+        if table is None:
+            return
+        for method_name in ("cleanup_old_versions",):
+            fn = getattr(table, method_name, None)
+            if fn is None:
+                continue
+            try:
+                fn()
+            except Exception as e:
+                logger.debug("[KB] LanceDB %s skipped: %s", method_name, e)
+
+    def close(self) -> None:
+        """关闭 LanceDB 连接并 compact 数据文件，防止 Windows 重启后损坏。"""
+        table = self._lance_table
+        if table is not None:
+            for method_name in ("optimize", "compact_files", "cleanup_old_versions"):
+                fn = getattr(table, method_name, None)
+                if fn is None:
+                    continue
+                try:
+                    fn()
+                    logger.info("[KB] LanceDB %s completed", method_name)
+                except Exception as e:
+                    logger.debug("[KB] LanceDB %s skipped: %s", method_name, e)
+            self._lance_table = None
+        if self._lance_db is not None:
+            try:
+                self._lance_db = None
+            except Exception:
+                pass
+        gc.collect()
+        logger.info("[KB] LanceDB connection closed")

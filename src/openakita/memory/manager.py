@@ -2062,3 +2062,11 @@ class MemoryManager:
         """Reset per-session extraction counters (called from start_session)."""
         self.recent_new_count = 0
         self.recent_updated_count = 0
+
+    def close(self) -> None:
+        """关闭 MemoryManager 的 LanceDB 连接，compact 数据文件。"""
+        if hasattr(self, "store") and hasattr(self.store, "close"):
+            try:
+                self.store.close()
+            except Exception:
+                pass

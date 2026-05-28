@@ -1155,6 +1155,19 @@ async def stop_im_channels(*, graceful: bool = True, drain_timeout: float = 30.0
         logger.info("SessionManager stopped")
 
 
+def _close_lancedb_managers(agent):
+    """关闭 agent 的 KB manager 和 memory manager 的 LanceDB 连接。"""
+    if agent is None:
+        return
+    for attr_name in ("kb_manager", "memory_manager"):
+        mgr = getattr(agent, attr_name, None)
+        if mgr is not None and hasattr(mgr, "close"):
+            try:
+                mgr.close()
+            except Exception:
+                pass
+
+
 def print_welcome():
     """打印欢迎信息"""
     welcome_text = """
@@ -2385,6 +2398,8 @@ def serve(
                             await asyncio.wait_for(api_task, timeout=2.0)
                         except (asyncio.CancelledError, TimeoutError):
                             pass
+                    # 关闭 LanceDB 连接（compact 数据文件，防止 Windows 重启后损坏）
+                    _close_lancedb_managers(agent_or_master)
                     await asyncio.wait_for(
                         stop_im_channels(graceful=True, drain_timeout=30.0),
                         timeout=35.0,

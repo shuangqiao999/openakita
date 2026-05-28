@@ -685,4 +685,9 @@ class UnifiedStore:
         }
 
     def close(self) -> None:
+        if hasattr(self, "search") and hasattr(self.search, "close"):
+            try:
+                self.search.close()
+            except Exception:
+                pass
         self.db.close()

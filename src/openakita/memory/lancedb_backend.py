@@ -17,6 +17,7 @@ LanceDB Python SDK 核心 API:
 
 from __future__ import annotations
 
+import gc
 import json
 import logging
 import math
@@ -164,13 +165,28 @@ class LanceDBBackend:
                 self._table = db.open_table(self._table_name())
                 self._embedding_dim = self._read_table_dim()
                 self._enabled = True
-                logger.info(
-                    "[LanceDBBackend] Opened existing table: dim=%d, rows=%d",
-                    self._embedding_dim,
-                    self._table.count_rows(),
-                )
-                self._create_index_async()
-                self._create_fts_index_async()
+                try:
+                    total = self._table.count_rows()
+                    logger.info(
+                        "[LanceDBBackend] Opened existing table: dim=%d, rows=%d",
+                        self._embedding_dim,
+                        total,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "[LanceDBBackend] Table corrupted: %s. Dropping and will rebuild.", e
+                    )
+                    self._table = None
+                    self._enabled = False
+                    try:
+                        db.drop_table(self._table_name())
+                    except Exception:
+                        pass
+                    if embedding_dim > 0:
+                        self._ensure_table(embedding_dim)
+                else:
+                    self._create_index_async()
+                    self._create_fts_index_async()
             elif embedding_dim > 0:
                 self._ensure_table(embedding_dim)
             else:
@@ -618,6 +634,19 @@ class LanceDBBackend:
 
         self._mark_embedding_ok()
 
+        if vec is not None and len(vec) != vec_dim:
+            logger.warning(
+                "[LanceDBBackend] Embedding dim mismatch: expected %d, got %d",
+                vec_dim, len(vec),
+            )
+            vec_dim = len(vec)
+
+        if self._table is not None and vec_dim != self._embedding_dim:
+            logger.warning(
+                "[LanceDBBackend] Dim mismatch with existing table: vector=%d, table=%d",
+                vec_dim, self._embedding_dim,
+            )
+
         with self._lock:
             if self._table is None and vec_dim > 0:
                 try:
@@ -637,6 +666,7 @@ class LanceDBBackend:
                     "content": content,
                     "metadata": meta_str,
                 }])
+                self._flush_table()
                 self._create_index_async()
                 self._create_fts_index_async()
                 return True
@@ -681,6 +711,14 @@ class LanceDBBackend:
         self._mark_embedding_ok()
 
         vec_dim = getattr(embedder, "dimension", 0) or 0
+        if vecs and vec_dim <= 0:
+            vec_dim = len(vecs[0])
+        if vecs and vec_dim != len(vecs[0]):
+            logger.warning(
+                "[LanceDBBackend] Embedding dim mismatch in batch: declared=%d, actual=%d",
+                vec_dim, len(vecs[0]),
+            )
+            vec_dim = len(vecs[0])
 
         with self._lock:
             if self._table is None and vec_dim > 0:
@@ -709,6 +747,7 @@ class LanceDBBackend:
                     })
                 if rows:
                     self._table.add(rows)
+                    self._flush_table()
                 self._create_index_async()
                 self._create_fts_index_async()
                 return len(rows)
@@ -769,3 +808,40 @@ class LanceDBBackend:
         except Exception as e:
             logger.warning(f"[LanceDBBackend] delete_not_in failed: {e}")
             return 0
+
+    def _flush_table(self) -> None:
+        """每次 add 后调用，立即清理旧版本确保数据持久化到磁盘。"""
+        table = self._table
+        if table is None:
+            return
+        for method_name in ("cleanup_old_versions",):
+            fn = getattr(table, method_name, None)
+            if fn is None:
+                continue
+            try:
+                fn()
+            except Exception as e:
+                logger.debug("[LanceDBBackend] %s skipped: %s", method_name, e)
+
+    def close(self) -> None:
+        """关闭 LanceDB 连接并 compact 数据文件，防止 Windows 重启后损坏。"""
+        table = self._table
+        if table is not None:
+            for method_name in ("optimize", "compact_files", "cleanup_old_versions"):
+                fn = getattr(table, method_name, None)
+                if fn is None:
+                    continue
+                try:
+                    fn()
+                    logger.info("[LanceDBBackend] %s completed", method_name)
+                except Exception as e:
+                    logger.debug("[LanceDBBackend] %s skipped: %s", method_name, e)
+            self._table = None
+        if self._db is not None:
+            try:
+                self._db = None
+            except Exception:
+                pass
+        self._enabled = False
+        gc.collect()
+        logger.info("[LanceDBBackend] connection closed")
