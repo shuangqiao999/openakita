@@ -839,14 +839,13 @@ def build_system_prompt(
         if kb_summary:
             developer_parts.append(kb_summary)
 
-    # 10.6 中型/小型模型行为补充（精简版，仅补充 EXTENDED_RULES 未覆盖的）
-    if _tier in (PromptTier.SMALL, PromptTier.MEDIUM):
-        developer_parts.append(
-            "## 行为补充（小型模型专用）\n\n"
-            "- 用户问事实/文档内容 → 优先调用 search_knowledge_base，不要凭记忆回答\n"
-            "- 搜索结果为空 → 换更宽泛的关键词重试一次，仍空则告知用户\n"
-            "- 每次工具调用前用一句话思考：我需要什么？用哪个工具？参数是什么？"
-        )
+    # 10.6 行为补充：优先检索知识库，搜索结果为空时重试
+    developer_parts.append(
+        "## 行为补充\n\n"
+        "- 用户问事实/文档内容 → 优先调用 search_knowledge_base，不要凭记忆回答\n"
+        "- 搜索结果为空 → 换更宽泛的关键词重试一次，仍空则告知用户\n"
+        "- 每次工具调用前用一句话思考：我需要什么？用哪个工具？参数是什么？"
+    )
 
     # 11. User 层（仅 FULL 模式）
     user_core_section = _build_user_core_profile_section(
