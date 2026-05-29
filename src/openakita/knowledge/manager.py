@@ -601,7 +601,7 @@ class KnowledgeBaseManager:
 
         return {"doc_id": doc_id, "duplicate": False}
 
-    async def _process_chunks(self, doc_id: str, text: str) -> int:
+    async def _process_chunks(self, doc_id: str, text: str, file_type: str = ".txt") -> int:
         """公共方法：分块 → 嵌入 → 原子写入 SQLite + LanceDB。
 
         任一步骤失败即终止，不产生部分数据。
@@ -610,8 +610,8 @@ class KnowledgeBaseManager:
         Returns:
             分块数量
         """
-        chunker = TextChunker(strategy="paragraph", max_chunk_size=2000)
-        chunks = chunker.chunk(text)
+        chunker = TextChunker(strategy="paragraph", max_chunk_size=1536)
+        chunks = chunker.chunk(text, file_type=file_type)
 
         if not chunks:
             raise RuntimeError("未能从文档中提取任何内容块")
@@ -709,7 +709,8 @@ class KnowledgeBaseManager:
             if not text or not text.strip():
                 raise RuntimeError("文档内容为空")
 
-            await self._process_chunks(doc_id, text)
+            file_type = "".join(file_path.suffixes).lower() or file_path.suffix.lower()
+            await self._process_chunks(doc_id, text, file_type=file_type)
 
         except Exception as e:
             logger.error("[KB] Failed to process document %s: %s", doc_id, e)
