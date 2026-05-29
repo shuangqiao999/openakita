@@ -140,6 +140,7 @@ jobs:
           ref: ${{ needs.get_version.outputs.ref }}
           fetch-depth: 0
 
+      # ========== 添加 concurrency 控制 ==========
       - name: 显示构建信息
         shell: bash
         run: |
@@ -152,6 +153,7 @@ jobs:
           echo "运行 ID: ${{ github.run_id }}"
           echo "=========================================="
 
+      # ========== 清理所有缓存 ==========
       - name: 🧹 清理所有构建缓存
         shell: bash
         run: |
@@ -213,10 +215,14 @@ jobs:
           python-version: '3.11'
           cache: pip
 
-      - name: 安装 UPX 二进制压缩工具
+      - name: 安装 UPX 二进制压缩工具（修复 SSL 吊销错误）
         shell: bash
         run: |
-          curl -L -o upx.zip https://github.com/upx/upx/releases/download/v4.2.4/upx-4.2.4-win64.zip
+          echo "=========================================="
+          echo "📦 安装 UPX 压缩工具"
+          echo "=========================================="
+          # 使用 --ssl-no-revoke 绕过吊销检查，解决 CRYPT_E_REVOCATION_OFFLINE 错误
+          curl -L --ssl-no-revoke -o upx.zip https://github.com/upx/upx/releases/download/v4.2.4/upx-4.2.4-win64.zip
           unzip -o upx.zip
           mkdir -p ~/bin
           cp upx-4.2.4-win64/upx.exe ~/bin/
