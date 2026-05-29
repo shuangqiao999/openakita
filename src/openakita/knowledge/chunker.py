@@ -42,7 +42,7 @@ class TextChunker:
 
     # Markdown 结构保护：不切断这些块
     _MD_CODE_FENCE = re.compile(r"^(```|~~~)")
-    _MD_TABLE_ROW = re.compile(r"^\|.*\|$")
+    _MD_TABLE_ROW = re.compile(r"^\s*\|.*\|$")
     _MD_TABLE_SEP = re.compile(r"^\|[-: ]+\|$")
     _MD_HEADING = re.compile(r"^(#{1,6})\s+")
 
@@ -135,7 +135,12 @@ class TextChunker:
             result.extend(self._split_recursive(after, separators))
             return result
 
-        return [text[:self.max_chunk_size], text[self.max_chunk_size:]]
+        result: list[str] = []
+        pos = 0
+        while pos < len(text):
+            result.append(text[pos:pos + self.max_chunk_size])
+            pos += self.max_chunk_size
+        return result
 
     # ------------------------------------------------------------------
     # markdown structure-aware
@@ -224,15 +229,20 @@ class TextChunker:
                     buffer.append(stripped)
                     buf_len += len(stripped)
                     in_code = False
+                    # 完整代码块结束 — 保护它不被后续合并
+                    if buffer and buf_len >= self.max_chunk_size:
+                        result.extend(self._finalize_buffer(buffer))
+                        buffer, buf_len = [], 0
+                    continue
                 else:
                     # flush buffer before code block
                     if buffer:
-                        result.extend(self._finalize_buffer(buffer, buf_len))
+                        result.extend(self._finalize_buffer(buffer))
                         buffer, buf_len = [], 0
                     in_code = True
                     buffer.append(stripped)
                     buf_len += len(stripped)
-                continue
+                    continue
 
             if in_code:
                 buffer.append(stripped)
@@ -248,18 +258,18 @@ class TextChunker:
             # 普通行：检查是否需要 flush
             line_len = len(stripped)
             if buf_len + line_len > self.max_chunk_size and buffer:
-                result.extend(self._finalize_buffer(buffer, buf_len))
+                result.extend(self._finalize_buffer(buffer))
                 buffer, buf_len = [], 0
 
             buffer.append(stripped)
             buf_len += line_len
 
         if buffer:
-            result.extend(self._finalize_buffer(buffer, buf_len))
+            result.extend(self._finalize_buffer(buffer))
 
         return result
 
-    def _finalize_buffer(self, lines: list[str], buf_len: int) -> list[str]:
+    def _finalize_buffer(self, lines: list[str]) -> list[str]:
         """将缓冲区内容输出为块。如果超限则递归分割，否则保持整体。"""
         text = "\n".join(lines)
         if len(text) <= self.max_chunk_size:
