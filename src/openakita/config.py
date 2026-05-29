@@ -425,7 +425,7 @@ class Settings(BaseSettings):
         description="KB 嵌入批次间隔秒 (本地模型可设 0.02-0.1 节流，API 设 0)",
     )
     kb_embed_chunk_truncate: int = Field(
-        default=600,
+        default=1600,
         ge=100, le=4000,
         description="KB 嵌入前单块最大字符数 (2K token 模型 600，8K+ 模型 2000)",
     )
