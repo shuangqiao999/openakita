@@ -43,7 +43,7 @@ class TextChunker:
     # Markdown 结构保护：不切断这些块
     _MD_CODE_FENCE = re.compile(r"^(```|~~~)")
     _MD_TABLE_ROW = re.compile(r"^\s*\|.*\|$")
-    _MD_TABLE_SEP = re.compile(r"^\|[-: ]+\|$")
+    _MD_TABLE_SEP = re.compile(r"^\s*\|[-: ]+\|$")
     _MD_HEADING = re.compile(r"^(#{1,6})\s+")
 
     def __init__(
@@ -312,7 +312,7 @@ class TextChunker:
             prev = result[-1]
             prev_tail = prev.content
             ov = min(self.overlap, len(prev_tail))
-            if len(c.content) + ov < self.max_chunk_size:
+            if len(c.content) + ov <= self.max_chunk_size:
                 overlap_text = prev_tail[-ov:]
                 new_content = overlap_text + "\n" + c.content
                 result.append(ChunkResult(

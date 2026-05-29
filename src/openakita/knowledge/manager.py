@@ -882,6 +882,15 @@ class KnowledgeBaseManager:
             self._search_cache.clear()
         return True
 
+    def _get_doc_file_type(self, doc_id: str) -> str:
+        with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
+            row = conn.execute(
+                "SELECT file_type FROM knowledge_documents WHERE id=?", (doc_id,)
+            ).fetchone()
+            if row and row[0]:
+                return f".{row[0]}"
+            return ".txt"
+
     def _document_exists(self, doc_id: str) -> bool:
         with self._write_lock, sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
             return conn.execute("SELECT 1 FROM knowledge_documents WHERE id=?", (doc_id,)).fetchone() is not None
@@ -1442,7 +1451,8 @@ class KnowledgeBaseManager:
             conn.commit()
 
         try:
-            n_chunks = await self._process_chunks(doc_id, content)
+            file_type = self._get_doc_file_type(doc_id)
+            n_chunks = await self._process_chunks(doc_id, content, file_type=file_type)
             return {"doc_id": doc_id, "status": "updated", "chunks": n_chunks}
         except Exception as e:
             logger.error("[KB] Failed to update document %s: %s", doc_id, e)
