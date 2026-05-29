@@ -172,24 +172,35 @@ class TextChunker:
         return chunks
 
     def _split_by_headings(self, text: str) -> list[str]:
-        """按 Markdown 标题（#级别）分割，标题固定附加到所属内容前面。"""
+        """按 H1/H2 标题分割文档。H3+ 子标题保持在所属节内。"""
         lines = text.split("\n")
         sections: list[list[str]] = []
         current: list[str] = []
+        in_code = False
 
         for line in lines:
-            m = self._MD_HEADING.match(line)
+            stripped = line.rstrip("\r")
+
+            if self._MD_CODE_FENCE.match(stripped):
+                in_code = not in_code
+                current.append(line)
+                continue
+
+            if in_code:
+                current.append(line)
+                continue
+
+            m = self._MD_HEADING.match(stripped)
             if m:
                 level = len(m.group(1))
-                if current:
-                    sections.append(current)
-                    current = []
                 if level <= 2:
-                    current.append(line)
-                else:
-                    current.append(line)
-            else:
+                    if current:
+                        sections.append(current)
+                        current = []
                 current.append(line)
+                continue
+
+            current.append(line)
 
         if current:
             sections.append(current)
@@ -251,7 +262,7 @@ class TextChunker:
     def _finalize_buffer(self, lines: list[str], buf_len: int) -> list[str]:
         """将缓冲区内容输出为块。如果超限则递归分割，否则保持整体。"""
         text = "\n".join(lines)
-        if buf_len <= self.max_chunk_size:
+        if len(text) <= self.max_chunk_size:
             return [text]
         return self._split_recursive(text, self._CN_SEPARATORS)
 
@@ -264,7 +275,6 @@ class TextChunker:
             return chunks
 
         merged: list[ChunkResult] = []
-        i = 0
         for c in chunks:
             if len(c.content) < self.min_chunk_size and merged:
                 prev = merged[-1]
@@ -277,9 +287,7 @@ class TextChunker:
                     )
                     continue
             merged.append(c)
-            i += 1
 
-        # Re-index
         for idx, c in enumerate(merged):
             c.index = idx
         return merged
@@ -304,17 +312,15 @@ class TextChunker:
                 ))
             else:
                 result.append(c)
+
+        for idx, c in enumerate(result):
+            c.index = idx
         return result
 
 
 # ------------------------------------------------------------------
 # helpers
 # ------------------------------------------------------------------
-
-
-def _split_paragraphs(text: str) -> list[str]:
-    """将文本拆分为段落（以空行分隔）。"""
-    return re.split(r"\n\s*\n", text)
 
 
 def _estimate_tokens(text: str) -> int:
