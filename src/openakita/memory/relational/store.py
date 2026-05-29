@@ -48,7 +48,7 @@ class RelationalMemoryStore:
             if self._closed:
                 return
             self._closed = True
-        self._conn = None
+            self._conn = None
 
     # ------------------------------------------------------------------
     # Schema

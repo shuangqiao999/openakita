@@ -800,7 +800,6 @@ async def get_memory_graph(request: Request):
     if mode_cfg != "mode1" and mm._ensure_relational() and mm.relational_store:
         try:
             rs = mm.relational_store
-            mode = "mode2"
             user_id, workspace_id = _current_owner(request)
             raw_nodes = rs.get_all_nodes(user_id=user_id, workspace_id=workspace_id)
             node_ids = {n.id for n in raw_nodes}
@@ -835,77 +834,84 @@ async def get_memory_graph(request: Request):
                             "weight": e.weight,
                         }
                     )
-        except RuntimeError:
+            return {
+                "nodes": nodes_out,
+                "links": links_out,
+                "meta": {"total_nodes": len(nodes_out), "total_edges": len(links_out), "mode": "mode2"},
+            }
+        except (RuntimeError, AttributeError):
+            nodes_out.clear()
+            links_out.clear()
             mode = "mode1"
             logger.warning("[MemoryGraph] Relational store closed during request, falling back to mode1")
-    else:
-        store = _get_store(request)
-        if store:
-            import json as _json
-            from collections import defaultdict
 
-            user_id, workspace_id = _current_owner(request)
-            all_mems = store.load_all_memories(
-                scope="user",
-                scope_owner="",
-                user_id=user_id,
-                workspace_id=workspace_id,
+    store = _get_store(request)
+    if store:
+        import json as _json
+        from collections import defaultdict
+
+        user_id, workspace_id = _current_owner(request)
+        all_mems = store.load_all_memories(
+            scope="user",
+            scope_owner="",
+            user_id=user_id,
+            workspace_id=workspace_id,
+        )
+        subject_map: dict[str, list[str]] = defaultdict(list)
+        for m in all_mems:
+            nodes_out.append(
+                {
+                    "id": m.id,
+                    "content": (m.content or "")[:200],
+                    "node_type": (m.type.value if hasattr(m.type, "value") else "FACT").upper(),
+                    "importance": m.importance_score,
+                    "entities": [],
+                    "action_category": "",
+                    "occurred_at": m.created_at.isoformat() if m.created_at else None,
+                    "session_id": "",
+                    "project": "",
+                    "group": f"type:{m.type.value if hasattr(m.type, 'value') else 'fact'}",
+                }
             )
-            subject_map: dict[str, list[str]] = defaultdict(list)
-            for m in all_mems:
-                nodes_out.append(
-                    {
-                        "id": m.id,
-                        "content": (m.content or "")[:200],
-                        "node_type": (m.type.value if hasattr(m.type, "value") else "FACT").upper(),
-                        "importance": m.importance_score,
-                        "entities": [],
-                        "action_category": "",
-                        "occurred_at": m.created_at.isoformat() if m.created_at else None,
-                        "session_id": "",
-                        "project": "",
-                        "group": f"type:{m.type.value if hasattr(m.type, 'value') else 'fact'}",
-                    }
-                )
-                if m.subject:
-                    subject_map[m.subject].append(m.id)
+            if m.subject:
+                subject_map[m.subject].append(m.id)
 
-                linked_ids = getattr(m, "linked_memory_ids", None)
-                if not linked_ids:
-                    meta = getattr(m, "metadata", {}) or {}
-                    if isinstance(meta, str):
-                        try:
-                            meta = _json.loads(meta)
-                        except Exception:
-                            meta = {}
-                    linked_ids = meta.get("linked_memory_ids", [])
-                if isinstance(linked_ids, list):
-                    node_set = {n["id"] for n in nodes_out}
-                    for lid in linked_ids:
-                        if lid in node_set:
-                            links_out.append(
-                                {
-                                    "source": m.id,
-                                    "target": lid,
-                                    "edge_type": "linked",
-                                    "dimension": "context",
-                                    "weight": 0.5,
-                                }
-                            )
+            linked_ids = getattr(m, "linked_memory_ids", None)
+            if not linked_ids:
+                meta = getattr(m, "metadata", {}) or {}
+                if isinstance(meta, str):
+                    try:
+                        meta = _json.loads(meta)
+                    except Exception:
+                        meta = {}
+                linked_ids = meta.get("linked_memory_ids", [])
+            if isinstance(linked_ids, list):
+                node_set = {n["id"] for n in nodes_out}
+                for lid in linked_ids:
+                    if lid in node_set:
+                        links_out.append(
+                            {
+                                "source": m.id,
+                                "target": lid,
+                                "edge_type": "linked",
+                                "dimension": "context",
+                                "weight": 0.5,
+                            }
+                        )
 
-            for _subj, ids in subject_map.items():
-                if len(ids) >= 2:
-                    for i in range(len(ids)):
-                        for j in range(i + 1, min(i + 3, len(ids))):
-                            links_out.append(
-                                {
-                                    "source": ids[i],
-                                    "target": ids[j],
-                                    "edge_type": "same_subject",
-                                    "dimension": "entity",
-                                    "weight": 0.4,
-                                }
-                            )
+        for _subj, ids in subject_map.items():
+            if len(ids) >= 2:
+                for i in range(len(ids)):
+                    for j in range(i + 1, min(i + 3, len(ids))):
+                        links_out.append(
+                            {
+                                "source": ids[i],
+                                "target": ids[j],
+                                "edge_type": "same_subject",
+                                "dimension": "entity",
+                                "weight": 0.4,
+                            }
+                        )
 
     return {
         "nodes": nodes_out,
