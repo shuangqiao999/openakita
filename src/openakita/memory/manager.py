@@ -2065,6 +2065,12 @@ class MemoryManager:
 
     def close(self) -> None:
         """关闭 MemoryManager 的 LanceDB 连接，compact 数据文件。"""
+        if self.relational_store is not None:
+            try:
+                self.relational_store.close()
+            except Exception:
+                pass
+            self.relational_store = None
         if hasattr(self, "store") and hasattr(self.store, "close"):
             try:
                 self.store.close()

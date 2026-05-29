@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import sqlite3
+import threading
 from datetime import datetime
 from typing import Any
 
@@ -26,6 +27,8 @@ class RelationalMemoryStore:
 
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
+        self._closed = False
+        self._close_lock = threading.Lock()
         self._ensure_tables()
 
     @staticmethod
@@ -34,6 +37,18 @@ class RelationalMemoryStore:
         return f"({prefix}valid_until IS NULL OR {prefix}valid_until >= ?)", [
             datetime.now().isoformat()
         ]
+
+    def _check_open(self) -> None:
+        with self._close_lock:
+            if self._closed:
+                raise RuntimeError("RelationalMemoryStore is closed")
+
+    def close(self) -> None:
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
+        self._conn = None
 
     # ------------------------------------------------------------------
     # Schema
@@ -266,6 +281,7 @@ class RelationalMemoryStore:
             pass
 
     def rebuild_fts(self) -> int:
+        self._check_open()
         """Rebuild the entire FTS5 index from mdrm_nodes. Returns count."""
         try:
             self._conn.execute("DELETE FROM mdrm_nodes_fts")
@@ -292,6 +308,7 @@ class RelationalMemoryStore:
     # ------------------------------------------------------------------
 
     def save_node(self, node: MemoryNode) -> None:
+        self._check_open()
         now = datetime.now().isoformat()
         entities_json = json.dumps(
             [{"name": e.name, "type": e.type, "role": e.role} for e in node.entities],
@@ -346,6 +363,7 @@ class RelationalMemoryStore:
         self._conn.commit()
 
     def save_nodes_batch(self, nodes: list[MemoryNode]) -> None:
+        self._check_open()
         if not nodes:
             return
         now = datetime.now().isoformat()
@@ -399,6 +417,7 @@ class RelationalMemoryStore:
         self._conn.commit()
 
     def get_node(self, node_id: str) -> MemoryNode | None:
+        self._check_open()
         cur = self._conn.execute("SELECT * FROM mdrm_nodes WHERE id = ?", (node_id,))
         row = cur.fetchone()
         if not row:
@@ -406,6 +425,7 @@ class RelationalMemoryStore:
         return self._row_to_node(cur.description, row)
 
     def delete_node(self, node_id: str) -> bool:
+        self._check_open()
         self._conn.execute(
             "DELETE FROM mdrm_edges WHERE source_id=? OR target_id=?", (node_id, node_id)
         )
@@ -419,10 +439,12 @@ class RelationalMemoryStore:
         return cur.rowcount > 0
 
     def count_nodes(self) -> int:
+        self._check_open()
         cur = self._conn.execute("SELECT COUNT(*) FROM mdrm_nodes")
         return cur.fetchone()[0]
 
     def count_edges(self) -> int:
+        self._check_open()
         cur = self._conn.execute("SELECT COUNT(*) FROM mdrm_edges")
         return cur.fetchone()[0]
 
@@ -431,6 +453,7 @@ class RelationalMemoryStore:
     # ------------------------------------------------------------------
 
     def save_edge(self, edge: MemoryEdge) -> None:
+        self._check_open()
         self._conn.execute(
             """INSERT OR REPLACE INTO mdrm_edges
                (id, source_id, target_id, edge_type, dimension, weight, metadata, created_at)
@@ -449,6 +472,7 @@ class RelationalMemoryStore:
         self._conn.commit()
 
     def save_edges_batch(self, edges: list[MemoryEdge]) -> None:
+        self._check_open()
         for edge in edges:
             self._conn.execute(
                 """INSERT OR REPLACE INTO mdrm_edges
@@ -468,6 +492,7 @@ class RelationalMemoryStore:
         self._conn.commit()
 
     def get_edges_for_node(self, node_id: str, dimension: str | None = None) -> list[MemoryEdge]:
+        self._check_open()
         if dimension:
             cur = self._conn.execute(
                 "SELECT * FROM mdrm_edges WHERE (source_id=? OR target_id=?) AND dimension=?",
@@ -481,6 +506,7 @@ class RelationalMemoryStore:
         return [self._row_to_edge(cur.description, r) for r in cur.fetchall()]
 
     def get_neighbors(self, node_id: str, dimension: str | None = None) -> list[str]:
+        self._check_open()
         edges = self.get_edges_for_node(node_id, dimension)
         neighbors: list[str] = []
         for e in edges:
@@ -494,6 +520,7 @@ class RelationalMemoryStore:
     # ------------------------------------------------------------------
 
     def search_fts(self, query: str, limit: int = 20) -> list[MemoryNode]:
+        self._check_open()
         """Full-text search with CJK bigram tokenization and BM25 ranking."""
         if not query or len(query.strip()) < 2:
             return []
@@ -530,6 +557,7 @@ class RelationalMemoryStore:
             return self.search_like(query, limit)
 
     def search_like(self, query: str, limit: int = 20) -> list[MemoryNode]:
+        self._check_open()
         if not query or len(query.strip()) < 2:
             return []
         escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -548,6 +576,7 @@ class RelationalMemoryStore:
         return [self._row_to_node(cur.description, r) for r in cur.fetchall()]
 
     def search_by_entity(self, entity_name: str, limit: int = 20) -> list[MemoryNode]:
+        self._check_open()
         name_lower = entity_name.lower()
         # Check alias table first
         cur = self._conn.execute(
@@ -605,6 +634,7 @@ class RelationalMemoryStore:
         return [self._row_to_node(cur.description, r) for r in cur.fetchall()]
 
     def get_all_edges(self, node_ids: set[str] | None = None) -> list[MemoryEdge]:
+        self._check_open()
         if node_ids:
             placeholders = ",".join("?" for _ in node_ids)
             id_list = list(node_ids)
@@ -622,6 +652,7 @@ class RelationalMemoryStore:
     # ------------------------------------------------------------------
 
     def rebuild_reachable(self) -> int:
+        self._check_open()
         """Rebuild the materialized reachable table from edges. Returns row count."""
         c = self._conn.cursor()
         c.execute("DELETE FROM mdrm_reachable")
@@ -681,6 +712,7 @@ class RelationalMemoryStore:
     # ------------------------------------------------------------------
 
     def get_all_entity_names(self, limit: int = 500) -> list[str]:
+        self._check_open()
         cur = self._conn.execute(
             "SELECT DISTINCT entity_name FROM mdrm_entity_index LIMIT ?", (limit,)
         )
@@ -696,6 +728,7 @@ class RelationalMemoryStore:
         self._conn.commit()
 
     def resolve_entity(self, name: str) -> str:
+        self._check_open()
         cur = self._conn.execute(
             "SELECT canonical FROM mdrm_entity_aliases WHERE alias = ?", (name.lower(),)
         )
@@ -707,6 +740,7 @@ class RelationalMemoryStore:
     # ------------------------------------------------------------------
 
     def strengthen_edge(self, edge_id: str, delta: float = 0.05) -> None:
+        self._check_open()
         self._conn.execute(
             "UPDATE mdrm_edges SET weight = MIN(1.0, weight + ?) WHERE id = ?",
             (delta, edge_id),
@@ -714,16 +748,19 @@ class RelationalMemoryStore:
         self._conn.commit()
 
     def decay_edges(self, factor: float = 0.98) -> int:
+        self._check_open()
         cur = self._conn.execute("UPDATE mdrm_edges SET weight = weight * ?", (factor,))
         self._conn.commit()
         return cur.rowcount
 
     def prune_weak_edges(self, threshold: float = 0.05) -> int:
+        self._check_open()
         cur = self._conn.execute("DELETE FROM mdrm_edges WHERE weight < ?", (threshold,))
         self._conn.commit()
         return cur.rowcount
 
     def increment_access(self, node_id: str) -> None:
+        self._check_open()
         self._conn.execute(
             "UPDATE mdrm_nodes SET access_count = access_count + 1 WHERE id = ?",
             (node_id,),

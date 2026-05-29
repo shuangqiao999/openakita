@@ -798,42 +798,46 @@ async def get_memory_graph(request: Request):
 
     mode_cfg = mm._get_memory_mode()
     if mode_cfg != "mode1" and mm._ensure_relational() and mm.relational_store:
-        rs = mm.relational_store
-        mode = "mode2"
-        user_id, workspace_id = _current_owner(request)
-        raw_nodes = rs.get_all_nodes(user_id=user_id, workspace_id=workspace_id)
-        node_ids = {n.id for n in raw_nodes}
+        try:
+            rs = mm.relational_store
+            mode = "mode2"
+            user_id, workspace_id = _current_owner(request)
+            raw_nodes = rs.get_all_nodes(user_id=user_id, workspace_id=workspace_id)
+            node_ids = {n.id for n in raw_nodes}
 
-        for n in raw_nodes:
-            ents = [{"name": e.name, "type": e.type} for e in n.entities[:5]]
-            group = f"entity:{ents[0]['name']}" if ents else f"type:{n.node_type.value}"
-            nodes_out.append(
-                {
-                    "id": n.id,
-                    "content": n.content[:200],
-                    "node_type": n.node_type.value.upper(),
-                    "importance": n.importance,
-                    "entities": ents,
-                    "action_category": n.action_category,
-                    "occurred_at": n.occurred_at.isoformat() if n.occurred_at else None,
-                    "session_id": n.session_id,
-                    "project": n.project,
-                    "group": group,
-                }
-            )
-
-        raw_edges = rs.get_all_edges(node_ids)
-        for e in raw_edges:
-            if e.source_id in node_ids and e.target_id in node_ids:
-                links_out.append(
+            for n in raw_nodes:
+                ents = [{"name": e.name, "type": e.type} for e in n.entities[:5]]
+                group = f"entity:{ents[0]['name']}" if ents else f"type:{n.node_type.value}"
+                nodes_out.append(
                     {
-                        "source": e.source_id,
-                        "target": e.target_id,
-                        "edge_type": e.edge_type.value,
-                        "dimension": e.dimension.value,
-                        "weight": e.weight,
+                        "id": n.id,
+                        "content": n.content[:200],
+                        "node_type": n.node_type.value.upper(),
+                        "importance": n.importance,
+                        "entities": ents,
+                        "action_category": n.action_category,
+                        "occurred_at": n.occurred_at.isoformat() if n.occurred_at else None,
+                        "session_id": n.session_id,
+                        "project": n.project,
+                        "group": group,
                     }
                 )
+
+            raw_edges = rs.get_all_edges(node_ids)
+            for e in raw_edges:
+                if e.source_id in node_ids and e.target_id in node_ids:
+                    links_out.append(
+                        {
+                            "source": e.source_id,
+                            "target": e.target_id,
+                            "edge_type": e.edge_type.value,
+                            "dimension": e.dimension.value,
+                            "weight": e.weight,
+                        }
+                    )
+        except RuntimeError:
+            mode = "mode1"
+            logger.warning("[MemoryGraph] Relational store closed during request, falling back to mode1")
     else:
         store = _get_store(request)
         if store:
