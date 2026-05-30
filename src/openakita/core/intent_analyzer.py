@@ -325,14 +325,14 @@ _RECALL_MARKERS: frozenset[str] = frozenset({
     "我说过", "你提过",
     # 英文
     "recall", "remember",
-    "last time", "past conversation", "what did I say",
+    "last time",     "past conversation", "what did i say",
     "summarize our conversation", "what did we discuss",
     "what did we talk about", "what did you tell me",
 })
 
 _RECALL_TIME_EXTRACT_RE = re.compile(
-    r"((?:最近)?\s*[一二两三四五六七八九十几半\d]+\s*(?:个)?(?:星)?[天周期月年])"
-    r"|(今天|昨天|前天|本周|上周|这个月|上个月|今年|去年)"
+    r"((?:最近)?\s*[一二两三四五六七八九十零几半\d]+\s*(?:个)?(?:星)?[天周期月年])"
+    r"|(今天|昨天|前天|本周|上周|上上周|这周|这星期|上星期|这个月|上个月|今年|去年)"
     r"|(this|last)\s+(week|month|year)"
     r"|(\d+)\s*(?:days?|weeks?|months?|years?)\s*ago",
     re.IGNORECASE,
