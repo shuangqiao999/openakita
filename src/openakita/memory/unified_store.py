@@ -65,7 +65,7 @@ class UnifiedStore:
         if self.search.backend_type != "fts5":
             self._fts5_fallback = FTS5Backend(self.db)
 
-        self._backfill_semantic_if_empty()
+        self._backfill_semantic_if_needed()
         self._backfill_episodes_if_needed()
 
     def _backfill_semantic_if_empty(self) -> None:
@@ -180,6 +180,23 @@ class UnifiedStore:
             len(all_mems),
         )
         self._needs_full_backfill = False
+
+    def _backfill_semantic_if_needed(self) -> None:
+        """比例检查：LanceDB/SQLite memories < 95% 时触发增量回填。"""
+        if self.search.backend_type == "fts5":
+            return
+        if not self.search.available:
+            return
+        sqlite_count = self.count_memories()
+        if sqlite_count == 0:
+            return
+        try:
+            lance_count = self.search.count()
+        except Exception:
+            return
+        if lance_count >= sqlite_count * 0.95:
+            return
+        self._backfill_semantic_if_empty()  # 复用现有 worker
 
     # ======================================================================
     # Episodes vector backfill
@@ -309,16 +326,27 @@ class UnifiedStore:
 
         d = memory.to_dict()
         self.db.save_memory(d)
-        self.search.add(
-            memory.id,
-            memory.content,
-            {
-                "type": memory.type.value,
-                "priority": memory.priority.value,
-                "importance": memory.importance_score,
-                "tags": memory.tags,
-            },
-        )
+        try:
+            ok = self.search.add(
+                memory.id,
+                memory.content,
+                {
+                    "type": memory.type.value,
+                    "priority": memory.priority.value,
+                    "importance": memory.importance_score,
+                    "tags": memory.tags,
+                },
+            )
+            if not ok:
+                logger.warning(
+                    "[UnifiedStore] LanceDB add failed for memory %s, will retry on backfill",
+                    memory.id[:8],
+                )
+        except Exception:
+            logger.warning(
+                "[UnifiedStore] LanceDB add exception for memory %s", memory.id[:8],
+                exc_info=True,
+            )
         return memory.id
 
     def _check_semantic_duplicate(
