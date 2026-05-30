@@ -1829,27 +1829,15 @@ class MemoryStorage:
             return []
         cutoff = (datetime.now() - timedelta(days=days_back)).isoformat()
         try:
-            if user_id:
-                cur = self._conn.execute(
-                    """SELECT ct.session_id, ct.turn_index, ct.role,
-                              substr(ct.content, 1, 500) as content_preview,
-                              ct.timestamp
-                       FROM conversation_turns ct
-                       INNER JOIN episodes e ON ct.episode_id = e.id
-                       WHERE ct.timestamp >= ? AND e.user_id = ?
-                       ORDER BY ct.timestamp DESC LIMIT ?""",
-                    (cutoff, user_id, max_turns),
-                )
-            else:
-                cur = self._conn.execute(
-                    """SELECT session_id, turn_index, role,
-                              substr(content, 1, 500) as content_preview,
-                              timestamp
-                       FROM conversation_turns
-                       WHERE timestamp >= ?
-                       ORDER BY timestamp DESC LIMIT ?""",
-                    (cutoff, max_turns),
-                )
+            cur = self._conn.execute(
+                """SELECT session_id, turn_index, role,
+                          substr(content, 1, 500) as content_preview,
+                          timestamp
+                   FROM conversation_turns
+                   WHERE timestamp >= ?
+                   ORDER BY timestamp DESC LIMIT ?""",
+                (cutoff, max_turns),
+            )
             return self._rows_to_dicts(cur, json_fields=[])
         except Exception as e:
             logger.warning(f"Failed to summarize recent turns: {e}")

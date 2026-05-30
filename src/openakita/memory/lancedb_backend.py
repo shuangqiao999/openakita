@@ -969,9 +969,20 @@ class LanceDBBackend:
                         pass
                     self._episodes_table = None
                     self._episodes_enabled = False
-                    self._ensure_episodes_table(vec_dim)
-                    if self._episodes_table is None:
+                    try:
+                        self._ensure_episodes_table(vec_dim)
+                    except Exception as e:
+                        logger.warning(
+                            "[LanceDBBackend] Episodes table recreate failed: %s — "
+                            "vectors will be backfilled on restart", e
+                        )
                         return False
+                    # Mark for backfill: table is empty, needs repopulation
+                    if hasattr(self, "_on_rebuild") and self._on_rebuild is not None:
+                        try:
+                            self._on_rebuild()
+                        except Exception:
+                            pass
 
             try:
                 meta_str = json.dumps(meta or {}, ensure_ascii=False)
