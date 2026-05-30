@@ -313,32 +313,28 @@ _FAST_CHAT_MAX_LEN = 12
 # 用户消息中出现的回忆/追溯关键词。命中时自动将 memory_scope 设为 FULL，
 # 确保系统提示词中的 Memory 层加载完整的历史记忆和关系图。
 _RECALL_MARKERS: frozenset[str] = frozenset({
-    # 完整话题回顾短语（排除了可以作为副词单独出现的短词如"之前""那天"）
-    "上次", "上周", "以前", "上回", "过去",
-    "前面说过", "前面讲", "前面聊", "前面讨论",
-    "我说过", "你提过", "记得", "还记得", "回忆", "回想",
-    "之前说", "之前聊", "之前讲", "之前讨论", "之前答应",
-    "聊了什么", "聊了", "聊过什么", "聊过哪些", "聊到",
-    "讨论了什么", "讨论过", "谈了什么", "谈过", "说了什么",
-    "这几天", "这几天聊", "最近几天", "最近聊",
-    "回顾一下", "回顾", "总结一下", "梳理一下",
-    "之前的对话", "之前的讨论", "之前讲", "前面讲",
-    "之前是怎么", "之前怎么", "上次的结论", "上回选",
-    "三天前", "两天前", "一天前",
+    # 完整话题回顾短语 — 仅包含确定表示"回顾过去对话"的组合短语
+    "聊了什么", "聊了", "聊过什么", "聊过哪些", "聊到哪儿",
+    "讨论了什么", "讨论了", "讨论的", "讨论过什么", "谈了什么", "谈过什么", "说了什么",
+    "这几天聊", "最近几天聊", "最近聊",
+    "回顾一下", "总结一下", "梳理一下",
+    "之前的对话", "之前的讨论", "之前是怎么", "之前怎么",
+    "上次的结论", "上回选", "前面说过", "前面聊",
+    "之前说", "之前聊", "之前讨论", "之前答应",
+    "几天前", "三天前", "两天前", "一天前",
+    "我说过", "你提过",
     # 英文
-    "recall", "remember", "previous",
-    "last time", "earlier", "history",
-    "past conversation", "what did I say",
+    "recall", "remember",
+    "last time", "past conversation", "what did I say",
     "summarize our conversation", "what did we discuss",
     "what did we talk about", "what did you tell me",
 })
 
 _RECALL_TIME_EXTRACT_RE = re.compile(
-    r"((?:最近)?\s*[一二两三四五六七八九十\d]+\s*(?:个)?[天周月年])"
+    r"((?:最近)?\s*[一二两三四五六七八九十几半\d]+\s*(?:个)?(?:星)?[天周期月年])"
     r"|(今天|昨天|前天|本周|上周|这个月|上个月|今年|去年)"
     r"|(this|last)\s+(week|month|year)"
-    r"|(\d+)\s*days?\s*ago"
-    r"|(\d+)\s*weeks?\s*ago",
+    r"|(\d+)\s*(?:days?|weeks?|months?|years?)\s*ago",
     re.IGNORECASE,
 )
 
@@ -736,33 +732,41 @@ class IntentAnalyzer:
             raw_output = _strip_thinking_tags(response.content).strip() if response.content else ""
             if not raw_output:
                 logger.warning("[IntentAnalyzer] Empty LLM response, using default")
-                return _make_default(message)
+                result = _make_default(message)
+                _apply_recall_markers(result, message)
+                self._intent_cache[_cache_key] = (_time.monotonic(), result)
+                return result
 
             logger.info(f"[IntentAnalyzer] Raw output: {raw_output[:200]}")
             result = _parse_intent_output(raw_output, message)
-            # If user message contains recall markers, upgrade memory scope to FULL
-            # to ensure comprehensive historical memory search.
-            if _has_recall_markers(message):
-                result.is_recall_intent = True
-                if not result.recall_time_hint:
-                    result.recall_time_hint = _extract_recall_time_hint(message)
-                if result.memory_scope in (
-                    MemoryScope.PINNED_ONLY, MemoryScope.RELEVANT
-                ):
-                    result.memory_scope = MemoryScope.FULL
-                logger.info(
-                    f"[IntentAnalyzer] Recall markers detected, "
-                    f"memory_scope: {result.memory_scope.value}, "
-                    f"time_hint: {result.recall_time_hint!r}"
-                )
+            _apply_recall_markers(result, message)
             self._intent_cache[_cache_key] = (_time.monotonic(), result)
             return result
 
         except Exception as e:
             logger.warning(f"[IntentAnalyzer] LLM analysis failed: {e}, using default")
             _fallback = _make_default(message)
+            _apply_recall_markers(_fallback, message)
             self._intent_cache[_cache_key] = (_time.monotonic(), _fallback)
             return _fallback
+
+
+def _apply_recall_markers(result: IntentResult, message: str) -> None:
+    """Apply recall markers to intent result: set is_recall_intent, time_hint, memory_scope."""
+    if not _has_recall_markers(message):
+        return
+    result.is_recall_intent = True
+    if not result.recall_time_hint:
+        result.recall_time_hint = _extract_recall_time_hint(message)
+    if result.memory_scope in (
+        MemoryScope.PINNED_ONLY, MemoryScope.RELEVANT
+    ):
+        result.memory_scope = MemoryScope.FULL
+    logger.info(
+        f"[IntentAnalyzer] Recall markers detected, "
+        f"memory_scope: {result.memory_scope.value}, "
+        f"time_hint: {result.recall_time_hint!r}"
+    )
 
 
 def _normalize_for_cache(message: str) -> str:

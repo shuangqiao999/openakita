@@ -213,7 +213,7 @@ class LanceDBBackend:
                     )
                 except Exception as e:
                     logger.warning(
-                        "[LanceDBBackend] Episodes table corrupted: %s — dropping", e
+                        "[LanceDBBackend] Episodes table corrupted: %s — dropping and will rebuild", e
                     )
                     self._episodes_table = None
                     self._episodes_enabled = False
@@ -221,6 +221,8 @@ class LanceDBBackend:
                         db.drop_table(self._episodes_table_name())
                     except Exception:
                         pass
+                    if self._embedding_dim > 0:
+                        self._ensure_episodes_table(self._embedding_dim)
         except Exception as e:
             logger.warning(f"[LanceDBBackend] Init/open failed: {e}")
             self._enabled = False
@@ -872,14 +874,25 @@ class LanceDBBackend:
             pa.field("ended_at", pa.string()),
             pa.field("metadata", pa.string()),
         ])
-        self._episodes_table = self._db.create_table(
-            self._episodes_table_name(), schema=schema, mode="overwrite",
-        )
-        self._episodes_enabled = True
-        logger.info(
-            "[LanceDBBackend] Created episodes table: dim=%d",
-            embedding_dim,
-        )
+        tbl_name = self._episodes_table_name()
+        try:
+            if tbl_name in self._db.list_tables():
+                self._episodes_table = self._db.open_table(tbl_name)
+            else:
+                self._episodes_table = self._db.create_table(
+                    tbl_name, schema=schema, mode="create",
+                )
+            self._episodes_enabled = True
+            logger.info(
+                "[LanceDBBackend] Opened or created episodes table: dim=%d",
+                embedding_dim,
+            )
+        except Exception as e:
+            logger.warning(
+                "[LanceDBBackend] Failed to ensure episodes table: %s", e
+            )
+            self._episodes_table = None
+            self._episodes_enabled = False
 
     def upsert_episode(
         self, episode_id: str, summary_text: str, meta: dict | None = None
@@ -903,6 +916,13 @@ class LanceDBBackend:
         if vec is None:
             self._mark_embedding_failure("upsert_episode_timeout")
             return False
+
+        if vec is not None and len(vec) != vec_dim:
+            logger.warning(
+                "[LanceDBBackend] upsert_episode dim mismatch: expected %d, got %d",
+                vec_dim, len(vec),
+            )
+            vec_dim = len(vec)
 
         self._mark_embedding_ok()
 
