@@ -133,6 +133,8 @@ class LanceDBBackend:
         self._fts_index_created = False
         self._creating_fts_index = False
         self._query_embed_cache: OrderedDict[str, list[float]] = OrderedDict()
+        self._episodes_table: object | None = None
+        self._episodes_enabled = False
 
         try:
             import lancedb as _mod
@@ -155,6 +157,9 @@ class LanceDBBackend:
 
     def _table_name(self) -> str:
         return "openakita_memories"
+
+    def _episodes_table_name(self) -> str:
+        return "openakita_episodes"
 
     def _init_or_open(self, embedding_dim: int) -> None:
         try:
@@ -195,6 +200,27 @@ class LanceDBBackend:
                     "(will auto-create on first insert)"
                 )
                 self._enabled = False
+
+            # Also open episodes table if it exists
+            if self._episodes_table_name() in table_names:
+                try:
+                    self._episodes_table = db.open_table(self._episodes_table_name())
+                    self._episodes_enabled = True
+                    total = self._episodes_table.count_rows()
+                    logger.info(
+                        "[LanceDBBackend] Opened existing episodes table: rows=%d",
+                        total,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "[LanceDBBackend] Episodes table corrupted: %s — dropping", e
+                    )
+                    self._episodes_table = None
+                    self._episodes_enabled = False
+                    try:
+                        db.drop_table(self._episodes_table_name())
+                    except Exception:
+                        pass
         except Exception as e:
             logger.warning(f"[LanceDBBackend] Init/open failed: {e}")
             self._enabled = False
@@ -823,25 +849,188 @@ class LanceDBBackend:
             except Exception as e:
                 logger.debug("[LanceDBBackend] %s skipped: %s", method_name, e)
 
+    # ── Episodes Table ──
+
+    @property
+    def episodes_available(self) -> bool:
+        return self._episodes_enabled and self._episodes_table is not None
+
+    def _ensure_episodes_table(self, embedding_dim: int) -> None:
+        if self._episodes_table is not None:
+            return
+        if embedding_dim <= 0 or self._db is None:
+            return
+        import pyarrow as pa
+
+        schema = pa.schema([
+            pa.field("id", pa.string()),
+            pa.field("vector", pa.list_(pa.float32(), embedding_dim)),
+            pa.field("session_id", pa.string()),
+            pa.field("summary", pa.string()),
+            pa.field("goal", pa.string()),
+            pa.field("started_at", pa.string()),
+            pa.field("ended_at", pa.string()),
+            pa.field("metadata", pa.string()),
+        ])
+        self._episodes_table = self._db.create_table(
+            self._episodes_table_name(), schema=schema, mode="overwrite",
+        )
+        self._episodes_enabled = True
+        logger.info(
+            "[LanceDBBackend] Created episodes table: dim=%d",
+            embedding_dim,
+        )
+
+    def upsert_episode(
+        self, episode_id: str, summary_text: str, meta: dict | None = None
+    ) -> bool:
+        if not self._lancedb:
+            return False
+        embedder = self._get_embedder()
+        if embedder is None:
+            return False
+
+        vec_dim = getattr(embedder, "dimension", 0) or 0
+        if vec_dim <= 0:
+            return False
+
+        try:
+            vec = _run_embedding_sync(embedder, "embed_query", summary_text)
+        except Exception as e:
+            self._mark_embedding_failure(str(e))
+            return False
+
+        if vec is None:
+            self._mark_embedding_failure("upsert_episode_timeout")
+            return False
+
+        self._mark_embedding_ok()
+
+        with self._lock:
+            if self._episodes_table is None and vec_dim > 0:
+                try:
+                    self._ensure_episodes_table(vec_dim)
+                except Exception as e:
+                    logger.warning(
+                        "[LanceDBBackend] Auto-create episodes table failed: %s", e
+                    )
+                    return False
+
+            if self._episodes_table is None:
+                return False
+
+            try:
+                meta_str = json.dumps(meta or {}, ensure_ascii=False)
+                # Delete existing row with same id before insert
+                try:
+                    self._episodes_table.delete(f"id = '{episode_id}'")
+                except Exception:
+                    pass
+                self._episodes_table.add([{
+                    "id": episode_id,
+                    "vector": vec,
+                    "session_id": (meta or {}).get("session_id", ""),
+                    "summary": summary_text,
+                    "goal": (meta or {}).get("goal", ""),
+                    "started_at": (meta or {}).get("started_at", ""),
+                    "ended_at": (meta or {}).get("ended_at", ""),
+                    "metadata": meta_str,
+                }])
+                try:
+                    self._episodes_table.cleanup_old_versions()
+                except Exception:
+                    pass
+                return True
+            except Exception as e:
+                logger.warning("[LanceDBBackend] upsert_episode failed: %s", e)
+                return False
+
+    def search_episodes(
+        self, query_text: str, limit: int = 10
+    ) -> list[dict]:
+        if not self.episodes_available:
+            return []
+        if not self._embedding_healthy:
+            return []
+        embedder = self._get_embedder()
+        if embedder is None:
+            return []
+
+        try:
+            query_vec = _run_embedding_sync(embedder, "embed_query", query_text)
+        except Exception as e:
+            self._mark_embedding_failure(str(e))
+            return []
+
+        if query_vec is None:
+            return []
+
+        self._mark_embedding_ok()
+
+        try:
+            with self._lock:
+                results = (
+                    self._episodes_table.search(query_vec)
+                    .metric(self._METRIC)
+                    .limit(min(limit, 20))
+                    .to_list()
+                )
+            if not results:
+                return []
+            out = []
+            for row in results:
+                doc_id = row.get("id", "")
+                if not doc_id:
+                    continue
+                distance = row.get("_distance", 1.0)
+                score = float(1.0 - distance / 2.0)
+                score = max(0.0, min(1.0, score))
+                out.append({
+                    "id": doc_id,
+                    "session_id": row.get("session_id", ""),
+                    "summary": row.get("summary", ""),
+                    "goal": row.get("goal", ""),
+                    "started_at": row.get("started_at", ""),
+                    "ended_at": row.get("ended_at", ""),
+                    "_score": score,
+                })
+            return out
+        except Exception as e:
+            logger.warning("[LanceDBBackend] search_episodes failed: %s", e)
+            return []
+
+    def delete_episode(self, episode_id: str) -> bool:
+        if not self.episodes_available:
+            return False
+        try:
+            with self._lock:
+                self._episodes_table.delete(f"id = '{episode_id}'")
+            return True
+        except Exception as e:
+            logger.warning("[LanceDBBackend] delete_episode failed: %s", e)
+            return False
+
     def close(self) -> None:
         """关闭 LanceDB 连接并 compact 数据文件，防止 Windows 重启后损坏。"""
-        table = self._table
-        if table is not None:
-            for method_name in ("optimize", "compact_files", "cleanup_old_versions"):
-                fn = getattr(table, method_name, None)
-                if fn is None:
-                    continue
-                try:
-                    fn()
-                    logger.info("[LanceDBBackend] %s completed", method_name)
-                except Exception as e:
-                    logger.debug("[LanceDBBackend] %s skipped: %s", method_name, e)
-            self._table = None
+        for tbl_attr in ("_table", "_episodes_table"):
+            table = getattr(self, tbl_attr, None)
+            if table is not None:
+                for method_name in ("optimize", "compact_files", "cleanup_old_versions"):
+                    fn = getattr(table, method_name, None)
+                    if fn is None:
+                        continue
+                    try:
+                        fn()
+                        logger.info("[LanceDBBackend] %s %s completed", tbl_attr, method_name)
+                    except Exception as e:
+                        logger.debug("[LanceDBBackend] %s %s skipped: %s", tbl_attr, method_name, e)
+                setattr(self, tbl_attr, None)
         if self._db is not None:
             try:
                 self._db = None
             except Exception:
                 pass
         self._enabled = False
+        self._episodes_enabled = False
         gc.collect()
         logger.info("[LanceDBBackend] connection closed")

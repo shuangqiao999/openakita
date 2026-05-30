@@ -441,6 +441,7 @@ class Episode:
     importance_score: float = 0.5
     access_count: int = 0
     source: str = "session_end"  # session_end / context_compress / daily_consolidation
+    quality: float = 0.5  # 摘要质量评分 0-1
 
     def to_dict(self) -> dict:
         return {
@@ -459,6 +460,7 @@ class Episode:
             "importance_score": self.importance_score,
             "access_count": self.access_count,
             "source": self.source,
+            "quality": self.quality,
         }
 
     @classmethod
@@ -485,6 +487,7 @@ class Episode:
             importance_score=data.get("importance_score", 0.5),
             access_count=data.get("access_count", 0),
             source=data.get("source", "session_end"),
+            quality=data.get("quality", 0.5),
         )
 
     def to_markdown(self) -> str:

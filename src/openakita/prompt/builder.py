@@ -512,6 +512,8 @@ def build_system_prompt(
     catalog_scope: list[str] | None = None,
     include_project_guidelines: bool | None = None,
     intent_tool_hints: list[str] | None = None,
+    recall_intent: bool = False,
+    recall_time_hint: str = "",
 ) -> str:
     """
     组装系统提示词
@@ -829,6 +831,8 @@ def build_system_prompt(
                 skip_relational=skip_relational,
                 use_compact_guide=_use_compact,
                 pinned_only=_memory_scope == "pinned_only",
+                recall_intent=recall_intent,
+                recall_time_hint=recall_time_hint,
             )
         if memory_section:
             developer_parts.append(memory_section)
@@ -2146,12 +2150,15 @@ def _build_memory_section(
     skip_relational: bool = False,
     use_compact_guide: bool = False,
     pinned_only: bool = False,
+    recall_intent: bool = False,
+    recall_time_hint: str = "",
 ) -> str:
     """
     构建 Memory 层 — 渐进式披露:
     0. 记忆系统自描述 (告知 LLM 记忆系统的运作方式)
     1. Scratchpad (当前任务 + 近期完成)
     2. Core Memory (MEMORY.md 用户基本信息 + 永久规则)
+    2.5. Recall Context (回顾意图专用) — 仅在 recall_intent=True 时注入
     3. Experience Hints (高权重经验记忆) — skipped under high input pressure
     4. Active Retrieval (if memory_keywords provided by IntentAnalyzer)
     5. Relational graph retrieval — skipped under medium+ input pressure
@@ -2189,6 +2196,19 @@ def _build_memory_section(
     if core_memory:
         parts.append(f"## 核心记忆\n\n{core_memory}")
 
+    retrieval_query = " ".join(memory_keywords or []) or task_description
+
+    # Layer 2.5: Recall Context (回顾意图专用)
+    if recall_intent and retrieval_query and memory_manager:
+        recall_text = _build_recall_section(
+            memory_manager,
+            retrieval_query,
+            time_hint=recall_time_hint,
+            max_tokens=min(budget_tokens, 800),
+        )
+        if recall_text:
+            parts.append(recall_text)
+
     # Layer 3: Experience Hints (高权重经验/教训/技能记忆)
     if not skip_experience:
         experience_text = _build_experience_section(
@@ -2197,9 +2217,7 @@ def _build_memory_section(
         if experience_text:
             parts.append(experience_text)
 
-    # Layer 4: Active Retrieval. Always use the current task as a query so
-    # external providers can recall context before every agent run.
-    retrieval_query = " ".join(memory_keywords or []) or task_description
+    # Layer 4: Active Retrieval.
     if retrieval_query:
         retrieved = _retrieve_by_query(memory_manager, retrieval_query, max_tokens=500)
         if retrieved:
@@ -2282,6 +2300,29 @@ def _build_kb_doc_summary_sync(kb_manager: Any, max_docs: int = 30) -> str:
             future = ex.submit(_run)
             return future.result(timeout=3)
     except Exception:
+        return ""
+
+
+def _build_recall_section(
+    memory_manager: Optional["MemoryManager"],
+    query: str,
+    time_hint: str = "",
+    max_tokens: int = 800,
+) -> str:
+    """Layer 2.5: 回顾意图专用检索 — 返回会话话题列表。"""
+    if not memory_manager:
+        return ""
+    retrieval_engine = getattr(memory_manager, "retrieval_engine", None)
+    if not retrieval_engine or not hasattr(retrieval_engine, "retrieve_recall_context"):
+        return ""
+    try:
+        return retrieval_engine.retrieve_recall_context(
+            query=query,
+            time_hint=time_hint,
+            max_tokens=max_tokens,
+        )
+    except Exception as e:
+        logger.debug(f"[RecallSection] retrieval failed: {e}")
         return ""
 
 

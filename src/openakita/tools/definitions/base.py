@@ -131,6 +131,7 @@ CATEGORY_PREFIXES = {
         "get_memory_stats",
         "search_relational_memory",
         "list_recent_tasks",
+        "list_recent_topics",
         "search_conversation_traces",
         "trace_memory",
         "consolidate_memories",

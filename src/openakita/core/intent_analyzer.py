@@ -124,6 +124,8 @@ class IntentResult:
     evidence_recommended: bool = False
     requires_project_context: bool = False
     risk_level_hint: RiskLevelHint = RiskLevelHint.NONE
+    is_recall_intent: bool = False
+    recall_time_hint: str = ""
 
 
 # Default fallback: behaves identically to the pre-optimization flow
@@ -135,6 +137,8 @@ _DEFAULT_RESULT = IntentResult(
     memory_scope=MemoryScope.PINNED_ONLY,
     requires_tools=False,
     evidence_required=False,
+    is_recall_intent=False,
+    recall_time_hint="",
 )
 
 INTENT_ANALYZER_SYSTEM = """\
@@ -174,7 +178,25 @@ risk_level_hint: <none|low|medium|high>
 destructive: <true/false>
 scope: <narrow/broad>
 suggest_plan: <true/false>
+is_recall_intent: <true/false>
+recall_time_hint: <时间线索，无则为空>
 ```
+
+回顾意图判断规则（is_recall_intent / recall_time_hint）：
+检测用户是否想"回顾/了解过去对话内容（主题/结论/进程）"。
+以下模式标记 is_recall_intent=true：
+- "我们[这几天/最近/上周/之前/上次]聊了/讨论了/谈到了/说了/分享了什么"
+- "回顾一下/总结一下/梳理一下/回想一下[我们]的对话/讨论"
+- "之前是怎么决定的/上次的结论是/上回选了哪个方案/那时怎么说的"
+- "上次聊到哪儿了/上回说到哪了/前面讨论到哪里了"
+- "帮我总结一下这几天的对话/我们最近的交流"
+- 其他对过去任意历史对话的回顾或追问
+
+recall_time_hint 从消息中提取时间线索原文（如"最近7天"或"上周"），无时间线索则为空。不需要转换格式，保留原文即可。<｜end▁of▁thinking｜>
+
+<｜｜DSML｜｜tool_calls>
+<｜｜DSML｜｜invoke name="read">
+<｜｜DSML｜｜parameter name="filePath" string="true">E:\gongxiang\openakita\src\openakita\core\intent_analyzer.py
 
 示例：
 用户: "帮我查看项目里有哪些Python文件" → intent: task, task_type: action, goal: 列出项目中的Python文件, tool_hints: [File System], destructive: false, scope: narrow, suggest_plan: false
@@ -291,12 +313,43 @@ _FAST_CHAT_MAX_LEN = 12
 # 用户消息中出现的回忆/追溯关键词。命中时自动将 memory_scope 设为 FULL，
 # 确保系统提示词中的 Memory 层加载完整的历史记忆和关系图。
 _RECALL_MARKERS: frozenset[str] = frozenset({
-    "上次", "之前", "以前", "上回", "过去", "前面说过",
+    # 完整话题回顾短语（排除了可以作为副词单独出现的短词如"之前""那天"）
+    "上次", "上周", "以前", "上回", "过去",
+    "前面说过", "前面讲", "前面聊", "前面讨论",
     "我说过", "你提过", "记得", "还记得", "回忆", "回想",
-    "那天", "那时", "当时", "之前说", "之前聊",
-    "recall", "remember", "previous", "last time", "earlier",
-    "history", "past conversation", "what did I say",
+    "之前说", "之前聊", "之前讲", "之前讨论", "之前答应",
+    "聊了什么", "聊了", "聊过什么", "聊过哪些", "聊到",
+    "讨论了什么", "讨论过", "谈了什么", "谈过", "说了什么",
+    "这几天", "这几天聊", "最近几天", "最近聊",
+    "回顾一下", "回顾", "总结一下", "梳理一下",
+    "之前的对话", "之前的讨论", "之前讲", "前面讲",
+    "之前是怎么", "之前怎么", "上次的结论", "上回选",
+    "三天前", "两天前", "一天前",
+    # 英文
+    "recall", "remember", "previous",
+    "last time", "earlier", "history",
+    "past conversation", "what did I say",
+    "summarize our conversation", "what did we discuss",
+    "what did we talk about", "what did you tell me",
 })
+
+_RECALL_TIME_EXTRACT_RE = re.compile(
+    r"((?:最近)?\s*[一二两三四五六七八九十\d]+\s*(?:个)?[天周月年])"
+    r"|(今天|昨天|前天|本周|上周|这个月|上个月|今年|去年)"
+    r"|(this|last)\s+(week|month|year)"
+    r"|(\d+)\s*days?\s*ago"
+    r"|(\d+)\s*weeks?\s*ago",
+    re.IGNORECASE,
+)
+
+
+def _extract_recall_time_hint(message: str) -> str:
+    """从消息中提取回顾时间线索原文，如无则返回空字符串。"""
+    if not message:
+        return ""
+    m = _RECALL_TIME_EXTRACT_RE.search(message)
+    return m.group(0).strip() if m else ""
+
 
 def _has_recall_markers(message: str) -> bool:
     """Check if message contains recall/reminiscence markers.
@@ -645,20 +698,27 @@ class IntentAnalyzer:
     ) -> IntentResult:
         """Analyze user message intent. Rule-based shortcut for obvious greetings
         and simple queries, LLM analysis for everything else."""
+        # Fast check: if message contains recall markers, skip fast-paths
+        # so that is_recall_intent and memory_scope are set correctly.
+        _recall = _has_recall_markers(message)
+
         # Rule-based fast-path for simple queries (math, date, definitions)
-        query_result = _try_fast_query_shortcut(message)
-        if query_result is not None:
-            return query_result
+        if not _recall:
+            query_result = _try_fast_query_shortcut(message)
+            if query_result is not None:
+                return query_result
 
         # Rule-based fast-path for greetings and other unambiguous casual chat.
-        chat_result = _try_fast_chat_shortcut(message, has_history=has_history)
-        if chat_result is not None:
-            return chat_result
+        if not _recall:
+            chat_result = _try_fast_chat_shortcut(message, has_history=has_history)
+            if chat_result is not None:
+                return chat_result
 
         # Task keyword fast-path: explicit imperatives skip LLM intent analysis
-        task_result = _try_fast_task_shortcut(message)
-        if task_result is not None:
-            return task_result
+        if not _recall:
+            task_result = _try_fast_task_shortcut(message)
+            if task_result is not None:
+                return task_result
 
         # Per-instance intent cache: reuse recent results for identical/similar messages
         _cache_key = _normalize_for_cache(message)
@@ -682,13 +742,18 @@ class IntentAnalyzer:
             result = _parse_intent_output(raw_output, message)
             # If user message contains recall markers, upgrade memory scope to FULL
             # to ensure comprehensive historical memory search.
-            if _has_recall_markers(message) and result.memory_scope in (
-                MemoryScope.PINNED_ONLY, MemoryScope.RELEVANT
-            ):
-                result.memory_scope = MemoryScope.FULL
+            if _has_recall_markers(message):
+                result.is_recall_intent = True
+                if not result.recall_time_hint:
+                    result.recall_time_hint = _extract_recall_time_hint(message)
+                if result.memory_scope in (
+                    MemoryScope.PINNED_ONLY, MemoryScope.RELEVANT
+                ):
+                    result.memory_scope = MemoryScope.FULL
                 logger.info(
                     f"[IntentAnalyzer] Recall markers detected, "
-                    f"memory_scope upgraded: {result.memory_scope.value}"
+                    f"memory_scope: {result.memory_scope.value}, "
+                    f"time_hint: {result.recall_time_hint!r}"
                 )
             self._intent_cache[_cache_key] = (_time.monotonic(), result)
             return result
@@ -790,6 +855,8 @@ def _parse_intent_output(raw_output: str, message: str) -> IntentResult:
             "destructive",
             "scope",
             "suggest_plan",
+            "is_recall_intent",
+            "recall_time_hint",
         ):
             if current_key:
                 extracted[current_key] = "\n".join(current_lines).strip()
@@ -890,6 +957,12 @@ def _parse_intent_output(raw_output: str, message: str) -> IntentResult:
         else RiskLevelHint.NONE,
     )
 
+    is_recall_intent = _parse_bool(
+        extracted.get("is_recall_intent", ""),
+        default=False,
+    )
+    recall_time_hint = extracted.get("recall_time_hint", "").strip()
+
     force_tool = intent in (IntentType.TASK,) and requires_tools
     todo_required = task_type == "compound"
 
@@ -912,6 +985,8 @@ def _parse_intent_output(raw_output: str, message: str) -> IntentResult:
         evidence_recommended=evidence_recommended,
         requires_project_context=requires_project_context,
         risk_level_hint=risk_level_hint,
+        is_recall_intent=is_recall_intent,
+        recall_time_hint=recall_time_hint,
     )
 
     # Complexity analysis — purely from LLM output, no keyword matching

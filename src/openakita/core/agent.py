@@ -3266,6 +3266,8 @@ class Agent:
         ctx_window = self._get_raw_context_window()
         intent = getattr(self, "_current_intent", None)
         _mem_keywords = intent.memory_keywords if intent else None
+        _is_recall = getattr(intent, "is_recall_intent", False) if intent else False
+        _recall_time = getattr(intent, "recall_time_hint", "") if intent else ""
 
         model_lookup_id = self._resolve_model_lookup_id(
             session=session,
@@ -3370,6 +3372,8 @@ class Agent:
             tuple(sorted(_mem_keywords)) if _mem_keywords else (),
             _working_facts_cache_key,
             bool((session_context or {}).get("evidence_recommended", False)),
+            _is_recall,
+            _recall_time,
         )
 
         if (
@@ -3399,6 +3403,8 @@ class Agent:
                 catalog_scope=_strategy.catalog_scope,
                 include_project_guidelines=_strategy.include_project_guidelines,
                 intent_tool_hints=_intent_tool_hints,
+                recall_intent=_is_recall,
+                recall_time_hint=_recall_time,
             )
             self._system_prompt_cache[_cache_key] = prompt
             self._system_prompt_cache_dirty = False

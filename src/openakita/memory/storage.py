@@ -471,6 +471,12 @@ class MemoryStorage:
         c.execute("CREATE INDEX IF NOT EXISTS idx_episodes_outcome ON episodes(outcome)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_memories_episode ON memories(source_episode_id)")
 
+        # v4.1: episode quality score for recall filtering
+        try:
+            c.execute("ALTER TABLE episodes ADD COLUMN quality REAL DEFAULT 0.5")
+        except sqlite3.OperationalError:
+            pass
+
         c.execute("""
             CREATE TABLE IF NOT EXISTS scratchpad (
                 user_id TEXT PRIMARY KEY,
@@ -650,6 +656,17 @@ class MemoryStorage:
         except sqlite3.OperationalError:
             pass
 
+        try:
+            c.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS episodes_fts USING fts5(
+                    summary, goal, entities, tags,
+                    content=episodes, content_rowid=rowid,
+                    tokenize='unicode61'
+                )
+            """)
+        except sqlite3.OperationalError:
+            pass
+
         for trigger_sql in [
             """CREATE TRIGGER IF NOT EXISTS memories_fts_ai AFTER INSERT ON memories BEGIN
                 INSERT INTO memories_fts(rowid, content, subject, predicate, tags)
@@ -678,6 +695,20 @@ class MemoryStorage:
                 VALUES ('delete', old.rowid, old.description, old.transcription, old.extracted_text, old.filename, old.tags);
                 INSERT INTO attachments_fts(rowid, description, transcription, extracted_text, filename, tags)
                 VALUES (new.rowid, new.description, new.transcription, new.extracted_text, new.filename, new.tags);
+            END""",
+            """CREATE TRIGGER IF NOT EXISTS episodes_fts_ai AFTER INSERT ON episodes BEGIN
+                INSERT INTO episodes_fts(rowid, summary, goal, entities, tags)
+                VALUES (new.rowid, new.summary, new.goal, new.entities, new.tags);
+            END""",
+            """CREATE TRIGGER IF NOT EXISTS episodes_fts_ad AFTER DELETE ON episodes BEGIN
+                INSERT INTO episodes_fts(episodes_fts, rowid, summary, goal, entities, tags)
+                VALUES ('delete', old.rowid, old.summary, old.goal, old.entities, old.tags);
+            END""",
+            """CREATE TRIGGER IF NOT EXISTS episodes_fts_au AFTER UPDATE ON episodes BEGIN
+                INSERT INTO episodes_fts(episodes_fts, rowid, summary, goal, entities, tags)
+                VALUES ('delete', old.rowid, old.summary, old.goal, old.entities, old.tags);
+                INSERT INTO episodes_fts(rowid, summary, goal, entities, tags)
+                VALUES (new.rowid, new.summary, new.goal, new.entities, new.tags);
             END""",
         ]:
             try:
@@ -1248,8 +1279,8 @@ class MemoryStorage:
                     INSERT OR REPLACE INTO episodes
                     (id, session_id, summary, goal, outcome, started_at, ended_at,
                      action_nodes, entities, tools_used, linked_memory_ids, tags,
-                     importance_score, access_count, source)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     importance_score, access_count, source, quality)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         episode.get("id", ""),
@@ -1267,6 +1298,7 @@ class MemoryStorage:
                         episode.get("importance_score", 0.5),
                         episode.get("access_count", 0),
                         episode.get("source", "session_end"),
+                        episode.get("quality", 0.5),
                     ),
                 )
                 self._conn.commit()
@@ -1351,6 +1383,7 @@ class MemoryStorage:
             "tags",
             "entities",
             "tools_used",
+            "quality",
         }
         filtered = {k: v for k, v in updates.items() if k in allowed}
         if not filtered:
@@ -1392,6 +1425,68 @@ class MemoryStorage:
                     raise
                 logger.error(f"Failed to link turns to episode: {e}")
                 return 0
+
+    def count_episodes(self) -> int:
+        if not self._conn:
+            return 0
+        try:
+            cur = self._conn.execute("SELECT COUNT(*) FROM episodes")
+            row = cur.fetchone()
+            return row[0] if row else 0
+        except Exception:
+            return 0
+
+    def search_episodes_fts(
+        self,
+        query: str,
+        days_back: int = 7,
+        limit: int = 10,
+    ) -> list[dict]:
+        """FTS5 fallback search on episodes summary/goal/entities/tags."""
+        if not self._conn or not query or not query.strip():
+            return []
+        cutoff = (datetime.now() - timedelta(days=days_back)).isoformat()
+
+        def _deser_rows(cur) -> list[dict]:
+            return self._rows_to_dicts(
+                cur,
+                json_fields=["action_nodes", "entities", "tools_used", "linked_memory_ids", "tags"],
+            )
+
+        # S1: FTS5 MATCH with sanitized query
+        safe_query = self._sanitize_fts_query(query)
+        if safe_query:
+            try:
+                cur = self._conn.execute(
+                    """SELECT e.* FROM episodes e
+                       INNER JOIN episodes_fts ef ON e.rowid = ef.rowid
+                       WHERE episodes_fts MATCH ? AND e.started_at >= ?
+                       ORDER BY e.started_at DESC
+                       LIMIT ?""",
+                    (safe_query, cutoff, limit),
+                )
+                results = _deser_rows(cur)
+                if results:
+                    return results
+            except Exception as e:
+                logger.debug("[MemoryStorage] episodes FTS match failed: %s", e)
+
+        # S2: LIKE fallback for CJK text / special characters
+        like_pattern = f"%{query}%"
+        try:
+            cur = self._conn.execute(
+                """SELECT e.* FROM episodes e
+                   WHERE e.started_at >= ?
+                     AND (e.summary LIKE ? OR e.goal LIKE ?
+                          OR e.entities LIKE ? OR e.tags LIKE ?)
+                   ORDER BY e.started_at DESC
+                   LIMIT ?""",
+                (cutoff, like_pattern, like_pattern, like_pattern, like_pattern, limit),
+            )
+            return _deser_rows(cur)
+        except Exception as e:
+            logger.debug("[MemoryStorage] episodes LIKE fallback failed: %s", e)
+            return []
 
     # ======================================================================
     # Scratchpad CRUD

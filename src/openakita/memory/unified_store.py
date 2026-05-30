@@ -563,6 +563,24 @@ class UnifiedStore:
 
     def save_episode(self, episode: Episode) -> str:
         self.db.save_episode(episode.to_dict())
+        backend = getattr(self, "search", None)
+        if backend is not None and hasattr(backend, "upsert_episode"):
+            try:
+                meta = {
+                    "session_id": episode.session_id,
+                    "goal": episode.goal,
+                    "started_at": episode.started_at.isoformat() if episode.started_at else "",
+                    "ended_at": episode.ended_at.isoformat() if episode.ended_at else "",
+                    "outcome": episode.outcome,
+                    "tags": episode.tags,
+                }
+                backend.upsert_episode(
+                    episode.id,
+                    episode.summary or episode.goal or "",
+                    meta,
+                )
+            except Exception:
+                logger.debug("[UnifiedStore] LanceDB episode sync skipped", exc_info=True)
         return episode.id
 
     def get_episode(self, episode_id: str) -> Episode | None:
@@ -581,6 +599,15 @@ class UnifiedStore:
 
     def link_turns_to_episode(self, session_id: str, episode_id: str) -> int:
         return self.db.link_turns_to_episode(session_id, episode_id)
+
+    def count_episodes(self) -> int:
+        return self.db.count_episodes()
+
+    def search_episodes_fts(
+        self, query: str, days_back: int = 7, limit: int = 10
+    ) -> list[Episode]:
+        rows = self.db.search_episodes_fts(query, days_back=days_back, limit=limit)
+        return [Episode.from_dict(r) for r in rows]
 
     # ======================================================================
     # Scratchpad

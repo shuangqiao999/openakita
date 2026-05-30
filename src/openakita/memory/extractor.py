@@ -673,6 +673,12 @@ duration 参考:
             episode.goal = coerce_text(turns[0].content)[:100] if turns[0].content else ""
             episode.entities = self._extract_entities(turns)
 
+        # Low-quality summary auto-fill: use goal if summary is too short
+        if len(episode.summary.strip()) < 20 and episode.goal and len(episode.goal.strip()) >= 10:
+            episode.summary = episode.goal
+
+        episode.quality = _assess_episode_quality(episode)
+
         return episode
 
     def _extract_action_nodes(self, turns: list[ConversationTurn]) -> list[ActionNode]:
@@ -1124,3 +1130,40 @@ duration 参考:
                 unique.append(memory)
                 existing_contents.add(content_key)
         return unique
+
+
+def _assess_episode_quality(ep: "Episode") -> float:
+    """评估 episode 摘要质量，返回 0-1 分。
+
+    考虑因素：summary 长度、是否为 fallback 占位文本、goal 是否有意义、实体数量。
+    """
+    summary = (ep.summary or "").strip()
+    goal = (ep.goal or "").strip()
+    score = 0.5
+
+    if len(summary) >= 50:
+        score += 0.25
+    elif len(summary) >= 20:
+        score += 0.1
+    elif len(summary) < 10:
+        score -= 0.35
+
+    if summary.startswith("对话涉及:") or (summary.startswith("共 ") and "轮对话" in summary):
+        score -= 0.25
+
+    if goal and len(goal) >= 10:
+        score += 0.1
+
+    entities = ep.entities or []
+    if len(entities) >= 3:
+        score += 0.15
+    elif len(entities) >= 1:
+        score += 0.05
+
+    score = max(0.0, min(1.0, score))
+    if score < 0.3:
+        logger.debug(
+            "[Extractor] Low quality episode: id=%s score=%.2f summary='%.50s'",
+            getattr(ep, "id", "?"), score, summary[:50],
+        )
+    return score

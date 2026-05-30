@@ -153,6 +153,37 @@ MEMORY_TOOLS = [
         },
     },
     {
+        "name": "list_recent_topics",
+        "category": "Memory",
+        "description": "List recent conversation topics/sessions WITHOUT keyword search. Use when user asks 'what did we discuss', 'what topics did we talk about', 'what were we saying', '回顾一下我们聊了什么', '我们这几天讨论了什么话题'. Returns time-ordered list of session goals and summaries.",
+        "detail": """列出最近 N 天的会话话题列表（按时间倒序）。
+
+**与 list_recent_tasks 的区别**：
+- `list_recent_tasks`: 列出已完成的任务（面向执行结果）
+- `list_recent_topics`: 列出会话话题（面向对话回顾）
+
+**适用场景**：
+- 用户问"最近聊了什么话题？"
+- 用户问"这几天我们讨论了什么？"
+- 用户问"之前我们聊到哪儿了？"
+- 用户想回顾过去几天的会话内容""",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days": {
+                    "type": "integer",
+                    "description": "查看最近几天的会话话题（默认 7）",
+                    "default": 7,
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "最多返回几条（默认 10）",
+                    "default": 10,
+                },
+            },
+        },
+    },
+    {
         "name": "search_conversation_traces",
         "category": "Memory",
         "description": "Search full conversation history including tool calls and results by keyword. Use when search_memory results lack detail and you need exact tool parameters, return values, or original conversation text. Searches SQLite conversation records, reasoning traces, and conversation history files.",

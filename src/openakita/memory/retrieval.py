@@ -1024,6 +1024,299 @@ class RetrievalEngine:
             out.append(c)
         return out
 
+    # ==================================================================
+    # Recall Retrieval — 回顾意图专用
+    # ==================================================================
+
+    MAX_RECALL_DAYS = 90
+
+    def retrieve_recall_context(
+        self,
+        query: str = "",
+        time_hint: str = "",
+        max_tokens: int = 800,
+    ) -> str:
+        """专用回顾检索：返回最近会话话题摘要列表（按时间倒序）。
+
+        S1: FTS5 搜索 episode 摘要（向量搜索待 Phase 6 接入）
+        S2: 时间兜底（获取 N 天内全部 episode）
+        S3: 去重 + 按时间排序 + 格式化
+
+        数据稀疏降级：episodes 为空时 → _recall_fallback_from_turns()
+        """
+        days = _parse_days_from_hint(time_hint)
+        days = min(days, self.MAX_RECALL_DAYS)
+
+        # S0: 数据稀疏检查
+        episode_count = self.store.count_episodes()
+        logger.info(
+            "[Recall] query='%.60s' time_hint=%r days=%d episode_count=%d",
+            query, time_hint, days, episode_count,
+        )
+        if episode_count == 0:
+            logger.info("[Recall] Episode table empty, falling back to turns")
+            return self._recall_fallback_from_turns(days)
+
+        # S0.5: 向量搜索 (LanceDB)
+        matches: dict[str, dict] = {}
+        vec_hits = 0
+        if query and query.strip():
+            search_backend = getattr(self.store, "search", None)
+            if search_backend is not None and hasattr(search_backend, "search_episodes"):
+                try:
+                    vec_results = search_backend.search_episodes(query, limit=10)
+                    for item in vec_results:
+                        ep_id = item.get("id", "")
+                        if ep_id and ep_id not in matches:
+                            matches[ep_id] = {
+                                "episode": item,
+                                "source": "vector",
+                            }
+                    vec_hits = len(matches)
+                    logger.info("[Recall] vector_search: %d candidates", vec_hits)
+                except Exception as e:
+                    logger.debug("[Recall] vector_search failed: %s", e)
+
+        # S1: FTS5 搜索
+        fts_hits = 0
+        if query and query.strip():
+            try:
+                fts_results = self.store.search_episodes_fts(
+                    query, days_back=days, limit=10
+                )
+                for ep in fts_results:
+                    ep_id = getattr(ep, "id", "")
+                    if ep_id and ep_id not in matches:
+                        matches[ep_id] = {
+                            "episode": ep,
+                            "source": "fts",
+                        }
+                fts_hits = len(matches) - vec_hits
+                logger.info("[Recall] fts_search: %d new candidates", fts_hits)
+            except Exception as e:
+                logger.debug("[Recall] FTS episode search failed: %s", e)
+
+        # S2: 时间兜底
+        time_hit_count = 0
+        try:
+            time_episodes = self.store.get_recent_episodes(days=days, limit=20)
+            for ep in time_episodes:
+                ep_id = getattr(ep, "id", "")
+                if ep_id and ep_id not in matches:
+                    matches[ep_id] = {
+                        "episode": ep,
+                        "source": "time_fallback",
+                    }
+            time_hit_count = len(matches) - vec_hits - max(fts_hits, 0)
+            logger.info("[Recall] time_fallback: %d episodes added", time_hit_count)
+        except Exception as e:
+            logger.debug("[Recall] Time-window episode fetch failed: %s", e)
+
+        logger.info("[Recall] after merge+dedup: %d unique episodes", len(matches))
+
+        if not matches:
+            logger.info("[Recall] No candidates found, falling back to turns")
+            return self._recall_fallback_from_turns(days)
+
+        # S2.5: 质量过滤 — 丢弃低质量 episode
+        filtered = {
+            ep_id: item
+            for ep_id, item in matches.items()
+            if _episode_quality(item["episode"]) >= 0.3
+        }
+        logger.info(
+            "[Recall] after quality filter (>=0.3): %d/%d episodes",
+            len(filtered), len(matches),
+        )
+        if not filtered:
+            return self._recall_fallback_from_turns(days)
+
+        # S3: 排序 + 格式化
+        sorted_eps = sorted(
+            filtered.values(),
+            key=lambda x: str(getattr(x["episode"], "started_at", "")),
+            reverse=True,
+        )
+        output = self._format_recall_output(sorted_eps[:15], days)
+        logger.info("[Recall] output: %d episodes, ~%d chars", min(len(sorted_eps), 15), len(output))
+        return output
+
+    def _recall_fallback_from_turns(self, days: int) -> str:
+        """Episode 数据稀疏时，从 conversation_turns 聚合生成简单主题列表。"""
+        scope_pairs = self._scope_pairs
+        user_id = scope_pairs[0][2] if scope_pairs else "default"
+        try:
+            turns = self.store.db.summary_recent_turns(
+                user_id=user_id,
+                days_back=days,
+                max_turns=50,
+            )
+        except Exception as e:
+            logger.debug("[Recall] summary_recent_turns failed: %s", e)
+            return ""
+
+        if not turns:
+            return ""
+
+        sessions: dict[str, list[dict]] = {}
+        for t in turns:
+            sid = t.get("session_id", "unknown")
+            sessions.setdefault(sid, []).append(t)
+
+        lines = [f"[最近 {days} 天内的对话话题，共 {len(sessions)} 个会话]"]
+        for sid, sess_turns in list(sessions.items())[:10]:
+            user_msgs = [
+                t.get("content_preview", "")[:80]
+                for t in sess_turns
+                if t.get("role") == "user"
+            ]
+            topic = user_msgs[0] if user_msgs else "(无用户消息)"
+            short_id = sid[:8]
+            lines.append(f"- **{short_id}...**: {topic}")
+            if len(user_msgs) > 1:
+                lines.append(f"  后续: {user_msgs[1][:60]}")
+
+        total_chars = sum(len(l) for l in lines)
+        if total_chars > 3000:
+            lines.append("\n[更多内容可通过 search_conversation_traces 查找]")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_recall_output(
+        episodes: list[dict],
+        days: int,
+    ) -> str:
+        lines = [f"## 近期话题回顾（最近 {days} 天）\n"]
+        for i, item in enumerate(episodes, 1):
+            ep = item["episode"]
+            date_str = str(getattr(ep, "started_at", ""))[:10]
+            goal = getattr(ep, "goal", "") or "(未设定目标)"
+            summary = (getattr(ep, "summary", "") or "")[:200]
+            outcome = getattr(ep, "outcome", "") or ""
+
+            line = f"{i}. **{date_str}** — {goal}"
+            if summary and summary != goal:
+                line += f"\n   摘要: {summary}"
+            if outcome:
+                emoji_map = {"success": "✓", "partial": "△", "failed": "✗", "ongoing": "…"}
+                line += f"  [{emoji_map.get(outcome, outcome)}]"
+
+            entities = getattr(ep, "entities", []) or []
+            if entities:
+                entity_str = ", ".join(str(e) for e in entities[:5])
+                line += f"\n   相关: {entity_str}"
+            lines.append(line)
+
+        lines.append(
+            "\n> 如需更详细的事实/决策细节，可使用 `search_memory` "
+            "或 `search_conversation_traces` 工具查找。"
+        )
+        return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# 时间提示解析（在类外定义，供 RetrievalEngine 和其他模块使用）
+# ---------------------------------------------------------------------------
+
+_CN_NUM = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
+            "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+
+_CN_NUM_FULL: dict[str, int] = {
+    "零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+    "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
+    "百": 100, "千": 1000, "万": 10000,
+}
+
+
+def _parse_chinese_or_int(val: str) -> int:
+    """Parse Arabic digits or Chinese numerals to integer.
+
+    Handles positional "二十五" → 25, "一百二十" → 120.
+    Falls back to simple addition for edge cases.
+    """
+    if val.isdigit():
+        return int(val)
+
+    # Positional parsing: 二十五 → 2*10 + 5 = 25
+    total = 0
+    segment = 0  # current number before a multiplier like 百/千/万
+    for ch in val:
+        n = _CN_NUM_FULL.get(ch)
+        if n is None:
+            continue
+        if n >= 100:
+            segment = (segment or 1) * n
+            total += segment
+            segment = 0
+        elif n == 10:
+            segment = (segment or 1) * n
+            total += segment
+            segment = 0
+        else:
+            segment += n
+    total += segment
+    return total or 1
+
+
+_TIME_PATTERNS: list[tuple[str, object]] = [
+    (r"([一二两三四五六七八九十]+|\d+)\s*天[前内]", lambda m: _parse_chinese_or_int(m.group(1))),
+    (r"([一二两三四五六七八九十]+|\d+)\s*周[前内]", lambda m: _parse_chinese_or_int(m.group(1)) * 7),
+    (r"([一二两三四五六七八九十]+|\d+)\s*个?月[前内]", lambda m: _parse_chinese_or_int(m.group(1)) * 30),
+    (r"(\d+)\s*年[前内]", lambda m: int(m.group(1)) * 365),
+    (r"(今天|当天|今日)", 1),
+    (r"(昨天|昨日)", 2),
+    (r"(前天|三天前)", 3),
+    (r"(本周|这周|这星期|这几天)", 7),
+    (r"(上周|上个星期)", 14),
+    (r"上上周", 21),
+    (r"(本月|这个月)", 30),
+    (r"上个月", 60),
+    (r"今年", 0),
+    (r"去年", 365),
+    (r"最近", 7),
+    (r"today", 1),
+    (r"yesterday", 2),
+    (r"this week", 7),
+    (r"last week", 14),
+    (r"this month", 30),
+    (r"last month", 60),
+    (r"(\d+)\s*days?\s*ago", lambda m: int(m.group(1))),
+    (r"(\d+)\s*weeks?\s*ago", lambda m: int(m.group(1)) * 7),
+]
+
+
+def _parse_days_from_hint(time_hint: str = "", default_days: int = 7) -> int:
+    """从时间提示文本中提取天数。无法解析时返回 default_days。"""
+    if not time_hint or not time_hint.strip():
+        return default_days
+    text = time_hint.strip().lower()
+    for pattern, resolver in _TIME_PATTERNS:
+        m = re.search(pattern, text)
+        if m:
+            if callable(resolver):
+                return resolver(m)
+            if resolver == 0:
+                return _days_this_year()
+            return int(resolver)
+    return default_days
+
+
+def _days_this_year(_m=None) -> int:
+    from datetime import datetime
+    return (datetime.now() - datetime(datetime.now().year, 1, 1)).days
+
+
+def _episode_quality(ep: object) -> float:
+    """读取 episode 的 quality 字段，若无则调用 extractor 的质量评估函数。"""
+    quality = getattr(ep, "quality", None)
+    if quality is not None:
+        try:
+            return float(quality)
+        except (TypeError, ValueError):
+            pass
+    from .extractor import _assess_episode_quality  # noqa: PLC0415
+    return _assess_episode_quality(ep)
+
 
 def retrieve_truncated_context(
     session_id: str, current_turn: int = 0

@@ -39,6 +39,7 @@ class MemoryHandler:
         "search_memory",
         "get_memory_stats",
         "list_recent_tasks",
+        "list_recent_topics",
         "search_conversation_traces",
         "trace_memory",
         "search_relational_memory",
@@ -382,6 +383,8 @@ class MemoryHandler:
             return self._get_memory_stats(params)
         elif tool_name == "list_recent_tasks":
             result = self._list_recent_tasks(params)
+        elif tool_name == "list_recent_topics":
+            result = self._list_recent_topics(params)
         elif tool_name == "search_conversation_traces":
             result = self._search_conversation_traces(params)
         elif tool_name == "trace_memory":
@@ -786,6 +789,50 @@ class MemoryHandler:
             if ep.summary:
                 lines.append(f"   摘要: {ep.summary[:120]}")
             lines.append("")
+
+        return "\n".join(lines)
+
+    def _list_recent_topics(self, params: dict) -> str:
+        """列出最近 N 天的会话话题摘要（免关键词搜索）。
+
+        调用 RetrievalEngine.retrieve_recall_context() 获取
+        按时间排序的会话话题列表，返回 goal + summary + outcome。
+        区别于 search_conversation_traces（需要关键词），此工具
+        直接按时间范围返回话题列表。
+        """
+        days = int(params.get("days", 7))
+        days = min(days, 90)
+        limit = int(params.get("limit", 10))
+
+        mm = self.agent.memory_manager
+        engine = getattr(mm, "retrieval_engine", None)
+        if engine and hasattr(engine, "retrieve_recall_context"):
+            result = engine.retrieve_recall_context(
+                query="",
+                time_hint=f"{days}天",
+            )
+            if result:
+                return result
+
+        store = getattr(mm, "store", None)
+        if not store:
+            return "记忆系统未初始化。"
+
+        episodes = store.get_recent_episodes(days=days, limit=limit)
+        if not episodes:
+            return f"最近 {days} 天没有会话记录。"
+
+        lines = [f"最近 {days} 天的会话话题（共 {min(len(episodes), limit)} 条）：\n"]
+        for i, ep in enumerate(episodes[:limit], 1):
+            goal = ep.goal or "(未记录目标)"
+            summary = (ep.summary or "")[:150]
+            outcome = ep.outcome or "unknown"
+            started = str(getattr(ep, "started_at", ""))[:10]
+            line = f"{i}. **{started}** — {goal}"
+            if summary and summary != goal:
+                line += f"\n   摘要: {summary}"
+            line += f"  [{outcome}]"
+            lines.append(line)
 
         return "\n".join(lines)
 
