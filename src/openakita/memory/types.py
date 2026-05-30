@@ -474,10 +474,10 @@ class Episode:
             goal=data.get("goal", ""),
             outcome=data.get("outcome", "completed"),
             started_at=datetime.fromisoformat(data["started_at"])
-            if "started_at" in data
+            if data.get("started_at", "").strip()
             else datetime.now(),
             ended_at=datetime.fromisoformat(data["ended_at"])
-            if "ended_at" in data
+            if data.get("ended_at", "").strip()
             else datetime.now(),
             action_nodes=nodes,
             entities=data.get("entities", []),

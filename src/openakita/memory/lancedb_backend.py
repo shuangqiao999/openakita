@@ -213,7 +213,7 @@ class LanceDBBackend:
                     )
                 except Exception as e:
                     logger.warning(
-                        "[LanceDBBackend] Episodes table corrupted: %s — dropping", e
+                        "[LanceDBBackend] Episodes table corrupted: %s — dropping and will rebuild", e
                     )
                     self._episodes_table = None
                     self._episodes_enabled = False
@@ -221,14 +221,22 @@ class LanceDBBackend:
                         db.drop_table(self._episodes_table_name())
                     except Exception:
                         pass
+                    if self._embedding_dim > 0:
+                        self._ensure_episodes_table(self._embedding_dim)
         except Exception as e:
             logger.warning(f"[LanceDBBackend] Init/open failed: {e}")
             self._enabled = False
 
     def _read_table_dim(self) -> int:
+        return self._read_table_dim_for(self._table)
+
+    @staticmethod
+    def _read_table_dim_for(table: object) -> int:
         """从 LanceDB table schema 读取向量维度"""
+        if table is None:
+            return 0
         try:
-            schema = self._table.schema
+            schema = table.schema
             vec_field = schema.field("vector")
             if vec_field is not None:
                 dim = getattr(vec_field.type, "list_size", 0)
@@ -872,14 +880,25 @@ class LanceDBBackend:
             pa.field("ended_at", pa.string()),
             pa.field("metadata", pa.string()),
         ])
-        self._episodes_table = self._db.create_table(
-            self._episodes_table_name(), schema=schema, mode="overwrite",
-        )
-        self._episodes_enabled = True
-        logger.info(
-            "[LanceDBBackend] Created episodes table: dim=%d",
-            embedding_dim,
-        )
+        tbl_name = self._episodes_table_name()
+        try:
+            if tbl_name in self._db.list_tables():
+                self._episodes_table = self._db.open_table(tbl_name)
+            else:
+                self._episodes_table = self._db.create_table(
+                    tbl_name, schema=schema, mode="create",
+                )
+            self._episodes_enabled = True
+            logger.info(
+                "[LanceDBBackend] Opened or created episodes table: dim=%d",
+                embedding_dim,
+            )
+        except Exception as e:
+            logger.warning(
+                "[LanceDBBackend] Failed to ensure episodes table: %s", e
+            )
+            self._episodes_table = None
+            self._episodes_enabled = False
 
     def upsert_episode(
         self, episode_id: str, summary_text: str, meta: dict | None = None
@@ -904,6 +923,13 @@ class LanceDBBackend:
             self._mark_embedding_failure("upsert_episode_timeout")
             return False
 
+        if vec is not None and len(vec) != vec_dim:
+            logger.warning(
+                "[LanceDBBackend] upsert_episode dim mismatch: expected %d, got %d",
+                vec_dim, len(vec),
+            )
+            vec_dim = len(vec)
+
         self._mark_embedding_ok()
 
         with self._lock:
@@ -918,6 +944,24 @@ class LanceDBBackend:
 
             if self._episodes_table is None:
                 return False
+
+            # Check if table dimension matches embedder — rebuild if changed
+            if self._episodes_table is not None:
+                tbl_dim = self._read_table_dim_for(self._episodes_table)
+                if tbl_dim > 0 and tbl_dim != vec_dim:
+                    logger.warning(
+                        "[LanceDBBackend] Episodes table dim changed: %d -> %d, rebuilding",
+                        tbl_dim, vec_dim,
+                    )
+                    try:
+                        self._db.drop_table(self._episodes_table_name())
+                    except Exception:
+                        pass
+                    self._episodes_table = None
+                    self._episodes_enabled = False
+                    self._ensure_episodes_table(vec_dim)
+                    if self._episodes_table is None:
+                        return False
 
             try:
                 meta_str = json.dumps(meta or {}, ensure_ascii=False)

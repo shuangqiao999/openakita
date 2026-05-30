@@ -1250,7 +1250,7 @@ class MemoryStorage:
         cleaned = "".join(c if c not in special else " " for c in query)
         tokens = cleaned.split()
         if not tokens:
-            return '""'
+            return ""
         return " OR ".join(tokens)
 
     def rebuild_fts_index(self) -> None:
@@ -1472,7 +1472,8 @@ class MemoryStorage:
                 logger.debug("[MemoryStorage] episodes FTS match failed: %s", e)
 
         # S2: LIKE fallback for CJK text / special characters
-        like_pattern = f"%{query}%"
+        escaped_query = query.replace("%", r"\%").replace("_", r"\_")
+        like_pattern = f"%{escaped_query}%"
         try:
             cur = self._conn.execute(
                 """SELECT e.* FROM episodes e

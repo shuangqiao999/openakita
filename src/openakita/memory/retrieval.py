@@ -1069,7 +1069,7 @@ class RetrievalEngine:
                         ep_id = item.get("id", "")
                         if ep_id and ep_id not in matches:
                             matches[ep_id] = {
-                                "episode": item,
+                                "episode": Episode.from_dict(item),
                                 "source": "vector",
                             }
                     vec_hits = len(matches)
@@ -1099,6 +1099,7 @@ class RetrievalEngine:
         # S2: 时间兜底
         time_hit_count = 0
         try:
+            matches_before_time = len(matches)
             time_episodes = self.store.get_recent_episodes(days=days, limit=20)
             for ep in time_episodes:
                 ep_id = getattr(ep, "id", "")
@@ -1107,7 +1108,7 @@ class RetrievalEngine:
                         "episode": ep,
                         "source": "time_fallback",
                     }
-            time_hit_count = len(matches) - vec_hits - max(fts_hits, 0)
+            time_hit_count = len(matches) - matches_before_time
             logger.info("[Recall] time_fallback: %d episodes added", time_hit_count)
         except Exception as e:
             logger.debug("[Recall] Time-window episode fetch failed: %s", e)
@@ -1119,11 +1120,13 @@ class RetrievalEngine:
             return self._recall_fallback_from_turns(days)
 
         # S2.5: 质量过滤 — 丢弃低质量 episode
-        filtered = {
-            ep_id: item
-            for ep_id, item in matches.items()
-            if _episode_quality(item["episode"]) >= 0.3
-        }
+        filtered = {}
+        for ep_id, item in matches.items():
+            try:
+                if _episode_quality(item["episode"]) >= 0.3:
+                    filtered[ep_id] = item
+            except Exception:
+                filtered[ep_id] = item  # keep if quality check fails
         logger.info(
             "[Recall] after quality filter (>=0.3): %d/%d episodes",
             len(filtered), len(matches),
@@ -1218,54 +1221,19 @@ class RetrievalEngine:
 # 时间提示解析（在类外定义，供 RetrievalEngine 和其他模块使用）
 # ---------------------------------------------------------------------------
 
-_CN_NUM = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
-            "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
-
-_CN_NUM_FULL: dict[str, int] = {
-    "零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
-    "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
-    "百": 100, "千": 1000, "万": 10000,
-}
-
-
-def _parse_chinese_or_int(val: str) -> int:
-    """Parse Arabic digits or Chinese numerals to integer.
-
-    Handles positional "二十五" → 25, "一百二十" → 120.
-    Falls back to simple addition for edge cases.
-    """
-    if val.isdigit():
-        return int(val)
-
-    # Positional parsing: 二十五 → 2*10 + 5 = 25
-    total = 0
-    segment = 0  # current number before a multiplier like 百/千/万
-    for ch in val:
-        n = _CN_NUM_FULL.get(ch)
-        if n is None:
-            continue
-        if n >= 100:
-            segment = (segment or 1) * n
-            total += segment
-            segment = 0
-        elif n == 10:
-            segment = (segment or 1) * n
-            total += segment
-            segment = 0
-        else:
-            segment += n
-    total += segment
-    return total or 1
-
-
 _TIME_PATTERNS: list[tuple[str, object]] = [
-    (r"([一二两三四五六七八九十]+|\d+)\s*天[前内]", lambda m: _parse_chinese_or_int(m.group(1))),
-    (r"([一二两三四五六七八九十]+|\d+)\s*周[前内]", lambda m: _parse_chinese_or_int(m.group(1)) * 7),
-    (r"([一二两三四五六七八九十]+|\d+)\s*个?月[前内]", lambda m: _parse_chinese_or_int(m.group(1)) * 30),
-    (r"(\d+)\s*年[前内]", lambda m: int(m.group(1)) * 365),
+    #      day/week/month patterns with flexible suffix. "半" handled specially.
+    (r"([一二两三四五六七八九十]+|\d+)\s*天(?:[前内以来]|左右|之久)?", lambda m: _parse_chinese_or_int(m.group(1))),
+    (r"([一二两三四五六七八九十]+|\d+)\s*(?:个)?(?:星期|周)(?:[前内以来]|左右|之久)?", lambda m: _parse_chinese_or_int(m.group(1)) * 7),
+    (r"([一二两三四五六七八九十]+|\d+)\s*(?:个)?月(?:[前内以来]|左右|之久)?", lambda m: _parse_chinese_or_int(m.group(1)) * 30),
+    (r"(\d+)\s*年(?:[前内以来]|左右|之久)?", lambda m: int(m.group(1)) * 365),
+    # "半" as standalone quantifier — treated as fraction, handled in lambda
+    (r"半\s*(?:个)?天(?:[前内以来]|左右|之久)?", 1),
+    (r"半\s*(?:个)?(?:星期|周)(?:[前内以来]|左右|之久)?", 7),
+    (r"半\s*(?:个)?月(?:[前内以来]|左右|之久)?", 15),
     (r"(今天|当天|今日)", 1),
     (r"(昨天|昨日)", 2),
-    (r"(前天|三天前)", 3),
+    (r"(前天)", 3),
     (r"(本周|这周|这星期|这几天)", 7),
     (r"(上周|上个星期)", 14),
     (r"上上周", 21),
@@ -1283,6 +1251,37 @@ _TIME_PATTERNS: list[tuple[str, object]] = [
     (r"(\d+)\s*days?\s*ago", lambda m: int(m.group(1))),
     (r"(\d+)\s*weeks?\s*ago", lambda m: int(m.group(1)) * 7),
 ]
+
+
+_CN_NUM_FULL: dict[str, int] = {
+    "零": 0, "半": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+    "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
+    "百": 100, "千": 1000, "万": 10000,
+}
+
+
+def _parse_chinese_or_int(val: str) -> int:
+    """Parse Arabic digits or Chinese numerals to integer."""
+    if val.isdigit():
+        return int(val)
+    total = 0
+    segment = 0
+    for ch in val:
+        n = _CN_NUM_FULL.get(ch)
+        if n is None:
+            continue
+        if n >= 100:
+            segment = (segment or 1) * n
+            total += segment
+            segment = 0
+        elif n == 10:
+            segment = (segment or 1) * n
+            total += segment
+            segment = 0
+        else:
+            segment += n
+    total += segment
+    return total
 
 
 def _parse_days_from_hint(time_hint: str = "", default_days: int = 7) -> int:
