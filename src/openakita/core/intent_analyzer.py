@@ -331,7 +331,7 @@ _RECALL_MARKERS: frozenset[str] = frozenset({
 })
 
 _RECALL_TIME_EXTRACT_RE = re.compile(
-    r"((?:最近)?\s*[一二两三四五六七八九十几半\d]+\s*(?:个)?(?:星)?[天周期月年](?:[前内以来左右]|之久)?)"
+    r"((?:最近)?\s*[一二两三四五六七八九十几半\d]+\s*(?:个)?(?:星)?[天周期月年])"
     r"|(今天|昨天|前天|本周|上周|这个月|上个月|今年|去年)"
     r"|(this|last)\s+(week|month|year)"
     r"|(\d+)\s*(?:days?|weeks?|months?|years?)\s*ago",
