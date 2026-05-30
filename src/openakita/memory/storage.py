@@ -1215,7 +1215,8 @@ class MemoryStorage:
             if not keywords:
                 return []
             like_conditions = " OR ".join(["content LIKE ?"] * len(keywords))
-            like_params: list[Any] = [f"%{kw}%" for kw in keywords]
+            escaped_kw = [kw.replace("%", r"\%").replace("_", r"\_") for kw in keywords]
+            like_params: list[Any] = [f"%{e}%" for e in escaped_kw]
             where = f"({like_conditions})"
             if scope is not None:
                 where += " AND (scope IS NULL OR scope = ?)"
@@ -1251,7 +1252,8 @@ class MemoryStorage:
         tokens = cleaned.split()
         if not tokens:
             return ""
-        return " OR ".join(tokens)
+        quoted = [f'"{t}"' for t in tokens]
+        return " OR ".join(quoted)
 
     def rebuild_fts_index(self) -> None:
         """Rebuild FTS5 index from scratch (after migration)."""
@@ -2166,7 +2168,8 @@ class MemoryStorage:
                     pass
 
                 if not results:
-                    like_q = f"%{query}%"
+                    escaped_q = query.replace("%", r"\%").replace("_", r"\_")
+                    like_q = f"%{escaped_q}%"
                     cursor = self._conn.execute(
                         """SELECT * FROM attachments
                            WHERE description LIKE ? OR filename LIKE ?

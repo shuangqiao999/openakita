@@ -347,8 +347,8 @@ class SemanticMemory:
             updated_at=datetime.fromisoformat(data["updated_at"])
             if "updated_at" in data
             else datetime.now(),
-            access_count=data.get("access_count", 0),
-            importance_score=data.get("importance_score", 0.5),
+            access_count=(v if (v := data.get("access_count")) is not None else 0),
+            importance_score=(v if (v := data.get("importance_score")) is not None else 0.5),
             confidence=data.get("confidence", 0.5),
             decay_rate=data.get("decay_rate", 0.1),
             last_accessed_at=datetime.fromisoformat(last_accessed) if last_accessed else None,
@@ -484,8 +484,8 @@ class Episode:
             tools_used=coerce_tool_names(data.get("tools_used", [])),
             linked_memory_ids=data.get("linked_memory_ids", []),
             tags=data.get("tags", []),
-            importance_score=data.get("importance_score", 0.5),
-            access_count=data.get("access_count", 0),
+            importance_score=(v if (v := data.get("importance_score")) is not None else 0.5),
+            access_count=(v if (v := data.get("access_count")) is not None else 0),
             source=data.get("source", "session_end"),
             quality=data.get("quality", 0.5),
         )
