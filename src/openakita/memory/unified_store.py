@@ -66,7 +66,7 @@ class UnifiedStore:
             self._fts5_fallback = FTS5Backend(self.db)
 
         self._backfill_semantic_if_empty()
-        self._backfill_episodes_if_empty()
+        self._backfill_episodes_if_needed()
 
     def _backfill_semantic_if_empty(self) -> None:
         """若语义搜索后端已可用但 vector count 为 0，在后台线程中从 SQLite 回填已有记忆。
@@ -185,20 +185,21 @@ class UnifiedStore:
     # Episodes vector backfill
     # ======================================================================
 
-    def _backfill_episodes_if_empty(self) -> None:
-        """若 LanceDB episodes 表为空且 SQLite 有存量数据，后台回填到向量库。
+    def _backfill_episodes_if_needed(self) -> None:
+        """若 SQLite episodes 数量与 LanceDB 差距过大，后台补写缺失的向量。
 
-        与 _backfill_semantic_if_empty 相同设计：daemon 线程，不阻塞启动，
-        逐条 upsert_episode（episodes 数量远少于 memories，无需 batch_add）。
-        嵌入模型不可用时静默跳过，后续 save_episode 时会自动补写。
+        比例检查：当 LanceDB/SQLite < 95% 时触发，覆盖单条写入失败后的累积缺失。
+        daemon 线程，不阻塞启动。嵌入模型不可用时静默跳过。
         """
         if self.search.backend_type == "fts5":
             return
         if not getattr(self.search, "episodes_available", False):
             return
-        if self.search.episodes_count() > 0:
+        sqlite_count = self.count_episodes()
+        if sqlite_count == 0:
             return
-        if self.count_episodes() == 0:
+        lance_count = self.search.episodes_count()
+        if lance_count >= sqlite_count * 0.95:
             return
 
         import threading
