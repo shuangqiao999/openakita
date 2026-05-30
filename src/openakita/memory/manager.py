@@ -1338,9 +1338,11 @@ class MemoryManager:
             self._enqueue_session_turns_for_extraction(session_id, turns)
 
         try:
-            self.store.cleanup_expired()
+            cleaned = self.store.cleanup_expired()
+            if cleaned:
+                logger.debug("[Memory] Cleaned up %d expired memories", cleaned)
         except Exception:
-            pass
+            logger.warning("[Memory] cleanup_expired failed", exc_info=True)
 
         logger.info(f"Ended session {session_id}: finalization scheduled")
         self._current_session_id = None

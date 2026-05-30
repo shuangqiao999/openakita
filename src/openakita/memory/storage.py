@@ -605,7 +605,8 @@ class MemoryStorage:
             )
         except sqlite3.IntegrityError:
             logger.warning(
-                "[MemoryStorage] extraction_queue has duplicate (session_id, turn_index), deduplicating..."
+                "[MemoryStorage] extraction_queue has %d duplicate(s), deduplicating (keeping latest)...",
+                c.execute("SELECT COUNT(*)-COUNT(DISTINCT session_id||turn_index) FROM extraction_queue").fetchone()[0],
             )
             c.execute("""
                 DELETE FROM extraction_queue
@@ -1207,7 +1208,7 @@ class MemoryStorage:
             if results:
                 return results
         except Exception as e:
-            logger.debug(f"FTS5 search failed (query={query!r}): {e}")
+            logger.warning("[MemoryStorage] FTS5 search degraded, using LIKE fallback (query=%r): %s", query[:80], e)
 
         # Fallback: LIKE search for CJK text that FTS5 unicode61 can't tokenize
         try:

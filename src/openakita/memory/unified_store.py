@@ -416,13 +416,13 @@ class UnifiedStore:
         return ok
 
     def delete_semantic(self, memory_id: str) -> bool:
-        self.search.delete(memory_id)
-        return self.db.delete_memory(memory_id)
+        ok = self.db.delete_memory(memory_id)    # SQLite authoritative first
+        self.search.delete(memory_id)             # LanceDB best-effort
+        return ok
 
     def cleanup_expired(self) -> int:
-        expired_ids = self.db.get_expired_memory_ids()
-        count = self.db.cleanup_expired()
-        for memory_id in expired_ids:
+        count = self.db.cleanup_expired()         # lock + condition re-check
+        for memory_id in list(self.db.get_expired_memory_ids()):
             self.search.delete(memory_id)
         return count
 
