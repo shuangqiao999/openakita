@@ -66,6 +66,7 @@ class UnifiedStore:
             self._fts5_fallback = FTS5Backend(self.db)
 
         self._backfill_semantic_if_empty()
+        self._backfill_episodes_if_empty()
 
     def _backfill_semantic_if_empty(self) -> None:
         """若语义搜索后端已可用但 vector count 为 0，在后台线程中从 SQLite 回填已有记忆。
@@ -179,6 +180,80 @@ class UnifiedStore:
             len(all_mems),
         )
         self._needs_full_backfill = False
+
+    # ======================================================================
+    # Episodes vector backfill
+    # ======================================================================
+
+    def _backfill_episodes_if_empty(self) -> None:
+        """若 LanceDB episodes 表为空且 SQLite 有存量数据，后台回填到向量库。
+
+        与 _backfill_semantic_if_empty 相同设计：daemon 线程，不阻塞启动，
+        逐条 upsert_episode（episodes 数量远少于 memories，无需 batch_add）。
+        嵌入模型不可用时静默跳过，后续 save_episode 时会自动补写。
+        """
+        if self.search.backend_type == "fts5":
+            return
+        if not getattr(self.search, "episodes_available", False):
+            return
+        if self.search.episodes_count() > 0:
+            return
+        if self.count_episodes() == 0:
+            return
+
+        import threading
+
+        thread = threading.Thread(
+            target=self._backfill_episodes_worker, daemon=True, name="episodes-backfill",
+        )
+        thread.start()
+        logger.info("[UnifiedStore] Episodes backfill thread started (daemon)")
+
+    def _backfill_episodes_worker(self) -> None:
+        """后台回填工作函数：从 SQLite 读取 episodes 并逐条写入 LanceDB。
+
+        异常不中断流程，单条失败跳过继续。
+        """
+        try:
+            episodes = self.get_recent_episodes(days=9999, limit=50000)
+        except Exception as e:
+            logger.warning("[UnifiedStore] Episodes backfill: query failed: %s", e)
+            return
+
+        if not episodes:
+            return
+
+        logger.info("[UnifiedStore] Episodes backfill started: %d episodes", len(episodes))
+        total_done = 0
+        total_skipped = 0
+
+        for ep in episodes:
+            try:
+                summary = ep.summary or ep.goal or ""
+                if not summary.strip():
+                    total_skipped += 1
+                    continue
+                meta = {
+                    "session_id": ep.session_id,
+                    "goal": ep.goal,
+                    "outcome": ep.outcome,
+                    "started_at": ep.started_at.isoformat() if ep.started_at else "",
+                    "ended_at": ep.ended_at.isoformat() if ep.ended_at else "",
+                    "tags": ep.tags or [],
+                    "entities": ep.entities or [],
+                }
+                ok = self.search.upsert_episode(ep.id, summary, meta)
+                if ok:
+                    total_done += 1
+                else:
+                    total_skipped += 1
+            except Exception:
+                total_skipped += 1
+
+        logger.info(
+            "[UnifiedStore] Episodes backfill completed: %d indexed, %d skipped (total %d)",
+            total_done, total_skipped, len(episodes),
+        )
 
     @staticmethod
     def _is_active_dict(memory: dict) -> bool:

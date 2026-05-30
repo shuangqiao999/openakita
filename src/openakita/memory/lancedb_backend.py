@@ -796,7 +796,17 @@ class LanceDBBackend:
             with self._lock:
                 return self._table.count_rows()
         except Exception as e:
-            logger.warning(f"[LanceDBBackend] count failed: {e}")
+            logger.warning("[LanceDBBackend] count failed: %s", e)
+            return 0
+
+    def episodes_count(self) -> int:
+        if not self.episodes_available:
+            return 0
+        try:
+            with self._lock:
+                return self._episodes_table.count_rows()
+        except Exception as e:
+            logger.warning("[LanceDBBackend] episodes_count failed: %s", e)
             return 0
 
     def clear(self) -> bool:

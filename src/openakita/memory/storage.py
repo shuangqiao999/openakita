@@ -1263,9 +1263,19 @@ class MemoryStorage:
             try:
                 self._conn.execute("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")
                 self._conn.commit()
-                logger.info("[MemoryStorage] FTS5 index rebuilt")
+                logger.info("[MemoryStorage] memories_fts index rebuilt")
             except Exception as e:
-                logger.warning(f"[MemoryStorage] FTS5 rebuild failed: {e}")
+                logger.warning("[MemoryStorage] memories_fts rebuild failed: %s", e)
+
+        if not self._conn:
+            return
+        with self._lock:
+            try:
+                self._conn.execute("INSERT INTO episodes_fts(episodes_fts) VALUES('rebuild')")
+                self._conn.commit()
+                logger.info("[MemoryStorage] episodes_fts index rebuilt")
+            except Exception as e:
+                logger.warning("[MemoryStorage] episodes_fts rebuild failed: %s", e)
 
     # ======================================================================
     # Episode CRUD
