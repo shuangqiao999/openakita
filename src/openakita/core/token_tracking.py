@@ -271,21 +271,29 @@ def _writer_loop(db_path: str) -> None:
         return
 
     batch: list[tuple] = []
-    while True:
-        try:
-            data = _write_queue.get(timeout=2.0)
-        except queue.Empty:
-            if batch:
+    try:
+        while True:
+            try:
+                data = _write_queue.get(timeout=2.0)
+            except queue.Empty:
+                if batch:
+                    _flush(conn, batch)
+                    batch.clear()
+                continue
+
+            row = tuple(data[col] for col in _COLUMN_ORDER)
+            batch.append(row)
+
+            if len(batch) >= 10:
                 _flush(conn, batch)
                 batch.clear()
-            continue
-
-        row = tuple(data[col] for col in _COLUMN_ORDER)
-        batch.append(row)
-
-        if len(batch) >= 10:
-            _flush(conn, batch)
-            batch.clear()
+    finally:
+        try:
+            if batch:
+                _flush(conn, batch)
+            conn.close()
+        except Exception:
+            pass
 
 
 def _flush(conn: sqlite3.Connection, batch: list[tuple]) -> None:

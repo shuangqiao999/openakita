@@ -45,7 +45,12 @@ def _notify_im_event(event: str, data: dict | None = None) -> None:
     try:
         from openakita.api.routes.websocket import broadcast_event
 
-        asyncio.ensure_future(broadcast_event(event, data))
+        task = asyncio.ensure_future(broadcast_event(event, data))
+        task.add_done_callback(
+            lambda t: logger.warning("IM WS广播任务异常: %s", t.exception())
+            if not t.cancelled() and t.exception()
+            else None
+        )
     except Exception:
         pass
 
@@ -794,6 +799,10 @@ class RestartCommandHandler:
         )
         self._pending[session_key] = session
 
+        if session_key in self._timeout_tasks:
+            old_task = self._timeout_tasks[session_key]
+            if not old_task.done():
+                old_task.cancel()
         timeout_task = asyncio.create_task(self._timeout_handler(session_key))
         self._timeout_tasks[session_key] = timeout_task
 
@@ -2922,7 +2931,14 @@ class MessageGateway:
                     f"{message.channel}:{message.chat_id}, "
                     f"deferring remaining to background"
                 )
-                asyncio.create_task(self._preprocess_media(message))
+                task = asyncio.create_task(self._preprocess_media(message))
+                task.add_done_callback(
+                    lambda t: logger.warning(
+                        "媒体预处理后台任务异常: %s", t.exception()
+                    )
+                    if not t.cancelled() and t.exception()
+                    else None
+                )
             except Exception as e:
                 logger.debug(f"[Gateway] Media preprocessing skipped: {e}")
 

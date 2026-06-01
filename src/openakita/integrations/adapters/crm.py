@@ -3,11 +3,14 @@ CRM API 适配器
 支持 Salesforce 和纷享销客
 """
 
+import logging
 from typing import Any
 
 import aiohttp
 
 from . import APIError, AuthenticationError, BaseAPIAdapter
+
+logger = logging.getLogger(__name__)
 
 
 class SalesforceAdapter(BaseAPIAdapter):
@@ -86,6 +89,12 @@ class SalesforceAdapter(BaseAPIAdapter):
         if self._session:
             await self._session.close()
 
+    def __del__(self):
+        if self._session and not self._session.closed:
+            logger.warning(
+                "SalesforceAdapter: aiohttp session 未被 close 即被 GC，可能泄漏连接"
+            )
+
 
 class FXiaokeAdapter(BaseAPIAdapter):
     """纷享销客 CRM 适配器"""
@@ -151,6 +160,12 @@ class FXiaokeAdapter(BaseAPIAdapter):
     async def close(self):
         if self._session:
             await self._session.close()
+
+    def __del__(self):
+        if self._session and not self._session.closed:
+            logger.warning(
+                "FxiaokeAdapter: aiohttp session 未被 close 即被 GC，可能泄漏连接"
+            )
 
 
 def create_crm_adapter(provider: str, config: dict[str, Any]) -> BaseAPIAdapter:

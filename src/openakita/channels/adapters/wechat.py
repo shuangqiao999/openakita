@@ -558,11 +558,13 @@ class WeChatAdapter(ChannelAdapter):
         self._get_updates_buf: str = ""
         self._sync_buf_dir = Path("data/wechat_sync")
 
-        # context_token 缓存 (user_id → token)
+        # context_token 缓存 (user_id → token)，上限 10000，超出 LRU 淘汰
         self._context_tokens: dict[str, str] = {}
+        self._CONTEXT_TOKENS_MAX = 10_000
 
-        # Typing ticket 缓存
+        # Typing ticket 缓存，上限 50000，定期清理过期条目
         self._ticket_cache: dict[str, _TicketEntry] = {}
+        self._TICKET_CACHE_MAX = 50_000
 
         # 消息去重
         self._seen_msg_ids: OrderedDict[int, float] = OrderedDict()
@@ -575,9 +577,12 @@ class WeChatAdapter(ChannelAdapter):
 
         # 连续失败计数
         self._consecutive_failures: int = 0
+        self._send_count_since_cleanup: int = 0
 
-        # 发送限流 (user_id → 上次发送时间戳)
+        # 发送限流 (user_id → 上次发送时间戳)，最大 100_000，超 1h 清理
         self._last_send_ts: dict[str, float] = {}
+        self._LAST_SEND_TS_MAX = 100_000
+        self._LAST_SEND_TS_CLEAN_INTERVAL = 100
 
         # 耗时统计 (chat_id → 首次 send_typing 的 time.time())
         self._typing_start_time: dict[str, float] = {}
@@ -632,6 +637,7 @@ class WeChatAdapter(ChannelAdapter):
                 pass
         self._save_sync_buf()
         self._save_context_tokens()
+        self._cleanup_caches()
         if self._http:
             await self._http.aclose()
             self._http = None
@@ -639,6 +645,32 @@ class WeChatAdapter(ChannelAdapter):
             f"{self.channel_name}: WeChat adapter stopped "
             f"(msgs_received={self._msg_count}, msgs_sent={self._send_count})"
         )
+
+    def _cleanup_caches(self) -> None:
+        """清理过期和无限制增长的缓存条目，防止长时间运行内存泄漏。"""
+        now = time.time()
+        # 清理过期的 typing ticket 缓存
+        stale_keys = [
+            k for k, v in self._ticket_cache.items()
+            if v.next_fetch_at < now
+        ]
+        for k in stale_keys:
+            del self._ticket_cache[k]
+        # 清理超过 1 小时的发送限流记录
+        stale_ts = [
+            k for k, v in self._last_send_ts.items()
+            if now - v > 3600
+        ]
+        for k in stale_ts:
+            del self._last_send_ts[k]
+        # 清理残留的 typing 计时（错误路径可能未 pop）
+        now_ts = time.time()
+        stale_typing = [
+            k for k, v in self._typing_start_time.items()
+            if now_ts - v > 3600
+        ]
+        for k in stale_typing:
+            del self._typing_start_time[k]
 
     # ==================== 请求基础 ====================
 
@@ -700,6 +732,18 @@ class WeChatAdapter(ChannelAdapter):
         if gap < SEND_MIN_INTERVAL_S:
             await asyncio.sleep(SEND_MIN_INTERVAL_S - gap)
         self._last_send_ts[user_id] = time.time()
+        self._send_count_since_cleanup += 1
+        if self._send_count_since_cleanup >= self._LAST_SEND_TS_CLEAN_INTERVAL:
+            self._send_count_since_cleanup = 0
+            stale = [k for k, v in self._last_send_ts.items() if now - v > 3600]
+            for k in stale:
+                del self._last_send_ts[k]
+        if len(self._last_send_ts) > self._LAST_SEND_TS_MAX:
+            keys_to_drop = sorted(
+                self._last_send_ts.items(), key=lambda x: x[1]
+            )[:5000]
+            for k, _ in keys_to_drop:
+                del self._last_send_ts[k]
 
     def _check_send_response(self, resp: dict, *, action: str = "sendmessage") -> None:
         """检查 sendmessage / sendtyping 等 API 响应中的业务层错误。
@@ -987,6 +1031,11 @@ class WeChatAdapter(ChannelAdapter):
         ctx_token = msg.get("context_token")
         if ctx_token:
             self._context_tokens[from_user] = ctx_token
+            if len(self._context_tokens) > self._CONTEXT_TOKENS_MAX:
+                for _k in list(self._context_tokens.keys())[:1000]:
+                    if _k == from_user:
+                        continue
+                    del self._context_tokens[_k]
             self._save_context_tokens()
 
         item_list = msg.get("item_list") or []

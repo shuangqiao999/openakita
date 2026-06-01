@@ -4,11 +4,14 @@
 """
 
 import base64
+import logging
 from typing import Any
 
 import aiohttp
 
 from . import APIError, AuthenticationError, BaseAPIAdapter
+
+logger = logging.getLogger(__name__)
 
 
 class SendGridAdapter(BaseAPIAdapter):
@@ -132,6 +135,12 @@ class SendGridAdapter(BaseAPIAdapter):
         if self._session:
             await self._session.close()
             self._session = None
+
+    def __del__(self):
+        if self._session and not self._session.closed:
+            logger.warning(
+                "SendGridAdapter: aiohttp session 未被 close 即被 GC，可能泄漏连接"
+            )
 
 
 class AliyunMailAdapter(BaseAPIAdapter):
@@ -275,6 +284,12 @@ class AliyunMailAdapter(BaseAPIAdapter):
         if self._session:
             await self._session.close()
             self._session = None
+
+    def __del__(self):
+        if self._session and not self._session.closed:
+            logger.warning(
+                "AliyunMailAdapter: aiohttp session 未被 close 即被 GC，可能泄漏连接"
+            )
 
 
 # 工厂函数

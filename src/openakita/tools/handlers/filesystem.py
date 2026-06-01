@@ -71,8 +71,8 @@ def _get_terminal_manager(agent: "Agent") -> Any:
     _terminal_mgr_strong_refs[agent_id] = mgr
     try:
         weakref.finalize(agent, _terminal_mgr_strong_refs.pop, agent_id, None)
-    except TypeError:
-        pass
+    except TypeError as e:
+        logger.warning("无法对 Agent 注册 finalize: %s", e)
     return mgr
 
 
@@ -108,6 +108,8 @@ class FilesystemHandler:
         # Phase 3-10: TTL-based read cache (avoids re-reading same file in tight loops)
         self._read_file_ttl_cache: dict[str, tuple[float, str]] = {}
         self._read_cache_ttl_seconds: float = 5.0
+        self._read_file_ttl_cache_max = 500
+        self._read_file_ttl_check_count = 0
 
     def _get_fix_policy(self) -> dict | None:
         """
@@ -638,6 +640,15 @@ class FilesystemHandler:
             ts, cached = self._read_file_ttl_cache[cache_key]
             if now - ts < self._read_cache_ttl_seconds:
                 return cached
+            del self._read_file_ttl_cache[cache_key]
+        self._read_file_ttl_check_count += 1
+        if self._read_file_ttl_check_count % 50 == 0:
+            stale = [
+                k for k, v in self._read_file_ttl_cache.items()
+                if now - v[0] > self._read_cache_ttl_seconds * 10
+            ]
+            for k in stale:
+                del self._read_file_ttl_cache[k]
 
         unc_err = self._check_unc(path)
         if unc_err:
@@ -672,7 +683,7 @@ class FilesystemHandler:
         if total_lines <= limit and offset <= 1:
             result = f"文件内容 ({total_lines} 行):\n{content}"
             self._remember_read_file_cache(cache_key, result)
-            self._read_file_ttl_cache[cache_key] = (_time.monotonic(), result)
+            self._set_ttl_cache(cache_key, result)
             return result
 
         # 分页截取
@@ -700,7 +711,7 @@ class FilesystemHandler:
             )
 
         self._remember_read_file_cache(cache_key, result)
-        self._read_file_ttl_cache[cache_key] = (_time.monotonic(), result)
+        self._set_ttl_cache(cache_key, result)
         return result
 
     def _remember_read_file_cache(self, key: tuple[str, int, int], result: str) -> None:
@@ -708,6 +719,14 @@ class FilesystemHandler:
         if len(self._read_file_cache) > 64:
             oldest = next(iter(self._read_file_cache))
             self._read_file_cache.pop(oldest, None)
+
+    def _set_ttl_cache(self, key: str, result: str) -> None:
+        import time as _time
+
+        self._read_file_ttl_cache[key] = (_time.monotonic(), result)
+        if len(self._read_file_ttl_cache) > self._read_file_ttl_cache_max:
+            for _k in list(self._read_file_ttl_cache.keys())[:100]:
+                del self._read_file_ttl_cache[_k]
 
     # list_directory 默认最大条目数
     LIST_DIR_DEFAULT_MAX = 200

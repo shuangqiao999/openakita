@@ -296,7 +296,7 @@ class OrgInbox:
     # ------------------------------------------------------------------
 
     def subscribe(self, org_id: str) -> asyncio.Queue:
-        q: asyncio.Queue = asyncio.Queue()
+        q: asyncio.Queue = asyncio.Queue(maxsize=100)
         self._listeners[org_id].append(q)
         return q
 

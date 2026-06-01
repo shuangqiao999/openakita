@@ -249,6 +249,7 @@ class PersonaManager:
         self.active_preset_name = active_preset
         self.user_traits: list[PersonaTrait] = []
         self._preset_cache: dict[str, str] = {}
+        self._PRESET_CACHE_MAX = 100
         self._traits_lock = threading.Lock()  # 保护 user_traits 的并发访问
 
     # ── 预设管理 ──
@@ -283,6 +284,8 @@ class PersonaManager:
                 return MergedPersona(preset_name=preset_name)
 
         content = preset_file.read_text(encoding="utf-8")
+        if len(self._preset_cache) >= self._PRESET_CACHE_MAX:
+            self._preset_cache.pop(next(iter(self._preset_cache)), None)
         self._preset_cache[preset_name] = content
 
         persona = MergedPersona(preset_name=preset_name)

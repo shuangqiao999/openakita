@@ -238,7 +238,9 @@ class OrgRuntime:
         # 节点 inbox "新事件" 异步信号：sub-agent 发来 question/escalate 等
         # 需要 coordinator 立即处理的消息时被 set，用于 `org_wait_for_deliverable`
         # 跳出阻塞，避免 coordinator 阻塞导致的死锁。key=org_id:node_id。
+        # 最大 5000 条目，超出按 LRU 淘汰，防止长时间运行内存膨胀。
         self._node_inbox_events: dict[str, asyncio.Event] = {}
+        self._MAX_NODE_INBOX_EVENTS = 5000
         # 已验收/打回/取消的任务链集合（按组织维度）。用于：
         #   1) 抑制已关闭 chain 的消息重新唤醒 agent ReAct；
         #   2) 阻断对已关闭 chain 的 delegate/submit；
@@ -480,6 +482,8 @@ class OrgRuntime:
         self._idle_probe_pending_since.clear()
         self._idle_node_ineffective.clear()
         self._idle_org_quiet_since.clear()
+        self._node_inbox_events.clear()
+        self._chain_events.clear()
 
         self._started = False
         logger.info("[OrgRuntime] Shutdown complete.")
@@ -562,11 +566,20 @@ class OrgRuntime:
         if mode == "autonomous":
             if org.core_business and org.core_business.strip():
                 asyncio.ensure_future(self._auto_kickoff(org))
+            old_idle = self._idle_tasks.pop(org_id, None)
+            if old_idle and not old_idle.done():
+                old_idle.cancel()
             self._idle_tasks[org_id] = asyncio.ensure_future(self._idle_probe_loop(org_id))
         else:
+            old_idle = self._idle_tasks.pop(org_id, None)
+            if old_idle and not old_idle.done():
+                old_idle.cancel()
             self._idle_tasks[org_id] = asyncio.ensure_future(self._health_check_loop(org_id))
 
         if getattr(org, "watchdog_enabled", False):
+            old_wd = self._watchdog_tasks.pop(org_id, None)
+            if old_wd and not old_wd.done():
+                old_wd.cancel()
             self._watchdog_tasks[org_id] = asyncio.ensure_future(self._watchdog_loop(org_id))
 
         return org
@@ -1860,7 +1873,14 @@ class OrgRuntime:
             # 非正常结束时不触发 post-task hook（避免把"部分/失败结果"再次下发下游）；
             # 软 verify_incomplete 也走 hook，让父级能 drain 子节点交付队列。
             if is_normal:
-                asyncio.ensure_future(self._post_task_hook(org, node))
+                task = asyncio.ensure_future(self._post_task_hook(org, node))
+                task.add_done_callback(
+                    lambda t: logger.warning(
+                        "任务后置钩子异常: %s", t.exception()
+                    )
+                    if not t.cancelled() and t.exception()
+                    else None
+                )
 
             return_payload: dict = {
                 "node_id": node.id,
@@ -4469,11 +4489,18 @@ class OrgRuntime:
                                     "决定是否需要推进工作或分配新任务。"
                                 )
                                 self._heartbeat.record_activity(org_id)
-                                asyncio.ensure_future(
+                                task = asyncio.ensure_future(
                                     self._activate_and_run(
                                         org, root, prompt,
                                         activation_origin="watchdog_kick",
                                     )
+                                )
+                                task.add_done_callback(
+                                    lambda t: logger.warning(
+                                        "看门狗激活任务异常: %s", t.exception()
+                                    )
+                                    if not t.cancelled() and t.exception()
+                                    else None
                                 )
 
             except asyncio.CancelledError:
@@ -4864,13 +4891,20 @@ class OrgRuntime:
         )
 
         if entry:
-            asyncio.ensure_future(self._broadcast_ws("org:blackboard_update", {
+            task = asyncio.ensure_future(self._broadcast_ws("org:blackboard_update", {
                 "org_id": org_id, "scope": "org", "node_id": node_id,
                 "memory_type": "resource",
                 "filename": resolved_name,
                 "file_path": str(p),
                 "file_size": size_bytes,
             }))
+            task.add_done_callback(
+                lambda t: logger.warning(
+                    "组织黑板WS广播任务异常: %s", t.exception()
+                )
+                if not t.cancelled() and t.exception()
+                else None
+            )
 
         _TEXT_EXTS = {".md", ".txt", ".html", ".json", ".yaml", ".yml", ".csv", ".xml"}
         text_preview = ""

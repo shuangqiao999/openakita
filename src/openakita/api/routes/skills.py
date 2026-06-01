@@ -685,7 +685,14 @@ def _broadcast_ws_event(action: str) -> None:
     try:
         from openakita.api.routes.websocket import broadcast_event
 
-        asyncio.ensure_future(broadcast_event("skills:changed", {"action": action}))
+        task = asyncio.ensure_future(
+            broadcast_event("skills:changed", {"action": action})
+        )
+        task.add_done_callback(
+            lambda t: logger.warning("技能WS广播任务异常: %s", t.exception())
+            if not t.cancelled() and t.exception()
+            else None
+        )
     except Exception:
         pass
 

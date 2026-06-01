@@ -685,6 +685,24 @@ class IntentAnalyzer:
         self.brain = brain
         self._intent_cache: dict[str, tuple[float, IntentResult]] = {}
         self._intent_cache_ttl = 60.0
+        self._intent_analyze_count = 0
+        self._INTENT_CACHE_MAX = 5000
+
+    def _sweep_stale_intents(self) -> None:
+        """清理过期的意图缓存条目和超出上限的旧条目。"""
+        import time as _time
+
+        now = _time.monotonic()
+        stale = [
+            k for k, v in self._intent_cache.items()
+            if now - v[0] > self._intent_cache_ttl
+        ]
+        for k in stale:
+            del self._intent_cache[k]
+        if len(self._intent_cache) > self._INTENT_CACHE_MAX:
+            overflow = len(self._intent_cache) - self._INTENT_CACHE_MAX + 1000
+            for k in list(self._intent_cache.keys())[:overflow]:
+                del self._intent_cache[k]
 
     async def analyze(
         self,
@@ -717,6 +735,9 @@ class IntentAnalyzer:
                 return task_result
 
         # Per-instance intent cache: reuse recent results for identical/similar messages
+        self._intent_analyze_count += 1
+        if self._intent_analyze_count % 100 == 0:
+            self._sweep_stale_intents()
         _cache_key = _normalize_for_cache(message)
         _cached = self._intent_cache.get(_cache_key)
         if _cached and _time.monotonic() - _cached[0] < self._intent_cache_ttl:

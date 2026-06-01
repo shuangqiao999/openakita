@@ -2179,8 +2179,13 @@ async def dispatch_task(request: Request, org_id: str, project_id: str, task_id:
 
     import asyncio
 
-    asyncio.ensure_future(
+    task = asyncio.ensure_future(
         to_engine(runtime.send_command(org_id, target_node_id, prompt, chain_id=chain_id)),
+    )
+    task.add_done_callback(
+        lambda t: logger.warning("组织任务派发异常: %s", t.exception())
+        if not t.cancelled() and t.exception()
+        else None
     )
 
     return {"ok": True, "task_id": task_id, "chain_id": chain_id, "dispatched": True}

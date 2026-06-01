@@ -29,7 +29,14 @@ def _notify_scheduler_change(action: str = "update") -> None:
     try:
         from openakita.api.routes.websocket import broadcast_event
 
-        asyncio.ensure_future(broadcast_event("scheduler:task_update", {"action": action}))
+        task = asyncio.ensure_future(
+            broadcast_event("scheduler:task_update", {"action": action})
+        )
+        task.add_done_callback(
+            lambda t: logger.warning("调度器WS广播任务异常: %s", t.exception())
+            if not t.cancelled() and t.exception()
+            else None
+        )
     except Exception:
         pass
 

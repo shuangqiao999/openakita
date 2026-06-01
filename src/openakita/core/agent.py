@@ -1935,14 +1935,19 @@ class Agent:
             return tool_results, executed_tool_names, delivery_receipts
 
         tasks = [_run_one(tc, idx) for idx, tc in enumerate(tool_calls)]
-        done = await asyncio.gather(*tasks, return_exceptions=False)
-        done.sort(key=lambda x: x[0])
-        tool_results = [out for _, out, _, _ in done]
-        for _, _, executed_name, receipts in done:
-            if executed_name:
-                executed_tool_names.append(executed_name)
-            if receipts:
-                delivery_receipts = receipts
+        done = await asyncio.gather(*tasks, return_exceptions=True)
+        tool_results = []
+        for item in done:
+            if isinstance(item, BaseException):
+                logger.warning("并行工具执行异常: %s", item)
+                tool_results.append(f"[工具执行错误: {item}]")
+            else:
+                idx, out, executed_name, receipts = item
+                tool_results.append(out)
+                if executed_name:
+                    executed_tool_names.append(executed_name)
+                if receipts:
+                    delivery_receipts = receipts
         return tool_results, executed_tool_names, delivery_receipts
 
     async def initialize(self, start_scheduler: bool = True, lightweight: bool = False) -> None:
@@ -5836,12 +5841,19 @@ class Agent:
                 f"[Session:{session_id}] Context compression deferred "
                 f"to background (timeout). Proceeding with uncompressed context."
             )
-            asyncio.create_task(
+            task = asyncio.create_task(
                 self._compress_context_for_prepare(
                     messages,
                     session_id=session_id,
                     conversation_id=conversation_id,
                 )
+            )
+            task.add_done_callback(
+                lambda t, sid=session_id: logger.warning(
+                    "[Session:%s] 后台上下文压缩异常: %s", sid, t.exception()
+                )
+                if not t.cancelled() and t.exception()
+                else None
             )
 
         # 12. TaskMonitor creation

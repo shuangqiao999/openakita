@@ -1611,6 +1611,20 @@ async def run_interactive():
                 await _init_task
         with console.status("[bold yellow]正在停止服务...", spinner="dots"):
             await stop_im_channels(graceful=True, drain_timeout=30.0)
+            try:
+                from .llm.client import get_default_client
+
+                await asyncio.wait_for(
+                    get_default_client().close(), timeout=5.0
+                )
+            except (TimeoutError, Exception):
+                pass
+            # Agent 异步关闭
+            if agent is not None and hasattr(agent, "shutdown"):
+                try:
+                    await asyncio.wait_for(agent.shutdown(), timeout=10.0)
+                except (TimeoutError, Exception):
+                    pass
         console.print("[green]✓[/green] 服务已停止")
 
 
@@ -2404,6 +2418,25 @@ def serve(
                         stop_im_channels(graceful=True, drain_timeout=30.0),
                         timeout=35.0,
                     )
+                    # 关闭 LLM 客户端连接（释放 TCP 连接，防止长时间运行端口泄漏）
+                    try:
+                        from .llm.client import get_default_client
+
+                        await asyncio.wait_for(
+                            get_default_client().close(), timeout=5.0
+                        )
+                    except (TimeoutError, Exception):
+                        pass
+                    # Agent 异步关闭（flush memory tasks, save eval events, close event bus）
+                    try:
+                        if agent_or_master is not None and hasattr(
+                            agent_or_master, "shutdown"
+                        ):
+                            await asyncio.wait_for(
+                                agent_or_master.shutdown(), timeout=10.0
+                            )
+                    except (TimeoutError, Exception):
+                        pass
                 except TimeoutError:
                     logger.warning("Shutdown timeout, forcing exit")
                 except Exception as e:

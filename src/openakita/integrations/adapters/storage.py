@@ -6,12 +6,15 @@
 import base64
 import hashlib
 import hmac
+import logging
 from datetime import datetime
 from typing import Any
 
 import aiohttp
 
 from . import BaseAPIAdapter
+
+logger = logging.getLogger(__name__)
 
 
 class AliyunOSSAdapter(BaseAPIAdapter):
@@ -74,6 +77,12 @@ class AliyunOSSAdapter(BaseAPIAdapter):
         if self._session:
             await self._session.close()
 
+    def __del__(self):
+        if self._session and not self._session.closed:
+            logger.warning(
+                "AliyunOSSAdapter: aiohttp session 未被 close 即被 GC，可能泄漏连接"
+            )
+
 
 class QiniuAdapter(BaseAPIAdapter):
     """七牛云存储适配器"""
@@ -124,6 +133,12 @@ class QiniuAdapter(BaseAPIAdapter):
     async def close(self):
         if self._session:
             await self._session.close()
+
+    def __del__(self):
+        if self._session and not self._session.closed:
+            logger.warning(
+                "QiniuAdapter: aiohttp session 未被 close 即被 GC，可能泄漏连接"
+            )
 
 
 def create_storage_adapter(provider: str, config: dict[str, Any]) -> BaseAPIAdapter:

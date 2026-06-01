@@ -78,8 +78,10 @@ class ContextManager:
         self._brain = brain
         self._cancel_event = cancel_event
         self._token_cache: dict[int, int] = {}
+        self._TOKEN_CACHE_MAX = 10000
         self._tools_tokens_cache: int | None = None
         self._previous_summaries: dict[str, str] = {}
+        self._PREVIOUS_SUMMARIES_MAX = 200
 
     def set_cancel_event(self, event: asyncio.Event | None) -> None:
         """更新 cancel_event（每次任务开始时由 Agent 设置）"""
@@ -206,7 +208,10 @@ class ContextManager:
                     tokens += self.estimate_tokens(item)
         tokens += 10  # 每条消息的结构开销
 
-        if cache_key is not None and len(self._token_cache) < 10000:
+        if cache_key is not None and len(self._token_cache) < self._TOKEN_CACHE_MAX:
+            self._token_cache[cache_key] = tokens
+        elif cache_key is not None:
+            self._token_cache.pop(next(iter(self._token_cache)), None)
             self._token_cache[cache_key] = tokens
         return tokens
 
@@ -597,6 +602,8 @@ class ContextManager:
                 summary = f"早期对话摘要（共 {len(early_messages)} 条消息，均与用户当前请求无关）"
 
         if summary:
+            if len(self._previous_summaries) >= self._PREVIOUS_SUMMARIES_MAX:
+                self._previous_summaries.pop(next(iter(self._previous_summaries)), None)
             self._previous_summaries[_summary_key] = summary
 
         if summary and memory_manager is not None:

@@ -126,8 +126,9 @@ class OneBotAdapter(ChannelAdapter):
         self._chat_type_map: OrderedDict[str, str] = OrderedDict()
         self._CHAT_TYPE_MAP_CAPACITY = 2000
 
-        # group_id → group_name 缓存
+        # group_id → group_name 缓存，上限 2000，LRU 淘汰
         self._group_name_cache: dict[str, str] = {}
+        self._GROUP_NAME_CACHE_MAX = 2000
 
         # Bot 已发送消息 ID 追踪：用于识别"回复机器人消息"作为隐式 mention
         self._bot_sent_msg_ids: OrderedDict[str, None] = OrderedDict()
@@ -411,6 +412,11 @@ class OneBotAdapter(ChannelAdapter):
                         chat_name = info.get("name") or ""
                         if chat_name:
                             self._group_name_cache[gid] = chat_name
+                            if len(self._group_name_cache) > self._GROUP_NAME_CACHE_MAX:
+                                for _k in list(self._group_name_cache.keys())[:500]:
+                                    if _k == gid:
+                                        continue
+                                    del self._group_name_cache[_k]
                 except Exception:
                     pass
 

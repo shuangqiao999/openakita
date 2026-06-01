@@ -2456,6 +2456,9 @@ class OrgToolHandler:
         inbox_event = runtime._node_inbox_events.get(inbox_key)
         if inbox_event is None:
             inbox_event = asyncio.Event()
+            if len(runtime._node_inbox_events) >= runtime._MAX_NODE_INBOX_EVENTS:
+                for _k in list(runtime._node_inbox_events.keys())[:1000]:
+                    del runtime._node_inbox_events[_k]
             runtime._node_inbox_events[inbox_key] = inbox_event
         inbox_event.clear()
 

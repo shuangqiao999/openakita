@@ -42,7 +42,12 @@ def _notify_im_event(event: str, data: dict | None = None) -> None:
     try:
         from openakita.api.routes.websocket import broadcast_event
 
-        asyncio.ensure_future(broadcast_event(event, data))
+        task = asyncio.ensure_future(broadcast_event(event, data))
+        task.add_done_callback(
+            lambda t: logger.warning("IM WS广播任务异常: %s", t.exception())
+            if not t.cancelled() and t.exception()
+            else None
+        )
     except Exception:
         pass
 

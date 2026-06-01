@@ -936,7 +936,14 @@ class AgentOrchestrator:
                 "tokens_used": state_entry.get("tokens_used", 0),
             }
 
-            asyncio.ensure_future(broadcast_event("agents:sub_state", payload))
+            task = asyncio.ensure_future(broadcast_event("agents:sub_state", payload))
+            task.add_done_callback(
+                lambda t: logger.warning(
+                    "子Agent状态WS广播任务异常: %s", t.exception()
+                )
+                if not t.cancelled() and t.exception()
+                else None
+            )
         except Exception:
             pass
 

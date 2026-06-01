@@ -741,7 +741,7 @@ async def start_api_server(
     proxy_task = asyncio.create_task(_proxy())
     # Keep a handle to the app so the serve process can update late-bound
     # runtime references such as the IM gateway after HTTP is already online.
-    setattr(proxy_task, "_openakita_api_app", app)
+    proxy_task._openakita_api_app = app
     return proxy_task
 
 

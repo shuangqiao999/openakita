@@ -681,7 +681,12 @@ def _schedule_background_save(
             except Exception:
                 pass
 
-    asyncio.create_task(_bg_drain_and_save())
+    task = asyncio.create_task(_bg_drain_and_save())
+    task.add_done_callback(
+        lambda t: logger.warning("后台排空保存任务异常: %s", t.exception())
+        if not t.cancelled() and t.exception()
+        else None
+    )
     logger.info(
         "[Chat API] Scheduled background save for long-running task (conv=%s)",
         conversation_id,

@@ -3,12 +3,15 @@
 支持 Google Sheets 和腾讯文档
 """
 
+import logging
 from datetime import datetime
 from typing import Any
 
 import aiohttp
 
 from . import APIError, AuthenticationError, BaseAPIAdapter
+
+logger = logging.getLogger(__name__)
 
 
 class GoogleSheetsAdapter(BaseAPIAdapter):
@@ -158,6 +161,12 @@ class GoogleSheetsAdapter(BaseAPIAdapter):
             await self._session.close()
             self._session = None
 
+    def __del__(self):
+        if self._session and not self._session.closed:
+            logger.warning(
+                "GoogleSheetsAdapter: aiohttp session 未被 close 即被 GC，可能泄漏连接"
+            )
+
 
 class TencentDocsAdapter(BaseAPIAdapter):
     """腾讯文档 API 适配器"""
@@ -265,6 +274,12 @@ class TencentDocsAdapter(BaseAPIAdapter):
         if self._session:
             await self._session.close()
             self._session = None
+
+    def __del__(self):
+        if self._session and not self._session.closed:
+            logger.warning(
+                "TencentDocsAdapter: aiohttp session 未被 close 即被 GC，可能泄漏连接"
+            )
 
 
 # 工厂函数

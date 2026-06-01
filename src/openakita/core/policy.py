@@ -680,8 +680,10 @@ class PolicyEngine:
         self._consecutive_denials = 0
         self._total_denials = 0
         self._readonly_mode = False
-        # TTL confirmation cache: key → {expiry, needs_sandbox}
+        # TTL confirmation cache: key → {expiry, needs_sandbox}，最大 5000 条目
         self._confirmed_cache: dict[str, dict[str, Any]] = {}
+        self._CONFIRMED_CACHE_MAX = 5000
+        self._confirmed_check_count = 0
         # Session allowlist: cache_key → {needs_sandbox, pattern}
         self._session_allowlist: dict[str, dict[str, Any]] = {}
         # P1-5: 并发保护锁
@@ -1531,11 +1533,18 @@ class PolicyEngine:
             try:
                 from openakita.api.routes.websocket import broadcast_event
 
-                asyncio.ensure_future(broadcast_event(
+                task = asyncio.ensure_future(broadcast_event(
                     "security:death_switch",
                     {"active": True, "consecutive": self._consecutive_denials,
                      "total": self._total_denials},
                 ))
+                task.add_done_callback(
+                    lambda t: logger.warning(
+                        "安全策略WS广播任务异常: %s", t.exception()
+                    )
+                    if not t.cancelled() and t.exception()
+                    else None
+                )
             except Exception:
                 pass
         self._audit(tool_name, params, result)
@@ -1825,7 +1834,27 @@ class PolicyEngine:
                 }
             self._confirmed_cache.pop(key, None)
 
+        self._confirmed_check_count += 1
+        if self._confirmed_check_count % 200 == 0:
+            self._sweep_stale_confirmed()
+
         return None
+
+    def _sweep_stale_confirmed(self) -> None:
+        """清理过期的确认缓存条目和超出上限的旧条目。"""
+        import time
+
+        now = time.time()
+        stale = [
+            k for k, v in self._confirmed_cache.items()
+            if v.get("expiry", 0) < now
+        ]
+        for k in stale:
+            del self._confirmed_cache[k]
+        if len(self._confirmed_cache) > self._CONFIRMED_CACHE_MAX:
+            overflow = len(self._confirmed_cache) - self._CONFIRMED_CACHE_MAX + 500
+            for k in list(self._confirmed_cache.keys())[:overflow]:
+                del self._confirmed_cache[k]
 
     def store_ui_pending(
         self,

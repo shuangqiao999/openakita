@@ -742,6 +742,8 @@ async def trigger_review(request: Request):
                 _review_progress["error"] = str(e)
                 _review_progress["finished_at"] = time.time()
 
+        if _review_task and not _review_task.done():
+            _review_task.cancel()
         _review_task = asyncio.create_task(_run_review())
 
     return {"ok": True, "status": "started", "progress": _review_progress}
