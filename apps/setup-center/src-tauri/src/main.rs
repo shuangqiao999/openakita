@@ -4,6 +4,8 @@
 )]
 
 mod migrations;
+mod utils;
+use crate::utils::*;
 
 use base64::Engine as _;
 use dirs_next::home_dir;
@@ -100,14 +102,6 @@ const SERVICE_START_DEDUPE_MS: u64 = 3_000;
 static SERVICE_START_LAST_AT: Lazy<Mutex<HashMap<String, u64>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 const OPENAKITA_ROOT_MARKER: &str = ".openakita-root";
-
-fn now_ms() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
 
 /// 进程级自愈相关：crash 重启 marker 文件路径。
 /// 由 panic hook 在命中 tao#1180 特征时写入，setup 阶段读出并向前端 emit
@@ -473,7 +467,7 @@ fn start_onboarding_log(date_label: String) -> Result<String, String> {
             "onboarding-{}.log",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_secs()
         )
     } else {
@@ -529,41 +523,8 @@ fn append_onboarding_log_lines(log_path: String, lines: Vec<String>) -> Result<(
 
 // ── 前端日志持久化 ──
 
-const FRONTEND_LOG_MAX_BYTES: u64 = 5 * 1024 * 1024; // 5 MB
-const FRONTEND_LOG_TRUNCATE_TO: u64 = 2 * 1024 * 1024; // 截断后保留最后 2 MB
-
 fn frontend_log_path() -> PathBuf {
     setup_logs_dir().join("frontend.log")
-}
-
-/// 通用日志轮转：当文件超过 max_bytes 时，只保留尾部 keep_bytes 字节。
-fn maybe_rotate_log_file(path: &Path, max_bytes: u64, keep_bytes: u64) {
-    let meta = match fs::metadata(path) {
-        Ok(m) => m,
-        Err(_) => return,
-    };
-    if meta.len() <= max_bytes {
-        return;
-    }
-    let mut f = match fs::File::open(path) {
-        Ok(f) => f,
-        Err(_) => return,
-    };
-    let start = meta.len().saturating_sub(keep_bytes);
-    if f.seek(SeekFrom::Start(start)).is_err() {
-        return;
-    }
-    let mut tail = Vec::new();
-    if f.read_to_end(&mut tail).is_err() {
-        return;
-    }
-    drop(f);
-    let offset = tail
-        .iter()
-        .position(|&b| b == b'\n')
-        .map(|i| i + 1)
-        .unwrap_or(0);
-    let _ = fs::write(path, &tail[offset..]);
 }
 
 /// 自动轮转：当文件超过 FRONTEND_LOG_MAX_BYTES 时，只保留尾部 FRONTEND_LOG_TRUNCATE_TO 字节。
@@ -1725,35 +1686,6 @@ fn set_custom_root_dir(path: Option<String>, migrate: bool) -> Result<RootDirInf
     })
 }
 
-fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
-    fs::create_dir_all(dst).map_err(|e| format!("create dir {}: {e}", dst.display()))?;
-    let entries = fs::read_dir(src).map_err(|e| format!("read dir {}: {e}", src.display()))?;
-    for entry in entries.flatten() {
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-        // file_type() 不跟随符号链接（区别于 metadata()），能正确识别 symlink
-        let ft = match entry.file_type() {
-            Ok(ft) => ft,
-            Err(_) => continue,
-        };
-        if ft.is_symlink() {
-            continue;
-        }
-        if ft.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path)?;
-        } else if ft.is_file() {
-            if let Err(e) = fs::copy(&src_path, &dst_path) {
-                eprintln!(
-                    "copy file {} -> {}: {e}",
-                    src_path.display(),
-                    dst_path.display()
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
 // ── Workspace migration preflight ──
 
 #[derive(Debug, Serialize, Clone)]
@@ -1775,55 +1707,6 @@ struct MigratePreflightInfo {
     entries: Vec<MigrateEntry>,
     can_migrate: bool,
     reason: String,
-}
-
-fn available_space_mb(path: &Path) -> f64 {
-    #[cfg(target_os = "windows")]
-    {
-        use std::ffi::OsStr;
-        use std::os::windows::ffi::OsStrExt;
-        let fallback = path
-            .ancestors()
-            .last()
-            .map(|r| r.to_string_lossy().to_string())
-            .unwrap_or_else(|| "C:\\".to_string());
-        let wide: Vec<u16> = OsStr::new(path.to_str().unwrap_or(&fallback))
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-        let mut free_bytes: u64 = 0;
-        unsafe {
-            #[link(name = "kernel32")]
-            extern "system" {
-                fn GetDiskFreeSpaceExW(
-                    lpDirectoryName: *const u16,
-                    lpFreeBytesAvailableToCaller: *mut u64,
-                    lpTotalNumberOfBytes: *mut u64,
-                    lpTotalNumberOfFreeBytes: *mut u64,
-                ) -> i32;
-            }
-            GetDiskFreeSpaceExW(
-                wide.as_ptr(),
-                &mut free_bytes,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-            );
-        }
-        free_bytes as f64 / 1024.0 / 1024.0
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        use std::mem::MaybeUninit;
-        let c_path = std::ffi::CString::new(path.to_str().unwrap_or("/")).unwrap_or_default();
-        let mut stat = MaybeUninit::<libc::statvfs>::uninit();
-        let ok = unsafe { libc::statvfs(c_path.as_ptr(), stat.as_mut_ptr()) };
-        if ok == 0 {
-            let stat = unsafe { stat.assume_init() };
-            (stat.f_bavail as f64) * (stat.f_frsize as f64) / 1024.0 / 1024.0
-        } else {
-            0.0
-        }
-    }
 }
 
 #[tauri::command]
@@ -2093,50 +1976,6 @@ fn check_backend_availability(venv_dir: String) -> BackendAvailability {
     }
 }
 
-/// 强制删除目录：先尝试 Rust remove_dir_all，失败时在 Windows 上回退到 cmd /c rd /s /q
-fn force_remove_dir(path: &std::path::Path) -> Result<(), String> {
-    if !path.exists() {
-        return Ok(());
-    }
-    // 第一次尝试：Rust 标准库
-    if fs::remove_dir_all(path).is_ok() {
-        return Ok(());
-    }
-    // 第二次尝试 (Windows)：先去掉只读属性再 rd /s /q，避免“清不掉”
-    #[cfg(target_os = "windows")]
-    {
-        let mut attrib = std::process::Command::new("cmd");
-        attrib.args(["/c", "attrib", "-R", "/S", "/D"]).arg(path);
-        apply_no_window(&mut attrib);
-        let _ = attrib.status();
-        let mut rd_cmd = std::process::Command::new("cmd");
-        rd_cmd.args(["/c", "rd", "/s", "/q"]).arg(path);
-        apply_no_window(&mut rd_cmd);
-        let status = rd_cmd
-            .status()
-            .map_err(|e| format!("执行 rd 命令失败: {e}"))?;
-        if status.success() || !path.exists() {
-            return Ok(());
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = Command::new("chmod").args(["-R", "u+w"]).arg(path).status();
-        let status = Command::new("rm")
-            .args(["-rf"])
-            .arg(path)
-            .status()
-            .map_err(|e| format!("rm -rf failed: {e}"))?;
-        if status.success() || !path.exists() {
-            return Ok(());
-        }
-    }
-    if path.exists() {
-        Err(format!("无法删除目录: {}", path.display()))
-    } else {
-        Ok(())
-    }
-}
 
 #[tauri::command]
 fn cleanup_old_environment(clean_venv: bool, clean_runtime: bool) -> Result<String, String> {
@@ -2286,13 +2125,6 @@ struct PidFileData {
 
 fn default_started_by() -> String {
     "tauri".to_string()
-}
-
-fn now_epoch_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 fn write_pid_file(workspace_id: &str, pid: u32, started_by: &str) -> Result<(), String> {
@@ -3149,6 +2981,7 @@ fn openakita_stop_all_processes() -> Vec<u32> {
 }
 
 fn read_state_file() -> AppStateFile {
+    let _lock = STATE_FILE_LOCK.lock().unwrap();
     let p = state_file_path();
     if let Ok(content) = fs::read_to_string(&p) {
         if let Ok(state) = serde_json::from_str::<AppStateFile>(&content) {
@@ -3226,42 +3059,6 @@ fn write_state_file(state: &AppStateFile) -> Result<(), String> {
     }
     let data = serde_json::to_string_pretty(state).map_err(|e| format!("serialize failed: {e}"))?;
     atomic_write_with_backup(&p, data.as_bytes())
-}
-
-/// Crash-safe file write: backup existing file, write to .tmp, then atomic rename.
-/// On Windows rename failure (file locked), retries up to 3 times before falling back
-/// to direct write.
-fn atomic_write_with_backup(path: &Path, content: &[u8]) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("create parent dir failed: {e}"))?;
-    }
-    if path.exists() {
-        let bak = path.with_extension("json.bak");
-        let _ = fs::copy(path, &bak);
-    }
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, content).map_err(|e| format!("write tmp failed: {e}"))?;
-    for attempt in 0..3u64 {
-        match fs::rename(&tmp, path) {
-            Ok(()) => return Ok(()),
-            Err(e) => {
-                if attempt < 2 {
-                    std::thread::sleep(std::time::Duration::from_millis(100 * (attempt + 1)));
-                } else {
-                    eprintln!(
-                        "atomic rename failed after 3 retries ({e}), falling back to direct write"
-                    );
-                    if let Err(e2) = fs::write(path, content) {
-                        let _ = fs::remove_file(&tmp);
-                        return Err(format!("write failed: {e2}"));
-                    }
-                    let _ = fs::remove_file(&tmp);
-                    return Ok(());
-                }
-            }
-        }
-    }
-    Ok(())
 }
 
 fn ensure_workspace_scaffold(dir: &Path) -> Result<(), String> {
@@ -4561,44 +4358,6 @@ fn openakita_check_pid_alive(workspace_id: String) -> Result<bool, String> {
     Ok(false)
 }
 
-#[cfg(windows)]
-fn apply_no_window(cmd: &mut Command) {
-    use std::os::windows::process::CommandExt;
-    // CREATE_NO_WINDOW: avoid flashing a black console window for spawned commands.
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    cmd.creation_flags(CREATE_NO_WINDOW);
-}
-
-#[cfg(not(windows))]
-fn apply_no_window(_cmd: &mut Command) {}
-
-/// 清除可能干扰 Python 运行环境的外部环境变量。
-///
-/// 常见场景：用户安装了 Anaconda/Miniconda、系统设置了 PYTHONPATH 等，
-/// 这些变量会在 Python 启动时被注入到 sys.path 最前面，覆盖 PyInstaller
-/// 内置的包（如 pydantic_core），导致 C 扩展不兼容而崩溃。
-///
-/// 同时清除 pip 行为干扰变量（PIP_TARGET/PIP_PREFIX 等），
-/// 避免 pip install --target 时被用户配置覆盖。
-fn strip_harmful_python_env(cmd: &mut Command) {
-    // Python 运行时变量
-    cmd.env_remove("PYTHONPATH");
-    cmd.env_remove("PYTHONHOME");
-    cmd.env_remove("PYTHONSTARTUP");
-    // 虚拟环境 / Conda 变量
-    cmd.env_remove("VIRTUAL_ENV");
-    cmd.env_remove("CONDA_PREFIX");
-    cmd.env_remove("CONDA_DEFAULT_ENV");
-    cmd.env_remove("CONDA_SHLVL");
-    cmd.env_remove("CONDA_PYTHON_EXE");
-    // pip 行为干扰变量
-    cmd.env_remove("PIP_TARGET");
-    cmd.env_remove("PIP_PREFIX");
-    cmd.env_remove("PIP_USER");
-    cmd.env_remove("PIP_INDEX_URL");
-    cmd.env_remove("PIP_REQUIRE_VIRTUALENV");
-}
-
 /// Configure environment for invoking `_internal/python{3}` directly.
 ///
 /// PyInstaller packs `encodings`, `codecs` and other bootstrap modules into
@@ -5699,21 +5458,6 @@ fn workspace_update_env(workspace_id: String, entries: Vec<EnvEntry>) -> Result<
     fs::write(&env_path, updated).map_err(|e| format!("write .env failed: {e}"))
 }
 
-/// Read a text file as UTF-8; fall back to lossy conversion for non-UTF-8 files
-/// (e.g. .env with GBK-encoded Chinese comments on Windows).
-fn read_text_lossy(path: &Path) -> String {
-    match fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(_) => {
-            // Non-UTF-8 bytes — decode lossily so existing content is preserved.
-            fs::read(path)
-                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-                .unwrap_or_default()
-        }
-    }
-}
-
 // ── Workspace backup commands ────────────────────────────────────────
 
 #[tauri::command]
@@ -5995,89 +5739,6 @@ fn import_workspace_backup_native(
         "status": "ok",
         "restored_count": restored,
     }))
-}
-
-/// Simple recursive file walker (no external crate dependency needed)
-fn walkdir(dir: &Path) -> Vec<walkdir_entry::Entry> {
-    let mut result = Vec::new();
-    walkdir_recurse(dir, &mut result);
-    result
-}
-
-fn walkdir_recurse(dir: &Path, out: &mut Vec<walkdir_entry::Entry>) {
-    let Ok(rd) = fs::read_dir(dir) else { return };
-    for entry in rd.flatten() {
-        let path = entry.path();
-        out.push(walkdir_entry::Entry { path: path.clone() });
-        if path.is_dir() {
-            walkdir_recurse(&path, out);
-        }
-    }
-}
-
-mod walkdir_entry {
-    use std::path::{Path, PathBuf};
-    pub struct Entry {
-        pub path: PathBuf,
-    }
-    impl Entry {
-        pub fn path(&self) -> &Path {
-            &self.path
-        }
-    }
-}
-
-fn chrono_like_timestamp() -> String {
-    let dt = time_from_epoch(now_epoch_secs());
-    format!(
-        "{:04}{:02}{:02}_{:02}{:02}{:02}",
-        dt.0, dt.1, dt.2, dt.3, dt.4, dt.5
-    )
-}
-
-fn time_from_epoch(epoch_secs: u64) -> (u32, u32, u32, u32, u32, u32) {
-    // Simple epoch-to-datetime conversion (UTC-based, good enough for filenames)
-    const SECS_PER_DAY: u64 = 86400;
-    #[allow(dead_code)]
-    const DAYS_PER_YEAR: u64 = 365;
-
-    let total_days = epoch_secs / SECS_PER_DAY;
-    let time_of_day = epoch_secs % SECS_PER_DAY;
-    let hour = (time_of_day / 3600) as u32;
-    let minute = ((time_of_day % 3600) / 60) as u32;
-    let second = (time_of_day % 60) as u32;
-
-    // Calculate year/month/day from total_days since 1970-01-01
-    let mut year = 1970u32;
-    let mut remaining = total_days;
-    loop {
-        let days_in_year = if is_leap(year) { 366 } else { 365 };
-        if remaining < days_in_year {
-            break;
-        }
-        remaining -= days_in_year;
-        year += 1;
-    }
-    let days_in_months: [u64; 12] = if is_leap(year) {
-        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    } else {
-        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    };
-    let mut month = 1u32;
-    for &dm in &days_in_months {
-        if remaining < dm {
-            break;
-        }
-        remaining -= dm;
-        month += 1;
-    }
-    let day = remaining as u32 + 1;
-
-    (year, month, day, hour, minute, second)
-}
-
-fn is_leap(y: u32) -> bool {
-    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -7867,87 +7528,7 @@ fn export_env_backup(workspace_id: String, dest_path: Option<String>) -> Result<
     Ok(dest.to_string_lossy().to_string())
 }
 
-// ── 通用 ZIP 打包辅助函数 ──
 
-fn zip_collect_files(dir: &Path) -> Vec<PathBuf> {
-    let mut result = Vec::new();
-    if let Ok(entries) = fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                result.extend(zip_collect_files(&path));
-            } else {
-                result.push(path);
-            }
-        }
-    }
-    result
-}
-
-fn zip_add_dir(
-    zw: &mut zip::ZipWriter<fs::File>,
-    dir: &Path,
-    prefix: &str,
-    opts: zip::write::SimpleFileOptions,
-) {
-    if !dir.exists() {
-        return;
-    }
-    for fp in zip_collect_files(dir) {
-        if let Ok(rel) = fp.strip_prefix(dir) {
-            let name = format!("{}/{}", prefix, rel.to_string_lossy().replace('\\', "/"));
-            if zw.start_file(&name, opts).is_ok() {
-                let _ = zw.write_all(&fs::read(&fp).unwrap_or_default());
-            }
-        }
-    }
-}
-
-fn zip_add_dir_capped(
-    zw: &mut zip::ZipWriter<fs::File>,
-    dir: &Path,
-    prefix: &str,
-    opts: zip::write::SimpleFileOptions,
-    max_bytes: u64,
-) {
-    if !dir.exists() {
-        return;
-    }
-    let mut files = zip_collect_files(dir);
-    files.sort_by(|a, b| {
-        let ma = fs::metadata(a).and_then(|m| m.modified()).ok();
-        let mb = fs::metadata(b).and_then(|m| m.modified()).ok();
-        mb.cmp(&ma)
-    });
-    let mut total: u64 = 0;
-    for fp in files {
-        let sz = fs::metadata(&fp).map(|m| m.len()).unwrap_or(0);
-        if total + sz > max_bytes {
-            continue;
-        }
-        if let Ok(rel) = fp.strip_prefix(dir) {
-            let name = format!("{}/{}", prefix, rel.to_string_lossy().replace('\\', "/"));
-            if zw.start_file(&name, opts).is_ok() {
-                let _ = zw.write_all(&fs::read(&fp).unwrap_or_default());
-                total += sz;
-            }
-        }
-    }
-}
-
-fn zip_add_file(
-    zw: &mut zip::ZipWriter<fs::File>,
-    path: &Path,
-    zip_name: &str,
-    opts: zip::write::SimpleFileOptions,
-) {
-    if !path.exists() || !path.is_file() {
-        return;
-    }
-    if zw.start_file(zip_name, opts).is_ok() {
-        let _ = zw.write_all(&fs::read(path).unwrap_or_default());
-    }
-}
 
 /// Export diagnostic bundle (logs, llm_debug, system info) as a zip.
 /// If `dest_path` is given (from a save dialog), write there; otherwise fall back to Downloads.
@@ -8385,21 +7966,6 @@ fn build_feedback_zip(
 
     zw.finish().map_err(|e| format!("zip finish: {e}"))?;
     Ok(dest.to_string_lossy().to_string())
-}
-
-/// Simple days-since-epoch to civil date (year, month, day).
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = (z - era * 146097) as u32;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    (y, m, d)
 }
 
 /// Upload a feedback ZIP to the cloud FC endpoint (3-phase: prepare → OSS PUT → complete).
@@ -8880,7 +8446,7 @@ fn windows_broadcast_env_change() {
             lpdw_result: *mut usize,
         ) -> isize;
     }
-    let env_str = CString::new("Environment").unwrap();
+    let env_str = CString::new("Environment").expect("literal has no null bytes");
     unsafe {
         let mut result: usize = 0;
         // HWND_BROADCAST = 0xFFFF, WM_SETTINGCHANGE = 0x001A, SMTO_ABORTIFHUNG = 0x0002
