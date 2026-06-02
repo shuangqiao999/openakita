@@ -948,6 +948,33 @@ class TaskExecutor:
         except Exception as e:
             logger.debug("Knowledge base maintenance skipped: %s", e)
 
+        try:
+            # Memory LanceDB: 每 30 分钟 nudge 写入 + 每次对话 episode，但从未 compact
+            mm = getattr(self, "memory_manager", None)
+            if mm and hasattr(mm, "store") and mm.store and hasattr(mm.store, "search"):
+                backend = mm.store.search
+                for tbl_attr in ("_table", "_episodes_table"):
+                    table = getattr(backend, tbl_attr, None)
+                    if table is None:
+                        continue
+                    for method_name in ("optimize", "compact_files"):
+                        fn = getattr(table, method_name, None)
+                        if fn is None:
+                            continue
+                        try:
+                            fn()
+                            logger.debug(
+                                "[Maintenance] Memory LanceDB %s %s completed",
+                                tbl_attr, method_name,
+                            )
+                        except Exception as e:
+                            logger.debug(
+                                "[Maintenance] Memory LanceDB %s %s skipped: %s",
+                                tbl_attr, method_name, e,
+                            )
+        except Exception as e:
+            logger.debug("Memory LanceDB maintenance skipped: %s", e)
+
     async def _system_memory_nudge_review(self) -> tuple[bool, str]:
         """
         周期性记忆回顾（Memory Nudge）
