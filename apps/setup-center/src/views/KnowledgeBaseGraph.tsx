@@ -92,10 +92,12 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
 
   useEffect(() => {
     if (!apiBaseUrl) return;
+    let cancelled = false;
     safeFetch(`${apiBaseUrl}/api/kb/documents?limit=200`)
       .then(r => r.json())
-      .then(d => setDocs((d.documents || []).filter((dd: DocBrief) => dd.status === "ready")))
+      .then(d => { if (!cancelled) setDocs((d.documents || []).filter((dd: DocBrief) => dd.status === "ready")); })
       .catch(() => {});
+    return () => { cancelled = true; };
   }, [apiBaseUrl]);
 
   useEffect(() => {

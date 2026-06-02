@@ -934,6 +934,10 @@ export function ChatView({
     }, 1000);
   }, []);
 
+  useEffect(() => () => {
+    if (undoDebounceRef.current) clearTimeout(undoDebounceRef.current);
+  }, []);
+
   const setInputValue = useCallback((val: string) => {
     inputTextRef.current = val;
     setHasInputText(val.trim().length > 0);
@@ -964,28 +968,32 @@ export function ChatView({
 
   useEffect(() => {
     if (!visible) return;
+    let cancelled = false;
     const fetchProfiles = async () => {
       try {
         const res = await safeFetch(`${apiBaseUrl}/api/agents/profiles`);
         const data = await res.json();
-        setAgentProfiles(data.profiles || []);
+        if (!cancelled) setAgentProfiles(data.profiles || []);
       } catch (e) {
-        logger.warn("Chat", "Failed to fetch agent profiles", { error: String(e) });
+        if (!cancelled) logger.warn("Chat", "Failed to fetch agent profiles", { error: String(e) });
       }
     };
     fetchProfiles();
+    return () => { cancelled = true; };
   }, [apiBaseUrl, serviceRunning, visible]);
 
   useEffect(() => {
     if (!visible || !serviceRunning) return;
+    let cancelled = false;
     const fetchOrgs = async () => {
       try {
         const res = await safeFetch(`${apiBaseUrl}/api/orgs`);
         const data = await res.json();
-        setOrgList(data.map((o: any) => ({ id: o.id, name: o.name, icon: o.icon || "", status: o.status })));
+        if (!cancelled) setOrgList(data.map((o: any) => ({ id: o.id, name: o.name, icon: o.icon || "", status: o.status })));
       } catch { /* ignore */ }
     };
     fetchOrgs();
+    return () => { cancelled = true; };
   }, [apiBaseUrl, serviceRunning, visible]);
 
   // Sync selectedAgent → current conversation's agentProfileId
@@ -1404,6 +1412,9 @@ export function ChatView({
   }, []);
 
   // ── IM 通道掉线主动告警：监听 im:channel_status 事件 ──
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
+
   useEffect(() => {
     return onWsEvent((event, raw) => {
       if (event !== "im:channel_status") return;
@@ -1425,7 +1436,9 @@ export function ChatView({
         }
         if (isOnline) {
           setTimeout(() => {
-            setImChannelAlerts((prev) => prev.filter((a) => !(a.channel === channel && a.status === "online")));
+            if (mountedRef.current) {
+              setImChannelAlerts((prev) => prev.filter((a) => !(a.channel === channel && a.status === "online")));
+            }
           }, 8000);
         }
       }

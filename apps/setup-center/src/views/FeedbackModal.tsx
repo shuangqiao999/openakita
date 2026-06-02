@@ -95,6 +95,7 @@ export function FeedbackModal({ open, onClose, apiBase, initialMode = "bug", onN
 
   useEffect(() => {
     if (!open) return;
+    let cancelled = false;
 
     if (useOfflineIpc) {
       setSystemInfo({ os: navigator.userAgent, note: "collected_via_tauri_offline" });
@@ -106,22 +107,23 @@ export function FeedbackModal({ open, onClose, apiBase, initialMode = "bug", onN
           }
         })
         .catch(() => {});
-      return;
+      return () => { cancelled = true; };
     }
 
     safeFetch(`${apiBase}/api/system-info`, { signal: AbortSignal.timeout(5000) })
       .then((r) => r.json())
-      .then(setSystemInfo)
-      .catch(() => setSystemInfo(null));
+      .then((info) => { if (!cancelled) setSystemInfo(info); })
+      .catch(() => { if (!cancelled) setSystemInfo(null); });
 
     safeFetch(`${apiBase}/api/feedback-config`, { signal: AbortSignal.timeout(5000) })
       .then((r) => r.json())
       .then((cfg: any) => {
-        if (cfg.captcha_scene_id && cfg.captcha_prefix) {
+        if (!cancelled && cfg.captcha_scene_id && cfg.captcha_prefix) {
           setCaptchaCfg({ scene_id: cfg.captcha_scene_id, prefix: cfg.captcha_prefix });
         }
       })
       .catch(() => {});
+    return () => { cancelled = true; };
   }, [open, apiBase, useOfflineIpc, currentWorkspaceId]);
 
   useEffect(() => {

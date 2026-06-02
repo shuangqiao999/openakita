@@ -1038,10 +1038,12 @@ function ExtensionsCard({
     if (loadedRef.current) return;
     loadedRef.current = true;
     if (!shouldUseHttpApi()) return;
+    let cancelled = false;
     safeFetch(`${httpApiBase()}/api/config/extensions`, { signal: AbortSignal.timeout(5_000) })
       .then((r) => r.json())
-      .then((data) => setExts(data.extensions ?? []))
-      .catch(() => setError(true));
+      .then((data) => { if (!cancelled) setExts(data.extensions ?? []); })
+      .catch(() => { if (!cancelled) setError(true); });
+    return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
