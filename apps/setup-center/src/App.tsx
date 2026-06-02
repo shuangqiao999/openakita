@@ -1112,16 +1112,29 @@ function MainApp() {
           const wasReady = lastReadinessReadyRef.current;
           lastReadinessReadyRef.current = readinessReady;
           if (readinessReady) clearBackendStartingHold();
-          setServiceStatus(prev => ({
-            ...(prev || { pid: null, pidFile: "" }),
-            running: true,
-            heartbeatPhase: readinessPhase || prev?.heartbeatPhase,
-            heartbeatHttpReady: readinessHttpReady ?? prev?.heartbeatHttpReady,
-            heartbeatImReady: readinessImReady ?? prev?.heartbeatImReady,
-            heartbeatReady: readinessFullyReady ?? prev?.heartbeatReady,
-            lastLinkDiagnostic:
-              lastLinkDiagnostic !== undefined ? lastLinkDiagnostic : prev?.lastLinkDiagnostic,
-          }));
+          // Only update state when values actually change to avoid unnecessary re-renders
+          setServiceStatus(prev => {
+            const next = {
+              ...(prev || { pid: null, pidFile: "" }),
+              running: true,
+              heartbeatPhase: readinessPhase || prev?.heartbeatPhase,
+              heartbeatHttpReady: readinessHttpReady ?? prev?.heartbeatHttpReady,
+              heartbeatImReady: readinessImReady ?? prev?.heartbeatImReady,
+              heartbeatReady: readinessFullyReady ?? prev?.heartbeatReady,
+              lastLinkDiagnostic:
+                lastLinkDiagnostic !== undefined ? lastLinkDiagnostic : prev?.lastLinkDiagnostic,
+            };
+            // Skip re-render if nothing changed
+            if (
+              prev?.running === next.running &&
+              prev?.heartbeatPhase === next.heartbeatPhase &&
+              prev?.heartbeatHttpReady === next.heartbeatHttpReady &&
+              prev?.heartbeatImReady === next.heartbeatImReady &&
+              prev?.heartbeatReady === next.heartbeatReady &&
+              prev?.lastLinkDiagnostic === next.lastLinkDiagnostic
+            ) return prev;
+            return next;
+          });
           setBackendBootPhase(readinessReady ? "running" : "starting");
           notifyPluginAppsReady();
           if (wasReady === false && readinessReady) {

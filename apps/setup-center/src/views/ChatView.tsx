@@ -590,10 +590,26 @@ export function ChatView({
   // (workspace switch), the workspace-change effect handles loading new data; if
   // we included the key here, old workspace data would be written to the new key
   // before the workspace-change effect has a chance to run.
+  const convSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY_CONVS, JSON.stringify(conversations));
-    } catch { /* quota exceeded or private mode */ }
+    // Throttle: only write to localStorage every 1s max to avoid 10Hz IO during streaming
+    if (convSaveTimerRef.current) return;
+    convSaveTimerRef.current = setTimeout(() => {
+      convSaveTimerRef.current = null;
+      try {
+        localStorage.setItem(STORAGE_KEY_CONVS, JSON.stringify(conversations));
+      } catch { /* quota exceeded or private mode */ }
+    }, 1000);
+    return () => {
+      if (convSaveTimerRef.current) {
+        clearTimeout(convSaveTimerRef.current);
+        convSaveTimerRef.current = null;
+        // Final write on unmount to ensure data is saved
+        try {
+          localStorage.setItem(STORAGE_KEY_CONVS, JSON.stringify(conversations));
+        } catch { /* ignore */ }
+      }
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversations]);
 
