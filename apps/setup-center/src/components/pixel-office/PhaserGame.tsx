@@ -67,23 +67,28 @@ export const PhaserGame = forwardRef<GameRef, PhaserGameProps>(function PhaserGa
 
     const createGame = () => {
       if (destroyed || gameRef.current) return;
-      game = new Phaser.Game({
-        type: Phaser.AUTO,
-        parent: el,
-        pixelArt: true,
-        roundPixels: true,
-        antialias: false,
-        backgroundColor: '#1e1e2e',
-        scene: [OfficeScene],
-        fps: {
-          target: 60,
-          min: 30,
-        },
-        scale: {
-          mode: Phaser.Scale.RESIZE,
-          autoCenter: Phaser.Scale.CENTER_BOTH,
-        },
-      });
+      try {
+        game = new Phaser.Game({
+          type: Phaser.AUTO,
+          parent: el,
+          pixelArt: true,
+          roundPixels: true,
+          antialias: false,
+          backgroundColor: '#1e1e2e',
+          scene: [OfficeScene],
+          fps: {
+            target: 60,
+            min: 30,
+          },
+          scale: {
+            mode: Phaser.Scale.RESIZE,
+            autoCenter: Phaser.Scale.CENTER_BOTH,
+          },
+        });
+      } catch (e) {
+        console.error('[PhaserGame] Failed to create game:', e);
+        return;
+      }
       gameRef.current = game;
       game.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
       pollTimer = setInterval(pollForScene, 100);

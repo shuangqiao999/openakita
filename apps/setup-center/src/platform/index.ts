@@ -231,7 +231,11 @@ export async function proxyFetch(
       body: options?.body ?? null,
       timeoutSecs: options?.timeoutSecs ?? 30,
     });
-    return JSON.parse(raw) as { status: number; body: string };
+    try {
+      return JSON.parse(raw) as { status: number; body: string };
+    } catch {
+      return { status: 502, body: "" };
+    }
   }
   const res = await fetch(url, {
     method: options?.method ?? "GET",

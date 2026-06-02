@@ -270,7 +270,12 @@ export async function fetchModelsDirectly(params: {
       }
       throw new Error(`Anthropic API ${resp.status}: ${resp.body.slice(0, 200)}`);
     }
-    const data = JSON.parse(resp.body);
+    let data: any;
+    try {
+      data = JSON.parse(resp.body);
+    } catch {
+      return [];
+    }
     return (data.data ?? [])
       .map((m: any) => ({
         id: String(m.id ?? "").trim(),
@@ -296,7 +301,12 @@ export async function fetchModelsDirectly(params: {
     }
     throw new Error(`API ${resp.status}: ${resp.body.slice(0, 200)}`);
   }
-  const data = JSON.parse(resp.body);
+  let data: any;
+  try {
+    data = JSON.parse(resp.body);
+  } catch {
+    return [];
+  }
   const routerModels = isOpenRouterProvider(providerSlug, baseUrl) ? openRouterRouterModels() : [];
   const seen = new Set(routerModels.map((m) => m.id));
   const apiModels = (data.data ?? [])

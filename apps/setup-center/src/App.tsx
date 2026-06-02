@@ -5476,12 +5476,14 @@ function MainApp() {
     }
     if (view === "token_stats") {
       return (
-        <TokenStatsView
-          serviceRunning={serviceStatus?.running ?? false}
-          apiBaseUrl={apiBaseUrl}
-          disabled={disabledViews.includes("token_stats")}
-          onToggleDisabled={() => toggleViewDisabled("token_stats")}
-        />
+        <ErrorBoundary>
+          <TokenStatsView
+            serviceRunning={serviceStatus?.running ?? false}
+            apiBaseUrl={apiBaseUrl}
+            disabled={disabledViews.includes("token_stats")}
+            onToggleDisabled={() => toggleViewDisabled("token_stats")}
+          />
+        </ErrorBoundary>
       );
     }
     if (view === "mcp") {
@@ -5533,15 +5535,19 @@ function MainApp() {
     }
     if (view === "identity") {
       return (
-        <IdentityView serviceRunning={serviceStatus?.running ?? false} apiBaseUrl={apiBaseUrl} />
+        <ErrorBoundary>
+          <IdentityView serviceRunning={serviceStatus?.running ?? false} apiBaseUrl={apiBaseUrl} />
+        </ErrorBoundary>
       );
     }
     if (view === "dashboard") {
       return (
-        <AgentDashboardView
-          apiBaseUrl={apiBaseUrl}
-          visible={view === "dashboard"}
-        />
+        <ErrorBoundary>
+          <AgentDashboardView
+            apiBaseUrl={apiBaseUrl}
+            visible={view === "dashboard"}
+          />
+        </ErrorBoundary>
       );
     }
     if (view === "org_editor") {
@@ -5559,26 +5565,32 @@ function MainApp() {
     }
     if (view === "agent_manager") {
       return (
-        <AgentManagerView
-          apiBaseUrl={apiBaseUrl}
-          visible={view === "agent_manager"}
-        />
+        <ErrorBoundary>
+          <AgentManagerView
+            apiBaseUrl={apiBaseUrl}
+            visible={view === "agent_manager"}
+          />
+        </ErrorBoundary>
       );
     }
     if (view === "agent_store") {
       return (
-        <AgentStoreView
-          apiBaseUrl={apiBaseUrl}
-          visible={view === "agent_store"}
-        />
+        <ErrorBoundary>
+          <AgentStoreView
+            apiBaseUrl={apiBaseUrl}
+            visible={view === "agent_store"}
+          />
+        </ErrorBoundary>
       );
     }
     if (view === "skill_store") {
       return (
-        <SkillStoreView
-          apiBaseUrl={apiBaseUrl}
-          visible={view === "skill_store"}
-        />
+        <ErrorBoundary>
+          <SkillStoreView
+            apiBaseUrl={apiBaseUrl}
+            visible={view === "skill_store"}
+          />
+        </ErrorBoundary>
       );
     }
     if (view === "security") {
@@ -5594,12 +5606,14 @@ function MainApp() {
     if (view.startsWith("plugin_app:")) {
       const pluginId = view.slice("plugin_app:".length);
       return (
-        <PluginAppHost
-          key={pluginId}
-          pluginId={pluginId}
-          apiBase={httpApiBase()}
-          onViewChange={(v) => navigateToView(v)}
-        />
+        <ErrorBoundary>
+          <PluginAppHost
+            key={pluginId}
+            pluginId={pluginId}
+            apiBase={httpApiBase()}
+            onViewChange={(v) => navigateToView(v)}
+          />
+        </ErrorBoundary>
       );
     }
     if (view === "docs") {
@@ -5612,26 +5626,28 @@ function MainApp() {
     }
     if (view === "my_feedback") {
       return (
-        <MyFeedbackView
-          apiBaseUrl={httpApiBase()}
-          serviceRunning={serviceStatus?.running ?? false}
-          onOpenFeedbackModal={() => setBugReportOpen(true)}
-        />
+        <ErrorBoundary>
+          <MyFeedbackView
+            apiBaseUrl={httpApiBase()}
+            serviceRunning={serviceStatus?.running ?? false}
+            onOpenFeedbackModal={() => setBugReportOpen(true)}
+          />
+        </ErrorBoundary>
       );
     }
     switch (stepId) {
       case "llm":
-        return renderLLM();
+        return <ErrorBoundary>{renderLLM()}</ErrorBoundary>;
       case "im":
-        return renderIM();
+        return <ErrorBoundary>{renderIM()}</ErrorBoundary>;
       case "tools":
-        return renderTools();
+        return <ErrorBoundary>{renderTools()}</ErrorBoundary>;
       case "agent":
-        return renderAgentSystem();
+        return <ErrorBoundary>{renderAgentSystem()}</ErrorBoundary>;
       case "advanced":
-        return renderAdvanced();
+        return <ErrorBoundary>{renderAdvanced()}</ErrorBoundary>;
       default:
-        return renderLLM();
+        return <ErrorBoundary>{renderLLM()}</ErrorBoundary>;
     }
   }
 
@@ -5912,7 +5928,8 @@ function MainApp() {
         <div style={{ gridRow: 3, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
           {/* ChatView 始终挂载，切走时隐藏以保留聊天记录 */}
           <div className="contentChat" style={{ display: view === "chat" ? undefined : "none", flex: 1, minHeight: 0 }}>
-            <ChatView
+            <ErrorBoundary>
+              <ChatView
               serviceRunning={serviceStatus?.running ?? false} apiBaseUrl={apiBaseUrl}
               endpoints={chatEndpoints}
               visible={view === "chat"}
@@ -5927,6 +5944,7 @@ function MainApp() {
                 await startLocalServiceWithConflictCheck(effectiveWsId);
               }}
             />
+            </ErrorBoundary>
           </div>
           <div style={{ display: view === "org_editor" ? undefined : "none", flex: 1, minHeight: 0 }}>
             <ErrorBoundary>
