@@ -1353,6 +1353,11 @@ class Agent:
         self._preferred_endpoint: str | None = None
         self._endpoint_policy: str = "prefer"
 
+        # 资源归属：主 Agent 自己创建 memory_manager/kb_manager，拥有所有权
+        # AgentFactory 复用主 Agent 资源时设为 False，回收时不会误关
+        self._owns_memory_manager = True
+        self._owns_kb_manager = True
+
         # Plan mode exit pending — keyed by conversation_id
         # Set by exit_plan_mode tool, consumed by chat_with_session_stream
         self._plan_exit_pending: dict[str, dict] = {}
@@ -9560,17 +9565,19 @@ class Agent:
         except Exception as e:
             logger.warning(f"Failed to await memory pending tasks: {e}")
 
-        # 关闭知识库管理器（compact LanceDB 防止 Windows 重启后数据丢失）
+        # 关闭知识库管理器（compact LanceDB 防止 Windows 重启后数据损坏）
+        # 仅当该 Agent 自己拥有 kb_manager 时才关闭，共享实例不关闭
         kb_mgr = getattr(self, "kb_manager", None)
-        if kb_mgr is not None and hasattr(kb_mgr, "close"):
+        if kb_mgr is not None and hasattr(kb_mgr, "close") and self._owns_kb_manager:
             try:
                 kb_mgr.close()
             except Exception as e:
                 logger.warning(f"KB manager close failed: {e}")
 
         # 关闭记忆系统的 LanceDB 后端
+        # 仅当该 Agent 自己拥有 memory_manager 时才关闭，共享实例不关闭
         mem_mgr = getattr(self, "memory_manager", None)
-        if mem_mgr is not None and hasattr(mem_mgr, "close"):
+        if mem_mgr is not None and hasattr(mem_mgr, "close") and self._owns_memory_manager:
             try:
                 mem_mgr.close()
             except Exception as e:

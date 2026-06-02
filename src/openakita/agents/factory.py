@@ -136,6 +136,10 @@ class AgentFactory:
         await agent.initialize(start_scheduler=False, lightweight=True)
         agent.configure_runtime_environment(profile)
 
+        # AgentFactory 创建的 agent 默认不拥有共享资源，回收时不能关闭
+        agent._owns_memory_manager = False
+        agent._owns_kb_manager = False
+
         self._apply_skill_filter(agent, profile)
         self._apply_tool_filter(agent, profile)
         self._apply_mcp_filter(agent, profile)
@@ -412,6 +416,7 @@ class AgentFactory:
             isolated_mm.retrieval_engine._external_sources.append(_GlobalStoreSource(global_store))
 
         agent.memory_manager = isolated_mm
+        agent._owns_memory_manager = True  # 独立记忆实例，该 agent 拥有所有权
 
         logger.info(
             f"Memory isolation applied: profile={profile.id}, "
