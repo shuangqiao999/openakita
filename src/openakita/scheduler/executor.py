@@ -892,6 +892,9 @@ class TaskExecutor:
 
             tracker.record_memory_consolidation(result)
 
+            # ── 磁盘维护：防止 knowledge.db / LanceDB 无限膨胀 ──
+            await self._run_storage_maintenance()
+
             v2_keys = ["unextracted_processed", "duplicates_removed", "memories_decayed"]
             _v1_keys = ["sessions_processed", "memories_extracted", "memories_added"]
 
@@ -920,6 +923,30 @@ class TaskExecutor:
         except Exception as e:
             logger.error(f"Memory consolidation failed: {e}")
             return False, str(e)
+
+    async def _run_storage_maintenance(self) -> None:
+        """磁盘维护：防止 SQLite/LanceDB/FTS5/embedding_cache 无限膨胀。"""
+        try:
+            if self.memory_manager and self.memory_manager.store:
+                store = self.memory_manager.store
+                if hasattr(store, "evict_old_embeddings"):
+                    store.evict_old_embeddings(keep=5000)
+        except Exception as e:
+            logger.debug("Embedding cache eviction skipped: %s", e)
+
+        try:
+            from ..config import settings
+            from ..knowledge.manager import KnowledgeBaseManager
+
+            ws_root = settings.project_root
+            kb = KnowledgeBaseManager(ws_root)
+            kb.cleanup_tmp_dir()
+            kb.optimize_fts5()
+            kb.compact_lance_now()
+            kb.repair_orphan_vectors_safe()
+            kb.vacuum_knowledge_db()
+        except Exception as e:
+            logger.debug("Knowledge base maintenance skipped: %s", e)
 
     async def _system_memory_nudge_review(self) -> tuple[bool, str]:
         """

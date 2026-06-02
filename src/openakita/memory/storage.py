@@ -2082,6 +2082,33 @@ class MemoryStorage:
                     raise
                 logger.error(f"Failed to cache embedding: {e}")
 
+    def evict_old_embeddings(self, keep: int = 5000) -> int:
+        """清理最旧的 embedding 缓存条目，仅保留最近 N 条。返回删除数。"""
+        if not self._conn:
+            return 0
+        with self._lock:
+            try:
+                cur = self._conn.execute("SELECT COUNT(*) FROM embedding_cache")
+                total = cur.fetchone()[0]
+                if total <= keep:
+                    return 0
+                # 按 created_at 排序，删除最旧的
+                self._conn.execute(
+                    "DELETE FROM embedding_cache WHERE content_hash IN ("
+                    "SELECT content_hash FROM embedding_cache ORDER BY created_at ASC LIMIT ?)",
+                    (total - keep,),
+                )
+                self._conn.commit()
+                removed = total - keep
+                logger.info(
+                    "[MemoryStorage] Evicted %d old embedding cache entries (kept %d)",
+                    removed, keep,
+                )
+                return removed
+            except Exception as e:
+                logger.debug("[MemoryStorage] Embedding cache eviction skipped: %s", e)
+                return 0
+
     # ======================================================================
     # Attachments (文件/媒体记忆)
     # ======================================================================

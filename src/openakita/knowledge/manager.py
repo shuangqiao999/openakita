@@ -136,6 +136,7 @@ class KnowledgeBaseManager:
 
         self._init_sqlite()
         self._init_lancedb()
+        self.cleanup_tmp_dir()  # 启动时清理残留临时文件
         try:
             asyncio.create_task(self._scan_on_startup())
         except RuntimeError:
@@ -2059,3 +2060,64 @@ class KnowledgeBaseManager:
                 pass
         gc.collect()
         logger.info("[KB] LanceDB connection closed")
+
+    # ── 定期维护 ──
+
+    def compact_lance_now(self) -> None:
+        """运行时调用：compact + optimize + cleanup LanceDB，不关闭连接。"""
+        table = self._lance_table
+        if table is None:
+            return
+        for method_name in ("optimize", "compact_files", "cleanup_old_versions"):
+            fn = getattr(table, method_name, None)
+            if fn is None:
+                continue
+            try:
+                fn()
+                logger.debug("[KB] LanceDB runtime %s completed", method_name)
+            except Exception as e:
+                logger.debug("[KB] LanceDB runtime %s skipped: %s", method_name, e)
+
+    def vacuum_knowledge_db(self) -> None:
+        """SQLite VACUUM: 回收 DELETE 后的空闲空间。"""
+        try:
+            with sqlite3.connect(str(self._db_path), timeout=10.0) as conn:
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                conn.execute("VACUUM")
+            logger.info("[KB] SQLite VACUUM + WAL checkpoint completed")
+        except Exception as e:
+            logger.warning("[KB] SQLite VACUUM failed (non-critical): %s", e)
+
+    def optimize_fts5(self) -> None:
+        """FTS5 optimize: 合并影子表，减少碎片。"""
+        try:
+            with sqlite3.connect(str(self._db_path), timeout=10.0) as conn:
+                conn.execute("INSERT INTO knowledge_chunks_fts(knowledge_chunks_fts) VALUES('optimize')")
+                conn.commit()
+            logger.info("[KB] FTS5 optimize completed")
+        except Exception as e:
+            logger.debug("[KB] FTS5 optimize skipped: %s", e)
+
+    def repair_orphan_vectors_safe(self) -> None:
+        """AI 安全封装的 orphan vector 修复，静默忽略异常。"""
+        try:
+            self.repair_orphan_vectors()
+        except Exception as e:
+            logger.debug("[KB] orphan vector repair skipped: %s", e)
+
+    def cleanup_tmp_dir(self) -> None:
+        """清理临时文件目录。"""
+        import shutil
+
+        tmp = self._tmp_dir
+        if not tmp.exists():
+            return
+        for f in tmp.iterdir():
+            try:
+                if f.is_file():
+                    f.unlink()
+                else:
+                    shutil.rmtree(f)
+            except Exception:
+                pass
+        logger.info("[KB] tmp directory cleaned")
