@@ -8,6 +8,7 @@ import { EventBus } from '../components/pixel-office/EventBus';
 import type { OrgData } from '../components/pixel-office/OfficeScene';
 import type { AgentSpriteConfig } from '../components/pixel-office/AgentSprite';
 import { safeFetch } from '../providers';
+import { onWsEvent } from '../platform/websocket';
 import { IconClipboard, IconSearch, IconFile, IconBot } from '../icons';
 import '../components/pixel-office/pixel-office.css';
 
@@ -57,7 +58,6 @@ export function PixelOfficeView({
   const [orgDropdownOpen, setOrgDropdownOpen] = useState(false);
   const [dataVersion, setDataVersion] = useState(0);
   const gameRef = useRef<GameRef>(null);
-  const wsRef = useRef<WebSocket | null>(null);
   const selectedOrgIdRef = useRef(selectedOrgId);
 
   const setSelectedOrgId = useCallback((id: string) => {
@@ -159,39 +159,15 @@ export function PixelOfficeView({
 
   useEffect(() => {
     if (!visible || !selectedOrgId || isSoloMode) return;
-    const wsBase = apiBaseUrl.replace(/^http/, 'ws');
-    const wsUrl = `${wsBase}/ws/events`;
-
-    let ws: WebSocket;
-    try {
-      ws = new WebSocket(wsUrl);
-    } catch {
-      return;
-    }
-    wsRef.current = ws;
-
-    ws.onmessage = (ev) => {
-      try {
-        const msg = JSON.parse(ev.data);
-        const eventType = msg.type ?? msg.event;
-        if (eventType?.startsWith('org:')) {
-          const payload = msg.payload ?? msg.data ?? msg;
-          const eventOrgId = payload?.org_id;
-          if (!eventOrgId || eventOrgId === selectedOrgIdRef.current) {
-            EventBus.emit('org-event', eventType, payload);
-          }
-        }
-      } catch { /* ignore */ }
-    };
-
-    ws.onerror = () => {};
-    ws.onclose = () => {};
-
-    return () => {
-      ws.close();
-      wsRef.current = null;
-    };
-  }, [apiBaseUrl, visible, selectedOrgId, isSoloMode]);
+    return onWsEvent((event, raw) => {
+      if (typeof event !== 'string' || !event.startsWith('org:')) return;
+      const payload = (raw as any)?.payload ?? (raw as any)?.data ?? raw;
+      const eventOrgId = (payload as any)?.org_id;
+      if (!eventOrgId || eventOrgId === selectedOrgIdRef.current) {
+        EventBus.emit('org-event', event, payload);
+      }
+    });
+  }, [visible, selectedOrgId, isSoloMode]);
 
   const handleEventLog = useCallback((entry: unknown) => {
     setEventLog(prev => {

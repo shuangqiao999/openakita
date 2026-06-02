@@ -82,9 +82,17 @@ export default defineConfig({
     ],
   },
   base: isWebBuild ? "/web/" : isCapBuild ? "./" : undefined,
-  build: isRemoteBuild
-    ? { outDir: "dist-web" }
-    : undefined,
+  build: {
+    ...(isRemoteBuild ? { outDir: "dist-web" } : { outDir: "dist" }),
+    rollupOptions: {
+      output: {
+        manualChunks: isRemoteBuild ? undefined : {
+          'vendor-phaser': ['phaser'],
+          'vendor-three': ['three', 'react-force-graph-3d', '3d-force-graph'],
+        },
+      },
+    },
+  },
   server: {
     host: "127.0.0.1",
     port: 5173,
