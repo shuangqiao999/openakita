@@ -9503,6 +9503,13 @@ class Agent:
         """
         logger.info("Shutting down agent...")
 
+        # 先停止定时任务调度器，防止数据库关闭后仍有积压任务触发
+        if self.task_scheduler is not None:
+            try:
+                await self.task_scheduler.stop(graceful_timeout=10.0)
+            except Exception as e:
+                logger.warning(f"TaskScheduler stop failed (non-critical): {e}")
+
         # 插件系统清理：dispatch on_shutdown → unload → 清全局 map
         pm = getattr(self, "_plugin_manager", None)
         if pm is not None:

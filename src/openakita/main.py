@@ -2412,6 +2412,16 @@ def serve(
                             await asyncio.wait_for(api_task, timeout=2.0)
                         except (asyncio.CancelledError, TimeoutError):
                             pass
+                    # Agent 异步关闭（先停调度器再关DB，防止"closed database"错误）
+                    try:
+                        if agent_or_master is not None and hasattr(
+                            agent_or_master, "shutdown"
+                        ):
+                            await asyncio.wait_for(
+                                agent_or_master.shutdown(), timeout=10.0
+                            )
+                    except (TimeoutError, Exception):
+                        pass
                     # 关闭 LanceDB 连接（compact 数据文件，防止 Windows 重启后损坏）
                     _close_lancedb_managers(agent_or_master)
                     await asyncio.wait_for(
@@ -2425,16 +2435,6 @@ def serve(
                         await asyncio.wait_for(
                             get_default_client().close(), timeout=5.0
                         )
-                    except (TimeoutError, Exception):
-                        pass
-                    # Agent 异步关闭（flush memory tasks, save eval events, close event bus）
-                    try:
-                        if agent_or_master is not None and hasattr(
-                            agent_or_master, "shutdown"
-                        ):
-                            await asyncio.wait_for(
-                                agent_or_master.shutdown(), timeout=10.0
-                            )
                     except (TimeoutError, Exception):
                         pass
                 except TimeoutError:
