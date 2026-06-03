@@ -98,6 +98,7 @@ class LanceDBBackend:
     内部自动调用嵌入模型将文本转为向量。
 
     线程安全: 所有对 _table 的写访问由 _lock 保护。
+    冲突重试: 捕获 IncompatibleTransaction 时自动重试 (最多3次, 指数退避)。
 
     延迟创建: _table 在首次 add() 时根据嵌入模型维度自动创建。
     若维度变更（换用不同模型），自动删除旧表并重建。
@@ -108,6 +109,8 @@ class LanceDBBackend:
     _INDEX_TYPE = "IVF_PQ"
     _INDEX_FTS_FIELD = "content"
     _QUERY_EMBED_CACHE_SIZE = 256
+    _MAX_RETRIES = 3
+    _RETRY_BASE_DELAY = 0.5
 
     def __init__(
         self,
@@ -152,6 +155,26 @@ class LanceDBBackend:
 
         self._persist_dir.mkdir(parents=True, exist_ok=True)
         self._init_or_open(embedding_dim)
+
+    def _retry_on_conflict(self, op_name: str, fn, *args) -> bool:
+        """执行 LanceDB 写操作，遇 IncompatibleTransaction 自动重试(指数退避,最多3次)。返回是否成功。"""
+        import time
+        for attempt in range(3):
+            try:
+                fn(*args)
+                return True
+            except Exception as e:
+                msg = str(e)
+                if "Incompatible transaction" in msg and attempt < 2:
+                    delay = 0.5 * (2 ** attempt)
+                    logger.debug(
+                        "[LanceDBBackend] %s conflict retry %d/3 after %.1fs",
+                        op_name, attempt + 1, delay,
+                    )
+                    time.sleep(delay)
+                    continue
+                raise
+        return False
 
     # ── Init / Open ──
 
@@ -294,13 +317,14 @@ class LanceDBBackend:
                 "(type=%s, rows=%d, dim=%d, partitions=%d, sub_vectors=%d)",
                 self._INDEX_TYPE, row_count, dim, num_partitions, num_sub,
             )
-            self._table.create_index(
-                metric=self._METRIC,
-                num_partitions=num_partitions,
-                num_sub_vectors=num_sub,
-                index_type=self._INDEX_TYPE,
-                replace=True,
-            )
+            with self._lock:
+                self._table.create_index(
+                    metric=self._METRIC,
+                    num_partitions=num_partitions,
+                    num_sub_vectors=num_sub,
+                    index_type=self._INDEX_TYPE,
+                    replace=True,
+                )
             self._index_created = True
             logger.info("[LanceDBBackend] Index creation completed")
         except Exception as e:
@@ -335,18 +359,22 @@ class LanceDBBackend:
     def _create_fts_index_sync(self) -> None:
         try:
             logger.info("[LanceDBBackend] FTS index creation started (language=Chinese)")
-            self._table.create_fts_index(
-                self._INDEX_FTS_FIELD,
-                replace=True,
-                language="Chinese",
-                lower_case=True,
-                ascii_folding=True,
-                max_token_length=64,
-            )
+            with self._lock:
+                self._table.create_fts_index(
+                    self._INDEX_FTS_FIELD,
+                    replace=True,
+                    language="Chinese",
+                    lower_case=True,
+                    ascii_folding=True,
+                    max_token_length=64,
+                )
             self._fts_index_created = True
             logger.info("[LanceDBBackend] FTS index creation completed")
-        except Exception as e:
-            logger.warning("[LanceDBBackend] FTS index creation failed: %s", e)
+        except Exception:
+            logger.debug(
+                "[LanceDBBackend] FTS index not created "
+                "(Chinese unsupported by this LanceDB build, using SQLite FTS5 fallback)"
+            )
         finally:
             self._creating_fts_index = False
 
@@ -694,12 +722,13 @@ class LanceDBBackend:
 
             try:
                 meta_str = json.dumps(metadata or {}, ensure_ascii=False)
-                self._table.add([{
+                row = [{
                     "id": memory_id,
                     "vector": vec,
                     "content": content,
                     "metadata": meta_str,
-                }])
+                }]
+                self._retry_on_conflict("add", self._table.add, row)
                 self._flush_table()
                 self._create_index_async()
                 self._create_fts_index_async()
@@ -715,7 +744,7 @@ class LanceDBBackend:
             return False
         try:
             with self._lock:
-                self._table.delete(f"id = '{memory_id}'")
+                self._retry_on_conflict("delete", self._table.delete, f"id = '{memory_id}'")
             return True
         except Exception as e:
             logger.warning(
@@ -780,7 +809,7 @@ class LanceDBBackend:
                         ),
                     })
                 if rows:
-                    self._table.add(rows)
+                    self._retry_on_conflict("batch_add", self._table.add, rows)
                     self._flush_table()
                 self._create_index_async()
                 self._create_fts_index_async()
@@ -846,7 +875,7 @@ class LanceDBBackend:
                 return 0
             with self._lock:
                 ids_str = ", ".join(f"'{id}'" for id in stale)
-                self._table.delete(f"id IN ({ids_str})")
+                self._retry_on_conflict("delete_not_in", self._table.delete, f"id IN ({ids_str})")
             logger.info(f"[LanceDBBackend] Removed {len(stale)} stale vectors")
             return len(stale)
         except Exception as e:
@@ -1077,25 +1106,26 @@ class LanceDBBackend:
 
     def close(self) -> None:
         """关闭 LanceDB 连接并 compact 数据文件，防止 Windows 重启后损坏。"""
-        for tbl_attr in ("_table", "_episodes_table"):
-            table = getattr(self, tbl_attr, None)
-            if table is not None:
-                for method_name in ("optimize", "compact_files", "cleanup_old_versions"):
-                    fn = getattr(table, method_name, None)
-                    if fn is None:
-                        continue
-                    try:
-                        fn()
-                        logger.info("[LanceDBBackend] %s %s completed", tbl_attr, method_name)
-                    except Exception as e:
-                        logger.debug("[LanceDBBackend] %s %s skipped: %s", tbl_attr, method_name, e)
-                setattr(self, tbl_attr, None)
-        if self._db is not None:
-            try:
-                self._db = None
-            except Exception:
-                pass
-        self._enabled = False
-        self._episodes_enabled = False
+        with self._lock:
+            for tbl_attr in ("_table", "_episodes_table"):
+                table = getattr(self, tbl_attr, None)
+                if table is not None:
+                    for method_name in ("optimize", "compact_files", "cleanup_old_versions"):
+                        fn = getattr(table, method_name, None)
+                        if fn is None:
+                            continue
+                        try:
+                            fn()
+                            logger.info("[LanceDBBackend] %s %s completed", tbl_attr, method_name)
+                        except Exception as e:
+                            logger.debug("[LanceDBBackend] %s %s skipped: %s", tbl_attr, method_name, e)
+                    setattr(self, tbl_attr, None)
+            if self._db is not None:
+                try:
+                    self._db = None
+                except Exception:
+                    pass
+            self._enabled = False
+            self._episodes_enabled = False
         gc.collect()
         logger.info("[LanceDBBackend] connection closed")

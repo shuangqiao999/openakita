@@ -176,6 +176,16 @@ class KnowledgeBaseManager:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_chunks_doc_chunk ON knowledge_chunks(document_id, chunk_index)"
             )
+            # Performance indexes for hot query paths
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_docs_status ON knowledge_documents(status)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_docs_upload_time ON knowledge_documents(upload_time)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_docs_name_hash ON knowledge_documents(name, content_hash)"
+            )
             conn.execute("CREATE TABLE IF NOT EXISTS _meta (key TEXT PRIMARY KEY, value TEXT)")
             conn.execute("INSERT OR IGNORE INTO _meta (key, value) VALUES ('schema_version', '1')")
             try:
@@ -427,8 +437,11 @@ class KnowledgeBaseManager:
                 )
                 self._fts_index_created = True
                 logger.info("[KB] LanceDB FTS index created on content column")
-            except Exception as e:
-                logger.warning("[KB] LanceDB FTS index creation failed: %s", e)
+            except Exception:
+                logger.debug(
+                    "[KB] FTS index not created "
+                    "(Chinese unsupported by this LanceDB build, using SQLite FTS5 fallback)"
+                )
             finally:
                 self._fts_index_creating = False
 

@@ -599,6 +599,7 @@ class MemoryStorage:
 
         # extraction_queue
         c.execute("CREATE INDEX IF NOT EXISTS idx_eq_status ON extraction_queue(status)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_eq_created ON extraction_queue(created_at)")
         try:
             c.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_eq_session_turn ON extraction_queue(session_id, turn_index)"
