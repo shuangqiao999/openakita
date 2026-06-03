@@ -584,10 +584,10 @@ class MemoryStorage:
         )
         c.execute("CREATE INDEX IF NOT EXISTS idx_memories_subject ON memories(subject)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_memories_episode ON memories(source_episode_id)")
-        # 复合索引：覆盖最频繁的记忆查询模式 (多租户 + 活跃过滤 + 重要性排序)
+        # 复合索引：覆盖最频繁的记忆查询模式 (多租户 + 活跃过滤 + 时间/重要性排序)
         c.execute(
             "CREATE INDEX IF NOT EXISTS idx_memories_active_query "
-            "ON memories(workspace_id, user_id, scope, importance_score, created_at)"
+            "ON memories(workspace_id, user_id, scope, created_at, importance_score)"
         )
 
         # episodes

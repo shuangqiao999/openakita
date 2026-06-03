@@ -2768,6 +2768,7 @@ class Agent:
             # 预设 persona/memory/proactive 引用，供活人感心跳等系统任务使用
             self._task_executor.persona_manager = getattr(self, "persona_manager", None)
             self._task_executor.memory_manager = getattr(self, "memory_manager", None)
+            self._task_executor.kb_manager = getattr(self, "kb_manager", None)
             self._task_executor.proactive_engine = getattr(self, "proactive_engine", None)
 
             # 创建调度器
@@ -9492,6 +9493,7 @@ class Agent:
             # 同时传递 persona/memory/proactive 引用，供活人感心跳等系统任务使用
             self._task_executor.persona_manager = getattr(self, "persona_manager", None)
             self._task_executor.memory_manager = getattr(self, "memory_manager", None)
+            self._task_executor.kb_manager = getattr(self, "kb_manager", None)
             self._task_executor.proactive_engine = getattr(self, "proactive_engine", None)
             logger.info("Scheduler gateway configured")
 

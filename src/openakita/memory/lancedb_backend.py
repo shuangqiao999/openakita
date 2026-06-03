@@ -156,13 +156,13 @@ class LanceDBBackend:
         self._persist_dir.mkdir(parents=True, exist_ok=True)
         self._init_or_open(embedding_dim)
 
-    def _retry_on_conflict(self, op_name: str, fn, *args) -> bool:
-        """执行 LanceDB 写操作，遇 IncompatibleTransaction 自动重试(指数退避,最多3次)。返回是否成功。"""
+    def _retry_on_conflict(self, op_name: str, fn, *args) -> None:
+        """执行 LanceDB 写操作，遇 IncompatibleTransaction 自动重试(指数退避,最多3次)。"""
         import time
         for attempt in range(3):
             try:
                 fn(*args)
-                return True
+                return
             except Exception as e:
                 msg = str(e)
                 if "Incompatible transaction" in msg and attempt < 2:
@@ -174,7 +174,6 @@ class LanceDBBackend:
                     time.sleep(delay)
                     continue
                 raise
-        return False
 
     # ── Init / Open ──
 

@@ -2095,14 +2095,23 @@ class KnowledgeBaseManager:
                 logger.debug("[KB] LanceDB runtime %s skipped: %s", method_name, e)
 
     def vacuum_knowledge_db(self) -> None:
-        """SQLite VACUUM: 回收 DELETE 后的空闲空间。"""
-        try:
-            with sqlite3.connect(str(self._db_path), timeout=10.0) as conn:
-                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                conn.execute("VACUUM")
-            logger.info("[KB] SQLite VACUUM + WAL checkpoint completed")
-        except Exception as e:
-            logger.warning("[KB] SQLite VACUUM failed (non-critical): %s", e)
+        """SQLite VACUUM: 回收 DELETE 后的空闲空间（含重试，处理并发连接冲突）。"""
+        import time
+
+        for attempt in range(3):
+            try:
+                with sqlite3.connect(str(self._db_path), timeout=30.0) as conn:
+                    conn.execute("PRAGMA busy_timeout = 30000")
+                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    conn.execute("VACUUM")
+                logger.info("[KB] SQLite VACUUM + WAL checkpoint completed")
+                return
+            except Exception as e:
+                if attempt < 2:
+                    logger.debug("[KB] SQLite VACUUM attempt %d/3 failed, retrying: %s", attempt + 1, e)
+                    time.sleep(1.0)
+                    continue
+                logger.warning("[KB] SQLite VACUUM failed after 3 retries: %s", e)
 
     def optimize_fts5(self) -> None:
         """FTS5 optimize: 合并影子表，减少碎片。"""

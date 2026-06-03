@@ -47,6 +47,7 @@ class TaskExecutor:
         # 可选：由 Agent 设置，用于活人感心跳等系统任务
         self.persona_manager = None
         self.memory_manager = None
+        self.kb_manager = None  # KnowledgeBaseManager: 用于定时存储维护
         self.proactive_engine = None  # 复用 agent 上的实例，保留 _last_user_interaction 状态
 
     @staticmethod
@@ -888,6 +889,8 @@ class TaskExecutor:
                     f"- 时间范围: {since.strftime('%m-%d %H:%M') if since else '全部'} → {until.strftime('%m-%d %H:%M')}"
                 )
                 logger.info(f"Memory consolidation paused with checkpoint: {result}")
+                # 即使 partial，仍执行存储维护（compact/vacuum 与数据完整性无关）
+                await self._run_storage_maintenance()
                 return True, summary
 
             tracker.record_memory_consolidation(result)
@@ -926,36 +929,26 @@ class TaskExecutor:
 
     async def _run_storage_maintenance(self) -> None:
         """磁盘维护：防止 SQLite/LanceDB/FTS5/embedding_cache 无限膨胀。"""
+        # 嵌入缓存清理
         try:
             if self.memory_manager and self.memory_manager.store:
                 store = self.memory_manager.store
                 if hasattr(store, "evict_old_embeddings"):
-                    store.evict_old_embeddings(keep=5000)
+                    await asyncio.to_thread(store.evict_old_embeddings, keep=5000)
         except Exception as e:
             logger.debug("Embedding cache eviction skipped: %s", e)
 
+        # KB 维护：复用已打开的实例，避免创建新连接与主实例竞争
         try:
-            from ..config import settings
-
-            ws_root = settings.project_root
-
-            async def _kb_maintenance():
-                from ..knowledge.manager import KnowledgeBaseManager
-
-                kb = KnowledgeBaseManager(ws_root)
-                try:
-                    kb.cleanup_tmp_dir()
-                    kb.optimize_fts5()
-                    kb.compact_lance_now()
-                    kb.repair_orphan_vectors_safe()
-                    kb.vacuum_knowledge_db()
-                finally:
-                    try:
-                        kb.close()
-                    except Exception:
-                        pass
-
-            await asyncio.to_thread(_kb_maintenance)
+            kb = self.kb_manager
+            if kb is not None:
+                await asyncio.to_thread(kb.cleanup_tmp_dir)
+                await asyncio.to_thread(kb.optimize_fts5)
+                await asyncio.to_thread(kb.compact_lance_now)
+                await asyncio.to_thread(kb.repair_orphan_vectors_safe)
+                await asyncio.to_thread(kb.vacuum_knowledge_db)
+            else:
+                logger.debug("KB maintenance skipped: kb_manager not available")
         except Exception as e:
             logger.debug("Knowledge base maintenance skipped: %s", e)
 
