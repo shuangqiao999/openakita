@@ -415,14 +415,14 @@ class LanceDBBackend:
                 if dim % d == 0:
                     num_sub = dim // d
                     break
-            with self._lock:
-                self._episodes_table.create_index(
-                    metric=self._METRIC,
-                    num_partitions=num_partitions,
-                    num_sub_vectors=num_sub,
-                    index_type=self._INDEX_TYPE,
-                    replace=True,
-                )
+            # 调用方已持有 self._lock，此处无需再加锁
+            self._episodes_table.create_index(
+                metric=self._METRIC,
+                num_partitions=num_partitions,
+                num_sub_vectors=num_sub,
+                index_type=self._INDEX_TYPE,
+                replace=True,
+            )
             logger.info(
                 "[LanceDBBackend] Episodes index created "
                 "(type=%s, rows=%d, dim=%d, partitions=%d, sub_vectors=%d)",

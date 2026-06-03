@@ -936,15 +936,26 @@ class TaskExecutor:
 
         try:
             from ..config import settings
-            from ..knowledge.manager import KnowledgeBaseManager
 
             ws_root = settings.project_root
-            kb = KnowledgeBaseManager(ws_root)
-            kb.cleanup_tmp_dir()
-            kb.optimize_fts5()
-            kb.compact_lance_now()
-            kb.repair_orphan_vectors_safe()
-            kb.vacuum_knowledge_db()
+
+            async def _kb_maintenance():
+                from ..knowledge.manager import KnowledgeBaseManager
+
+                kb = KnowledgeBaseManager(ws_root)
+                try:
+                    kb.cleanup_tmp_dir()
+                    kb.optimize_fts5()
+                    kb.compact_lance_now()
+                    kb.repair_orphan_vectors_safe()
+                    kb.vacuum_knowledge_db()
+                finally:
+                    try:
+                        kb.close()
+                    except Exception:
+                        pass
+
+            await asyncio.to_thread(_kb_maintenance)
         except Exception as e:
             logger.debug("Knowledge base maintenance skipped: %s", e)
 
