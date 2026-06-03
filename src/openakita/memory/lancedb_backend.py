@@ -388,6 +388,49 @@ class LanceDBBackend:
         t.start()
         logger.debug("[LanceDBBackend] FTS index creation dispatched to background thread")
 
+    # ── Episodes Vector Index ──
+
+    _EPISODE_INDEX_MIN_ROWS = 100
+
+    def _maybe_create_episodes_index(self) -> None:
+        """自动为 episodes 表创建 IVF_PQ 向量索引（与主表相同策略）。"""
+        if self._episodes_table is None:
+            return
+        try:
+            existing = list(self._episodes_table.list_indices())
+            if existing:
+                return  # already indexed
+        except Exception:
+            return
+        try:
+            row_count = self._episodes_table.count_rows()
+            if row_count < self._EPISODE_INDEX_MIN_ROWS:
+                return
+            dim = self._read_table_dim_for(self._episodes_table)
+            if dim <= 0:
+                return
+            num_partitions = max(2, min(128, int(row_count ** 0.5)))
+            num_sub = 1
+            for d in (64, 32, 16, 96, 48, 8, 128):
+                if dim % d == 0:
+                    num_sub = dim // d
+                    break
+            with self._lock:
+                self._episodes_table.create_index(
+                    metric=self._METRIC,
+                    num_partitions=num_partitions,
+                    num_sub_vectors=num_sub,
+                    index_type=self._INDEX_TYPE,
+                    replace=True,
+                )
+            logger.info(
+                "[LanceDBBackend] Episodes index created "
+                "(type=%s, rows=%d, dim=%d, partitions=%d, sub_vectors=%d)",
+                self._INDEX_TYPE, row_count, dim, num_partitions, num_sub,
+            )
+        except Exception as e:
+            logger.debug("[LanceDBBackend] Episodes index creation skipped: %s", e)
+
     def _ensure_table(self, embedding_dim: int) -> None:
         """创建表 (幂等)"""
         if self._table is not None:
@@ -1034,6 +1077,8 @@ class LanceDBBackend:
                     self._episodes_table.cleanup_old_versions()
                 except Exception:
                     pass
+                # 自动创建 episodes 向量索引 (与主表相同的 IVF_PQ 策略)
+                self._maybe_create_episodes_index()
                 return True
             except Exception as e:
                 logger.warning("[LanceDBBackend] upsert_episode failed: %s", e)

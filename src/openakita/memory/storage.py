@@ -584,6 +584,11 @@ class MemoryStorage:
         )
         c.execute("CREATE INDEX IF NOT EXISTS idx_memories_subject ON memories(subject)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_memories_episode ON memories(source_episode_id)")
+        # 复合索引：覆盖最频繁的记忆查询模式 (多租户 + 活跃过滤 + 重要性排序)
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_memories_active_query "
+            "ON memories(workspace_id, user_id, scope, importance_score, created_at)"
+        )
 
         # episodes
         c.execute("CREATE INDEX IF NOT EXISTS idx_episodes_session ON episodes(session_id)")
@@ -596,9 +601,17 @@ class MemoryStorage:
         c.execute("CREATE INDEX IF NOT EXISTS idx_turns_tool ON conversation_turns(has_tool_calls)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_turns_extracted ON conversation_turns(extracted)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_turns_episode ON conversation_turns(episode_id)")
+        # 复合索引：get_unextracted_turns() 的 WHERE extracted=FALSE ORDER BY timestamp
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_turns_unextracted "
+            "ON conversation_turns(extracted, timestamp)"
+        )
 
-        # extraction_queue
-        c.execute("CREATE INDEX IF NOT EXISTS idx_eq_status ON extraction_queue(status)")
+        # extraction_queue — 复合索引覆盖出队排序: WHERE status='pending' ORDER BY created_at
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_eq_status_created "
+            "ON extraction_queue(status, created_at)"
+        )
         c.execute("CREATE INDEX IF NOT EXISTS idx_eq_created ON extraction_queue(created_at)")
         try:
             c.execute(

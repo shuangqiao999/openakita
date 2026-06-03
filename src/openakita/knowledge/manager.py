@@ -186,6 +186,9 @@ class KnowledgeBaseManager:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_docs_name_hash ON knowledge_documents(name, content_hash)"
             )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_docs_name ON knowledge_documents(name)"
+            )
             conn.execute("CREATE TABLE IF NOT EXISTS _meta (key TEXT PRIMARY KEY, value TEXT)")
             conn.execute("INSERT OR IGNORE INTO _meta (key, value) VALUES ('schema_version', '1')")
             try:
