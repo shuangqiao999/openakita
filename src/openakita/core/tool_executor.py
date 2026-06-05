@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from .permission import PermissionDecision
 
 from ..config import settings
+from .tool_accelerator import CircuitBreaker, make_cache_key as _accel_cache_key, run_with_retry
 from ..tools.errors import ToolError, classify_error
 from ..tools.handlers import SystemHandlerRegistry
 from ..tools.input_normalizer import normalize_tool_input
@@ -89,6 +90,7 @@ def get_tool_usage_stats() -> dict[str, int]:
 _READ_TOOLS_FOR_CACHE: frozenset[str] = frozenset({
     "read_file", "list_files", "search_files", "web_fetch",
     "get_time", "get_workspace_map", "read_resource", "list_resources",
+    "web_search", "news_search",
 })
 
 
@@ -291,6 +293,9 @@ class ToolExecutor:
             "write_file", "run_shell", "run_powershell", "delete_file",
             "move_file", "copy_file", "mkdir", "pip_install", "pip_uninstall",
         })
+
+        # Circuit breaker instances per tool
+        self._circuit_breakers: dict[str, CircuitBreaker] = {}
 
     # 并发安全工具: 这些工具的只读操作可以并行执行
     _CONCURRENCY_SAFE_TOOLS: set[str] = {
@@ -840,17 +845,52 @@ class ToolExecutor:
 
         # P2-2: tool result cache for pure-read tools
         _cache_key = _make_tool_cache_key(tool_name, tool_input)
+        _accel = settings.tool_accel.get(tool_name, settings.tool_accel.get("default", {}))
+        _cache_ttl = _accel.get("cache_ttl", self._tool_result_cache_ttl.get(tool_name, 10.0))
         if _cache_key:
             _cached = self._tool_result_cache.get(_cache_key)
-            if _cached and time.monotonic() - _cached[0] < self._tool_result_cache_ttl.get(tool_name, 10.0):
-                logger.debug("[ToolCache] HIT %s", tool_name)
+            if _cached and time.monotonic() - _cached[0] < _cache_ttl:
+                logger.debug("[ToolCache] HIT %s (ttl=%ds)", tool_name, _cache_ttl)
                 return _cached[1]
 
         # Write tools invalidate read cache entries
         if tool_name in self._WRITE_TOOLS:
             self._tool_result_cache.clear()
 
-        result = await self._execute_tool_impl(tool_name, tool_input)
+        # ── Circuit breaker check ──
+        cb_threshold = _accel.get("circuit_threshold", 0)
+        cb = None
+        if cb_threshold > 0:
+            if tool_name not in self._circuit_breakers:
+                self._circuit_breakers[tool_name] = CircuitBreaker(
+                    failure_threshold=cb_threshold,
+                )
+            cb = self._circuit_breakers[tool_name]
+            if not cb.allow_request():
+                logger.warning(
+                    "[CircuitBreaker] OPEN for %s, returning fast-fail",
+                    tool_name,
+                )
+                return f"工具 {tool_name} 暂时不可用（连续失败 {cb_threshold} 次），请稍后重试"
+
+        # ── Execute with retry ──
+        _timeout = _accel.get("timeout", self._hard_timeout_for_tool(tool_name)) or 60
+        _retries = _accel.get("retries", 0)
+        _retry_delay = _accel.get("retry_delay", 0.5)
+
+        try:
+            result = await run_with_retry(
+                coro_factory=lambda: self._execute_tool_impl(tool_name, tool_input),
+                max_retries=_retries,
+                delay=_retry_delay,
+                timeout=_timeout,
+            )
+            if cb:
+                cb.record_success()
+        except Exception as e:
+            if cb:
+                cb.record_failure()
+            raise
 
         # Store successful results in cache
         if _cache_key and isinstance(result, str) and "error" not in result.lower()[:200]:

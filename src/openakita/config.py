@@ -267,6 +267,74 @@ class Settings(BaseSettings):
         description="是否允许在启用“工具间中断检查”时也并行执行工具（会降低中断插入粒度，默认关闭）",
     )
 
+    # === 工具加速配置 ===
+    tool_accel: dict = Field(
+        default_factory=lambda: {
+            "web_search": {
+                "timeout": 25,
+                "cache_ttl": 300,
+                "retries": 1,
+                "retry_delay": 0.1,
+                "circuit_threshold": 5,
+            },
+            "news_search": {
+                "timeout": 25,
+                "cache_ttl": 300,
+                "retries": 1,
+                "retry_delay": 0.1,
+                "circuit_threshold": 5,
+            },
+            "read_file": {
+                "cache_ttl": 3600,
+                "retries": 1,
+                "retry_delay": 0.5,
+            },
+            "list_files": {
+                "cache_ttl": 30,
+                "retries": 1,
+                "retry_delay": 0.1,
+            },
+            "search_files": {
+                "cache_ttl": 30,
+                "retries": 1,
+                "retry_delay": 0.1,
+            },
+            "web_fetch": {
+                "timeout": 30,
+                "cache_ttl": 30,
+                "retries": 0,
+                "circuit_threshold": 3,
+            },
+            "get_time": {
+                "cache_ttl": 5,
+                "retries": 0,
+            },
+            "run_shell": {
+                "timeout": 120,
+                "retries": 0,
+                "circuit_threshold": 3,
+            },
+            "run_powershell": {
+                "timeout": 120,
+                "retries": 0,
+                "circuit_threshold": 3,
+            },
+            "browser_navigate": {
+                "timeout": 60,
+                "retries": 1,
+                "retry_delay": 2,
+                "circuit_threshold": 3,
+            },
+            "default": {
+                "timeout": 10,
+                "cache_ttl": 0,
+                "retries": 1,
+                "retry_delay": 0.5,
+            },
+        },
+        description="工具加速配置（timeout秒, cache_ttl秒, retries, retry_delay秒, circuit_threshold）",
+    )
+
     # === 工具常驻加载 ===
     always_load_tools: list = Field(
         default_factory=list,
