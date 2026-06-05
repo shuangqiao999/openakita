@@ -385,6 +385,11 @@ waitForBackend().then((ok) => {
   }
 });
 
+// Tauri/WebView2 GPU 降级：backdrop-filter + infinite 动画是 GPU OOM 主因
+if (__BUILD_TARGET__ === "tauri") {
+  document.documentElement.setAttribute("data-perf-mode", "low");
+}
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <GlobalErrorBoundary>
