@@ -787,14 +787,18 @@ class LanceDBBackend:
         try:
             with self._lock:
                 self._retry_on_conflict("delete", self._table.delete, f"id = '{memory_id}'")
-            # 删除后触发版本清理
-            self._flush_table()
             return True
         except Exception as e:
             logger.warning(
                 f"[LanceDBBackend] delete failed for {memory_id[:8]}: {e}"
             )
             return False
+        finally:
+            # 删除后清理旧版本，失败不影响返回值
+            try:
+                self._flush_table()
+            except Exception:
+                pass
 
     def batch_add(self, items: list[dict]) -> int:
         if not self._lancedb:
@@ -921,12 +925,16 @@ class LanceDBBackend:
                 ids_str = ", ".join(f"'{id}'" for id in stale)
                 self._retry_on_conflict("delete_not_in", self._table.delete, f"id IN ({ids_str})")
             logger.info(f"[LanceDBBackend] Removed {len(stale)} stale vectors")
-            # 删除后立即清理旧版本，防止版本堆积
-            self._flush_table()
             return len(stale)
         except Exception as e:
             logger.warning(f"[LanceDBBackend] delete_not_in failed: {e}")
             return 0
+        finally:
+            if stale:
+                try:
+                    self._flush_table()
+                except Exception:
+                    pass
 
     def _flush_table(self) -> None:
         """每次 add 后调用，立即清理旧版本确保数据持久化到磁盘。"""
