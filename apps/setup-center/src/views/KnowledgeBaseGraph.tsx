@@ -109,6 +109,7 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
 
   // ── P2: 停止模拟 ──
   const [simRunning, setSimRunning] = useState(true);
+  const simRunningRef = useRef(true);
 
   // ── 为每个节点附加类别 ──
   const enrichedNodes = useMemo(() => {
@@ -137,7 +138,7 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
     const searchActive = searchQuery.trim().length > 0;
     const anyFilter = catFilterActive || degFilterActive || searchActive || hideIsolated;
 
-    if (!anyFilter) return rawGraphData;
+    if (!anyFilter) return { nodes: enrichedNodes, links: rawGraphData.links };
 
     // 先按度和孤立节点过滤
     let keepIds = new Set<string>();
@@ -164,7 +165,6 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
       for (const n of enrichedNodes) {
         if (n.name?.toLowerCase().includes(q)) matchIds.add(n.id);
       }
-      setSearchMatchIds(matchIds);
       // 扩展 1-hop
       const expanded = new Set(matchIds);
       for (const l of rawGraphData.links) {
@@ -186,6 +186,20 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
 
     return { nodes: filteredNodes, links: filteredLinks };
   }, [enrichedNodes, rawGraphData, activeCategories, minDegree, searchQuery, hideIsolated, degreeMap]);
+
+  // ── 搜索匹配 ID 副作用（不能放在 useMemo 内） ─
+  useEffect(() => {
+    if (!searchQuery.trim()) {
+      if (searchMatchIds.size > 0) setSearchMatchIds(new Set());
+      return;
+    }
+    const q = searchQuery.trim().toLowerCase();
+    const matchIds = new Set<string>();
+    for (const n of enrichedNodes) {
+      if (n.name?.toLowerCase().includes(q)) matchIds.add(n.id);
+    }
+    setSearchMatchIds(matchIds);
+  }, [searchQuery, enrichedNodes]);
 
   const fetchGraph = useCallback(async (silent = false) => {
     if (abortRef.current) abortRef.current.abort();
@@ -507,8 +521,8 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
           d3AlphaDecay={0.1}
           warmupTicks={10}
           cooldownTicks={20}
-          onEngineStop={() => setSimRunning(false)}
-          onEngineTick={() => setSimRunning(true)}
+          onEngineStop={() => { simRunningRef.current = false; setSimRunning(false); }}
+          onEngineTick={() => { simRunningRef.current = true; }}
         />
       )}
 
@@ -746,7 +760,7 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
         <button onClick={handleZoomOut} title={t("kb.graph.zoomOut")} style={zoomBtnStyle}><Minus size={16} /></button>
         <button onClick={handleResetView} title={t("kb.graph.resetView")} style={zoomBtnStyle}><RotateCw size={14} /></button>
         <button
-          onClick={simRunning ? handleStopSim : handleResumeSim}
+          onClick={() => simRunningRef.current ? handleStopSim() : handleResumeSim()}
           title={simRunning ? "停止布局" : "恢复布局"}
           style={{ ...zoomBtnStyle, background: simRunning ? "rgba(255,255,255,0.15)" : "rgba(251,191,36,0.4)" }}
         >
