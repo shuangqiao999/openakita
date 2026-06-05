@@ -53,6 +53,18 @@ function getCatLabel(cat: string): string {
   return map[cat] || cat;
 }
 
+function hashToColor(str: string): string {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = str.charCodeAt(i) + ((hash << 5) - hash);
+    hash = hash & hash;
+  }
+  const h = Math.abs(hash) % 360;
+  const s = 60 + (Math.abs(hash >> 8) % 25);
+  const l = 45 + (Math.abs(hash >> 16) % 15);
+  return `hsl(${h}, ${s}%, ${l}%)`;
+}
+
 function computeDegrees(nodes: any[], links: any[]): Map<string, number> {
   const deg = new Map<string, number>();
   for (const n of nodes) deg.set(n.id, 0);
@@ -377,8 +389,11 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
       if (searchMatchIds.has(node.id)) return "#fbbf24";
       return "rgba(100,100,120,0.15)";
     }
-    return CATEGORY_COLORS[node.category] || CATEGORY_COLORS.default;
-  }, [highlightNode, searchMatchIds]);
+    if (activeCategories.size > 0) {
+      return CATEGORY_COLORS[node.category] || CATEGORY_COLORS.default;
+    }
+    return hashToColor(node.group || node.id);
+  }, [highlightNode, searchMatchIds, activeCategories]);
 
   // ── 动态 linkColor ──
   const linkColorFn = useCallback((link: any) => {
