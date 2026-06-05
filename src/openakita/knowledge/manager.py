@@ -2047,28 +2047,36 @@ class KnowledgeBaseManager:
         table = self._lance_table
         if table is None:
             return
-        for method_name in ("cleanup_old_versions",):
-            fn = getattr(table, method_name, None)
-            if fn is None:
-                continue
+        try:
+            from datetime import timedelta
+            table.optimize(cleanup_older_than=timedelta(hours=1))
+        except TypeError:
             try:
-                fn()
+                table.cleanup_old_versions()
             except Exception as e:
-                logger.warning("[KB] LanceDB %s failed: %s", method_name, e)
+                logger.warning("[KB] LanceDB cleanup_old_versions failed: %s", e)
+        except Exception as e:
+            logger.warning("[KB] LanceDB _flush optimize failed: %s", e)
 
     def close(self) -> None:
         """关闭 LanceDB 连接并 compact 数据文件，防止 Windows 重启后损坏。"""
         table = self._lance_table
         if table is not None:
-            for method_name in ("optimize", "compact_files", "cleanup_old_versions"):
-                fn = getattr(table, method_name, None)
-                if fn is None:
-                    continue
+            try:
+                from datetime import timedelta
+                table.optimize(cleanup_older_than=timedelta(0))
+                logger.info("[KB] LanceDB optimize completed")
+            except TypeError:
                 try:
-                    fn()
-                    logger.info("[KB] LanceDB %s completed", method_name)
-                except Exception as e:
-                    logger.debug("[KB] LanceDB %s skipped: %s", method_name, e)
+                    table.optimize()
+                except Exception:
+                    pass
+                try:
+                    table.cleanup_old_versions()
+                except Exception:
+                    pass
+            except Exception as e:
+                logger.warning("[KB] LanceDB close optimize failed: %s", e)
             self._lance_table = None
         if self._lance_db is not None:
             try:
@@ -2085,15 +2093,21 @@ class KnowledgeBaseManager:
         table = self._lance_table
         if table is None:
             return
-        for method_name in ("optimize", "compact_files", "cleanup_old_versions"):
-            fn = getattr(table, method_name, None)
-            if fn is None:
-                continue
+        try:
+            from datetime import timedelta
+            table.optimize(cleanup_older_than=timedelta(0))
+            logger.info("[KB] LanceDB runtime optimize completed")
+        except TypeError:
             try:
-                fn()
-                logger.debug("[KB] LanceDB runtime %s completed", method_name)
-            except Exception as e:
-                logger.debug("[KB] LanceDB runtime %s skipped: %s", method_name, e)
+                table.optimize()
+            except Exception:
+                pass
+            try:
+                table.cleanup_old_versions()
+            except Exception:
+                pass
+        except Exception as e:
+            logger.warning("[KB] LanceDB runtime optimize failed: %s", e)
 
     def vacuum_knowledge_db(self) -> None:
         """SQLite VACUUM: 回收 DELETE 后的空闲空间（含重试，处理并发连接冲突）。"""

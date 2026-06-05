@@ -317,24 +317,31 @@ class LifecycleManager:
             if existing_ids is not None and hasattr(search, "add"):
                 missing = [m for m in all_mems if m.id not in existing_ids]
                 if missing:
-                    added = 0
+                    # 批量构建 items 列表，一次 batch_add 减少 LanceDB 碎片
+                    items = []
                     for mem in missing:
-                        try:
-                            search.add(
-                                mem.id,
-                                mem.content,
-                                {
-                                    "type": mem.type.value,
-                                    "priority": mem.priority.value,
-                                    "importance": mem.importance_score,
-                                    "tags": mem.tags,
-                                },
-                            )
-                            added += 1
-                        except Exception as _e:
-                            logger.debug(
-                                f"[Lifecycle] backfill embed failed for {mem.id}: {_e}"
-                            )
+                        items.append({
+                            "id": mem.id,
+                            "content": mem.content,
+                            "metadata": {
+                                "type": mem.type.value,
+                                "priority": mem.priority.value,
+                                "importance": mem.importance_score,
+                                "tags": mem.tags,
+                            },
+                        })
+                    if hasattr(search, "batch_add"):
+                        added = search.batch_add(items)
+                    else:
+                        added = 0
+                        for item in items:
+                            try:
+                                search.add(
+                                    item["id"], item["content"], item["metadata"],
+                                )
+                                added += 1
+                            except Exception:
+                                pass
                     if added:
                         logger.info(
                             f"[Lifecycle] Backfilled {added}/{len(missing)} missing vectors"

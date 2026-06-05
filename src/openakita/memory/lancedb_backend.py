@@ -941,14 +941,17 @@ class LanceDBBackend:
         table = self._table
         if table is None:
             return
-        for method_name in ("cleanup_old_versions",):
-            fn = getattr(table, method_name, None)
-            if fn is None:
-                continue
+        try:
+            from datetime import timedelta
+            table.optimize(cleanup_older_than=timedelta(hours=1))
+        except TypeError:
+            # 旧版 LanceDB 不支持 optimize keyword args，回退到 cleanup_old_versions
             try:
-                fn()
+                table.cleanup_old_versions()
             except Exception as e:
-                logger.warning("[LanceDBBackend] %s failed: %s", method_name, e)
+                logger.warning("[LanceDBBackend] cleanup_old_versions failed: %s", e)
+        except Exception as e:
+            logger.warning("[LanceDBBackend] _flush_table optimize failed: %s", e)
 
     # ── Episodes Table ──
 
@@ -1166,15 +1169,21 @@ class LanceDBBackend:
             for tbl_attr in ("_table", "_episodes_table"):
                 table = getattr(self, tbl_attr, None)
                 if table is not None:
-                    for method_name in ("optimize", "compact_files", "cleanup_old_versions"):
-                        fn = getattr(table, method_name, None)
-                        if fn is None:
-                            continue
+                    try:
+                        from datetime import timedelta
+                        table.optimize(cleanup_older_than=timedelta(0))
+                        logger.info("[LanceDBBackend] %s optimize completed", tbl_attr)
+                    except TypeError:
                         try:
-                            fn()
-                            logger.info("[LanceDBBackend] %s %s completed", tbl_attr, method_name)
-                        except Exception as e:
-                            logger.debug("[LanceDBBackend] %s %s skipped: %s", tbl_attr, method_name, e)
+                            table.optimize()
+                        except Exception:
+                            pass
+                        try:
+                            table.cleanup_old_versions()
+                        except Exception:
+                            pass
+                    except Exception as e:
+                        logger.warning("[LanceDBBackend] %s close optimize failed: %s", tbl_attr, e)
                     setattr(self, tbl_attr, None)
             if self._db is not None:
                 try:

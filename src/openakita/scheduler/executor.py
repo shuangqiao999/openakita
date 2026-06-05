@@ -961,12 +961,19 @@ class TaskExecutor:
                     table = getattr(backend, tbl_attr, None)
                     if table is None:
                         continue
-                    for method_name in ("optimize", "compact_files", "cleanup_old_versions"):
+                    for method_name in ("optimize", "cleanup_old_versions"):
                         fn = getattr(table, method_name, None)
                         if fn is None:
                             continue
                         try:
-                            fn()
+                            if method_name == "optimize":
+                                from datetime import timedelta
+                                try:
+                                    fn(cleanup_older_than=timedelta(0))
+                                except TypeError:
+                                    fn()
+                            else:
+                                fn()
                             logger.debug(
                                 "[Maintenance] Memory LanceDB %s %s completed",
                                 tbl_attr, method_name,
