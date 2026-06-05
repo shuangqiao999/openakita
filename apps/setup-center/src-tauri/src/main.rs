@@ -2943,7 +2943,23 @@ fn openakita_list_processes() -> Vec<OpenAkitaProcess> {
                             out.push(OpenAkitaProcess {
                                 pid,
                                 cmd: parts[10..].join(" "),
-                            });
+    });
+    // 监控 detached task 是否 panic，写入日志以便诊断初始 panic 来源
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = stream_handle.await {
+            let msg = if let Ok(panic_msg) = e.try_into_panic() {
+                let s = panic_msg
+                    .downcast_ref::<String>()
+                    .map(|s| s.as_str())
+                    .or_else(|| panic_msg.downcast_ref::<&str>().copied())
+                    .unwrap_or("(unknown panic message)");
+                format!("backend_fetch streaming task panicked: {}", s)
+            } else {
+                "backend_fetch streaming task was cancelled".to_string()
+            };
+            log_to_file(&msg);
+        }
+    });
                         }
                     }
                 }
@@ -2981,7 +2997,13 @@ fn openakita_stop_all_processes() -> Vec<u32> {
 }
 
 fn read_state_file() -> AppStateFile {
-    let _lock = STATE_FILE_LOCK.lock().unwrap();
+    let _lock = match STATE_FILE_LOCK.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            log_to_file("[state] STATE_FILE_LOCK was poisoned by a previous panic, clearing poison flag and continuing");
+            poisoned.into_inner()
+        }
+    };
     let p = state_file_path();
     if let Ok(content) = fs::read_to_string(&p) {
         if let Ok(state) = serde_json::from_str::<AppStateFile>(&content) {
@@ -7253,7 +7275,7 @@ async fn backend_fetch(
         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
         .collect();
 
-    tauri::async_runtime::spawn(async move {
+    let stream_handle = tauri::async_runtime::spawn(async move {
         let mut response = resp;
         loop {
             match response.chunk().await {

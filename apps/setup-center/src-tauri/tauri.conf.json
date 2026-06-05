@@ -66,8 +66,7 @@
         "height": 860,
         "minWidth": 800,
         "minHeight": 600,
-        "resizable": true,
-        "additionalBrowserArgs": "--js-flags=--max-old-space-size=4096"
+        "resizable": true
       }
     ]
   }
