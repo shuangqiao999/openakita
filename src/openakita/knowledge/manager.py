@@ -1692,6 +1692,7 @@ class KnowledgeBaseManager:
 
         if cleaned:
             logger.info("[KB] Cleaned %d orphan vector groups", cleaned)
+            await asyncio.to_thread(self._flush_lance_table)
 
         stuck_count = await self._check_stuck_processing()
         return {"cleaned": cleaned, "stuck_processing_fixed": stuck_count}
@@ -2053,7 +2054,7 @@ class KnowledgeBaseManager:
             try:
                 fn()
             except Exception as e:
-                logger.debug("[KB] LanceDB %s skipped: %s", method_name, e)
+                logger.warning("[KB] LanceDB %s failed: %s", method_name, e)
 
     def close(self) -> None:
         """关闭 LanceDB 连接并 compact 数据文件，防止 Windows 重启后损坏。"""

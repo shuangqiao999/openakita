@@ -182,7 +182,8 @@ class UnifiedStore:
         self._needs_full_backfill = False
 
     def _backfill_semantic_if_needed(self) -> None:
-        """比例检查：LanceDB/SQLite memories < 95% 时触发增量回填。"""
+        """比例检查：LanceDB/SQLite memories < 95% 时触发增量回填。
+        24h 防抖：避免每次重启都因少量缺失而全量重写体积膨胀。"""
         if self.search.backend_type == "fts5":
             return
         if not self.search.available:
@@ -196,6 +197,25 @@ class UnifiedStore:
             return
         if lance_count >= sqlite_count * 0.95:
             return
+        # 24h 防抖：用标记文件记录上次回填时间，避免频繁重写
+        import time as _time_module
+        now = _time_module.time()
+        _store_dir = Path(self.db._db_path).parent
+        tag_file = _store_dir / ".semantic_backfill_tag"
+        if tag_file.exists():
+            try:
+                last_ts = float(tag_file.read_text().strip())
+                if now - last_ts < 86400:
+                    logger.info(
+                        "[UnifiedStore] Backfill skipped (last run %.1fh ago)", (now - last_ts) / 3600
+                    )
+                    return
+            except (ValueError, OSError):
+                pass
+        try:
+            tag_file.write_text(str(int(now)))
+        except OSError:
+            pass
         self._backfill_semantic_if_empty()  # 复用现有 worker
 
     # ======================================================================
@@ -207,7 +227,7 @@ class UnifiedStore:
 
         比例检查：当 LanceDB/SQLite < 95% 时触发，覆盖单条写入失败后的累积缺失。
         daemon 线程，不阻塞启动。嵌入模型不可用时静默跳过。
-        """
+        24h 防抖：避免每次重启重复回填导致体积膨胀。"""
         if self.search.backend_type == "fts5":
             return
         if not getattr(self.search, "episodes_available", False):
@@ -218,6 +238,25 @@ class UnifiedStore:
         lance_count = self.search.episodes_count()
         if lance_count >= sqlite_count * 0.95:
             return
+
+        import time as _time_module
+        now = _time_module.time()
+        _store_dir = Path(self.db._db_path).parent
+        tag_file = _store_dir / ".episodes_backfill_tag"
+        if tag_file.exists():
+            try:
+                last_ts = float(tag_file.read_text().strip())
+                if now - last_ts < 86400:
+                    logger.info(
+                        "[UnifiedStore] Episodes backfill skipped (last run %.1fh ago)", (now - last_ts) / 3600
+                    )
+                    return
+            except (ValueError, OSError):
+                pass
+        try:
+            tag_file.write_text(str(int(now)))
+        except OSError:
+            pass
 
         import threading
 

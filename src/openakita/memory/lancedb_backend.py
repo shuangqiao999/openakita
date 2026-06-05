@@ -787,6 +787,8 @@ class LanceDBBackend:
         try:
             with self._lock:
                 self._retry_on_conflict("delete", self._table.delete, f"id = '{memory_id}'")
+            # 删除后触发版本清理
+            self._flush_table()
             return True
         except Exception as e:
             logger.warning(
@@ -919,6 +921,8 @@ class LanceDBBackend:
                 ids_str = ", ".join(f"'{id}'" for id in stale)
                 self._retry_on_conflict("delete_not_in", self._table.delete, f"id IN ({ids_str})")
             logger.info(f"[LanceDBBackend] Removed {len(stale)} stale vectors")
+            # 删除后立即清理旧版本，防止版本堆积
+            self._flush_table()
             return len(stale)
         except Exception as e:
             logger.warning(f"[LanceDBBackend] delete_not_in failed: {e}")
@@ -936,7 +940,7 @@ class LanceDBBackend:
             try:
                 fn()
             except Exception as e:
-                logger.debug("[LanceDBBackend] %s skipped: %s", method_name, e)
+                logger.warning("[LanceDBBackend] %s failed: %s", method_name, e)
 
     # ── Episodes Table ──
 

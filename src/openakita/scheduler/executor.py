@@ -961,7 +961,7 @@ class TaskExecutor:
                     table = getattr(backend, tbl_attr, None)
                     if table is None:
                         continue
-                    for method_name in ("optimize", "compact_files"):
+                    for method_name in ("optimize", "compact_files", "cleanup_old_versions"):
                         fn = getattr(table, method_name, None)
                         if fn is None:
                             continue
