@@ -192,24 +192,20 @@ async def test_circuit_breaker_production():
 
     for i in range(5):
         try:
-            if not cb.allow_request():
+            if not await cb.allow_request():
                 p_info(f"  第{i+1}次: 熔断器 OPEN, 跳过执行")
                 continue
-            await run_with_retry(
-                lambda: failing_call(),
-                max_retries=0,
-                timeout=0.5,
-            )
-            cb.record_success()
+            await run_with_retry(lambda: failing_call(), max_retries=0, timeout=0.5)
+            await cb.record_success()
         except Exception:
             fail_count += 1
-            cb.record_failure()
+            await cb.record_failure()
             state_str = {CircuitState.CLOSED: "CLOSED", CircuitState.OPEN: "OPEN", CircuitState.HALF_OPEN: "HALF_OPEN"}
             p_info(f"  第{i+1}次: 失败 → 状态={state_str[cb.state]}, 失败计数={cb.failures}")
 
-    p_info(f"等待冷却 1.5s...")
+    p_info("等待冷却 1.5s...")
     await asyncio.sleep(1.5)
-    assert cb.allow_request(), "冷却后应允许 Half-Open"
+    assert await cb.allow_request(), "冷却后应允许 Half-Open"
     assert cb.state == CircuitState.HALF_OPEN
     p_pass(f"冷却后进入 Half-Open (总失败={fail_count}次)")
 

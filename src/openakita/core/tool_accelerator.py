@@ -22,7 +22,7 @@ class CircuitState(Enum):
 
 
 class CircuitBreaker:
-    """三态熔断器：Closed → Open → Half-Open → Closed"""
+    """三态熔断器：Closed → Open → Half-Open → Closed。async-safe via asyncio.Lock。"""
 
     def __init__(
         self,
@@ -34,51 +34,77 @@ class CircuitBreaker:
         self.failures = 0
         self.last_fail = 0.0
         self.state: CircuitState = CircuitState.CLOSED
+        self._probing = False  # HALF_OPEN 试探进行中
+        self._lock = asyncio.Lock()
 
-    def allow_request(self) -> bool:
-        """是否允许本次请求"""
-        now = time.monotonic()
-        if self.state == CircuitState.CLOSED:
-            return True
-        if self.state == CircuitState.OPEN:
-            if now - self.last_fail > self.recovery:
-                self.state = CircuitState.HALF_OPEN
+    async def allow_request(self) -> bool:
+        """是否允许本次请求。async 安全。"""
+        async with self._lock:
+            now = time.monotonic()
+            if self.state == CircuitState.CLOSED:
                 return True
-            return False
-        # HALF_OPEN: 只允许一次试探（外部调用 record_success/record_failure 后状态变化）
+            if self.state == CircuitState.OPEN:
+                if now - self.last_fail > self.recovery:
+                    self.state = CircuitState.HALF_OPEN
+                    self._probing = True  # 立即标记试探进行中
+                    return True
+                return False
+            # HALF_OPEN: 只允许一次试探
+            if self._probing:
+                return False
+            self._probing = True
+            return True
+
+    async def record_success(self) -> None:
+        """记录成功，reset 为 CLOSED。"""
+        async with self._lock:
+            self.failures = 0
+            self.state = CircuitState.CLOSED
+            self._probing = False
+
+    async def record_failure(self) -> None:
+        """记录失败。"""
+        async with self._lock:
+            self.failures += 1
+            self.last_fail = time.monotonic()
+            if self.state == CircuitState.HALF_OPEN:
+                self.state = CircuitState.OPEN
+                self._probing = False
+            elif self.failures >= self.threshold:
+                self.state = CircuitState.OPEN
+                self._probing = False
+
+
+# 标准 JSON 可序列化类型
+_JSON_SAFE_TYPES = (str, int, float, bool, type(None), list, dict)
+
+
+def _is_json_safe(obj: Any) -> bool:
+    """递归检查对象是否可以安全地 JSON 序列化（无自定义类型）。"""
+    if isinstance(obj, (str, int, float, bool, type(None))):
         return True
-
-    def record_success(self) -> None:
-        self.failures = 0
-        self.state = CircuitState.CLOSED
-
-    def record_failure(self) -> None:
-        self.failures += 1
-        self.last_fail = time.monotonic()
-        if self.state == CircuitState.HALF_OPEN:
-            # 试探失败 → 立即重新打开
-            self.state = CircuitState.OPEN
-        elif self.failures >= self.threshold:
-            self.state = CircuitState.OPEN
+    if isinstance(obj, (list, tuple)):
+        return all(_is_json_safe(v) for v in obj)
+    if isinstance(obj, dict):
+        return all(
+            isinstance(k, str) and _is_json_safe(v) for k, v in obj.items()
+        )
+    return False
 
 
 def make_cache_key(tool_name: str, params: dict) -> str | None:
-    """生成工具参数缓存键。失败返回 None。"""
+    """生成工具参数缓存键。含不可序列化对象时返回 None（跳过缓存）。"""
     filtered = {
         k: v
         for k, v in sorted(params.items())
         if k not in ("request_id", "session_id", "timestamp")
     }
+    if not _is_json_safe(filtered):
+        return None
     try:
-        raw = json.dumps(filtered, sort_keys=True, default=str)
+        raw = json.dumps(filtered, sort_keys=True)
     except (TypeError, ValueError):
-        try:
-            raw = str(filtered)
-            logger.warning(
-                "[Accel] make_cache_key fallback to str() for %s", tool_name
-            )
-        except Exception:
-            return None
+        return None
     return hashlib.md5(raw.encode()).hexdigest()
 
 

@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from .permission import PermissionDecision
 
 from ..config import settings
-from .tool_accelerator import CircuitBreaker, make_cache_key as _accel_cache_key, run_with_retry
+from .tool_accelerator import CircuitBreaker, run_with_retry
 from ..tools.errors import ToolError, classify_error
 from ..tools.handlers import SystemHandlerRegistry
 from ..tools.input_normalizer import normalize_tool_input
@@ -97,8 +97,14 @@ _READ_TOOLS_FOR_CACHE: frozenset[str] = frozenset({
 def _make_tool_cache_key(tool_name: str, tool_input: dict) -> tuple[str, int] | None:
     if tool_name not in _READ_TOOLS_FOR_CACHE:
         return None
+    # 过滤动态字段，避免缓存永不命中
+    filtered = {
+        k: v
+        for k, v in sorted(tool_input.items())
+        if k not in ("request_id", "session_id", "timestamp")
+    }
     try:
-        args_hash = hash(json.dumps(tool_input, sort_keys=True, default=str))
+        args_hash = hash(json.dumps(filtered, sort_keys=True))
     except (TypeError, ValueError):
         return None
     return (tool_name, args_hash)
@@ -866,7 +872,7 @@ class ToolExecutor:
                     failure_threshold=cb_threshold,
                 )
             cb = self._circuit_breakers[tool_name]
-            if not cb.allow_request():
+            if not await cb.allow_request():
                 logger.warning(
                     "[CircuitBreaker] OPEN for %s, returning fast-fail",
                     tool_name,
@@ -874,7 +880,9 @@ class ToolExecutor:
                 return f"工具 {tool_name} 暂时不可用（连续失败 {cb_threshold} 次），请稍后重试"
 
         # ── Execute with retry ──
-        _timeout = _accel.get("timeout", self._hard_timeout_for_tool(tool_name)) or 60
+        _timeout = _accel.get("timeout", self._hard_timeout_for_tool(tool_name))
+        if not _timeout or _timeout <= 0:
+            _timeout = 60
         _retries = _accel.get("retries", 0)
         _retry_delay = _accel.get("retry_delay", 0.5)
 
@@ -886,10 +894,15 @@ class ToolExecutor:
                 timeout=_timeout,
             )
             if cb:
-                cb.record_success()
+                await cb.record_success()
         except Exception as e:
             if cb:
-                cb.record_failure()
+                try:
+                    await cb.record_failure()
+                except Exception:
+                    logger.warning(
+                        "[CircuitBreaker] record_failure error (ignored)", exc_info=True
+                    )
             raise
 
         # Store successful results in cache
