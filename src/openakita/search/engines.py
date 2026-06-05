@@ -26,8 +26,8 @@ logger = logging.getLogger(__name__)
 
 # ── 常量 ──────────────────────────────────────────────────
 
-ENGINE_TIMEOUT = 10.0
-RETRY_DELAY = 0.5
+ENGINE_TIMEOUT = 5.0
+RETRY_DELAY = 0.1
 MAX_RETRIES = 1
 MERGE_LIMIT = 8
 

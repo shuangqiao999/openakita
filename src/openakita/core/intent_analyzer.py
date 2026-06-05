@@ -684,7 +684,7 @@ class IntentAnalyzer:
     def __init__(self, brain: Brain):
         self.brain = brain
         self._intent_cache: dict[str, tuple[float, IntentResult]] = {}
-        self._intent_cache_ttl = 60.0
+        self._intent_cache_ttl = 300.0
         self._intent_analyze_count = 0
         self._INTENT_CACHE_MAX = 5000
 

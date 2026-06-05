@@ -319,7 +319,7 @@ class Settings(BaseSettings):
     database_path: str = Field(default="data/agent.db", description="数据库路径")
 
     # === 日志配置 ===
-    log_level: str = Field(default="INFO", description="日志级别")
+    log_level: str = Field(default="WARNING", description="日志级别")
     log_dir: str = Field(default="logs", description="日志目录")
     log_file_prefix: str = Field(default="openakita", description="日志文件前缀")
     log_max_size_mb: int = Field(default=10, description="单个日志文件最大大小（MB）")
@@ -330,7 +330,7 @@ class Settings(BaseSettings):
     )
     log_to_console: bool = Field(default=True, description="是否输出到控制台")
     log_to_file: bool = Field(default=True, description="是否输出到文件")
-    llm_debug_enabled: bool = Field(default=True, description="是否保存 LLM 请求/响应调试快照")
+    llm_debug_enabled: bool = Field(default=False, description="是否保存 LLM 请求/响应调试快照")
     llm_debug_retention_days: int = Field(default=3, description="LLM 调试快照保留天数")
     llm_debug_max_size_mb: int = Field(default=512, description="LLM 调试快照目录最大体积（MB）")
 

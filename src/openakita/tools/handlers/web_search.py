@@ -3,6 +3,7 @@ Web Search 处理器
 委托给 openakita.search.engines 共享模块 — 六引擎并行搜索 + DDG/国际Bing兜底。
 """
 import asyncio
+import hashlib
 import json
 import logging
 import time
@@ -25,6 +26,20 @@ from openakita.search.engines import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class _NoResultError(Exception):
+    """标记：执行成功但无结果，用于并行降级链中区分无结果 vs 异常。"""
+    pass
+
+# ── 搜索结果缓存 ──
+_search_cache: dict[str, tuple[float, str]] = {}
+_SEARCH_CACHE_TTL = 300  # 5 分钟
+
+
+def _search_cache_key(query: str, max_results: int, kind: str) -> str:
+    raw = f"{query.strip().lower()}|{max_results}|{kind}"
+    return hashlib.md5(raw.encode()).hexdigest()
 
 
 def _resolve_timeout(params: dict[str, Any]) -> float:
@@ -65,10 +80,23 @@ class WebSearchHandler:
 
     async def handle(self, tool_name: str, params: dict[str, Any]) -> str:
         if tool_name == "web_search":
-            return await self._do_search(params, kind="web")
+            kind = "web"
         elif tool_name == "news_search":
-            return await self._do_search(params, kind="news")
-        return f"Unknown web search tool: {tool_name}"
+            kind = "news"
+        else:
+            return f"Unknown web search tool: {tool_name}"
+
+        # 结果缓存检查
+        cache_key = _search_cache_key(params.get("query", ""), params.get("max_results", 5), kind)
+        now = time.monotonic()
+        cached = _search_cache.get(cache_key)
+        if cached and now - cached[0] < _SEARCH_CACHE_TTL:
+            logger.info("[WebSearch] Cache HIT for query=%s", (params.get("query") or "")[:60])
+            return cached[1]
+
+        result = await self._do_search(params, kind=kind)
+        _search_cache[cache_key] = (now, result)
+        return result
 
     async def _do_search(self, params: dict[str, Any], *, kind: str) -> str:
         query = (params.get("query") or "").strip()
@@ -95,80 +123,91 @@ class WebSearchHandler:
         # P0-2: 按 kind 选择引擎列表
         engines = get_news_engines() if kind == "news" else get_web_engines()
 
-        # ① 引擎并行搜索
-        tasks = [
-            _run_search_attempt(
-                engine_search_with_retry,
-                timeout_seconds=overall_timeout,
-                engine=eng,
-                query=query,
-                max_results=max_results,
-            )
-            for eng in engines
-        ]
-        all_results = await asyncio.gather(*tasks, return_exceptions=True)
+        # ── 并行三层：引擎并行 + DDG 兜底 + Bing 国际兜底同时发起 ──
+        async def _tier1_engines():
+            tasks = [
+                _run_search_attempt(
+                    engine_search_with_retry,
+                    timeout_seconds=overall_timeout,
+                    engine=eng, query=query, max_results=max_results,
+                )
+                for eng in engines
+            ]
+            all_results = await asyncio.gather(*tasks, return_exceptions=True)
+            engine_results: list[tuple[str, list[dict[str, Any]]]] = []
+            for eng, result in zip(engines, all_results, strict=True):
+                if isinstance(result, Exception):
+                    logger.warning("[%s] engine error: %s: %s", eng.label, type(result).__name__, result)
+                    continue
+                if result:
+                    engine_results.append((eng.name, result))
+            merged = merge_dedup_results(engine_results)
+            if merged:
+                summary = format_engine_summary(merged, engines)
+                total_ms = (time.perf_counter() - search_t0) * 1000
+                logger.warning(
+                    "[TIMING] web_search tier1_engines total=%.0fms query=%s results=%d %s",
+                    total_ms, query[:60], len(merged), summary,
+                )
+                return merged  # non-empty list
+            logger.info("引擎并行无结果 (%d/%d), 等待兜底层", sum(1 for _ in engine_results), len(engines))
+            raise _NoResultError("engines returned empty")
 
-        engine_results: list[tuple[str, list[dict[str, Any]]]] = []
-        success_count = 0
-        for eng, result in zip(engines, all_results, strict=True):
-            if isinstance(result, Exception):
-                logger.warning("[%s] engine error: %s: %s", eng.label, type(result).__name__, result)
-                continue
-            if result:
-                success_count += 1
-                engine_results.append((eng.name, result))
-
-        # 合并去重
-        merged = merge_dedup_results(engine_results)
-        total_ms = (time.perf_counter() - search_t0) * 1000
-
-        if merged:
-            summary = format_engine_summary(merged, engines)
-            logger.info(
-                "搜索「%s」→ %d条 (%s) 耗时 %.0fms %d/%d引擎成功",
-                query[:60], len(merged), summary, total_ms, success_count, len(engines),
-            )
-            return self._format_results(merged, kind)
-
-        # ② DDG 兜底（海外）
-        logger.info("所有引擎无结果 (%d/%d), 尝试 DDG 兜底: %s", success_count, len(engines), query[:60])
-        try:
-            from ddgs import DDGS  # noqa: F401
+        async def _tier2_ddg():
+            try:
+                from ddgs import DDGS  # noqa: F401
+            except ImportError:
+                return None
             ddg_func = ddg_web_search if kind == "web" else ddg_news_search
             ddg_kwargs = {"query": query, "max_results": max_results, "region": region, "safesearch": safesearch}
             if kind == "news":
                 ddg_kwargs["timelimit"] = timelimit
             ddg_results = await _run_search_attempt(ddg_func, timeout_seconds=overall_timeout, **ddg_kwargs)
             if ddg_results:
-                logger.info("DDG 兜底成功: %d results", len(ddg_results))
                 for r in ddg_results:
                     r["_engine"] = "ddg"
-                return self._format_results(ddg_results[:MERGE_LIMIT], kind)
-        except ImportError:
-            from openakita.tools._import_helper import import_or_hint
-            return f"错误：{import_or_hint('ddgs')}"
-        except TimeoutError:
-            logger.warning("DDG 兜底超时: %s", query[:60])
-        except Exception as e:
-            logger.debug("DDG 兜底失败: %s: %s", type(e).__name__, e)
+                total_ms = (time.perf_counter() - search_t0) * 1000
+                logger.warning(
+                    "[TIMING] web_search tier2_ddg total=%.0fms query=%s results=%d",
+                    total_ms, query[:60], len(ddg_results),
+                )
+                return ddg_results[:MERGE_LIMIT]
+            return None
 
-        # ③ P0-1: 国内友好兜底（Bing 国际版等）
-        logger.info("DDG 兜底失败, 尝试国内友好兜底: %s", query[:60])
-        try:
+        async def _tier3_bing():
             fb_results = await _run_search_attempt(
                 fallback_engines_search, timeout_seconds=overall_timeout,
                 query=query, max_results=max_results,
             )
             if fb_results:
-                logger.info("国内兜底成功: %d results", len(fb_results))
-                return self._format_results(fb_results[:MERGE_LIMIT], kind)
-        except TimeoutError:
-            logger.warning("国内兜底超时: %s", query[:60])
-        except Exception as e:
-            logger.debug("国内兜底失败: %s: %s", type(e).__name__, e)
+                total_ms = (time.perf_counter() - search_t0) * 1000
+                logger.warning(
+                    "[TIMING] web_search tier3_bing total=%.0fms query=%s results=%d",
+                    total_ms, query[:60], len(fb_results),
+                )
+                return fb_results[:MERGE_LIMIT]
+            return None
 
-        # ④ 全部失败
-        logger.error("所有搜索源均无结果: %s", query[:60])
+        tier_tasks = [
+            asyncio.create_task(_tier1_engines()),
+            asyncio.create_task(_tier2_ddg()),
+            asyncio.create_task(_tier3_bing()),
+        ]
+        done, pending = await asyncio.wait(tier_tasks, return_when=asyncio.FIRST_COMPLETED,
+                                            timeout=overall_timeout if overall_timeout > 0 else 60.0)
+        for t in pending:
+            t.cancel()
+        for t in done:
+            try:
+                result = t.result()
+                if result and (isinstance(result, list) and len(result) > 0):
+                    return self._format_results(result, kind)
+            except (_NoResultError, Exception):
+                continue
+
+        # 全部失败
+        total_ms = (time.perf_counter() - search_t0) * 1000
+        logger.warning("[TIMING] web_search ALL_FAILED total=%.0fms query=%s", total_ms, query[:60])
         return all_failed_response(kind)
 
     # ── 格式化 ──
