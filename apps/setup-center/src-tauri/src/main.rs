@@ -2943,23 +2943,7 @@ fn openakita_list_processes() -> Vec<OpenAkitaProcess> {
                             out.push(OpenAkitaProcess {
                                 pid,
                                 cmd: parts[10..].join(" "),
-    });
-    // 监控 detached task 是否 panic，写入日志以便诊断初始 panic 来源
-    tauri::async_runtime::spawn(async move {
-        if let Err(e) = stream_handle.await {
-            let msg = if let Ok(panic_msg) = e.try_into_panic() {
-                let s = panic_msg
-                    .downcast_ref::<String>()
-                    .map(|s| s.as_str())
-                    .or_else(|| panic_msg.downcast_ref::<&str>().copied())
-                    .unwrap_or("(unknown panic message)");
-                format!("backend_fetch streaming task panicked: {}", s)
-            } else {
-                "backend_fetch streaming task was cancelled".to_string()
-            };
-            log_to_file(&msg);
-        }
-    });
+                            });
                         }
                     }
                 }
@@ -7296,6 +7280,12 @@ async fn backend_fetch(
                     break;
                 }
             }
+        }
+    });
+    // 监控 detached task，异常结束时写入日志
+    tauri::async_runtime::spawn(async move {
+        if let Err(_e) = stream_handle.await {
+            log_to_file("[backend_fetch] streaming task ended with error (may be cancelled or panicked)");
         }
     });
 
