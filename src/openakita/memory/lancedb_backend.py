@@ -1171,7 +1171,7 @@ class LanceDBBackend:
                 if table is not None:
                     try:
                         from datetime import timedelta
-                        table.optimize(cleanup_older_than=timedelta(0))
+                        table.optimize(cleanup_older_than=timedelta(0), delete_unverified=True)
                         logger.info("[LanceDBBackend] %s optimize completed", tbl_attr)
                     except TypeError:
                         try:

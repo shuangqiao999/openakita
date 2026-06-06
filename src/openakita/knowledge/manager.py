@@ -2064,7 +2064,7 @@ class KnowledgeBaseManager:
         if table is not None:
             try:
                 from datetime import timedelta
-                table.optimize(cleanup_older_than=timedelta(0))
+                table.optimize(cleanup_older_than=timedelta(0), delete_unverified=True)
                 logger.info("[KB] LanceDB optimize completed")
             except TypeError:
                 try:
@@ -2095,7 +2095,7 @@ class KnowledgeBaseManager:
             return
         try:
             from datetime import timedelta
-            table.optimize(cleanup_older_than=timedelta(0))
+            table.optimize(cleanup_older_than=timedelta(0), delete_unverified=True)
             logger.info("[KB] LanceDB runtime optimize completed")
         except TypeError:
             try:

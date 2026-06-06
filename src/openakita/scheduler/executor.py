@@ -969,11 +969,11 @@ class TaskExecutor:
                             if method_name == "optimize":
                                 from datetime import timedelta
                                 try:
-                                    fn(cleanup_older_than=timedelta(0))
+                                    fn(cleanup_older_than=timedelta(0), delete_unverified=True)
                                 except TypeError:
-                                    fn()
+                                    fn(cleanup_older_than=timedelta(0))
                             else:
-                                fn()
+                                fn(older_than=timedelta(0), delete_unverified=True)
                             logger.debug(
                                 "[Maintenance] Memory LanceDB %s %s completed",
                                 tbl_attr, method_name,
