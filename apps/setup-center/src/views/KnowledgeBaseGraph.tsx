@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import ForceGraph3D from "react-force-graph-3d";
 import { useTranslation } from "react-i18next";
 import { safeFetch } from "../providers";
-import { Loader2, Plus, Minus, RotateCw, X, Search, AlertTriangle, StopCircle, Eye, EyeOff } from "lucide-react";
+import { Loader2, Plus, Minus, RotateCw, X, Search, AlertTriangle, StopCircle } from "lucide-react";
 
 interface Props {
   apiBaseUrl: string;
@@ -103,9 +103,6 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
   const docDropdownRef = useRef<HTMLDivElement>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // ── P0: 度过滤 ──
-  const [minDegree, setMinDegree] = useState(0);
-
   // ── P1: 类别过滤 ──
   const [activeCategories, setActiveCategories] = useState<Set<string>>(new Set());
 
@@ -115,9 +112,6 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
   // ── P1: 搜索 ──
   const [searchQuery, setSearchQuery] = useState("");
   const [searchMatchIds, setSearchMatchIds] = useState<Set<string>>(new Set());
-
-  // ── P1: 隐藏孤立节点 ──
-  const [hideIsolated, setHideIsolated] = useState(false);
 
   // ── P2: 停止模拟 ──
   const [simRunning, setSimRunning] = useState(true);
@@ -146,18 +140,14 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
     if (enrichedNodes.length === 0) return { nodes: [], links: [] };
 
     const catFilterActive = activeCategories.size > 0;
-    const degFilterActive = minDegree > 0;
     const searchActive = searchQuery.trim().length > 0;
-    const anyFilter = catFilterActive || degFilterActive || searchActive || hideIsolated;
+    const anyFilter = catFilterActive || searchActive;
 
     if (!anyFilter) return { nodes: enrichedNodes, links: rawGraphData.links };
 
-    // 先按度和孤立节点过滤
+    // 收集所有节点 ID
     let keepIds = new Set<string>();
     for (const n of enrichedNodes) {
-      const deg = degreeMap.get(n.id) || 0;
-      if (deg < minDegree) continue;
-      if (hideIsolated && deg === 0) continue;
       keepIds.add(n.id);
     }
 
@@ -197,7 +187,7 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
     });
 
     return { nodes: filteredNodes, links: filteredLinks };
-  }, [enrichedNodes, rawGraphData, activeCategories, minDegree, searchQuery, hideIsolated, degreeMap]);
+  }, [enrichedNodes, rawGraphData, activeCategories, searchQuery, degreeMap]);
 
   // ── 搜索匹配 ID 副作用（不能放在 useMemo 内） ─
   useEffect(() => {
@@ -344,6 +334,16 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
     }, 200);
     return () => clearTimeout(timer);
   }, [filteredGraphData, dimensions]);
+
+  // 语义布局：相似度越高节点越靠近
+  useEffect(() => {
+    const fg = fgRef.current as any;
+    if (!fg) return;
+    try {
+      fg.d3Force("charge").strength(-120);
+      fg.d3Force("link").distance((l: any) => 10 + 90 * (1 - (l.value ?? 0.5)));
+    } catch { /* ignore */ }
+  }, [filteredGraphData.nodes.length]);
 
   // ── P0: 点击高亮邻居 ──
   const handleNodeClick = useCallback((node: any, event?: MouseEvent) => {
@@ -533,9 +533,9 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
           onNodeClick={handleNodeClick as any}
           onBackgroundClick={handleBackgroundClick}
           enablePointerInteraction={true}
-          d3AlphaDecay={0.1}
-          warmupTicks={10}
-          cooldownTicks={20}
+          d3AlphaDecay={0.08}
+          warmupTicks={30}
+          cooldownTicks={50}
           onEngineStop={() => { simRunningRef.current = false; setSimRunning(false); }}
           onEngineTick={() => { simRunningRef.current = true; }}
         />
@@ -646,18 +646,6 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
               style={{ width: 60, cursor: "pointer", accentColor: "#3b82f6" }}
             />
           </label>
-
-          {/* ── P0: 度过滤滑块 ── */}
-          <label style={{ color: "#e2e8f0", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
-            <span>最小度</span>
-            <input
-              type="range" min="0" max="20" step="1"
-              value={minDegree}
-              onChange={e => { setMinDegree(parseInt(e.target.value)); setHighlightNode(null); }}
-              style={{ width: 60, cursor: "pointer", accentColor: "#3b82f6" }}
-            />
-            <span style={{ opacity: 0.7, minWidth: 20 }}>≥{minDegree}</span>
-          </label>
         </div>
 
         {/* ── P1: 类别过滤 + 搜索 + 孤立 ── */}
@@ -729,14 +717,8 @@ export function KnowledgeBaseGraph({ apiBaseUrl, refreshKey = 0 }: Props) {
             )}
           </div>
 
-          {/* 折叠孤立节点 + 高亮清除 */}
+          {/* 高亮清除 */}
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <label style={{ color: "#e2e8f0", fontSize: 11, display: "flex", alignItems: "center", gap: 4, cursor: "pointer", userSelect: "none" }}
-              onClick={() => { setHideIsolated(v => !v); setHighlightNode(null); }}
-            >
-              {hideIsolated ? <Eye size={12} /> : <EyeOff size={12} />}
-              隐藏孤立节点
-            </label>
             {highlightNode && (
               <button
                 onClick={() => setHighlightNode(null)}
