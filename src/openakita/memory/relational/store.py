@@ -617,6 +617,7 @@ class RelationalMemoryStore:
         user_id: str | None = None,
         workspace_id: str | None = None,
     ) -> list[MemoryNode]:
+        self._check_open()
         active_where, active_params = self._active_node_where()
         conditions = [active_where]
         params: list[object] = [*active_params]

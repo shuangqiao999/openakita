@@ -672,6 +672,8 @@ class TaskExecutor:
 
         agent = Agent()
         await agent.initialize(start_scheduler=False)
+        # 调度 Agent 共享主 Agent 的 MemoryStorage 单例，不应在 shutdown 时关闭共享连接
+        agent._owns_memory_manager = False
         return agent
 
     def _resolve_agent_profile(self, profile_id: str) -> Any | None:

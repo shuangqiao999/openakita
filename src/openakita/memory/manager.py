@@ -1085,7 +1085,20 @@ class MemoryManager:
     def _ensure_relational(self) -> bool:
         """Lazily initialize relational memory components. Returns True if available."""
         if self.relational_store is not None:
-            return True
+            # 验证底层共享连接未被其他 Agent 的 shutdown 关闭
+            store = self.relational_store
+            conn = self.store.db._conn
+            if conn is not None and not getattr(store, "_closed", False):
+                return True
+            # 连接已被关闭或 store 已标记 closed → 重建
+            logger.warning(
+                "[Memory] Relational store connection was closed by another agent, "
+                "re-initializing"
+            )
+            self.relational_store = None
+            self.relational_consolidator = None
+            self.relational_graph = None
+            self.relational_encoder = None
         try:
             from .relational.consolidator import RelationalConsolidator
             from .relational.encoder import MemoryEncoder
