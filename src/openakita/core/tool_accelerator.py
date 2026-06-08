@@ -162,3 +162,17 @@ async def run_with_retry(
         if attempt < max_retries:
             await asyncio.sleep(delay)
     raise last_exc  # type: ignore[misc]
+
+
+# ── 全局熔断器工厂（跨工具共享 per-domain CircuitBreaker） ──
+
+_domain_breakers: dict[str, CircuitBreaker] = {}
+
+
+def get_circuit_breaker(domain: str, threshold: int | None = None) -> CircuitBreaker:
+    """获取或创建指定域名的全局熔断器。同一域名在 web_search / batch_web_fetch 间共享。"""
+    if domain not in _domain_breakers:
+        _domain_breakers[domain] = CircuitBreaker(
+            failure_threshold=threshold if threshold is not None else 3
+        )
+    return _domain_breakers[domain]

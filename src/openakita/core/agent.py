@@ -86,6 +86,7 @@ from ..tools.handlers.system import create_handler as create_system_handler
 from ..tools.handlers.tool_search import create_handler as create_tool_search_handler
 from ..tools.handlers.web_fetch import create_handler as create_web_fetch_handler
 from ..tools.handlers.web_search import create_handler as create_web_search_handler
+from ..tools.handlers.batch_web_fetch import create_handler as create_batch_web_fetch_handler
 from ..tools.handlers.worktree import create_handler as create_worktree_handler
 
 # MCP 系统
@@ -2183,6 +2184,9 @@ class Agent:
 
         # Web Fetch（轻量 URL 内容获取）
         self.handler_registry.register("web_fetch", create_web_fetch_handler(self))
+
+        # Batch Web Fetch + 书签抓取
+        self.handler_registry.register("batch_web_fetch", create_batch_web_fetch_handler(self))
 
         # Code Quality（linter 诊断）
         self.handler_registry.register("code_quality", create_code_quality_handler(self))

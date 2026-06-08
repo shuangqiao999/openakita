@@ -77,6 +77,7 @@ from .structured_output import STRUCTURED_OUTPUT_TOOLS
 from .system import SYSTEM_TOOLS
 from .tool_search import TOOL_SEARCH_TOOLS
 from .web_fetch import WEB_FETCH_TOOLS
+from .batch_web_fetch import BATCH_WEB_FETCH_TOOLS
 from .web_search import WEB_SEARCH_TOOLS
 from .worktree import WORKTREE_TOOLS
 
@@ -95,6 +96,7 @@ BASE_TOOLS = (
     + PLAN_TOOLS
     + WEB_SEARCH_TOOLS
     + WEB_FETCH_TOOLS
+    + BATCH_WEB_FETCH_TOOLS
     + CODE_QUALITY_TOOLS
     + SEARCH_TOOLS
     + MODE_TOOLS
@@ -170,6 +172,7 @@ __all__ = [
     "MCP_TOOLS",
     "PLAN_TOOLS",
     "WEB_FETCH_TOOLS",
+    "BATCH_WEB_FETCH_TOOLS",
     "WEB_SEARCH_TOOLS",
     "PERSONA_TOOLS",
     "STICKER_TOOLS",

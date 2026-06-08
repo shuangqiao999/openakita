@@ -159,6 +159,18 @@ async def _fetch_with_redirects(
 
         current_url = urljoin(current_url, location)
         chain.append(current_url)
+        # 跳转后 URL 也需安全检查，防止从公网重定向到内网
+        safe, _ = await is_safe_url(current_url)
+        if not safe:
+            meta = WebFetchMeta(
+                requested_url=requested_url,
+                final_url=current_url,
+                redirect_chain=list(chain),
+                fetched_at=_utc_now_iso(),
+                error_code="unsafe_redirect",
+                hint=f"重定向目标 {current_url} 被安全策略拒绝（可能为内网地址）",
+            )
+            return None, meta
 
     return (
         None,

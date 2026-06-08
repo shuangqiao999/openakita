@@ -262,6 +262,11 @@ class Settings(BaseSettings):
         ),
     )
 
+    bookmarks_path: str = Field(
+        default="data/web_bookmarks.json",
+        description="网址书签配置文件路径（相对 project_root）",
+    )
+
     allow_parallel_tools_with_interrupt_checks: bool = Field(
         default=False,
         description="是否允许在启用“工具间中断检查”时也并行执行工具（会降低中断插入粒度，默认关闭）",
@@ -304,6 +309,19 @@ class Settings(BaseSettings):
                 "cache_ttl": 30,
                 "retries": 0,
                 "circuit_threshold": 3,
+            },
+            "batch_web_fetch": {
+                "timeout": None,            # None = inherit from web_fetch
+                "cache_ttl": None,
+                "retries": 1,
+                "retry_delay": 0.5,
+                "circuit_threshold": 3,
+                "max_concurrent": 5,
+            },
+            "fetch_bookmarked": {
+                "cache_ttl": 300,
+                "retries": 1,
+                "retry_delay": 0.5,
             },
             "get_time": {
                 "cache_ttl": 5,

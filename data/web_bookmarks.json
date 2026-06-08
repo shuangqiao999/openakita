@@ -1,0 +1,37 @@
+{
+  "bookmarks": [
+    {
+      "name": "GitHub Trending",
+      "url": "https://github.com/trending",
+      "description": "GitHub 每日热门仓库，用于发现前沿开源项目",
+      "purpose": "daily_tech_news",
+      "enabled": true,
+      "priority": 10,
+      "ttl_seconds": 3600
+    },
+    {
+      "name": "Hacker News",
+      "url": "https://news.ycombinator.com",
+      "description": "硅谷顶级科技社区，每日最重要技术讨论",
+      "purpose": "daily_tech_news",
+      "enabled": true,
+      "priority": 8
+    },
+    {
+      "name": "Python 官方文档",
+      "url": "https://docs.python.org/3/",
+      "description": "Python 3 官方文档",
+      "purpose": "official_doc",
+      "enabled": true,
+      "priority": 10
+    },
+    {
+      "name": "ArXiv CS 最新",
+      "url": "https://arxiv.org/list/cs/recent",
+      "description": "计算机科学领域最新预印本论文",
+      "purpose": "academic_papers",
+      "enabled": true,
+      "priority": 5
+    }
+  ]
+}
