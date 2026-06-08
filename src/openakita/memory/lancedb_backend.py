@@ -91,6 +91,71 @@ def _run_embedding_sync(embedder, method_name: str, *args):
         return asyncio.run(method(*args))
 
 
+class EmbeddingHealthBreaker:
+    """嵌入模型自愈熔断器：Closed → Open(冷却) → Half-Open(探测)
+
+    2 次失败后触发 Open，5 分钟后自动进入 Half-Open 尝试探测恢复。
+    _probing 标志防止并发探测，避免每次 search 都尝试重连。
+    """
+
+    def __init__(self, failure_threshold: int = 2, cooldown_seconds: float = 300):
+        import time
+        self.threshold = failure_threshold
+        self.cooldown = cooldown_seconds
+        self.failures = 0
+        self.last_fail_time = 0.0
+        self._obtain_time = time.monotonic
+        self.healthy = True
+        self._probing = False
+
+    def _now(self) -> float:
+        return self._obtain_time()
+
+    def is_healthy(self) -> bool:
+        if self.healthy:
+            return True
+        if self._now() - self.last_fail_time > self.cooldown:
+            self.healthy = True
+            self.failures = 0
+            return True
+        return False
+
+    def try_probe(self) -> bool:
+        if self.healthy:
+            return True
+        if self._probing:
+            return False
+        if self._now() - self.last_fail_time > self.cooldown:
+            self._probing = True
+            return True
+        return False
+
+    def mark_success(self) -> None:
+        was_unhealthy = not self.healthy
+        self.failures = 0
+        self.healthy = True
+        self._probing = False
+        if was_unhealthy:
+            logger.info("[LanceDBBackend] Embedding recovered — search re-enabled")
+
+    def mark_failure(self, reason: str) -> None:
+        self.failures += 1
+        self.last_fail_time = self._now()
+        self._probing = False
+        if self.failures >= self.threshold and self.healthy:
+            self.healthy = False
+            logger.warning(
+                "[LanceDBBackend] Embedding circuit OPEN "
+                "(failures=%d, cooldown=%ds, reason=%s) — search disabled temporarily",
+                self.failures, self.cooldown, reason,
+            )
+        elif self.failures < self.threshold:
+            logger.warning(
+                "[LanceDBBackend] Embedding failure %d/%d: %s",
+                self.failures, self.threshold, reason,
+            )
+
+
 class LanceDBBackend:
     """LanceDB 向量存储后端。
 
@@ -127,9 +192,11 @@ class LanceDBBackend:
         self._lock = threading.Lock()
         self._cached_embedder: object | None = None
         self._embedder_pinged = False
-        self._embedding_failures = 0
-        self._embedding_healthy = True
         self._embedding_last_error: str | None = None
+        self._breakers = {
+            "search": EmbeddingHealthBreaker(failure_threshold=2, cooldown_seconds=300),
+            "episodes": EmbeddingHealthBreaker(failure_threshold=2, cooldown_seconds=300),
+        }
         self._on_rebuild = on_rebuild
         self._index_created = False
         self._creating_index = False
@@ -563,29 +630,13 @@ class LanceDBBackend:
     # ── Health Tracking ──
 
     def _mark_embedding_ok(self) -> None:
-        was_unhealthy = not self._embedding_healthy
-        self._embedding_failures = 0
-        self._embedding_healthy = True
-        self._embedding_last_error = None
-        if was_unhealthy:
-            logger.info("[LanceDBBackend] Embedding recovered — vector search re-enabled")
+        for b in self._breakers.values():
+            b.mark_success()
 
     def _mark_embedding_failure(self, reason: str) -> None:
-        self._embedding_failures += 1
+        for b in self._breakers.values():
+            b.mark_failure(reason)
         self._embedding_last_error = reason
-        if self._embedding_failures >= 2:
-            self._embedding_healthy = False
-            logger.error(
-                "[LanceDBBackend] Embedding unhealthy after %s failures (last: %s)",
-                self._embedding_failures,
-                reason,
-            )
-        else:
-            logger.warning(
-                "[LanceDBBackend] Embedding failure %s/2: %s",
-                self._embedding_failures,
-                reason,
-            )
 
     # ── Query Embedding Cache ──
 
@@ -645,9 +696,12 @@ class LanceDBBackend:
     ) -> list[tuple[str, float]]:
         if not self.available:
             return []
-        if not self._embedding_healthy:
-            return []
+        if not self._breakers["search"].is_healthy():
+            if not self._breakers["search"].try_probe():
+                return []
         embedder = self._get_embedder()
+        if self._breakers["search"].is_healthy():
+            self._breakers["search"].mark_success()
         if embedder is None:
             return []
 
@@ -1103,9 +1157,12 @@ class LanceDBBackend:
     ) -> list[dict]:
         if not self.episodes_available:
             return []
-        if not self._embedding_healthy:
-            return []
+        if not self._breakers["episodes"].is_healthy():
+            if not self._breakers["episodes"].try_probe():
+                return []
         embedder = self._get_embedder()
+        if self._breakers["episodes"].is_healthy():
+            self._breakers["episodes"].mark_success()
         if embedder is None:
             return []
 

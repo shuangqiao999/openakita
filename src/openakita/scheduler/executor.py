@@ -957,6 +957,18 @@ class TaskExecutor:
             mm = getattr(self, "memory_manager", None)
             if mm and hasattr(mm, "store") and mm.store and hasattr(mm.store, "search"):
                 backend = mm.store.search
+                # 嵌入模型自愈探测：若熔断器 Open 且冷却期已过，尝试恢复
+                if hasattr(backend, "_breakers"):
+                    for bname, breaker in backend._breakers.items():
+                        if not breaker.is_healthy() and breaker.try_probe():
+                            try:
+                                backend._get_embedder()
+                                breaker.mark_success()
+                                logger.info(
+                                    "[Maintenance] Embedding breaker '%s' recovered", bname
+                                )
+                            except Exception:
+                                breaker.mark_failure("maintenance_probe")
                 for tbl_attr in ("_table", "_episodes_table"):
                     table = getattr(backend, tbl_attr, None)
                     if table is None:
