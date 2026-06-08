@@ -39,8 +39,11 @@ BATCH_WEB_FETCH_TOOLS = [
         "name": "fetch_bookmarked",
         "category": "Web",
         "description": (
-            "从预设的书签配置中按用途分类抓取网址。适合获取固定来源的最新内容"
-            "（如科技新闻、官方文档、学术论文）。书签配置在 web_bookmarks.json 中预设。"
+            "从预设的书签配置中按用途分类抓取网址。适合获取固定来源的最新内容。"
+            "当前可用用途: daily_tech_news, ai_research, academic_papers, development, "
+            "technical_blog, tech_news, tech_analysis, geo_analysis, public_data, "
+            "general_news, technical_qna, official_doc。"
+            "必须从这些用途中精确选择一个，不能自己编造。"
         ),
         "related_tools": [
             {"name": "batch_web_fetch", "relation": "底层使用 batch_web_fetch 并发抓取"},
@@ -51,7 +54,13 @@ BATCH_WEB_FETCH_TOOLS = [
             "properties": {
                 "purpose": {
                     "type": "string",
-                    "description": "书签用途类别（如 daily_tech_news、official_doc、academic_papers）",
+                    "description": "书签用途类别，必须从可用列表中选择",
+                    "enum": [
+                        "daily_tech_news", "ai_research", "academic_papers",
+                        "development", "technical_blog", "tech_news", "tech_analysis",
+                        "geo_analysis", "public_data", "general_news",
+                        "technical_qna", "official_doc"
+                    ],
                 },
                 "limit": {
                     "type": "integer",
