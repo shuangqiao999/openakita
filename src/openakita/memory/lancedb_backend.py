@@ -114,7 +114,7 @@ class EmbeddingHealthBreaker:
     def is_healthy(self) -> bool:
         if self.healthy:
             return True
-        if self._now() - self.last_fail_time > self.cooldown:
+        if self._now() - self.last_fail_time >= self.cooldown:
             self.healthy = True
             self.failures = 0
             return True
@@ -125,7 +125,7 @@ class EmbeddingHealthBreaker:
             return True
         if self._probing:
             return False
-        if self._now() - self.last_fail_time > self.cooldown:
+        if self._now() - self.last_fail_time >= self.cooldown:
             self._probing = True
             return True
         return False
