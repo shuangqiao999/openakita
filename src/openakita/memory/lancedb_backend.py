@@ -629,13 +629,19 @@ class LanceDBBackend:
 
     # ── Health Tracking ──
 
-    def _mark_embedding_ok(self) -> None:
-        for b in self._breakers.values():
-            b.mark_success()
+    def _mark_embedding_ok(self, breaker_key: str | None = None) -> None:
+        if breaker_key:
+            self._breakers[breaker_key].mark_success()
+        else:
+            for b in self._breakers.values():
+                b.mark_success()
 
-    def _mark_embedding_failure(self, reason: str) -> None:
-        for b in self._breakers.values():
-            b.mark_failure(reason)
+    def _mark_embedding_failure(self, reason: str, breaker_key: str | None = None) -> None:
+        if breaker_key:
+            self._breakers[breaker_key].mark_failure(reason)
+        else:
+            for b in self._breakers.values():
+                b.mark_failure(reason)
         self._embedding_last_error = reason
 
     # ── Query Embedding Cache ──
@@ -700,9 +706,9 @@ class LanceDBBackend:
             if not self._breakers["search"].try_probe():
                 return []
         embedder = self._get_embedder()
-        if self._breakers["search"].is_healthy():
+        if embedder is not None:
             self._breakers["search"].mark_success()
-        if embedder is None:
+        else:
             return []
 
         query_vec = self._get_cached_embedding(query)
@@ -710,15 +716,13 @@ class LanceDBBackend:
             try:
                 query_vec = _run_embedding_sync(embedder, "embed_query", query)
             except Exception as e:
-                self._mark_embedding_failure(str(e))
+                self._mark_embedding_failure(str(e), "search")
                 return []
             if query_vec is None:
-                self._mark_embedding_failure("timeout_or_none")
+                self._mark_embedding_failure("timeout_or_none", "search")
                 return []
             if query_vec:
                 self._cache_embedding(query, query_vec)
-
-        self._mark_embedding_ok()
 
         if not query_vec:
             return []
@@ -1161,21 +1165,19 @@ class LanceDBBackend:
             if not self._breakers["episodes"].try_probe():
                 return []
         embedder = self._get_embedder()
-        if self._breakers["episodes"].is_healthy():
+        if embedder is not None:
             self._breakers["episodes"].mark_success()
-        if embedder is None:
+        else:
             return []
 
         try:
             query_vec = _run_embedding_sync(embedder, "embed_query", query_text)
         except Exception as e:
-            self._mark_embedding_failure(str(e))
+            self._mark_embedding_failure(str(e), "episodes")
             return []
 
         if query_vec is None:
             return []
-
-        self._mark_embedding_ok()
 
         try:
             with self._lock:
