@@ -18,18 +18,218 @@
       "priority": 8
     },
     {
-      "name": "Python 官方文档",
+      "name": "Hugging Face Blog",
+      "url": "https://huggingface.co/blog",
+      "description": "Transformer 模型和开源 AI 生态的资讯源头",
+      "purpose": "ai_research",
+      "enabled": true,
+      "priority": 9
+    },
+    {
+      "name": "OpenAI Blog",
+      "url": "https://openai.com/news",
+      "description": "GPT系列模型及OpenAI最新技术发布的一手信息源",
+      "purpose": "ai_research",
+      "enabled": true,
+      "priority": 9
+    },
+    {
+      "name": "Google AI Blog",
+      "url": "https://ai.googleblog.com",
+      "description": "Google 在 AI 前沿领域的研究动态和技术分享",
+      "purpose": "ai_research",
+      "enabled": true,
+      "priority": 8
+    },
+    {
+      "name": "arXiv Artificial Intelligence",
+      "url": "https://arxiv.org/list/cs.AI/recent",
+      "description": "AI 领域最新论文预印本，追踪前沿研究",
+      "purpose": "academic_papers",
+      "enabled": true,
+      "priority": 7
+    },
+    {
+      "name": "Journal of Machine Learning Research",
+      "url": "https://www.jmlr.org",
+      "description": "JMLR是机器学习领域的顶级开放获取期刊，所有论文均可免费查阅",
+      "purpose": "academic_papers",
+      "enabled": true,
+      "priority": 7
+    },
+    {
+      "name": "MIT Technology Review",
+      "url": "https://www.technologyreview.com/topic/artificial-intelligence",
+      "description": "权威科技媒体，提供对AI趋势的深度解读",
+      "purpose": "daily_tech_news",
+      "enabled": true,
+      "priority": 6
+    },
+    {
+      "name": "Gitee (码云)",
+      "url": "https://gitee.com",
+      "description": "国内最大的代码托管平台，适合跟踪中文开源生态",
+      "purpose": "development",
+      "enabled": true,
+      "priority": 7
+    },
+    {
+      "name": "开源中国",
+      "url": "https://www.oschina.net",
+      "description": "国内开源技术资讯与社区，本土化内容及时",
+      "purpose": "development",
+      "enabled": true,
+      "priority": 6
+    },
+    {
+      "name": "美团技术团队",
+      "url": "https://tech.meituan.com",
+      "description": "国内顶级技术团队的实践经验分享",
+      "purpose": "technical_blog",
+      "enabled": true,
+      "priority": 7
+    },
+    {
+      "name": "Microsoft Dev Blogs",
+      "url": "https://devblogs.microsoft.com",
+      "description": "追踪微软技术栈（如.NET, Azure）的最新发展",
+      "purpose": "technical_blog",
+      "enabled": true,
+      "priority": 6
+    },
+    {
+      "name": "36Kr",
+      "url": "https://36kr.com",
+      "description": "国内主流科技媒体，覆盖创业、投资和新经济动态",
+      "purpose": "tech_news",
+      "enabled": true,
+      "priority": 7
+    },
+    {
+      "name": "VentureBeat",
+      "url": "https://venturebeat.com",
+      "description": "国际权威科技商业媒体，尤其关注AI、游戏和SaaS领域",
+      "purpose": "tech_news",
+      "enabled": true,
+      "priority": 6
+    },
+    {
+      "name": "Data & Society",
+      "url": "https://datasociety.net",
+      "description": "专注研究数据技术对社会和文化影响的智库机构",
+      "purpose": "tech_analysis",
+      "enabled": true,
+      "priority": 5
+    },
+    {
+      "name": "Oxford Analytica Daily Brief",
+      "url": "https://www.oxan.com",
+      "description": "每日全球地缘政治和宏观经济分析",
+      "purpose": "geo_analysis",
+      "enabled": true,
+      "priority": 5
+    },
+    {
+      "name": "Google Public Data Explorer",
+      "url": "https://www.google.com/publicdata",
+      "description": "来自世界银行、OECD等机构的高价值公开数据集",
+      "purpose": "public_data",
+      "enabled": true,
+      "priority": 6
+    },
+    {
+      "name": "World Bank Open Data",
+      "url": "https://data.worldbank.org",
+      "description": "全球宏观发展数据的权威来源，免费开放",
+      "purpose": "public_data",
+      "enabled": true,
+      "priority": 7
+    },
+    {
+      "name": "Common Crawl",
+      "url": "https://commoncrawl.org",
+      "description": "庞大且免费的网络爬虫数据集，是训练模型的语料宝库",
+      "purpose": "public_data",
+      "enabled": true,
+      "priority": 6
+    },
+    {
+      "name": "UCI Machine Learning Repository",
+      "url": "https://archive.ics.uci.edu/ml",
+      "description": "机器学习领域最经典的数据集集合站",
+      "purpose": "public_data",
+      "enabled": true,
+      "priority": 7
+    },
+    {
+      "name": "Hugging Face Datasets",
+      "url": "https://huggingface.co/datasets",
+      "description": "AI社区的核心资源库，包含海量开源数据集",
+      "purpose": "public_data",
+      "enabled": true,
+      "priority": 8
+    },
+    {
+      "name": "ACM Digital Library",
+      "url": "https://dl.acm.org",
+      "description": "全球计算机科学领域最权威的文献数据库之一",
+      "purpose": "academic_papers",
+      "enabled": true,
+      "priority": 8
+    },
+    {
+      "name": "Semantic Scholar",
+      "url": "https://www.semanticscholar.org",
+      "description": "由AI驱动的免费学术搜索引擎，索引数亿篇论文",
+      "purpose": "academic_papers",
+      "enabled": true,
+      "priority": 7
+    },
+    {
+      "name": "Reuters",
+      "url": "https://www.reuters.com",
+      "description": "全球最大的国际通讯社之一，新闻报道客观权威",
+      "purpose": "general_news",
+      "enabled": true,
+      "priority": 7
+    },
+    {
+      "name": "The Guardian",
+      "url": "https://www.theguardian.com",
+      "description": "英国主流大报，深度报道和评论见长",
+      "purpose": "general_news",
+      "enabled": true,
+      "priority": 6
+    },
+    {
+      "name": "Stack Overflow",
+      "url": "https://stackoverflow.com",
+      "description": "全球最流行的程序员技术问答社区",
+      "purpose": "technical_qna",
+      "enabled": true,
+      "priority": 9
+    },
+    {
+      "name": "Python官方文档",
       "url": "https://docs.python.org/3/",
-      "description": "Python 3 官方文档",
+      "description": "最权威的Python语言参考手册",
       "purpose": "official_doc",
       "enabled": true,
       "priority": 10
     },
     {
-      "name": "ArXiv CS 最新",
-      "url": "https://arxiv.org/list/cs/recent",
-      "description": "计算机科学领域最新预印本论文",
-      "purpose": "academic_papers",
+      "name": "Codeberg",
+      "url": "https://codeberg.org",
+      "description": "GitHub之外的另一种选择，一个非营利性的开源协作平台",
+      "purpose": "development",
+      "enabled": true,
+      "priority": 5
+    },
+    {
+      "name": "SourceForge",
+      "url": "https://sourceforge.net",
+      "description": "历史悠久的开源软件托管和发布平台",
+      "purpose": "development",
       "enabled": true,
       "priority": 5
     }
