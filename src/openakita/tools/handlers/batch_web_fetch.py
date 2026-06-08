@@ -30,6 +30,12 @@ def _resolve_bookmarks_path() -> Path:
     p = Path(raw)
     if not p.is_absolute():
         p = settings.project_root / raw
+    if not p.exists():
+        # 回退到 skill 内置书签配置
+        skill_fallback = Path(__file__).parents[3] / "skills" / "external" / "web-bookmarks" / "bookmarks.json"
+        if skill_fallback.exists() and skill_fallback != p:
+            logger.info("[BatchFetch] Using skill built-in bookmarks: %s", skill_fallback)
+            return skill_fallback
     return p
 
 
