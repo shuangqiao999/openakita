@@ -208,6 +208,7 @@ include = [
     "skills",
     "mcps",
     "identity",
+    "data",
     "VERSION",
     "pyproject.toml",
     "README.md",
@@ -236,6 +237,7 @@ packages = ["src/openakita"]
 "docs-site/.vitepress/dist" = "openakita/docs_dist"
 "skills/system" = "openakita/builtin_skills/system"
 "mcps" = "openakita/builtin_mcps"
+"data" = "openakita/data"
 "skills/xiaohongshu-creator" = "openakita/builtin_skills/external/xiaohongshu-creator"
 "skills/wechat-article" = "openakita/builtin_skills/external/wechat-article"
 "skills/chinese-writing" = "openakita/builtin_skills/external/chinese-writing"

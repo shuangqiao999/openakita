@@ -104,6 +104,7 @@ apps/setup-center/src-tauri/resources/modules/
 data/*
 !data/.gitkeep
 !data/*.example
+!data/web_bookmarks.json
 
 # Identity — 模板/策略/人格/编译产物入库，用户定制文件不入库
 identity/SOUL.md
