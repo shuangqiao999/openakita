@@ -263,7 +263,7 @@ class Settings(BaseSettings):
     )
 
     bookmarks_path: str = Field(
-        default="data/web_bookmarks.json",
+        default="skills/external/web-bookmarks/bookmarks.json",
         description="网址书签配置文件路径（相对 project_root）",
     )
 
