@@ -31,7 +31,9 @@ def _resolve_bookmarks_path() -> Path:
     if not p.is_absolute():
         p = settings.project_root / raw
     if not p.exists():
-        p = Path(__file__).parents[3] / "skills" / "external" / "web-bookmarks" / "bookmarks.json"
+        # 开发模式: project_root/skills/external/...
+        # 生产模式(pip install): site-packages/openakita/builtin_skills/external/...
+        p = Path(__file__).parents[2] / "builtin_skills" / "external" / "web-bookmarks" / "bookmarks.json"
     return p
 
 
