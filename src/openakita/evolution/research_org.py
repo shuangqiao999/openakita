@@ -266,6 +266,8 @@ class ResearchOrg:
                 proposal = await self._engineer_tool(opp, timeout)
                 if proposal:
                     proposals.append(proposal)
+            else:
+                logger.debug("[ResearchOrg] 未处理类别: %s", category)
         return proposals
 
     async def _engineer_prompt(self, opp: dict, timeout: int) -> ResearchProposal | None:
