@@ -36,6 +36,7 @@ from .routes import (
     chat_models,
     config,
     embedding,
+    evolution,
     feishu_onboard,
     files,
     health,
@@ -363,6 +364,7 @@ def create_app(
     app.include_router(chat_models.router, tags=["模型"])
     app.include_router(config.router, tags=["配置"])
     app.include_router(embedding.router, tags=["嵌入模型"])
+    app.include_router(evolution.router, tags=["自我进化"])
     app.include_router(feishu_onboard.router, tags=["飞书扫码"])
     app.include_router(qqbot_onboard.router, tags=["QQ扫码"])
     app.include_router(wechat_onboard.router, tags=["微信扫码"])

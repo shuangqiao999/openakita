@@ -3,6 +3,7 @@ OpenAkita 自我进化模块
 """
 
 from .analyzer import NeedAnalyzer
+from .approval_queue import ApprovalQueue
 from .auto_evolve import AutoEvolver
 from .benchmark import BenchmarkEngine
 from .experiment_loop import ExperimentLoop
@@ -16,6 +17,7 @@ from .self_check import SelfChecker
 
 __all__ = [
     "NeedAnalyzer",
+    "ApprovalQueue",
     "AutoInstaller",
     "AutoEvolver",
     "BenchmarkEngine",

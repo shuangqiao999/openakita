@@ -34,6 +34,7 @@ class AuditVerdict:
     proposal_id: int
     approved: bool
     reason: str = ""
+    risk_level: str = "low"
 
 
 @dataclass
@@ -42,8 +43,10 @@ class ResearchCycleResult:
     proposals_count: int = 0
     approved_count: int = 0
     adopted_count: int = 0
+    queued_count: int = 0
     rejected_reasons: list[str] = field(default_factory=list)
     improvements: list[dict] = field(default_factory=list)
+    queued_for_approval: list[dict] = field(default_factory=list)
 
 
 ANALYST_PROMPT = """你是 AI 系统性能分析师。分析以下数据并识别 3 个最大的改进机会:
@@ -110,13 +113,25 @@ class ResearchOrg:
             )
 
         verdicts = await self._run_auditor(proposals)
-        approved = [p for p, v in zip(proposals, verdicts, strict=False) if v.approved]
-        approved = approved[: self.MAX_PROPOSALS_PER_CYCLE]
+        approved_pairs = [(p, v) for p, v in zip(proposals, verdicts, strict=False) if v.approved][
+            : self.MAX_PROPOSALS_PER_CYCLE
+        ]
 
         adopted = []
+        queued = []
         rejected_reasons = [v.reason for v in verdicts if not v.approved]
 
-        for i, proposal in enumerate(approved):
+        for i, (proposal, verdict) in enumerate(approved_pairs):
+            if verdict.risk_level == "high" and proposal.agent_role == "prompt_engineer":
+                req_id = self._submit_to_approval_queue(proposal, verdict, performance_data)
+                queued.append(
+                    {
+                        "role": proposal.agent_role,
+                        "description": proposal.description,
+                        "approval_id": req_id,
+                    }
+                )
+                continue
             if i >= self.MAX_BENCHMARK_RUNS_PER_CYCLE:
                 break
             success = await self._apply_and_verify(proposal, performance_data)
@@ -126,10 +141,12 @@ class ResearchOrg:
         result = ResearchCycleResult(
             timestamp=datetime.now().isoformat(),
             proposals_count=len(proposals),
-            approved_count=len(approved),
+            approved_count=len(approved_pairs),
             adopted_count=len(adopted),
+            queued_count=len(queued),
             rejected_reasons=rejected_reasons,
             improvements=adopted,
+            queued_for_approval=queued,
         )
         self._save_cycle_result(result)
         return result
@@ -196,6 +213,7 @@ class ResearchOrg:
                         "role": proposal.agent_role,
                         "description": proposal.description,
                         "target": proposal.target,
+                        "content": proposal.content[:1500],
                     },
                     ensure_ascii=False,
                 )
@@ -208,6 +226,7 @@ class ResearchOrg:
                         proposal_id=i,
                         approved=data.get("approved", False),
                         reason=data.get("reason", ""),
+                        risk_level=data.get("risk_level", "low"),
                     )
                 )
             except Exception:
@@ -283,6 +302,41 @@ class ResearchOrg:
         except Exception:
             return False
 
+    def _submit_to_approval_queue(
+        self,
+        proposal: ResearchProposal,
+        verdict: AuditVerdict,
+        performance_data: dict | None = None,
+    ) -> str:
+        from .approval_queue import ApprovalQueue, ApprovalRequest
+
+        queue = ApprovalQueue()
+        original = ""
+        proposed = ""
+        target_file = proposal.target
+        if proposal.agent_role == "prompt_engineer":
+            try:
+                data = json.loads(proposal.content)
+                original = data.get("original", "")
+                proposed = data.get("proposed", "")
+                target_file = data.get("section", proposal.target)
+            except Exception:
+                pass
+
+        req = ApprovalRequest(
+            source="research_org",
+            agent_role=proposal.agent_role,
+            risk_level=verdict.risk_level,
+            title=proposal.description[:100],
+            description=proposal.description,
+            target_file=target_file,
+            original_content=original,
+            proposed_content=proposed,
+            hypothesis=verdict.reason,
+            metrics_before=(performance_data or {}).get("metrics", {}),
+        )
+        return queue.submit(req)
+
     def _gather_performance_data(self) -> dict:
         from .benchmark import BenchmarkEngine
 
@@ -306,7 +360,9 @@ class ResearchOrg:
             "proposals_count": result.proposals_count,
             "approved_count": result.approved_count,
             "adopted_count": result.adopted_count,
+            "queued_count": result.queued_count,
             "rejected_reasons": result.rejected_reasons,
             "improvements": result.improvements,
+            "queued_for_approval": result.queued_for_approval,
         }
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
