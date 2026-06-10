@@ -143,6 +143,14 @@ class Settings(BaseSettings):
         default=60,
         description="实验假设生成 LLM 调用超时秒数",
     )
+    prompt_improvement_threshold: float = Field(
+        default=0.05,
+        description="Prompt 变体采纳的最低改进阈值",
+    )
+    prompt_max_change_ratio: float = Field(
+        default=0.2,
+        description="Prompt 单次修改最大占比",
+    )
     pattern_learn_enabled: bool = Field(
         default=True,
         description="是否从历史任务中学习高效工具调用模式",

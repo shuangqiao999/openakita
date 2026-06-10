@@ -382,8 +382,8 @@ class TestExperimentLoopSafety:
 
 class TestPromptOptimizerSafety:
     @pytest.mark.asyncio
-    async def test_rejects_non_whitelisted_section(self, mock_agent):
-        optimizer = PromptOptimizer(mock_agent)
+    async def test_rejects_non_whitelisted_section(self, mock_agent, tmp_path):
+        optimizer = PromptOptimizer(mock_agent, project_root=tmp_path)
         variant = PromptVariant(
             section="src/openakita/core/brain.py",
             original="old",
@@ -394,20 +394,81 @@ class TestPromptOptimizerSafety:
         assert result.reason == "目标不在允许列表中"
 
     def test_validate_change_ratio_reject_large(self, mock_agent, tmp_path):
-        with patch("openakita.config.settings") as mock_settings:
-            mock_settings.project_root = tmp_path
-            target = tmp_path / "identity" / "AGENT.md"
-            target.parent.mkdir(parents=True)
-            target.write_text("x" * 100, encoding="utf-8")
+        target = tmp_path / "identity" / "AGENT.md"
+        target.parent.mkdir(parents=True)
+        target.write_text("x" * 100, encoding="utf-8")
 
-            optimizer = PromptOptimizer(mock_agent)
-            variant = PromptVariant(
-                section="identity/AGENT.md",
-                original="x" * 50,
-                proposed="y" * 50,
-                hypothesis="test",
-            )
-            assert optimizer._validate_change_ratio(variant) is False
+        optimizer = PromptOptimizer(mock_agent, project_root=tmp_path)
+        variant = PromptVariant(
+            section="identity/AGENT.md",
+            original="x" * 50,
+            proposed="y" * 50,
+            hypothesis="test",
+        )
+        assert optimizer._validate_change_ratio(variant) is False
+
+    def test_validate_change_ratio_reject_short_proposed(self, mock_agent, tmp_path):
+        target = tmp_path / "identity" / "AGENT.md"
+        target.parent.mkdir(parents=True)
+        target.write_text("x" * 1000, encoding="utf-8")
+
+        optimizer = PromptOptimizer(mock_agent, project_root=tmp_path)
+        variant = PromptVariant(
+            section="identity/AGENT.md",
+            original="xxx",
+            proposed="y",
+            hypothesis="test",
+        )
+        assert optimizer._validate_change_ratio(variant) is False
+
+    def test_template_var_validation_balanced(self):
+        ok, _ = PromptOptimizer._validate_template_vars("hello {{name}} world {{age}}")
+        assert ok is True
+
+    def test_template_var_validation_unbalanced(self):
+        ok, reason = PromptOptimizer._validate_template_vars("hello {{name} world")
+        assert ok is False
+        assert "不平衡" in reason
+
+    @pytest.mark.asyncio
+    async def test_fuzzy_match_in_test_variant(self, mock_agent, tmp_path):
+        target = tmp_path / "identity" / "AGENT.md"
+        target.parent.mkdir(parents=True)
+        target.write_text("line one\n  line  two\nline three\n", encoding="utf-8")
+
+        optimizer = PromptOptimizer(mock_agent, project_root=tmp_path)
+        variant = PromptVariant(
+            section="identity/AGENT.md",
+            original="line one\nline two\nline three\n",
+            proposed="REPLACED\n",
+            hypothesis="test fuzzy",
+        )
+        result = await optimizer._test_variant(variant, {"success_rate": 1, "efficiency_score": 50})
+        assert result.reason != "未找到替换目标"
+
+    def test_improvement_threshold_success_rate_constraint(self):
+        from openakita.evolution.experiment_loop import ExperimentLoop
+        old = {"success_rate": 0.9, "avg_tokens": 5000, "avg_time": 10, "efficiency_score": 80}
+        new_worse = {"success_rate": 0.7, "avg_tokens": 2000, "avg_time": 5, "efficiency_score": 90}
+        assert ExperimentLoop._is_improvement(old, new_worse, 0.05) is False
+
+    @pytest.mark.asyncio
+    async def test_concurrent_lock(self, mock_agent, tmp_path):
+        PromptOptimizer._evolve_lock = None
+        call_order = []
+
+        async def fake_propose(self_ref, perf):
+            call_order.append("start")
+            await asyncio.sleep(0.2)
+            call_order.append("end")
+            return None
+
+        with patch.object(PromptOptimizer, "_propose_optimization", fake_propose):
+            opt = PromptOptimizer(mock_agent, project_root=tmp_path)
+            t1 = asyncio.create_task(opt.evolve_step())
+            t2 = asyncio.create_task(opt.evolve_step())
+            await asyncio.gather(t1, t2)
+        assert call_order == ["start", "end", "start", "end"]
 
 
 class TestResearchOrgSafety:
