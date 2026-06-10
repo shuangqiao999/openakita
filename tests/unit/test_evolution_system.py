@@ -61,6 +61,53 @@ class TestAutoEvolver:
         )
         assert result.action == "skip"
 
+    def test_dedup_cache(self):
+        evolver = AutoEvolver(MagicMock())
+        assert not evolver._is_recently_processed("test_cap")
+        evolver._mark_processed("test_cap")
+        assert evolver._is_recently_processed("test_cap")
+
+    def test_skill_exists_check(self):
+        agent = MagicMock()
+        agent.skill_registry = MagicMock()
+        agent.skill_registry.get_skill = MagicMock(return_value=MagicMock())
+        evolver = AutoEvolver(agent)
+        assert evolver._skill_exists("existing_skill") is True
+
+    def test_skill_not_exists(self):
+        agent = MagicMock()
+        agent.skill_registry = MagicMock()
+        agent.skill_registry.get_skill = MagicMock(return_value=None)
+        evolver = AutoEvolver(agent)
+        assert evolver._skill_exists("new_skill") is False
+
+    def test_dependency_injection(self):
+        mock_installer = MagicMock()
+        mock_skill_gen = MagicMock()
+        mock_analyzer = MagicMock()
+        evolver = AutoEvolver(
+            MagicMock(),
+            installer=mock_installer,
+            skill_gen=mock_skill_gen,
+            need_analyzer=mock_analyzer,
+        )
+        assert evolver._get_installer() is mock_installer
+        assert evolver._get_analyzer() is mock_analyzer
+        assert evolver._skill_gen is mock_skill_gen
+
+    @pytest.mark.asyncio
+    async def test_analysis_null_protection(self):
+        mock_analyzer = MagicMock()
+        mock_analyzer.analyze_task = AsyncMock(return_value=None)
+        agent = MagicMock()
+        agent.brain = MagicMock()
+        evolver = AutoEvolver(agent, need_analyzer=mock_analyzer)
+        result = await evolver.respond_to_failure(
+            task_description="test", harness_gap="missing_tool"
+        )
+        assert result.action == "skip"
+        assert "为空" in result.reason
+
 
 class TestBenchmarkEngine:
     def test_load_default_tasks(self):
@@ -485,6 +532,37 @@ class TestResearchOrgSafety:
         )
         result = await org._apply_prompt_change(proposal, {})
         assert result is False
+
+    @pytest.mark.asyncio
+    async def test_concurrent_lock(self, mock_agent):
+        ResearchOrg._cycle_lock = None
+        call_order = []
+
+        def fake_gather(self_ref):
+            return {"metrics": {"success_rate": 0.5}, "failures": [], "tool_stats": {}}
+
+        async def fake_analyst(self_ref, data, timeout=60):
+            call_order.append("start")
+            await asyncio.sleep(0.2)
+            call_order.append("end")
+            return []
+
+        with patch.object(ResearchOrg, "_gather_performance_data", fake_gather):
+            with patch.object(ResearchOrg, "_run_analyst", fake_analyst):
+                org = ResearchOrg(mock_agent)
+                t1 = asyncio.create_task(org.run_research_cycle())
+                t2 = asyncio.create_task(org.run_research_cycle())
+                await asyncio.gather(t1, t2)
+        assert call_order == ["start", "end", "start", "end"]
+
+    def test_gather_performance_data_structure(self, mock_agent):
+        org = ResearchOrg(mock_agent)
+        data = org._gather_performance_data()
+        assert "metrics" in data
+        assert "failures" in data
+        assert "tool_stats" in data
+        assert isinstance(data["failures"], list)
+        assert isinstance(data["tool_stats"], dict)
 
 
 class TestPatternLearner:

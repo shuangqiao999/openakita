@@ -151,6 +151,22 @@ class Settings(BaseSettings):
         default=0.2,
         description="Prompt 单次修改最大占比",
     )
+    research_improvement_threshold: float = Field(
+        default=0.05,
+        description="研究周期改进阈值",
+    )
+    research_max_proposals: int = Field(
+        default=2,
+        description="研究周期每次最大提案数",
+    )
+    research_max_benchmarks: int = Field(
+        default=2,
+        description="研究周期每次最大 benchmark 运行数",
+    )
+    research_llm_timeout: int = Field(
+        default=60,
+        description="研究周期 LLM 调用超时秒数",
+    )
     pattern_learn_enabled: bool = Field(
         default=True,
         description="是否从历史任务中学习高效工具调用模式",
