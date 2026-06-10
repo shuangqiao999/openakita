@@ -1159,7 +1159,13 @@ def _close_lancedb_managers(agent):
     """关闭 agent 的 KB manager 和 memory manager 的 LanceDB 连接。"""
     if agent is None:
         return
-    for attr_name in ("kb_manager", "memory_manager"):
+    ownership_map = {
+        "kb_manager": "_owns_kb_manager",
+        "memory_manager": "_owns_memory_manager",
+    }
+    for attr_name, ownership_flag in ownership_map.items():
+        if not getattr(agent, ownership_flag, False):
+            continue
         mgr = getattr(agent, attr_name, None)
         if mgr is not None and hasattr(mgr, "close"):
             try:
@@ -1614,9 +1620,7 @@ async def run_interactive():
             try:
                 from .llm.client import get_default_client
 
-                await asyncio.wait_for(
-                    get_default_client().close(), timeout=5.0
-                )
+                await asyncio.wait_for(get_default_client().close(), timeout=5.0)
             except (TimeoutError, Exception):
                 pass
             # Agent 异步关闭
@@ -1625,6 +1629,8 @@ async def run_interactive():
                     await asyncio.wait_for(agent.shutdown(), timeout=10.0)
                 except (TimeoutError, Exception):
                     pass
+            if agent is not None:
+                _close_lancedb_managers(agent)
         console.print("[green]✓[/green] 服务已停止")
 
 
@@ -1798,38 +1804,45 @@ def run(
     async def _run():
         agent = get_agent()
         await agent.initialize()
+        try:
+            with console.status("[bold green]执行任务中...", spinner="dots"):
+                result = await agent.execute_task_from_message(task)
 
-        with console.status("[bold green]执行任务中...", spinner="dots"):
-            result = await agent.execute_task_from_message(task)
-
-        if result.success:
-            console.print(
-                Panel(
-                    Markdown(str(result.data)),
-                    title="[green]任务完成[/green]",
-                    border_style="green",
+            if result.success:
+                console.print(
+                    Panel(
+                        Markdown(str(result.data)),
+                        title="[green]任务完成[/green]",
+                        border_style="green",
+                    )
                 )
-            )
-        else:
-            console.print(
-                Panel(
-                    f"错误: {result.error}",
-                    title="[red]任务失败[/red]",
-                    border_style="red",
+            else:
+                console.print(
+                    Panel(
+                        f"错误: {result.error}",
+                        title="[red]任务失败[/red]",
+                        border_style="red",
+                    )
                 )
-            )
 
-        # 桌面通知
-        from .config import settings
-        from .core.desktop_notify import notify_task_completed
+            # 桌面通知
+            from .config import settings
+            from .core.desktop_notify import notify_task_completed
 
-        if settings.desktop_notify_enabled:
-            notify_task_completed(
-                task[:80],
-                success=result.success,
-                duration_seconds=result.duration_seconds,
-                sound=settings.desktop_notify_sound,
-            )
+            if settings.desktop_notify_enabled:
+                notify_task_completed(
+                    task[:80],
+                    success=result.success,
+                    duration_seconds=result.duration_seconds,
+                    sound=settings.desktop_notify_sound,
+                )
+        finally:
+            if hasattr(agent, "shutdown"):
+                try:
+                    await asyncio.wait_for(agent.shutdown(), timeout=10.0)
+                except (TimeoutError, Exception):
+                    pass
+            _close_lancedb_managers(agent)
 
     asyncio.run(_run())
 
@@ -2237,7 +2250,9 @@ def serve(
             _api_port = API_PORT
             try:
                 if getattr(settings, "api_lan_mode", False):
-                    _has_password = bool(os.environ.get("OPENAKITA_WEB_PASSWORD") or _web_password_already_set())
+                    _has_password = bool(
+                        os.environ.get("OPENAKITA_WEB_PASSWORD") or _web_password_already_set()
+                    )
                     _has_token = bool(getattr(settings, "api_token", "") or "").strip()
                     if not (_has_password or _has_token):
                         raise RuntimeError(
@@ -2414,12 +2429,8 @@ def serve(
                             pass
                     # Agent 异步关闭（先停调度器再关DB，防止"closed database"错误）
                     try:
-                        if agent_or_master is not None and hasattr(
-                            agent_or_master, "shutdown"
-                        ):
-                            await asyncio.wait_for(
-                                agent_or_master.shutdown(), timeout=10.0
-                            )
+                        if agent_or_master is not None and hasattr(agent_or_master, "shutdown"):
+                            await asyncio.wait_for(agent_or_master.shutdown(), timeout=10.0)
                     except (TimeoutError, Exception):
                         pass
                     # 关闭 LanceDB 连接（compact 数据文件，防止 Windows 重启后损坏）
@@ -2432,9 +2443,7 @@ def serve(
                     try:
                         from .llm.client import get_default_client
 
-                        await asyncio.wait_for(
-                            get_default_client().close(), timeout=5.0
-                        )
+                        await asyncio.wait_for(get_default_client().close(), timeout=5.0)
                     except (TimeoutError, Exception):
                         pass
                 except TimeoutError:
@@ -2762,7 +2771,7 @@ class Plugin(PluginBase):
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>{manifest['name']}</title>
+  <title>{manifest["name"]}</title>
   <script type="module">
     // Replace with: import {{ PluginBridge }} from "@openakita/plugin-ui-sdk";
     const bridge = {{ init: () => window.parent.postMessage({{ __akita_bridge: true, version: 1, type: "bridge:ready" }}, "*") }};
@@ -2770,7 +2779,7 @@ class Plugin(PluginBase):
   </script>
 </head>
 <body>
-  <h1>{manifest['name']}</h1>
+  <h1>{manifest["name"]}</h1>
   <p>Plugin UI scaffold — replace this with your frontend app.</p>
 </body>
 </html>
@@ -2822,4 +2831,3 @@ def run_mcp_module(
 
 if __name__ == "__main__":
     app()
-

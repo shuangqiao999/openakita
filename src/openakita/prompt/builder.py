@@ -116,7 +116,7 @@ def split_static_dynamic(prompt: str) -> tuple[str, str]:
     if SYSTEM_PROMPT_DYNAMIC_BOUNDARY in prompt:
         idx = prompt.index(SYSTEM_PROMPT_DYNAMIC_BOUNDARY)
         static = prompt[:idx].rstrip()
-        dynamic = prompt[idx + len(SYSTEM_PROMPT_DYNAMIC_BOUNDARY):].lstrip()
+        dynamic = prompt[idx + len(SYSTEM_PROMPT_DYNAMIC_BOUNDARY) :].lstrip()
         return static, dynamic
     return prompt, ""
 
@@ -594,7 +594,12 @@ def build_system_prompt(
     if prompt_mode is None:
         prompt_mode = PromptMode.MINIMAL if is_sub_agent else PromptMode.FULL
 
-    logger.debug("build_system_prompt: profile=%s, tier=%s, mode=%s", _profile.value, _tier.value, prompt_mode.value)
+    logger.debug(
+        "build_system_prompt: profile=%s, tier=%s, mode=%s",
+        _profile.value,
+        _tier.value,
+        prompt_mode.value,
+    )
 
     system_parts: list[str] = []
     developer_parts: list[str] = []
@@ -687,9 +692,7 @@ def build_system_prompt(
             and isinstance(session_context, dict)
             and session_context.get("authorized_intent")
         ):
-            auth_section = _build_authorized_intent_section(
-                session_context["authorized_intent"]
-            )
+            auth_section = _build_authorized_intent_section(session_context["authorized_intent"])
             if auth_section:
                 system_parts.append(auth_section)
     except Exception:
@@ -728,7 +731,11 @@ def build_system_prompt(
 
     # 8. 项目 AGENTS.md（FULL 和 MINIMAL 都注入；ask 模式和 CONSUMER_CHAT
     #    profile 跳过——纯聊天/轻量问答不需要开发规范）
-    if prompt_mode in (PromptMode.FULL, PromptMode.MINIMAL) and mode != "ask" and _include_project_guidelines:
+    if (
+        prompt_mode in (PromptMode.FULL, PromptMode.MINIMAL)
+        and mode != "ask"
+        and _include_project_guidelines
+    ):
         agents_md_content = _cached_section("agents_md", _read_agents_md)
         if agents_md_content:
             from ..utils.context_scan import scan_context_content
@@ -775,7 +782,8 @@ def build_system_prompt(
             elif _profile == PromptProfile.IM_ASSISTANT:
                 _hint_exp = "core+recommended"
             rec_hint = skill_catalog.generate_recommendation_hint(
-                task_description, exposure_filter=_hint_exp,
+                task_description,
+                exposure_filter=_hint_exp,
             )
             if rec_hint:
                 tool_parts.append(rec_hint)
@@ -810,16 +818,17 @@ def build_system_prompt(
             logger.debug("Failed to build failure hint section: %s", e)
 
     # 10. Memory 层。pinned_only 是轻量记忆，不应等同于完全不注入记忆。
-    if _memory_scope in {"pinned_only", "relevant", "full"} and prompt_mode in (PromptMode.FULL, PromptMode.MINIMAL):
+    if _memory_scope in {"pinned_only", "relevant", "full"} and prompt_mode in (
+        PromptMode.FULL,
+        PromptMode.MINIMAL,
+    ):
         if precomputed_memory is not None:
             memory_section = precomputed_memory
         else:
-            effective_memory_budget, skip_experience, skip_relational = (
-                _adaptive_memory_budget(
-                    budget_config.memory_budget,
-                    user_input_tokens,
-                    context_window,
-                )
+            effective_memory_budget, skip_experience, skip_relational = _adaptive_memory_budget(
+                budget_config.memory_budget,
+                user_input_tokens,
+                context_window,
             )
             _use_compact = _profile == PromptProfile.CONSUMER_CHAT or _tier == PromptTier.SMALL
             memory_section = _build_memory_section(
@@ -1179,7 +1188,11 @@ def _build_identity_section(
         parts.append(result.content)
         parts.append("")
 
-    agent_behavior = compiled.get("agent_behavior") or compiled.get("agent_core") or _BUILT_IN_DEFAULTS.get("agent_core", "")
+    agent_behavior = (
+        compiled.get("agent_behavior")
+        or compiled.get("agent_core")
+        or _BUILT_IN_DEFAULTS.get("agent_core", "")
+    )
     if agent_behavior:
         result = apply_budget(agent_behavior.strip(), budget_tokens * 40 // 100, "agent_behavior")
         parts.append(result.content)
@@ -1505,9 +1518,7 @@ def _build_authorized_intent_section(intent: dict) -> str:
             "请直接调用 `run_powershell` / `run_shell` 执行用户指定的命令，"
             "不要再次询问用户。**禁止**扩大命令范围或递归扫描。"
         ),
-        "skill_install": (
-            "请调用 `install_skill` 工具，参数从 scope 中读取。"
-        ),
+        "skill_install": ("请调用 `install_skill` 工具，参数从 scope 中读取。"),
     }
     op_hint = op_hint_map.get(op, "请按 scope 指定的最小范围执行；不得扩大。")
 
@@ -1656,7 +1667,9 @@ def _build_python_info(
             ]
         )
     if legacy_mode:
-        lines.append("- **兼容模式**: 当前使用 legacy PyInstaller fallback，动态 pip install 可能不可靠")
+        lines.append(
+            "- **兼容模式**: 当前使用 legacy PyInstaller fallback，动态 pip install 可能不可靠"
+        )
     lines.extend(
         [
             "",
@@ -1911,9 +1924,11 @@ def _build_catalogs_section(
             if tools_result.truncated:
                 try:
                     from ...core.tool_executor import get_tool_usage_stats
+
                     usage_stats = get_tool_usage_stats()
                     if usage_stats:
                         from .budget import apply_tool_priority_truncation
+
                         priority_text = apply_tool_priority_truncation(
                             tools_text,
                             max(budget_tokens // 3, 500),
@@ -1949,6 +1964,7 @@ def _build_catalogs_section(
             # 仅名字。LLM 仍能通过 get_skill_info 拉详情，但首轮 prompt
             # 显著瘦身。priority_categories=() 时退化为旧行为。
             from .budget import intent_to_priority_categories
+
             _priority_cats = intent_to_priority_categories(intent_tool_hints)
 
             if _index_only:
@@ -1981,9 +1997,7 @@ def _build_catalogs_section(
                 "- **重要**：当前日期时间已写在「运行环境」里，禁止为了查日期而调用技能脚本\n"
             )
 
-            parts.append(
-                "\n\n".join([skills_grouped, skills_rule]).strip()
-            )
+            parts.append("\n\n".join([skills_grouped, skills_rule]).strip())
         except Exception as e:
             logger.error(
                 "[PromptBuilder] skill catalog build failed, skipping: %s",
@@ -1992,7 +2006,9 @@ def _build_catalogs_section(
             )
 
     elif skill_catalog and _scope:
-        parts.append("## Skills\n\n技能可通过 `tool_search` / `get_skill_info` 按需发现，当前请求未注入完整技能清单。")
+        parts.append(
+            "## Skills\n\n技能可通过 `tool_search` / `get_skill_info` 按需发现，当前请求未注入完整技能清单。"
+        )
 
     if plugin_catalog and (not _scope or _scope & {"plugins", "plugin"}):
         try:
@@ -2030,7 +2046,9 @@ def _build_catalogs_section(
             )
 
     elif mcp_catalog and _scope:
-        parts.append("## MCP\n\nMCP 外部服务按需披露；需要时先用 `tool_search` 或 MCP catalog 查询。")
+        parts.append(
+            "## MCP\n\nMCP 外部服务按需披露；需要时先用 `tool_search` 或 MCP catalog 查询。"
+        )
 
     if include_tools_guide:
         parts.append(_get_tools_guide_short())
@@ -2439,7 +2457,7 @@ def _build_pinned_rules_section(
         if query_visible:
             rules = query_visible(memory_type="rule", limit=20)
         else:
-            rules = store.query_semantic(memory_type="rule", scope="global", limit=20)
+            rules = store.query_semantic(memory_type="rule", scope=None, limit=20)
         if not rules:
             return ""
 
@@ -2664,7 +2682,9 @@ def _build_experience_section(
         return ""
 
 
-def _retrieve_relevant_experiences(memory_manager: Any, task_description: str, max_items: int) -> list:
+def _retrieve_relevant_experiences(
+    memory_manager: Any, task_description: str, max_items: int
+) -> list:
     """Semantic search for experiences relevant to the current task."""
     try:
         search_visible = getattr(memory_manager, "search_visible_semantic_scored", None)
@@ -2675,7 +2695,10 @@ def _retrieve_relevant_experiences(memory_manager: Any, task_description: str, m
             scored = store.search_semantic_scored(
                 task_description,
                 limit=max_items * 2,
-                scope="global",
+                scope=None,
+                scope_owner=None,
+                user_id=None,
+                workspace_id=None,
             )
         else:
             return []
@@ -2706,7 +2729,7 @@ def _retrieve_top_experiences(memory_manager: Any, max_items: int) -> list:
             if query_visible:
                 results = query_visible(memory_type=t, limit=10)
             elif store is not None:
-                results = store.query_semantic(memory_type=t, scope="global", limit=10)
+                results = store.query_semantic(memory_type=t, scope=None, limit=10)
             else:
                 results = []
             all_exp.extend(results)
@@ -2868,9 +2891,7 @@ def get_prompt_debug_info(
         except Exception:
             skills_grouped = skill_catalog.get_catalog()
         _skills_rule_overhead = 200
-        info["catalogs"]["skills"] = (
-            estimate_tokens(skills_grouped) + _skills_rule_overhead
-        )
+        info["catalogs"]["skills"] = estimate_tokens(skills_grouped) + _skills_rule_overhead
 
     if mcp_catalog:
         mcp_text = mcp_catalog.get_catalog()
@@ -2899,4 +2920,3 @@ def get_prompt_debug_info(
     }
 
     return info
-

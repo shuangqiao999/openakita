@@ -84,7 +84,9 @@ class UnifiedStore:
 
         import threading
 
-        thread = threading.Thread(target=self._backfill_worker, daemon=True, name="semantic-backfill")
+        thread = threading.Thread(
+            target=self._backfill_worker, daemon=True, name="semantic-backfill"
+        )
         thread.start()
         logger.info("[UnifiedStore] Semantic backfill thread started (daemon)")
 
@@ -103,9 +105,7 @@ class UnifiedStore:
             existing = count_fn()
             needs_full = getattr(self, "_needs_full_backfill", False)
             if existing > 0 and not needs_full:
-                logger.debug(
-                    "[UnifiedStore] Backfill skipped: already has %d vectors", existing
-                )
+                logger.debug("[UnifiedStore] Backfill skipped: already has %d vectors", existing)
                 return
         except Exception:
             return
@@ -167,12 +167,12 @@ class UnifiedStore:
                 if n < len(items):
                     logger.warning(
                         "[UnifiedStore] Backfill batch partial: %d/%d (offset=%d)",
-                        n, len(items), offset,
+                        n,
+                        len(items),
+                        offset,
                     )
             except Exception as e:
-                logger.error(
-                    "[UnifiedStore] Backfill batch failed (offset=%d): %s", offset, e
-                )
+                logger.error("[UnifiedStore] Backfill batch failed (offset=%d): %s", offset, e)
 
         logger.info(
             "[UnifiedStore] Backfill completed: %d/%d memories indexed into semantic backend",
@@ -199,6 +199,7 @@ class UnifiedStore:
             return
         # 24h 防抖：用标记文件记录上次回填时间，避免频繁重写
         import time as _time_module
+
         now = _time_module.time()
         _store_dir = Path(self.db._db_path).parent
         tag_file = _store_dir / ".semantic_backfill_tag"
@@ -207,7 +208,8 @@ class UnifiedStore:
                 last_ts = float(tag_file.read_text().strip())
                 if now - last_ts < 86400:
                     logger.info(
-                        "[UnifiedStore] Backfill skipped (last run %.1fh ago)", (now - last_ts) / 3600
+                        "[UnifiedStore] Backfill skipped (last run %.1fh ago)",
+                        (now - last_ts) / 3600,
                     )
                     return
             except (ValueError, OSError):
@@ -240,6 +242,7 @@ class UnifiedStore:
             return
 
         import time as _time_module
+
         now = _time_module.time()
         _store_dir = Path(self.db._db_path).parent
         tag_file = _store_dir / ".episodes_backfill_tag"
@@ -248,7 +251,8 @@ class UnifiedStore:
                 last_ts = float(tag_file.read_text().strip())
                 if now - last_ts < 86400:
                     logger.info(
-                        "[UnifiedStore] Episodes backfill skipped (last run %.1fh ago)", (now - last_ts) / 3600
+                        "[UnifiedStore] Episodes backfill skipped (last run %.1fh ago)",
+                        (now - last_ts) / 3600,
                     )
                     return
             except (ValueError, OSError):
@@ -261,7 +265,9 @@ class UnifiedStore:
         import threading
 
         thread = threading.Thread(
-            target=self._backfill_episodes_worker, daemon=True, name="episodes-backfill",
+            target=self._backfill_episodes_worker,
+            daemon=True,
+            name="episodes-backfill",
         )
         thread.start()
         logger.info("[UnifiedStore] Episodes backfill thread started (daemon)")
@@ -309,7 +315,9 @@ class UnifiedStore:
 
         logger.info(
             "[UnifiedStore] Episodes backfill completed: %d indexed, %d skipped (total %d)",
-            total_done, total_skipped, len(episodes),
+            total_done,
+            total_skipped,
+            len(episodes),
         )
 
     @staticmethod
@@ -383,7 +391,8 @@ class UnifiedStore:
                 )
         except Exception:
             logger.warning(
-                "[UnifiedStore] LanceDB add exception for memory %s", memory.id[:8],
+                "[UnifiedStore] LanceDB add exception for memory %s",
+                memory.id[:8],
                 exc_info=True,
             )
         return memory.id
@@ -455,12 +464,12 @@ class UnifiedStore:
         return ok
 
     def delete_semantic(self, memory_id: str) -> bool:
-        ok = self.db.delete_memory(memory_id)    # SQLite authoritative first
-        self.search.delete(memory_id)             # LanceDB best-effort
+        ok = self.db.delete_memory(memory_id)  # SQLite authoritative first
+        self.search.delete(memory_id)  # LanceDB best-effort
         return ok
 
     def cleanup_expired(self) -> int:
-        count = self.db.cleanup_expired()         # lock + condition re-check
+        count = self.db.cleanup_expired()  # lock + condition re-check
         for memory_id in list(self.db.get_expired_memory_ids()):
             self.search.delete(memory_id)
         return count
@@ -479,7 +488,9 @@ class UnifiedStore:
                 },
             )
 
-    def get_semantic(self, memory_id: str, *, include_inactive: bool = False) -> SemanticMemory | None:
+    def get_semantic(
+        self, memory_id: str, *, include_inactive: bool = False
+    ) -> SemanticMemory | None:
         d = self.db.get_memory(memory_id)
         if d is None:
             return None
@@ -499,10 +510,10 @@ class UnifiedStore:
         query: str,
         limit: int = 10,
         filter_type: str | None = None,
-        scope: str = "user",
-        scope_owner: str = "",
-        user_id: str = "default",
-        workspace_id: str = "default",
+        scope: str | None = "user",
+        scope_owner: str | None = "",
+        user_id: str | None = "default",
+        workspace_id: str | None = "default",
         include_inactive: bool = False,
     ) -> list[SemanticMemory]:
         scored = self.search_semantic_scored(
@@ -522,10 +533,10 @@ class UnifiedStore:
         query: str,
         limit: int = 10,
         filter_type: str | None = None,
-        scope: str = "user",
-        scope_owner: str = "",
-        user_id: str = "default",
-        workspace_id: str = "default",
+        scope: str | None = "user",
+        scope_owner: str | None = "",
+        user_id: str | None = "default",
+        workspace_id: str | None = "default",
         include_inactive: bool = False,
     ) -> list[tuple[SemanticMemory, float]]:
         """Like search_semantic but also returns the raw similarity score.
@@ -564,9 +575,7 @@ class UnifiedStore:
                     workspace_id=workspace_id,
                 )
                 merged = {mid: float(s) for mid, s in fts_results}
-                logger.debug(
-                    "[HybridSearch] LanceDB unavailable, fts5=%d fallback", len(merged)
-                )
+                logger.debug("[HybridSearch] LanceDB unavailable, fts5=%d fallback", len(merged))
             except Exception as _e:
                 logger.debug("[UnifiedStore] FTS5 fallback failed: %s", _e)
                 merged = {}
@@ -589,11 +598,13 @@ class UnifiedStore:
                 continue
             if not include_inactive and not self._is_active_dict(d):
                 continue
+            if scope is None and (d.get("scope") or "global") == "legacy_quarantine":
+                continue
             if (
-                (d.get("scope") or "global") == scope
-                and (d.get("scope_owner") or "") == scope_owner
-                and (d.get("user_id") or "default") == user_id
-                and (d.get("workspace_id") or "default") == workspace_id
+                (scope is None or (d.get("scope") or "global") == scope)
+                and (scope_owner is None or (d.get("scope_owner") or "") == scope_owner)
+                and (user_id is None or (d.get("user_id") or "default") == user_id)
+                and (workspace_id is None or (d.get("workspace_id") or "default") == workspace_id)
             ):
                 scored.append((SemanticMemory.from_dict(d), float(score)))
                 if len(scored) >= limit:
@@ -746,9 +757,7 @@ class UnifiedStore:
     def count_episodes(self) -> int:
         return self.db.count_episodes()
 
-    def search_episodes_fts(
-        self, query: str, days_back: int = 7, limit: int = 10
-    ) -> list[Episode]:
+    def search_episodes_fts(self, query: str, days_back: int = 7, limit: int = 10) -> list[Episode]:
         rows = self.db.search_episodes_fts(query, days_back=days_back, limit=limit)
         return [Episode.from_dict(r) for r in rows]
 

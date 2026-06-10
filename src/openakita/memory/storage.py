@@ -22,6 +22,7 @@ import logging
 import shutil
 import sqlite3
 import threading
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -65,6 +66,7 @@ class MemoryStorage:
     """
 
     _BUSY_TIMEOUT_MS = 30_000
+    _PROBE_INTERVAL_S = 30.0
 
     def __init__(self, db_path: str | Path, *, _register: bool = True) -> None:
         self._db_path = Path(db_path)
@@ -72,6 +74,8 @@ class MemoryStorage:
         self._conn: sqlite3.Connection | None = None
         self._write_lock = threading.RLock()
         self._lock = self._write_lock  # backward compat alias
+        self._last_probe_ts: float = 0.0
+        self._closed_intentionally: bool = False
         self._init_db()
         if _register:
             key = str(self._db_path.resolve())
@@ -88,6 +92,7 @@ class MemoryStorage:
         self._conn.execute("PRAGMA synchronous=FULL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.execute(f"PRAGMA busy_timeout={self._BUSY_TIMEOUT_MS}")
+        self._last_probe_ts = time.monotonic()
 
         try:
             current_version = self._get_schema_version()
@@ -100,6 +105,61 @@ class MemoryStorage:
             raise
 
         logger.debug(f"MemoryStorage initialized: {self._db_path} (schema v{_SCHEMA_VERSION})")
+
+    def _ensure_conn(self) -> bool:
+        if self._closed_intentionally:
+            return False
+        with self._lock:
+            if self._conn is not None:
+                now = time.monotonic()
+                if now - self._last_probe_ts < self._PROBE_INTERVAL_S:
+                    return True
+                try:
+                    self._conn.execute("SELECT 1")
+                    self._last_probe_ts = now
+                    return True
+                except Exception:
+                    logger.warning("[MemoryStorage] Connection probe failed, reconnecting...")
+                    try:
+                        self._conn.close()
+                    except Exception:
+                        pass
+                    self._conn = None
+            return self._reconnect_locked()
+
+    def _reconnect(self) -> bool:
+        if self._closed_intentionally:
+            return False
+        with self._lock:
+            if self._conn is not None:
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+                self._conn = None
+            return self._reconnect_locked()
+
+    def _reconnect_locked(self) -> bool:
+        if self._closed_intentionally:
+            return False
+        if self._conn is not None:
+            return True
+        try:
+            self._conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA synchronous=FULL")
+            self._conn.execute("PRAGMA foreign_keys=ON")
+            self._conn.execute(f"PRAGMA busy_timeout={self._BUSY_TIMEOUT_MS}")
+            self._last_probe_ts = time.monotonic()
+            logger.info(f"[MemoryStorage] Reconnected to {self._db_path}")
+            key = str(self._db_path.resolve())
+            with _instance_lock:
+                _instance_registry[key] = self
+            return True
+        except Exception as e:
+            logger.error(f"[MemoryStorage] Reconnect failed: {e}")
+            self._conn = None
+            return False
 
     def _get_schema_version(self) -> int:
         try:
@@ -267,7 +327,9 @@ class MemoryStorage:
                     progress = min(i + batch_size, total)
                     logger.info(
                         "[MemoryStorage] v3→v4: 分词回填进度 %d/%d (%.1f%%)",
-                        progress, total, 100.0 * progress / total,
+                        progress,
+                        total,
+                        100.0 * progress / total,
                     )
                     if i + batch_size < total:
                         c.execute("BEGIN")
@@ -278,9 +340,7 @@ class MemoryStorage:
                 c.execute("ROLLBACK")
             except Exception:
                 pass
-            logger.warning(
-                "[MemoryStorage] v3→v4: content_fts 回填失败，将保留空列"
-            )
+            logger.warning("[MemoryStorage] v3→v4: content_fts 回填失败，将保留空列")
 
         # 3. 删除旧 FTS5 触发器
         for trigger in ["memories_fts_ai", "memories_fts_ad", "memories_fts_au"]:
@@ -620,7 +680,9 @@ class MemoryStorage:
         except sqlite3.IntegrityError:
             logger.warning(
                 "[MemoryStorage] extraction_queue has %d duplicate(s), deduplicating (keeping latest)...",
-                c.execute("SELECT COUNT(*)-COUNT(DISTINCT session_id||turn_index) FROM extraction_queue").fetchone()[0],
+                c.execute(
+                    "SELECT COUNT(*)-COUNT(DISTINCT session_id||turn_index) FROM extraction_queue"
+                ).fetchone()[0],
             )
             c.execute("""
                 DELETE FROM extraction_queue
@@ -738,7 +800,7 @@ class MemoryStorage:
     # ======================================================================
 
     def save_memory(self, memory: dict) -> None:
-        if not self._conn:
+        if not self._ensure_conn():
             return
         now = datetime.now().isoformat()
         with self._lock:
@@ -788,7 +850,7 @@ class MemoryStorage:
                 logger.error(f"Failed to save memory to SQLite: {e}")
 
     def save_memories_batch(self, memories: list[dict]) -> None:
-        if not self._conn or not memories:
+        if not self._ensure_conn() or not memories:
             return
         now = datetime.now().isoformat()
         with self._lock:
@@ -850,43 +912,52 @@ class MemoryStorage:
         workspace_id: str | None = None,
         active_only: bool = True,
     ) -> list[dict]:
-        if not self._conn:
+        if not self._ensure_conn():
             return []
-        try:
-            conditions: list[str] = []
-            params: list[Any] = []
-            if scope is not None:
-                conditions.append("(scope IS NULL OR scope = ?)")
-                params.append(scope)
-            if scope_owner is not None:
-                conditions.append("(scope_owner IS NULL OR scope_owner = ?)")
-                params.append(scope_owner)
-            if active_only:
-                conditions.extend(
-                    [
-                        "(expires_at IS NULL OR expires_at >= ?)",
-                        "(superseded_by IS NULL OR superseded_by = '')",
-                    ]
+        for _attempt in range(2):
+            try:
+                conditions: list[str] = []
+                params: list[Any] = []
+                if scope is not None:
+                    conditions.append("(scope IS NULL OR scope = ?)")
+                    params.append(scope)
+                else:
+                    conditions.append("(scope IS NULL OR scope != 'legacy_quarantine')")
+                if scope_owner is not None:
+                    conditions.append("(scope_owner IS NULL OR scope_owner = ?)")
+                    params.append(scope_owner)
+                if active_only:
+                    conditions.extend(
+                        [
+                            "(expires_at IS NULL OR expires_at >= ?)",
+                            "(superseded_by IS NULL OR superseded_by = '')",
+                        ]
+                    )
+                    params.append(datetime.now().isoformat())
+                if user_id is not None:
+                    conditions.append("COALESCE(user_id, '') = ?")
+                    params.append(user_id)
+                if workspace_id is not None:
+                    conditions.append("COALESCE(workspace_id, 'default') = ?")
+                    params.append(workspace_id)
+                where = " AND ".join(conditions) if conditions else "1=1"
+                cursor = self._conn.execute(
+                    f"SELECT * FROM memories WHERE {where} ORDER BY created_at DESC",
+                    params,
                 )
-                params.append(datetime.now().isoformat())
-            if user_id is not None:
-                conditions.append("COALESCE(user_id, '') = ?")
-                params.append(user_id)
-            if workspace_id is not None:
-                conditions.append("COALESCE(workspace_id, 'default') = ?")
-                params.append(workspace_id)
-            where = " AND ".join(conditions) if conditions else "1=1"
-            cursor = self._conn.execute(
-                f"SELECT * FROM memories WHERE {where} ORDER BY created_at DESC",
-                params,
-            )
-            return self._rows_to_dicts(cursor)
-        except Exception as e:
-            logger.error(f"Failed to load memories from SQLite: {e}")
-            return []
+                return self._rows_to_dicts(cursor)
+            except Exception as e:
+                if _is_db_locked(e):
+                    raise
+                if _attempt == 0 and self._reconnect():
+                    logger.warning(f"[MemoryStorage] load_all retry after reconnect: {e}")
+                    continue
+                logger.error(f"Failed to load memories from SQLite: {e}")
+                return []
+        return []
 
     def get_memory(self, memory_id: str) -> dict | None:
-        if not self._conn:
+        if not self._ensure_conn():
             return None
         try:
             cursor = self._conn.execute("SELECT * FROM memories WHERE id = ?", (memory_id,))
@@ -897,7 +968,7 @@ class MemoryStorage:
             return None
 
     def get_memories_batch(self, memory_ids: list[str]) -> dict[str, dict]:
-        if not self._conn or not memory_ids:
+        if not self._ensure_conn() or not memory_ids:
             return {}
         try:
             placeholders = ", ".join(["?"] * len(memory_ids))
@@ -912,7 +983,7 @@ class MemoryStorage:
             return {}
 
     def delete_memory(self, memory_id: str) -> bool:
-        if not self._conn:
+        if not self._ensure_conn():
             return False
         with self._lock:
             try:
@@ -927,7 +998,7 @@ class MemoryStorage:
 
     def update_memory(self, memory_id: str, updates: dict) -> bool:
         """Update specific fields of a memory."""
-        if not self._conn or not updates:
+        if not self._ensure_conn() or not updates:
             return False
         allowed = {
             "content",
@@ -993,7 +1064,7 @@ class MemoryStorage:
         offset: int = 0,
         active_only: bool = True,
     ) -> list[dict]:
-        if not self._conn:
+        if not self._ensure_conn():
             return []
 
         conditions: list[str] = []
@@ -1017,6 +1088,8 @@ class MemoryStorage:
         if scope is not None:
             conditions.append("(scope IS NULL OR scope = ?)")
             params.append(scope)
+        else:
+            conditions.append("(scope IS NULL OR scope != 'legacy_quarantine')")
         if scope_owner is not None:
             conditions.append("(scope_owner IS NULL OR scope_owner = ?)")
             params.append(scope_owner)
@@ -1055,40 +1128,51 @@ class MemoryStorage:
         workspace_id: str | None = None,
         active_only: bool = True,
     ) -> int:
-        if not self._conn:
+        if not self._ensure_conn():
             return 0
-        try:
-            conditions: list[str] = []
-            params: list[Any] = []
-            if memory_type:
-                conditions.append("type = ?")
-                params.append(memory_type)
-            if scope is not None:
-                conditions.append("(scope IS NULL OR scope = ?)")
-                params.append(scope)
-            if scope_owner is not None:
-                conditions.append("(scope_owner IS NULL OR scope_owner = ?)")
-                params.append(scope_owner)
-            if user_id is not None:
-                conditions.append("COALESCE(user_id, '') = ?")
-                params.append(user_id)
-            if workspace_id is not None:
-                conditions.append("COALESCE(workspace_id, 'default') = ?")
-                params.append(workspace_id)
-            if active_only:
-                conditions.append("(expires_at IS NULL OR expires_at >= ?)")
-                params.append(datetime.now().isoformat())
-                conditions.append("(superseded_by IS NULL OR superseded_by = '')")
-            where = " AND ".join(conditions) if conditions else "1=1"
-            cur = self._conn.execute(f"SELECT COUNT(*) FROM memories WHERE {where}", params)
-            return cur.fetchone()[0]
-        except Exception:
-            return 0
+        for _attempt in range(2):
+            try:
+                conditions: list[str] = []
+                params: list[Any] = []
+                if memory_type:
+                    conditions.append("type = ?")
+                    params.append(memory_type)
+                if scope is not None:
+                    conditions.append("(scope IS NULL OR scope = ?)")
+                    params.append(scope)
+                if scope_owner is not None:
+                    conditions.append("(scope_owner IS NULL OR scope_owner = ?)")
+                    params.append(scope_owner)
+                if user_id is not None:
+                    conditions.append("COALESCE(user_id, '') = ?")
+                    params.append(user_id)
+                if workspace_id is not None:
+                    conditions.append("COALESCE(workspace_id, 'default') = ?")
+                    params.append(workspace_id)
+                if active_only:
+                    conditions.append("(expires_at IS NULL OR expires_at >= ?)")
+                    params.append(datetime.now().isoformat())
+                    conditions.append("(superseded_by IS NULL OR superseded_by = '')")
+                where = " AND ".join(conditions) if conditions else "1=1"
+                cur = self._conn.execute(f"SELECT COUNT(*) FROM memories WHERE {where}", params)
+                return cur.fetchone()[0]
+            except Exception as e:
+                if _is_db_locked(e):
+                    raise
+                if _attempt == 0 and self._reconnect():
+                    continue
+                return 0
+        return 0
 
-    SORTABLE_COLUMNS = frozenset({
-        "importance_score", "created_at", "updated_at",
-        "last_accessed_at", "access_count",
-    })
+    SORTABLE_COLUMNS = frozenset(
+        {
+            "importance_score",
+            "created_at",
+            "updated_at",
+            "last_accessed_at",
+            "access_count",
+        }
+    )
 
     def query_paged(
         self,
@@ -1106,7 +1190,7 @@ class MemoryStorage:
         active_only: bool = True,
     ) -> tuple[list[dict], int]:
         """Paginated query with SQL-level sorting. Returns (rows, total_count)."""
-        if not self._conn:
+        if not self._ensure_conn():
             return [], 0
 
         if sort_by not in self.SORTABLE_COLUMNS:
@@ -1126,6 +1210,8 @@ class MemoryStorage:
         if scope is not None:
             conditions.append("(scope IS NULL OR scope = ?)")
             params.append(scope)
+        else:
+            conditions.append("(scope IS NULL OR scope != 'legacy_quarantine')")
         if scope_owner is not None:
             conditions.append("(scope_owner IS NULL OR scope_owner = ?)")
             params.append(scope_owner)
@@ -1142,25 +1228,32 @@ class MemoryStorage:
 
         where = " AND ".join(conditions) if conditions else "1=1"
 
-        try:
-            count_cur = self._conn.execute(
-                f"SELECT COUNT(*) FROM memories WHERE {where}", params
-            )
-            total = count_cur.fetchone()[0]
+        for _attempt in range(2):
+            try:
+                count_cur = self._conn.execute(
+                    f"SELECT COUNT(*) FROM memories WHERE {where}", params
+                )
+                total = count_cur.fetchone()[0]
 
-            order = sort_order.upper()
-            page_params = params + [limit, offset]
-            cursor = self._conn.execute(
-                f"SELECT * FROM memories WHERE {where} "
-                f"ORDER BY {sort_by} {order} "
-                f"LIMIT ? OFFSET ?",
-                page_params,
-            )
-            rows = self._rows_to_dicts(cursor)
-            return rows, total
-        except Exception as e:
-            logger.error(f"Failed to query_paged memories: {e}")
-            return [], 0
+                order = sort_order.upper()
+                page_params = params + [limit, offset]
+                cursor = self._conn.execute(
+                    f"SELECT * FROM memories WHERE {where} "
+                    f"ORDER BY {sort_by} {order} "
+                    f"LIMIT ? OFFSET ?",
+                    page_params,
+                )
+                rows = self._rows_to_dicts(cursor)
+                return rows, total
+            except Exception as e:
+                if _is_db_locked(e):
+                    raise
+                if _attempt == 0 and self._reconnect():
+                    logger.warning(f"[MemoryStorage] query_paged retry after reconnect: {e}")
+                    continue
+                logger.error(f"Failed to query_paged memories: {e}")
+                return [], 0
+        return [], 0
 
     # ======================================================================
     # FTS5 Search
@@ -1182,7 +1275,7 @@ class MemoryStorage:
             scope: If provided, restrict results to this scope (e.g. 'global').
             scope_owner: If provided, restrict results to this scope_owner.
         """
-        if not self._conn or not query.strip():
+        if not self._ensure_conn() or not query.strip():
             return []
 
         scope_clauses: list[str] = []
@@ -1190,6 +1283,8 @@ class MemoryStorage:
         if scope is not None:
             scope_clauses.append("(m.scope IS NULL OR m.scope = ?)")
             scope_params.append(scope)
+        else:
+            scope_clauses.append("(m.scope IS NULL OR m.scope != 'legacy_quarantine')")
         if scope_owner is not None:
             scope_clauses.append("(m.scope_owner IS NULL OR m.scope_owner = ?)")
             scope_params.append(scope_owner)
@@ -1222,7 +1317,11 @@ class MemoryStorage:
             if results:
                 return results
         except Exception as e:
-            logger.warning("[MemoryStorage] FTS5 search degraded, using LIKE fallback (query=%r): %s", query[:80], e)
+            logger.warning(
+                "[MemoryStorage] FTS5 search degraded, using LIKE fallback (query=%r): %s",
+                query[:80],
+                e,
+            )
 
         # Fallback: LIKE search for CJK text that FTS5 unicode61 can't tokenize
         try:
@@ -1236,6 +1335,8 @@ class MemoryStorage:
             if scope is not None:
                 where += " AND (scope IS NULL OR scope = ?)"
                 like_params.append(scope)
+            else:
+                where += " AND (scope IS NULL OR scope != 'legacy_quarantine')"
             if scope_owner is not None:
                 where += " AND (scope_owner IS NULL OR scope_owner = ?)"
                 like_params.append(scope_owner)
@@ -1272,7 +1373,7 @@ class MemoryStorage:
 
     def rebuild_fts_index(self) -> None:
         """Rebuild FTS5 index from scratch (after migration)."""
-        if not self._conn:
+        if not self._ensure_conn():
             return
         with self._lock:
             try:
@@ -1282,7 +1383,7 @@ class MemoryStorage:
             except Exception as e:
                 logger.warning("[MemoryStorage] memories_fts rebuild failed: %s", e)
 
-        if not self._conn:
+        if not self._ensure_conn():
             return
         with self._lock:
             try:
@@ -1297,7 +1398,7 @@ class MemoryStorage:
     # ======================================================================
 
     def save_episode(self, episode: dict) -> None:
-        if not self._conn:
+        if not self._ensure_conn():
             return
         with self._lock:
             try:
@@ -1335,7 +1436,7 @@ class MemoryStorage:
                 logger.error(f"Failed to save episode: {e}")
 
     def get_episode(self, episode_id: str) -> dict | None:
-        if not self._conn:
+        if not self._ensure_conn():
             return None
         try:
             cur = self._conn.execute("SELECT * FROM episodes WHERE id = ?", (episode_id,))
@@ -1358,7 +1459,7 @@ class MemoryStorage:
         days: int | None = None,
         limit: int = 20,
     ) -> list[dict]:
-        if not self._conn:
+        if not self._ensure_conn():
             return []
         conditions: list[str] = []
         params: list[Any] = []
@@ -1398,7 +1499,7 @@ class MemoryStorage:
 
     def update_episode(self, episode_id: str, updates: dict) -> bool:
         """Update specific fields of an episode."""
-        if not self._conn or not updates:
+        if not self._ensure_conn() or not updates:
             return False
         allowed = {
             "summary",
@@ -1437,7 +1538,7 @@ class MemoryStorage:
 
     def link_turns_to_episode(self, session_id: str, episode_id: str) -> int:
         """Set episode_id on all conversation_turns for a given session."""
-        if not self._conn:
+        if not self._ensure_conn():
             return 0
         with self._lock:
             try:
@@ -1454,7 +1555,7 @@ class MemoryStorage:
                 return 0
 
     def count_episodes(self) -> int:
-        if not self._conn:
+        if not self._ensure_conn():
             return 0
         try:
             cur = self._conn.execute("SELECT COUNT(*) FROM episodes")
@@ -1470,7 +1571,7 @@ class MemoryStorage:
         limit: int = 10,
     ) -> list[dict]:
         """FTS5 fallback search on episodes summary/goal/entities/tags."""
-        if not self._conn or not query or not query.strip():
+        if not self._ensure_conn() or not query or not query.strip():
             return []
         cutoff = (datetime.now() - timedelta(days=days_back)).isoformat()
 
@@ -1521,7 +1622,7 @@ class MemoryStorage:
     # ======================================================================
 
     def get_scratchpad(self, user_id: str = "default") -> dict | None:
-        if not self._conn:
+        if not self._ensure_conn():
             return None
         try:
             cur = self._conn.execute("SELECT * FROM scratchpad WHERE user_id = ?", (user_id,))
@@ -1534,7 +1635,7 @@ class MemoryStorage:
             return None
 
     def save_scratchpad(self, scratchpad: dict) -> None:
-        if not self._conn:
+        if not self._ensure_conn():
             return
         with self._lock:
             try:
@@ -1576,7 +1677,7 @@ class MemoryStorage:
         timestamp: str | None = None,
         token_estimate: int | None = None,
     ) -> None:
-        if not self._conn:
+        if not self._ensure_conn():
             return
         ts = timestamp or datetime.now().isoformat()
         has_tools = bool(tool_calls)
@@ -1608,7 +1709,7 @@ class MemoryStorage:
                 logger.error(f"Failed to save turn: {e}")
 
     def get_unextracted_turns(self, limit: int = 100) -> list[dict]:
-        if not self._conn:
+        if not self._ensure_conn():
             return []
         with self._lock:
             try:
@@ -1623,7 +1724,7 @@ class MemoryStorage:
                 return []
 
     def mark_turns_extracted(self, session_id: str, turn_indices: list[int]) -> None:
-        if not self._conn or not turn_indices:
+        if not self._ensure_conn() or not turn_indices:
             return
         placeholders = ",".join("?" * len(turn_indices))
         with self._lock:
@@ -1640,7 +1741,7 @@ class MemoryStorage:
                 logger.error(f"Failed to mark turns extracted: {e}")
 
     def get_session_turns(self, session_id: str) -> list[dict]:
-        if not self._conn:
+        if not self._ensure_conn():
             return []
         try:
             cur = self._conn.execute(
@@ -1654,7 +1755,7 @@ class MemoryStorage:
 
     def get_max_turn_index(self, session_id: str) -> int:
         """返回下一个可用的 turn_index（用于续接，避免覆盖历史数据）"""
-        if not self._conn:
+        if not self._ensure_conn():
             return 0
         try:
             cur = self._conn.execute(
@@ -1669,7 +1770,7 @@ class MemoryStorage:
 
     def get_recent_turns(self, session_id: str, limit: int = 20) -> list[dict]:
         """按 turn_index 倒序获取最近 N 轮对话"""
-        if not self._conn:
+        if not self._ensure_conn():
             return []
         try:
             cur = self._conn.execute(
@@ -1687,7 +1788,7 @@ class MemoryStorage:
 
     def get_global_recent_turns(self, limit: int = 20) -> list[dict]:
         """跨所有 session 按时间倒序获取最近 N 轮对话（用于 Memory Nudge）"""
-        if not self._conn:
+        if not self._ensure_conn():
             return []
         try:
             cur = self._conn.execute(
@@ -1717,7 +1818,7 @@ class MemoryStorage:
         Optional date_from / date_to (ISO date strings, e.g. '2026-03-19')
         restrict results by the timestamp column.
         """
-        if not self._conn:
+        if not self._ensure_conn():
             return [], 0
         with self._lock:
             try:
@@ -1749,7 +1850,7 @@ class MemoryStorage:
 
     def delete_turns(self, turn_ids: list[int]) -> int:
         """Delete specific conversation_turns by their rowid."""
-        if not self._conn or not turn_ids:
+        if not self._ensure_conn() or not turn_ids:
             return 0
         with self._lock:
             try:
@@ -1768,7 +1869,7 @@ class MemoryStorage:
 
     def delete_turns_for_session(self, session_id: str) -> int:
         """删除指定 session 的所有 conversation_turns 记录（用于上下文重置）"""
-        if not self._conn:
+        if not self._ensure_conn():
             return 0
         with self._lock:
             try:
@@ -1795,7 +1896,7 @@ class MemoryStorage:
         limit: int = 20,
     ) -> list[dict]:
         """按关键词搜索 conversation_turns（content + tool_calls + tool_results）"""
-        if not self._conn or not keyword:
+        if not self._ensure_conn() or not keyword:
             return []
         cutoff = (datetime.now() - timedelta(days=days_back)).isoformat()
         pattern = f"%{keyword}%"
@@ -1840,7 +1941,7 @@ class MemoryStorage:
         Used when starting a new conversation to give the LLM awareness of
         what was discussed recently, even across different sessions/devices.
         """
-        if not self._conn:
+        if not self._ensure_conn():
             return []
         cutoff = (datetime.now() - timedelta(days=days_back)).isoformat()
         try:
@@ -1872,7 +1973,7 @@ class MemoryStorage:
         session_id: str = "",
     ) -> None:
         """Insert or replace a pending confirmation action for a user."""
-        if not self._conn:
+        if not self._ensure_conn():
             return
         with self._lock:
             try:
@@ -1898,7 +1999,7 @@ class MemoryStorage:
 
     def get_pending_actions(self, user_id: str) -> list[dict]:
         """Get all pending confirmation actions for a user, newest first."""
-        if not self._conn:
+        if not self._ensure_conn():
             return []
         try:
             cur = self._conn.execute(
@@ -1915,7 +2016,7 @@ class MemoryStorage:
 
     def delete_pending_action(self, action_id: str) -> bool:
         """Delete a specific pending action by ID."""
-        if not self._conn:
+        if not self._ensure_conn():
             return False
         with self._lock:
             try:
@@ -1933,7 +2034,7 @@ class MemoryStorage:
 
     def delete_pending_actions_for_user(self, user_id: str) -> int:
         """Delete all pending actions for a user."""
-        if not self._conn:
+        if not self._ensure_conn():
             return 0
         with self._lock:
             try:
@@ -1961,7 +2062,7 @@ class MemoryStorage:
         tool_calls: list[dict] | None = None,
         tool_results: list[dict] | None = None,
     ) -> None:
-        if not self._conn:
+        if not self._ensure_conn():
             return
         with self._lock:
             try:
@@ -1988,7 +2089,7 @@ class MemoryStorage:
 
     def _recover_stuck_extractions(self, stuck_timeout_minutes: int = 30) -> int:
         """将卡在 'processing' 超过 stuck_timeout_minutes 的项重置为 'pending'"""
-        if not self._conn:
+        if not self._ensure_conn():
             return 0
         try:
             cutoff = (datetime.now() - timedelta(minutes=stuck_timeout_minutes)).isoformat()
@@ -2011,7 +2112,7 @@ class MemoryStorage:
             return 0
 
     def dequeue_extraction(self, batch_size: int = 10) -> list[dict]:
-        if not self._conn:
+        if not self._ensure_conn():
             return []
         with self._lock:
             try:
@@ -2043,7 +2144,7 @@ class MemoryStorage:
                 return []
 
     def complete_extraction(self, queue_id: int, success: bool = True) -> None:
-        if not self._conn:
+        if not self._ensure_conn():
             return
         status = "completed" if success else "failed"
         with self._lock:
@@ -2063,7 +2164,7 @@ class MemoryStorage:
     # ======================================================================
 
     def get_cached_embedding(self, content_hash: str) -> bytes | None:
-        if not self._conn:
+        if not self._ensure_conn():
             return None
         try:
             cur = self._conn.execute(
@@ -2078,7 +2179,7 @@ class MemoryStorage:
     def save_cached_embedding(
         self, content_hash: str, embedding: bytes, model: str, dimensions: int = 1024
     ) -> None:
-        if not self._conn:
+        if not self._ensure_conn():
             return
         with self._lock:
             try:
@@ -2098,7 +2199,7 @@ class MemoryStorage:
 
     def evict_old_embeddings(self, keep: int = 5000) -> int:
         """清理最旧的 embedding 缓存条目，仅保留最近 N 条。返回删除数。"""
-        if not self._conn:
+        if not self._ensure_conn():
             return 0
         with self._lock:
             try:
@@ -2116,7 +2217,8 @@ class MemoryStorage:
                 removed = total - keep
                 logger.info(
                     "[MemoryStorage] Evicted %d old embedding cache entries (kept %d)",
-                    removed, keep,
+                    removed,
+                    keep,
                 )
                 return removed
             except Exception as e:
@@ -2128,7 +2230,7 @@ class MemoryStorage:
     # ======================================================================
 
     def save_attachment(self, data: dict) -> None:
-        if not self._conn:
+        if not self._ensure_conn():
             return
         tags_val = json.dumps(normalize_tags(data.get("tags")), ensure_ascii=False)
         linked_val = data.get("linked_memory_ids", [])
@@ -2170,7 +2272,7 @@ class MemoryStorage:
                 logger.error(f"Failed to save attachment {data.get('id')}: {e}")
 
     def get_attachment(self, attachment_id: str) -> dict | None:
-        if not self._conn:
+        if not self._ensure_conn():
             return None
         try:
             cursor = self._conn.execute("SELECT * FROM attachments WHERE id = ?", (attachment_id,))
@@ -2188,7 +2290,7 @@ class MemoryStorage:
         session_id: str | None = None,
         limit: int = 20,
     ) -> list[dict]:
-        if not self._conn:
+        if not self._ensure_conn():
             return []
         try:
             if query:
@@ -2238,7 +2340,7 @@ class MemoryStorage:
             return []
 
     def delete_attachment(self, attachment_id: str) -> bool:
-        if not self._conn:
+        if not self._ensure_conn():
             return False
         with self._lock:
             try:
@@ -2252,7 +2354,7 @@ class MemoryStorage:
                 return False
 
     def get_session_attachments(self, session_id: str) -> list[dict]:
-        if not self._conn:
+        if not self._ensure_conn():
             return []
         try:
             cursor = self._conn.execute(
@@ -2296,7 +2398,7 @@ class MemoryStorage:
             return 0
 
     def cleanup_expired(self) -> int:
-        if not self._conn:
+        if not self._ensure_conn():
             return 0
         now = datetime.now().isoformat()
         with self._lock:
@@ -2317,7 +2419,7 @@ class MemoryStorage:
                 return 0
 
     def get_expired_memory_ids(self) -> list[str]:
-        if not self._conn:
+        if not self._ensure_conn():
             return []
         now = datetime.now().isoformat()
         try:
@@ -2333,6 +2435,7 @@ class MemoryStorage:
             return []
 
     def close(self) -> None:
+        self._closed_intentionally = True
         with self._lock:
             if self._conn:
                 self._conn.close()

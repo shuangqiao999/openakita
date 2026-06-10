@@ -175,45 +175,58 @@ def _current_owner(request: Request) -> tuple[str, str]:
 
 def _owner_counts(store: Any) -> dict[str, Any]:
     db = getattr(store, "db", None)
+    if db is None:
+        return {"total": 0, "by_scope": {}, "by_owner": []}
+    if hasattr(db, "_ensure_conn") and not db._ensure_conn():
+        return {"total": 0, "by_scope": {}, "by_owner": []}
     conn = getattr(db, "_conn", None)
     if conn is None:
         return {"total": 0, "by_scope": {}, "by_owner": []}
 
-    by_scope = {
-        (row[0] or "global"): row[1]
-        for row in conn.execute(
-            "SELECT COALESCE(scope, 'global') AS scope, COUNT(*) FROM memories GROUP BY scope"
-        ).fetchall()
-    }
-    by_owner = [
-        {
-            "scope": row[0] or "global",
-            "scope_owner": row[1] or "",
-            "user_id": row[2] or "default",
-            "workspace_id": row[3] or "default",
-            "count": row[4],
+    try:
+        by_scope = {
+            (row[0] or "global"): row[1]
+            for row in conn.execute(
+                "SELECT COALESCE(scope, 'global') AS scope, COUNT(*) FROM memories GROUP BY scope"
+            ).fetchall()
         }
-        for row in conn.execute(
-            """
-            SELECT COALESCE(scope, 'global'),
-                   COALESCE(scope_owner, ''),
-                   COALESCE(user_id, 'default'),
-                   COALESCE(workspace_id, 'default'),
-                   COUNT(*)
-            FROM memories
-            GROUP BY scope, scope_owner, user_id, workspace_id
-            ORDER BY COUNT(*) DESC
-            """
-        ).fetchall()
-    ]
-    total = sum(by_scope.values())
-    return {"total": total, "by_scope": by_scope, "by_owner": by_owner}
+        by_owner = [
+            {
+                "scope": row[0] or "global",
+                "scope_owner": row[1] or "",
+                "user_id": row[2] or "default",
+                "workspace_id": row[3] or "default",
+                "count": row[4],
+            }
+            for row in conn.execute(
+                """
+                SELECT COALESCE(scope, 'global'),
+                       COALESCE(scope_owner, ''),
+                       COALESCE(user_id, 'default'),
+                       COALESCE(workspace_id, 'default'),
+                       COUNT(*)
+                FROM memories
+                GROUP BY scope, scope_owner, user_id, workspace_id
+                ORDER BY COUNT(*) DESC
+                """
+            ).fetchall()
+        ]
+        total = sum(by_scope.values())
+        return {"total": total, "by_scope": by_scope, "by_owner": by_owner}
+    except Exception:
+        return {"total": 0, "by_scope": {}, "by_owner": []}
 
 
 def _graph_owner_counts(mm: Any) -> dict[str, Any]:
     if not mm or not mm._ensure_relational() or not mm.relational_store:
         return {"total_nodes": 0, "by_owner": []}
-    conn = getattr(mm.relational_store, "_conn", None)
+    store = mm.relational_store
+    if hasattr(store, "_check_open"):
+        try:
+            store._check_open()
+        except RuntimeError:
+            return {"total_nodes": 0, "by_owner": []}
+    conn = getattr(store, "_conn", None)
     if conn is None:
         return {"total_nodes": 0, "by_owner": []}
     try:
@@ -376,7 +389,9 @@ def _active_slot_index(store: Any, user_id: str, workspace_id: str) -> set[str]:
     }
 
 
-def _mark_legacy_reviewed(store: Any, mem: Any, reason: str, superseded_by: str | None = None) -> None:
+def _mark_legacy_reviewed(
+    store: Any, mem: Any, reason: str, superseded_by: str | None = None
+) -> None:
     updates: dict[str, Any] = {
         "tags": _normalize_legacy_tags(mem, "legacy_pending_review", f"legacy_reason:{reason}"),
     }
@@ -424,7 +439,9 @@ def _safe_import_legacy_memories(
             continue
         to_promote.append(winner)
         for mem, _subject, _predicate in items[1:]:
-            _mark_legacy_reviewed(store, mem, "legacy_identity_conflict", superseded_by=winner[0].id)
+            _mark_legacy_reviewed(
+                store, mem, "legacy_identity_conflict", superseded_by=winner[0].id
+            )
             conflict_skipped += 1
 
     to_promote.extend(accepted_general)
@@ -441,7 +458,9 @@ def _safe_import_legacy_memories(
             "predicate": predicate,
             "importance_score": importance,
             "priority": _priority_for_importance(
-                mem.type if isinstance(mem.type, MemoryType) else MemoryType(_memory_type_value(mem)),
+                mem.type
+                if isinstance(mem.type, MemoryType)
+                else MemoryType(_memory_type_value(mem)),
                 importance,
             ).value,
             "confidence": min(float(getattr(mem, "confidence", 0.5) or 0.5), 0.7),
@@ -518,6 +537,9 @@ async def list_memories(
     type: str | None = None,
     search: str | None = None,
     q: str | None = None,
+    scope: str | None = None,
+    user_id: str | None = None,
+    workspace_id: str | None = None,
     min_score: float = 0.0,
     limit: int = 50,
     offset: int = 0,
@@ -529,16 +551,20 @@ async def list_memories(
     if not store:
         raise HTTPException(503, "Memory store not available")
 
+    db = getattr(store, "db", None)
+    if db and hasattr(db, "_ensure_conn") and not db._ensure_conn():
+        raise HTTPException(503, "Memory database connection unavailable")
+
     # 兼容别名：?q= 与 ?search= 等价；search 优先，避免同时给两个值时行为不一致
     search = search or q
 
     if search:
-        user_id, workspace_id = _current_owner(request)
         results = store.search_semantic(
             search,
             limit=limit,
             filter_type=type,
-            scope="user",
+            scope=scope,
+            scope_owner=None,
             user_id=user_id,
             workspace_id=workspace_id,
             include_inactive=include_inactive,
@@ -550,7 +576,6 @@ async def list_memories(
             "offset": 0,
         }
 
-    user_id, workspace_id = _current_owner(request)
     results, total = store.query_paged(
         memory_type=type,
         min_importance=min_score if min_score > 0 else None,
@@ -558,8 +583,8 @@ async def list_memories(
         sort_order=sort_order,
         limit=limit,
         offset=offset,
-        scope="user",
-        scope_owner="",
+        scope=scope,
+        scope_owner=None,
         user_id=user_id,
         workspace_id=workspace_id,
         include_inactive=include_inactive,
@@ -578,13 +603,11 @@ async def memory_stats(request: Request):
     if not store:
         raise HTTPException(503, "Memory store not available")
 
-    user_id, workspace_id = _current_owner(request)
-    all_mems = store.load_all_memories(
-        scope="user",
-        scope_owner="",
-        user_id=user_id,
-        workspace_id=workspace_id,
-    )
+    db = getattr(store, "db", None)
+    if db and hasattr(db, "_ensure_conn") and not db._ensure_conn():
+        raise HTTPException(503, "Memory database connection unavailable")
+
+    all_mems = store.load_all_memories()
     by_type: dict[str, int] = {}
     total_score = 0.0
     for m in all_mems:
@@ -802,8 +825,7 @@ async def get_memory_graph(request: Request):
     if mode_cfg != "mode1" and mm._ensure_relational() and mm.relational_store:
         try:
             rs = mm.relational_store
-            user_id, workspace_id = _current_owner(request)
-            raw_nodes = rs.get_all_nodes(user_id=user_id, workspace_id=workspace_id)
+            raw_nodes = rs.get_all_nodes()
             node_ids = {n.id for n in raw_nodes}
 
             for n in raw_nodes:
@@ -839,26 +861,26 @@ async def get_memory_graph(request: Request):
             return {
                 "nodes": nodes_out,
                 "links": links_out,
-                "meta": {"total_nodes": len(nodes_out), "total_edges": len(links_out), "mode": "mode2"},
+                "meta": {
+                    "total_nodes": len(nodes_out),
+                    "total_edges": len(links_out),
+                    "mode": "mode2",
+                },
             }
         except (RuntimeError, AttributeError):
             nodes_out.clear()
             links_out.clear()
             mode = "mode1"
-            logger.warning("[MemoryGraph] Relational store closed during request, falling back to mode1")
+            logger.warning(
+                "[MemoryGraph] Relational store closed during request, falling back to mode1"
+            )
 
     store = _get_store(request)
     if store:
         import json as _json
         from collections import defaultdict
 
-        user_id, workspace_id = _current_owner(request)
-        all_mems = store.load_all_memories(
-            scope="user",
-            scope_owner="",
-            user_id=user_id,
-            workspace_id=workspace_id,
-        )
+        all_mems = store.load_all_memories()
         subject_map: dict[str, list[str]] = defaultdict(list)
         for m in all_mems:
             nodes_out.append(
@@ -990,4 +1012,3 @@ async def refresh_md(request: Request):
 
     lifecycle.refresh_memory_md(lifecycle.identity_dir)
     return {"ok": True}
-

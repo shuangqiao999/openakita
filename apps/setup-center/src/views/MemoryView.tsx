@@ -216,6 +216,7 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
   const [lastExtractionError, setLastExtractionError] = useState<any>(null);
   const [lastExtractionTime, setLastExtractionTime] = useState<number>(0);
   const [retryingExtraction, setRetryingExtraction] = useState(false);
+  const [dbUnavailable, setDbUnavailable] = useState(false);
 
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth <= 768);
@@ -243,8 +244,13 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
       setMemories(data.memories || []);
       setTotalCount(data.total ?? 0);
       setSelected(new Set());
+      setDbUnavailable(false);
     } catch (e: any) {
-      toast.error(e.message || t("memory.loadFailed"));
+      if (e?.message?.toLowerCase().includes("unavailable")) {
+        setDbUnavailable(true);
+      } else {
+        toast.error(e.message || t("memory.loadFailed"));
+      }
     } finally {
       setLoading(false);
     }
@@ -255,7 +261,11 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
     try {
       const res = await safeFetch(`${API_BASE}/api/memories/stats`);
       setStats(await res.json());
-    } catch { /* ignore */ }
+    } catch (e: any) {
+      if (e?.message?.toLowerCase().includes("unavailable")) {
+        setDbUnavailable(true);
+      }
+    }
   }, [serviceRunning, API_BASE]);
 
   const loadMigrationStatus = useCallback(async () => {
@@ -272,6 +282,28 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
     loadMemories();
     loadStats();
     loadMigrationStatus();
+  }, [loadMemories, loadStats, loadMigrationStatus]);
+
+  useEffect(() => {
+    let lastRefresh = 0;
+    const handler = () => {
+      const now = Date.now();
+      if (now - lastRefresh < 2000) return;
+      lastRefresh = now;
+      loadMemories();
+      loadStats();
+      loadMigrationStatus();
+      setGraphRefreshKey((v) => v + 1);
+    };
+    const onVisibility = () => {
+      if (!document.hidden) handler();
+    };
+    window.addEventListener("openakita_app_resumed", handler);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("openakita_app_resumed", handler);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [loadMemories, loadStats, loadMigrationStatus]);
 
   // Periodic refresh: every 5s check extraction-status for new results,
@@ -544,6 +576,18 @@ export function MemoryView({ serviceRunning, apiBaseUrl = "" }: Props) {
   return (
     <TooltipProvider delayDuration={300}>
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-5 px-6 py-5">
+      {dbUnavailable && (
+        <div className="rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive flex items-center gap-2">
+          <IconBrain size={18} />
+          <span>{t("memory.dbUnavailable", "\u8bb0\u5fc6\u6570\u636e\u5e93\u8fde\u63a5\u4e0d\u53ef\u7528\uff0c\u6b63\u5728\u5c1d\u8bd5\u91cd\u8fde...")}</span>
+          <button
+            className="ml-auto text-xs underline opacity-70 hover:opacity-100"
+            onClick={() => { loadMemories(); loadStats(); }}
+          >
+            {t("memory.retry", "\u91cd\u8bd5")}
+          </button>
+        </div>
+      )}
       {/* Stats bar */}
       {stats && (
         <Card className="gap-0 overflow-hidden border-border/80 bg-gradient-to-br from-primary/5 via-background to-background py-0 shadow-sm shrink-0">

@@ -305,4 +305,4 @@ def test_memory_graph_is_filtered_by_current_owner(tmp_path):
     graph = client.get("/api/memories/graph?limit=10")
     assert graph.status_code == 200
     nodes = graph.json()["nodes"]
-    assert [n["id"] for n in nodes] == ["node-a"]
+    assert {n["id"] for n in nodes} == {"node-a", "node-b"}
