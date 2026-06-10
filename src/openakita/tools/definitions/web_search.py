@@ -20,12 +20,18 @@ WEB_SEARCH_TOOLS = [
             "IMPORTANT — Use the correct year in search queries:\n"
             "- You MUST use the current year when searching for recent information, "
             "e.g., 'React documentation 2026' not 'React documentation 2025'\n\n"
-            "When to use web_search vs web_fetch vs browser:\n"
+            "When to use web_search vs fetch_bookmarked vs web_fetch vs browser:\n"
+            "- fetch_bookmarked: 当用户请求涉及技术新闻/AI研究/学术论文/开源动态/"
+            "技术博客/科技商业/公开数据集/国际新闻/编程问答/官方文档时优先使用\n"
             "- web_search: Find information when you don't have a specific URL\n"
             "- web_fetch: Read content from a known URL (docs, articles)\n"
             "- browser: Interactive web tasks (login, form filling, screenshots)"
         ),
         "related_tools": [
+            {
+                "name": "fetch_bookmarked",
+                "relation": "技术新闻/AI研究/学术论文/开源动态等特定领域请求优先使用",
+            },
             {
                 "name": "browser_navigate",
                 "relation": "需要打开网页查看完整内容或截图时改用 browser_navigate",

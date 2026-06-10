@@ -263,8 +263,8 @@ class Settings(BaseSettings):
     )
 
     bookmarks_path: str = Field(
-        default="skills/external/web-bookmarks/bookmarks.json",
-        description="网址书签配置文件路径（相对 project_root）",
+        default="",
+        description="自定义书签配置文件路径（留空使用内置书签，填写路径则覆盖内置数据）",
     )
 
     allow_parallel_tools_with_interrupt_checks: bool = Field(

@@ -51,6 +51,7 @@ ALWAYS_LOAD_TOOLS: frozenset[str] = frozenset(
         "add_memory",
         "web_search",
         "web_fetch",
+        "fetch_bookmarked",
         # 用户档案（"我叫 X" / "我是 Y" 的高频更新路径）
         "update_user_profile",
     }

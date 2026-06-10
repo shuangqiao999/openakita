@@ -39,11 +39,34 @@ BATCH_WEB_FETCH_TOOLS = [
         "name": "fetch_bookmarked",
         "category": "Web",
         "description": (
-            "从预设的书签配置中按用途分类抓取网址。适合获取固定来源的最新内容。"
-            "当前可用用途: daily_tech_news, ai_research, academic_papers, development, "
-            "technical_blog, tech_news, tech_analysis, geo_analysis, public_data, "
-            "general_news, technical_qna, official_doc。"
-            "必须从这些用途中精确选择一个，不能自己编造。"
+            "从权威信息源直接抓取最新内容，当用户请求匹配以下主题时优先于 web_search 使用："
+            "最新技术新闻/AI研究进展/学术论文/开源项目动态/技术博客/科技商业新闻/"
+            "公开数据集/国际新闻/编程技术问答/官方文档/地缘分析/技术社会分析。"
+            "比通用搜索引擎更快且来源更可靠。"
+        ),
+        "detail": (
+            "## 使用场景\n"
+            "| 用户意图 | 调用方式 |\n"
+            "|----------|----------|\n"
+            '| 最新技术新闻、GitHub趋势、Hacker News | purpose="daily_tech_news" |\n'
+            '| AI最新进展、OpenAI/Google/HuggingFace | purpose="ai_research" |\n'
+            '| 学术论文、arXiv、JMLR | purpose="academic_papers" |\n'
+            '| 开源项目动态、Gitee/开源中国 | purpose="development" |\n'
+            '| 技术博客、美团/Microsoft | purpose="technical_blog" |\n'
+            '| 科技商业新闻、36Kr/VentureBeat | purpose="tech_news" |\n'
+            '| 公开数据集、World Bank/Common Crawl | purpose="public_data" |\n'
+            '| 国际新闻、Reuters/Guardian | purpose="general_news" |\n'
+            '| Stack Overflow技术问答 | purpose="technical_qna" |\n'
+            '| Python官方文档 | purpose="official_doc" |\n'
+            '| 地缘政治分析 | purpose="geo_analysis" |\n'
+            '| 技术与社会分析 | purpose="tech_analysis" |\n\n'
+            "## 何时不用\n"
+            "- 用户没有指定具体固定来源 → 用 web_search\n"
+            "- 用户给出了具体 URL → 用 batch_web_fetch 或 web_fetch\n\n"
+            "## 注意\n"
+            "- purpose 必须从可用列表精确选择\n"
+            "- 工具按 priority 排序抓取（priority 越高越优先）\n"
+            "- 单个书签抓取失败不影响其他书签"
         ),
         "related_tools": [
             {"name": "batch_web_fetch", "relation": "底层使用 batch_web_fetch 并发抓取"},
@@ -56,10 +79,18 @@ BATCH_WEB_FETCH_TOOLS = [
                     "type": "string",
                     "description": "书签用途类别，必须从可用列表中选择",
                     "enum": [
-                        "daily_tech_news", "ai_research", "academic_papers",
-                        "development", "technical_blog", "tech_news", "tech_analysis",
-                        "geo_analysis", "public_data", "general_news",
-                        "technical_qna", "official_doc"
+                        "daily_tech_news",
+                        "ai_research",
+                        "academic_papers",
+                        "development",
+                        "technical_blog",
+                        "tech_news",
+                        "tech_analysis",
+                        "geo_analysis",
+                        "public_data",
+                        "general_news",
+                        "technical_qna",
+                        "official_doc",
                     ],
                 },
                 "limit": {

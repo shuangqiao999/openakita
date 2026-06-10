@@ -53,6 +53,7 @@ CATALOG_EXCLUDED_TOOLS = tuple(
             "glob",
             "web_search",
             "web_fetch",
+            "fetch_bookmarked",
             "delete_file",
             "read_lints",
             "semantic_search",
