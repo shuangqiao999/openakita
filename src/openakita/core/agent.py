@@ -138,8 +138,12 @@ except ImportError:
             return None
 
     def format_desktop_attachment_reference(
-        *, att_type: str, att_name: str, att_mime: str,
-        att_url: str, att_local_path: str | None = None,
+        *,
+        att_type: str,
+        att_name: str,
+        att_mime: str,
+        att_url: str,
+        att_local_path: str | None = None,
         att_size: int | None = None,
     ) -> str:
         if (att_url or "").strip().startswith("data:"):
@@ -158,6 +162,7 @@ except ImportError:
                 f"已保存到本地路径: {local_path}，URL: {att_url or '无'}{size_text}。"
             )
         return f"[{label}: {att_name} ({att_mime or att_type})] URL: {att_url}"
+
 
 from .brain import Brain, Context
 from .confirmation_state import get_confirmation_store
@@ -244,7 +249,7 @@ def _resolve_force_tool_policy(intent: Any) -> tuple[int | None, bool]:
     if force_tool:
         return 2, False  # 允许 2 次 ForceToolCall 重试，但不要求 evidence
     if evidence_required:
-        return 1, True   # 1 次柔性提示，evidence_required 走阶段 0 disclaimer
+        return 1, True  # 1 次柔性提示，evidence_required 走阶段 0 disclaimer
     return 0, False
 
 
@@ -274,11 +279,25 @@ def _looks_like_explicit_no_tool_request(message: str) -> bool:
 
 # ── 通用「继续」检测（即使没有 formal awaiting_confirmation） ──
 # 用户说这些词且存在对话历史时，应理解为「继续上一轮工作」而非新对话开始
-_CONTINUE_WORDS: frozenset[str] = frozenset({
-    "继续", "接着", "继续吧", "继续执行", "接着说",
-    "继续做", "继续完成", "继续处理", "接着做", "继续下一步",
-    "go on", "continue", "go ahead", "proceed", "keep going",
-})
+_CONTINUE_WORDS: frozenset[str] = frozenset(
+    {
+        "继续",
+        "接着",
+        "继续吧",
+        "继续执行",
+        "接着说",
+        "继续做",
+        "继续完成",
+        "继续处理",
+        "接着做",
+        "继续下一步",
+        "go on",
+        "continue",
+        "go ahead",
+        "proceed",
+        "keep going",
+    }
+)
 
 # ──「继续」场景下需强制加载的最近轮数 ──
 _CONTINUE_MINIMUM_RECENT_TURNS: int = 4
@@ -443,15 +462,18 @@ def _looks_like_previous_answer_replay_request(message: str, history_messages: l
     has_replay_marker = any(marker in normalized for marker in _REPLAY_REQUEST_MARKERS)
     has_context_marker = any(marker in normalized for marker in _REPLAY_CONTEXT_MARKERS)
     asks_to_show_again = (
-        ("重新展示" in normalized or "重新显示" in normalized or "再发" in normalized)
-        and has_context_marker
-    )
+        "重新展示" in normalized or "重新显示" in normalized or "再发" in normalized
+    ) and has_context_marker
     asks_to_continue_previous = (
         ("继续" in normalized or "接着" in normalized)
         and ("展示" in normalized or "显示" in normalized or "输出" in normalized)
         and has_context_marker
     )
-    return (has_replay_marker and has_context_marker) or asks_to_show_again or asks_to_continue_previous
+    return (
+        (has_replay_marker and has_context_marker)
+        or asks_to_show_again
+        or asks_to_continue_previous
+    )
 
 
 def _apply_previous_answer_replay_hint(message: str) -> str:
@@ -581,10 +603,25 @@ _STRIP_MARKERS = [
 ]
 _RE_TIME_PREFIX = re.compile(r"^\[\d{1,2}:\d{2}\]\s")
 _MEDIA_EXTENSIONS: set[str] = {
-    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg",
-    ".mp4", ".webm", ".mov", ".avi",
-    ".mp3", ".wav", ".ogg", ".flac",
-    ".pdf", ".docx", ".xlsx", ".pptx", ".csv",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".svg",
+    ".mp4",
+    ".webm",
+    ".mov",
+    ".avi",
+    ".mp3",
+    ".wav",
+    ".ogg",
+    ".flac",
+    ".pdf",
+    ".docx",
+    ".xlsx",
+    ".pptx",
+    ".csv",
 }
 
 # 上下文管理常量（部分迁移至 context_manager.py，压缩相关仍需就地定义）
@@ -608,60 +645,141 @@ except ImportError:
     LARGE_TOOL_RESULT_THRESHOLD = 5000
     MIN_RECENT_TURNS = 4
     _EXTERNAL_TOOL_MARKERS: tuple[str, ...] = (
-        "打开网页", "搜索网页", "浏览网页", "访问网页",
-        "搜索最新", "搜索新闻", "查询最新",
-        "发送邮件", "发邮件", "写邮件",
-        "安装软件", "安装包", "安装依赖",
-        "部署应用", "部署服务", "部署到",
-        "创建仓库", "fork", "clone",
-        "生成图片", "画图", "作图", "生成图像",
-        "处理视频", "剪辑视频", "视频处理",
-        "访问数据库", "查询数据库", "连接数据库",
-        "Docker", "docker", "容器",
-        "Kubernetes", "k8s", "集群",
-        "调用API", "请求API", "接口调用",
-        "下载文件", "下载数据",
-        "上传文件", "上传到",
-        "扫描端口", "端口扫描",
-        "抓取数据", "爬虫", "数据采集",
-        "语音合成", "文字转语音", "TTS",
-        "语音识别", "ASR", "语音转文字",
-        "翻译文档", "文档翻译",
-        "编译代码", "构建项目",
-        "运行测试", "执行测试",
-        "格式化代码", "代码格式化",
-        "检查代码", "代码检查", "lint",
+        "打开网页",
+        "搜索网页",
+        "浏览网页",
+        "访问网页",
+        "搜索最新",
+        "搜索新闻",
+        "查询最新",
+        "发送邮件",
+        "发邮件",
+        "写邮件",
+        "安装软件",
+        "安装包",
+        "安装依赖",
+        "部署应用",
+        "部署服务",
+        "部署到",
+        "创建仓库",
+        "fork",
+        "clone",
+        "生成图片",
+        "画图",
+        "作图",
+        "生成图像",
+        "处理视频",
+        "剪辑视频",
+        "视频处理",
+        "访问数据库",
+        "查询数据库",
+        "连接数据库",
+        "Docker",
+        "docker",
+        "容器",
+        "Kubernetes",
+        "k8s",
+        "集群",
+        "调用API",
+        "请求API",
+        "接口调用",
+        "下载文件",
+        "下载数据",
+        "上传文件",
+        "上传到",
+        "扫描端口",
+        "端口扫描",
+        "抓取数据",
+        "爬虫",
+        "数据采集",
+        "语音合成",
+        "文字转语音",
+        "TTS",
+        "语音识别",
+        "ASR",
+        "语音转文字",
+        "翻译文档",
+        "文档翻译",
+        "编译代码",
+        "构建项目",
+        "运行测试",
+        "执行测试",
+        "格式化代码",
+        "代码格式化",
+        "检查代码",
+        "代码检查",
+        "lint",
     )
     _TASK_RESULT_META_MARKERS: tuple[str, ...] = (
-        "已完成", "已执行", "已处理", "已更新",
-        "已完成任务", "任务完成", "执行完毕",
-        "操作完成", "处理完成", "更新完成",
-        "已经完成", "已经执行", "已经处理",
-        "已经更新", "已成功", "已经成功",
-        "successfully", "completed",
-        "done", "finished",
-        "全部完成", "所有任务",
+        "已完成",
+        "已执行",
+        "已处理",
+        "已更新",
+        "已完成任务",
+        "任务完成",
+        "执行完毕",
+        "操作完成",
+        "处理完成",
+        "更新完成",
+        "已经完成",
+        "已经执行",
+        "已经处理",
+        "已经更新",
+        "已成功",
+        "已经成功",
+        "successfully",
+        "completed",
+        "done",
+        "finished",
+        "全部完成",
+        "所有任务",
     )
     _TASK_PROGRESS_ONLY_MARKERS: tuple[str, ...] = (
-        "正在", "开始", "准备",
-        "第一步", "第二步", "第三步",
-        "接下来", "然后",
-        "首先", "其次",
+        "正在",
+        "开始",
+        "准备",
+        "第一步",
+        "第二步",
+        "第三步",
+        "接下来",
+        "然后",
+        "首先",
+        "其次",
     )
     _REPLAY_REQUEST_MARKERS: tuple[str, ...] = (
-        "重新回答", "再回答一次", "再说一遍",
-        "再回答", "重新说", "复述",
-        "重复一遍", "再说一次", "再讲一遍",
-        "重新输出", "再输出一次",
-        "再生成", "再生成一次",
-        "再执行", "重新执行",
-        "重新运行", "再运行一次",
-        "再来一遍", "重来", "redo",
+        "重新回答",
+        "再回答一次",
+        "再说一遍",
+        "再回答",
+        "重新说",
+        "复述",
+        "重复一遍",
+        "再说一次",
+        "再讲一遍",
+        "重新输出",
+        "再输出一次",
+        "再生成",
+        "再生成一次",
+        "再执行",
+        "重新执行",
+        "重新运行",
+        "再运行一次",
+        "再来一遍",
+        "重来",
+        "redo",
     )
     _DESTRUCTIVE_VERBS: tuple[str, ...] = (
-        "删除", "移除", "清空", "格式化",
-        "卸载", "解绑", "注销", "销毁",
-        "覆盖", "替换", "重置",
+        "删除",
+        "移除",
+        "清空",
+        "格式化",
+        "卸载",
+        "解绑",
+        "注销",
+        "销毁",
+        "覆盖",
+        "替换",
+        "重置",
     )
 
 # 小上下文窗口模型的核心工具白名单（仅保留最基本的执行能力）
@@ -717,6 +835,7 @@ class PromptStrategy:
     catalog_scope: list[str] = field(default_factory=list)
     include_project_guidelines: bool = False
 
+
 def _classify_risk_intent(intent: Any, message: str) -> RiskIntentResult:
     """Single source of truth for the pre-ReAct risk gate."""
     return classify_risk_intent(message, intent)
@@ -754,10 +873,7 @@ def _consume_risk_authorization(session: Any, message: str) -> bool:
             expired = float(stamp.get("expires_at", 0)) < time.time()
         except (TypeError, ValueError):
             expired = True
-        msg_match = (
-            (stamp.get("original_message") or "").strip()
-            == (message or "").strip()
-        )
+        msg_match = (stamp.get("original_message") or "").strip() == (message or "").strip()
         if expired:
             try:
                 session.set_metadata("risk_authorized_replay", None)
@@ -844,7 +960,9 @@ def _check_trusted_path_skip(
     return None
 
 
-def _build_destructive_intent_question(message: str, classification: RiskIntentResult | None = None) -> str:
+def _build_destructive_intent_question(
+    message: str, classification: RiskIntentResult | None = None
+) -> str:
     """生成高危确认提示。
 
     PR-1.1：两步式 summary。先把用户的长描述抽成 ≤30 字的"准备执行 X"
@@ -881,8 +999,17 @@ def _build_destructive_intent_question(message: str, classification: RiskIntentR
 
 
 _DESTRUCTIVE_VERBS = (
-    "删除", "删掉", "清空", "清除", "重置", "覆盖", "禁用", "关闭",
-    "卸载", "销毁", "格式化",
+    "删除",
+    "删掉",
+    "清空",
+    "清除",
+    "重置",
+    "覆盖",
+    "禁用",
+    "关闭",
+    "卸载",
+    "销毁",
+    "格式化",
 )
 
 
@@ -905,6 +1032,7 @@ def _summarize_destructive_action(text: str, classification: Any | None = None) 
             tail = raw[i : i + 28]
             return tail + ("…" if len(raw) > i + 28 else "")
     return raw[:28] + "…"
+
 
 # Prompt Compiler 系统提示词（两段式 Prompt 第一阶段）
 PROMPT_COMPILER_SYSTEM = """【角色】
@@ -1284,9 +1412,7 @@ class Agent:
 
         self._tools.extend(AGENT_TOOLS)
         self._tools.extend(ORG_SETUP_TOOLS)
-        logger.info(
-            f"Multi-agent tools enabled ({len(AGENT_TOOLS) + len(ORG_SETUP_TOOLS)} tools)"
-        )
+        logger.info(f"Multi-agent tools enabled ({len(AGENT_TOOLS) + len(ORG_SETUP_TOOLS)} tools)")
 
         # Platform hub tools (Agent Hub + Skill Store, only when enabled)
         if settings.hub_enabled:
@@ -1459,7 +1585,9 @@ class Agent:
                     deps=self._runtime_env_dependencies,
                 )
             except Exception as exc:
-                logger.warning("Failed to resolve agent runtime env for %s: %s", self._agent_profile_id, exc)
+                logger.warning(
+                    "Failed to resolve agent runtime env for %s: %s", self._agent_profile_id, exc
+                )
 
         if hasattr(self.shell_tool, "execution_env_spec"):
             self.shell_tool.execution_env_spec = self._execution_env_spec
@@ -1879,7 +2007,8 @@ class Agent:
                 # 中继交付都让 TaskVerify 看到真实的交付证据。
                 if (
                     capture_delivery_receipts
-                    and tool_name in (
+                    and tool_name
+                    in (
                         "deliver_artifacts",
                         "org_submit_deliverable",
                         "org_accept_deliverable",
@@ -2177,6 +2306,7 @@ class Agent:
 
         # 技能管理 (惰性导入，避免 agent → skills → core 循环)
         from ..tools.handlers.skills import create_handler as create_skills_handler
+
         self.handler_registry.register("skills", create_skills_handler(self))
 
         # Web 搜索
@@ -2672,9 +2802,7 @@ class Agent:
         if retrieval_sources is None or memory_backends is None:
             return
 
-        existing_sources = {
-            getattr(source, "source_name", "") for source in retrieval_sources
-        }
+        existing_sources = {getattr(source, "source_name", "") for source in retrieval_sources}
 
         for server in self.mcp_catalog.servers:
             provider_cfg = getattr(server, "memory_provider", None) or {}
@@ -2770,6 +2898,7 @@ class Agent:
             # 创建执行器（gateway 稍后通过 set_scheduler_gateway 设置）
             self._task_executor = TaskExecutor(timeout_seconds=settings.scheduler_task_timeout)
             # 预设 persona/memory/proactive 引用，供活人感心跳等系统任务使用
+            self._task_executor.agent = self
             self._task_executor.persona_manager = getattr(self, "persona_manager", None)
             self._task_executor.memory_manager = getattr(self, "memory_manager", None)
             self._task_executor.kb_manager = getattr(self, "kb_manager", None)
@@ -3067,6 +3196,87 @@ class Agent:
         except Exception as e:
             logger.warning(f"Failed to register workspace_backup task: {e}")
 
+        # 任务 6: Benchmark 进化实验（每周一、周四凌晨 2:00）
+        try:
+            evolve_task_id = "system_benchmark_evolve"
+            if settings.benchmark_evolve_enabled:
+                if evolve_task_id not in existing_ids:
+                    evolve_task = ScheduledTask(
+                        id=evolve_task_id,
+                        name="Benchmark 进化实验",
+                        trigger_type=TriggerType.CRON,
+                        trigger_config={"cron": "0 2 * * 1,4"},
+                        action="system:benchmark_evolve",
+                        prompt="运行 benchmark 评测 + 实验循环：提出改进假设→测试→保留或回滚",
+                        description="定期评估系统性能并自主实验优化",
+                        task_type=TaskType.TASK,
+                        enabled=True,
+                        deletable=False,
+                        metadata={"notify_on_start": False, "notify_on_complete": True},
+                    )
+                    await self.task_scheduler.add_task(evolve_task)
+                    logger.info("Registered system task: benchmark_evolve (Mon/Thu 02:00)")
+            else:
+                existing_et = self.task_scheduler.get_task(evolve_task_id)
+                if existing_et and existing_et.enabled:
+                    await self.task_scheduler.disable_task(evolve_task_id)
+        except Exception as e:
+            logger.warning(f"Failed to register benchmark_evolve task: {e}")
+
+        # 任务 7: 工具链路模式学习（每周日凌晨 5:00）
+        try:
+            pattern_task_id = "system_pattern_learn"
+            if settings.pattern_learn_enabled:
+                if pattern_task_id not in existing_ids:
+                    pattern_task = ScheduledTask(
+                        id=pattern_task_id,
+                        name="工具模式学习",
+                        trigger_type=TriggerType.CRON,
+                        trigger_config={"cron": "0 5 * * 0"},
+                        action="system:pattern_learn",
+                        prompt="从最近 7 天的成功任务中提取高效工具调用模式",
+                        description="学习高效工具调用模式并编码为 best practices",
+                        task_type=TaskType.TASK,
+                        enabled=True,
+                        deletable=False,
+                        metadata={"notify_on_start": False, "notify_on_complete": False},
+                    )
+                    await self.task_scheduler.add_task(pattern_task)
+                    logger.info("Registered system task: pattern_learn (Sun 05:00)")
+            else:
+                existing_pt = self.task_scheduler.get_task(pattern_task_id)
+                if existing_pt and existing_pt.enabled:
+                    await self.task_scheduler.disable_task(pattern_task_id)
+        except Exception as e:
+            logger.warning(f"Failed to register pattern_learn task: {e}")
+
+        # 任务 8: Multi-Agent 研究周期（每月 1 号、15 号凌晨 1:00）
+        try:
+            research_task_id = "system_research_org"
+            if settings.research_org_enabled:
+                if research_task_id not in existing_ids:
+                    research_task = ScheduledTask(
+                        id=research_task_id,
+                        name="研究组织周期",
+                        trigger_type=TriggerType.CRON,
+                        trigger_config={"cron": "0 1 1,15 * *"},
+                        action="system:research_org",
+                        prompt="运行 Multi-Agent 研究周期：分析→提案→审计→验证→采纳",
+                        description="多角色 Agent 协作识别改进机会并自主实施",
+                        task_type=TaskType.TASK,
+                        enabled=True,
+                        deletable=False,
+                        metadata={"notify_on_start": False, "notify_on_complete": True},
+                    )
+                    await self.task_scheduler.add_task(research_task)
+                    logger.info("Registered system task: research_org (1st/15th 01:00)")
+            else:
+                existing_rt = self.task_scheduler.get_task(research_task_id)
+                if existing_rt and existing_rt.enabled:
+                    await self.task_scheduler.disable_task(research_task_id)
+        except Exception as e:
+            logger.warning(f"Failed to register research_org task: {e}")
+
     def _build_system_prompt(
         self,
         task_description: str = "",
@@ -3102,7 +3312,9 @@ class Agent:
         profile_id = getattr(self, "_agent_profile_id", "default") or "default"
         spec = getattr(self, "_execution_env_spec", None)
         if spec is None:
-            env_line = "当前 Agent 使用共享 `agent-venv` fallback；不要把长期任务依赖随意安装到共享环境。"
+            env_line = (
+                "当前 Agent 使用共享 `agent-venv` fallback；不要把长期任务依赖随意安装到共享环境。"
+            )
         else:
             env_line = (
                 f"当前 AgentProfile `{profile_id}` 使用独立 Python 环境 "
@@ -3307,7 +3519,9 @@ class Agent:
                     "channel": getattr(session, "channel", "unknown"),
                     "chat_type": getattr(session, "chat_type", "private"),
                     "message_count": len(session.context.messages) if session.context else 0,
-                    "working_facts": getattr(session.context, "working_facts", {}) if session.context else {},
+                    "working_facts": getattr(session.context, "working_facts", {})
+                    if session.context
+                    else {},
                     "effective_model": session.get_metadata("effective_model", {}),
                     "has_sub_agents": bool(sub_records),
                     "sub_agent_count": len(sub_records),
@@ -3391,10 +3605,7 @@ class Agent:
             _recall_time,
         )
 
-        if (
-            not self._system_prompt_cache_dirty
-            and _cache_key in self._system_prompt_cache
-        ):
+        if not self._system_prompt_cache_dirty and _cache_key in self._system_prompt_cache:
             prompt = self._system_prompt_cache[_cache_key]
             logger.debug("[Agent] system prompt cache HIT (key=%s)", _cache_key[:3])
         else:
@@ -3470,11 +3681,19 @@ class Agent:
         profile = self._resolve_prompt_profile(intent, session_type)
         prompt_mode = PromptMode.FULL
         skip_catalogs = False
-        memory_scope = getattr(intent, "memory_scope", MemoryScope.RELEVANT) if intent else MemoryScope.RELEVANT
+        memory_scope = (
+            getattr(intent, "memory_scope", MemoryScope.RELEVANT)
+            if intent
+            else MemoryScope.RELEVANT
+        )
         catalog_scope = list(getattr(intent, "catalog_scope", []) or [])
         include_project_guidelines = bool(getattr(intent, "requires_project_context", False))
 
-        prompt_depth = getattr(intent, "prompt_depth", PromptDepth.STANDARD) if intent else PromptDepth.STANDARD
+        prompt_depth = (
+            getattr(intent, "prompt_depth", PromptDepth.STANDARD)
+            if intent
+            else PromptDepth.STANDARD
+        )
         requires_tools = bool(getattr(intent, "requires_tools", False))
 
         if intent and intent.intent in (IntentType.CHAT, IntentType.QUERY):
@@ -3521,6 +3740,7 @@ class Agent:
             return ""
 
         from ..agents.presets import SYSTEM_PRESETS
+
         if self._is_sub_agent_call:
             return (
                 "\n\n---\n"
@@ -3535,7 +3755,7 @@ class Agent:
                 "（Windows 用 run_powershell，其他环境用 run_shell）执行 python，"
                 "或调用对应工具获得，不得凭经验估算。\n"
                 "- 任何没有工具输出佐证的数字、百分比、均值、标准差、概率一律视为违规。\n"
-                "- 无法获得真实数据时，明确返回：\"无法执行：<具体原因>，建议 <替代方案>\"，"
+                '- 无法获得真实数据时，明确返回："无法执行：<具体原因>，建议 <替代方案>"，'
                 "禁止编造数据占位。\n"
             )
 
@@ -3822,9 +4042,9 @@ class Agent:
         for tr in tool_results:
             result_str = str(tr.get("result", tr.get("content", "")))
             for token in result_str.split():
-                if not token or '.' not in token or len(token) >= 500:
+                if not token or "." not in token or len(token) >= 500:
                     continue
-                ext = token.rsplit('.', 1)[-1].lower()
+                ext = token.rsplit(".", 1)[-1].lower()
                 if f".{ext}" not in _MEDIA_EXTENSIONS:
                     continue
                 p = Path(token)
@@ -4056,7 +4276,9 @@ class Agent:
 
         _tt = set_tracking_context(
             TokenTrackingContext(
-                session_id=getattr(self, "_current_conversation_id", "") or getattr(self, "_current_session_id", "") or "",
+                session_id=getattr(self, "_current_conversation_id", "")
+                or getattr(self, "_current_session_id", "")
+                or "",
                 operation_type="context_compress",
                 operation_detail=context_type,
             )
@@ -4223,7 +4445,9 @@ class Agent:
 
             _tt2 = set_tracking_context(
                 TokenTrackingContext(
-                    session_id=getattr(self, "_current_conversation_id", "") or getattr(self, "_current_session_id", "") or "",
+                    session_id=getattr(self, "_current_conversation_id", "")
+                    or getattr(self, "_current_session_id", "")
+                    or "",
                     operation_type="context_compress",
                     operation_detail=f"chunk_{i}",
                 )
@@ -4603,7 +4827,11 @@ class Agent:
             if store is None:
                 return None
 
-            user_id = getattr(session, "session_key", None) or getattr(session, "user_id", None) or "default"
+            user_id = (
+                getattr(session, "session_key", None)
+                or getattr(session, "user_id", None)
+                or "default"
+            )
             from ..memory.user_state import UserConfirmationState
 
             ucs = UserConfirmationState(store)
@@ -4636,9 +4864,7 @@ class Agent:
                         "tool_params": json.loads(action.get("params", "{}")),
                     },
                 )
-            logger.info(
-                f"[Session] Pending confirmation resolved: {action.get('tool_name')}"
-            )
+            logger.info(f"[Session] Pending confirmation resolved: {action.get('tool_name')}")
             return "resolved"
         except Exception as e:
             logger.debug(f"[Session] Pending confirmation check failed (non-critical): {e}")
@@ -4734,7 +4960,11 @@ class Agent:
                         from ..memory.types import Scratchpad as _SpClear
 
                         store.save_scratchpad(
-                            _SpClear(user_id=getattr(session, "user_id", "default") if session else "default")
+                            _SpClear(
+                                user_id=getattr(session, "user_id", "default")
+                                if session
+                                else "default"
+                            )
                         )
                         logger.debug(
                             f"[Session] Cleared scratchpad for new conversation {conversation_id}"
@@ -4759,12 +4989,13 @@ class Agent:
 
                 # 过滤短文本: 有效字符数 >= 5（排除空白和标点）
                 _min_query_len = 5
-                _effective = "".join(c for c in _user_query if c.isalnum() or "\u4e00" <= c <= "\u9fff")
+                _effective = "".join(
+                    c for c in _user_query if c.isalnum() or "\u4e00" <= c <= "\u9fff"
+                )
                 _skip_semantic = not _effective or len(_effective) < _min_query_len
 
-                if (
-                    not _skip_semantic
-                    and getattr(settings, "semantic_context_injection_enabled", True)
+                if not _skip_semantic and getattr(
+                    settings, "semantic_context_injection_enabled", True
                 ):
                     try:
                         _engine = getattr(self.memory_manager, "retrieval_engine", None)
@@ -4775,7 +5006,8 @@ class Agent:
                             )
                             _now = datetime.now()
                             _scored = _engine.store.search_semantic_scored(
-                                _user_query, limit=15,
+                                _user_query,
+                                limit=15,
                             )
                             _candidate_ids: set[str] = set()
                             _lines: list[str] = ["[近期重要记忆 — 与当前对话相关]"]
@@ -4793,7 +5025,11 @@ class Agent:
                                     except Exception:
                                         pass
                                 _candidate_ids.add(_mem.id)
-                                _text = _mem.to_markdown() if hasattr(_mem, "to_markdown") else _mem.content
+                                _text = (
+                                    _mem.to_markdown()
+                                    if hasattr(_mem, "to_markdown")
+                                    else _mem.content
+                                )
                                 _lines.append(f"• {_text[:300]}")
                                 _count += 1
                                 if _count >= 5:
@@ -4802,7 +5038,8 @@ class Agent:
                                 _recent_ctx = "\n".join(_lines)
                                 logger.info(
                                     "[SemanticContext] Injected %d memories (query='%.50s')",
-                                    _count, _user_query,
+                                    _count,
+                                    _user_query,
                                 )
                             else:
                                 logger.info(
@@ -4820,12 +5057,11 @@ class Agent:
                         logger.debug(
                             "[SemanticContext] Skipped: query too short "
                             "(effective=%d chars, need >= %d)",
-                            len(_effective), _min_query_len,
+                            len(_effective),
+                            _min_query_len,
                         )
                     else:
-                        logger.debug(
-                            "[SemanticContext] Skipped: injection disabled via config"
-                        )
+                        logger.debug("[SemanticContext] Skipped: injection disabled via config")
 
                 # 回退到原时间窗口查询
                 if not _recent_ctx:
@@ -4852,8 +5088,7 @@ class Agent:
                     )
             except Exception as _e:
                 logger.debug(
-                    f"[Session:{session_id}] Recent summary injection failed "
-                    f"(non-critical): {_e}"
+                    f"[Session:{session_id}] Recent summary injection failed (non-critical): {_e}"
                 )
 
         # 2. IM context setup（协程隔离）
@@ -4903,9 +5138,7 @@ class Agent:
         # 6. Trait mining — deferred to background for latency (Phase 2-5)
         _mining_task = None
         if hasattr(self, "trait_miner") and self.trait_miner and self.trait_miner.brain:
-            _mining_task = asyncio.create_task(
-                self._trait_mining_with_persist(message, session_id)
-            )
+            _mining_task = asyncio.create_task(self._trait_mining_with_persist(message, session_id))
             # Store reference for cleanup on cancellation
             if not hasattr(self, "_pending_mining_tasks"):
                 self._pending_mining_tasks = []
@@ -4926,8 +5159,10 @@ class Agent:
         #     全量 Agent 推理流程（避免被 CHAT 快速路径忽略待执行任务）。
         #     同时处理：超时自动清除、任务快照恢复、系统引导提示注入。
         _intent_pre_set = False
-        if session and hasattr(session, "context") and session.context.get_variable(
-            "awaiting_confirmation", False
+        if (
+            session
+            and hasattr(session, "context")
+            and session.context.get_variable("awaiting_confirmation", False)
         ):
             from .confirmation_state import _CANCEL_WORDS, _CONFIRM_WORDS
 
@@ -4969,9 +5204,7 @@ class Agent:
                         _last_has_ask = False
                         for _m in reversed(session_messages):
                             if _m.get("role") == "assistant":
-                                _last_has_ask = (
-                                    "确认" in str(_m.get("content", ""))[:200]
-                                )
+                                _last_has_ask = "确认" in str(_m.get("content", ""))[:200]
                                 break
                         if not _last_has_ask:
                             session_messages.append(
@@ -5002,8 +5235,7 @@ class Agent:
                     else:
                         session_messages.append(_inject_msg)
                     logger.info(
-                        f"[Session:{session_id}] Injected resume system prompt "
-                        f"after confirmation"
+                        f"[Session:{session_id}] Injected resume system prompt after confirmation"
                     )
                 intent_result = IntentResult(
                     intent=IntentType.TASK,
@@ -5021,9 +5253,7 @@ class Agent:
                 _intent_pre_set = True
 
             elif _normalized in _CANCEL_WORDS:
-                logger.info(
-                    f"[Session:{session_id}] User cancelled pending ask_user"
-                )
+                logger.info(f"[Session:{session_id}] User cancelled pending ask_user")
                 # 清除所有等待状态和快照
                 session.context.set_variable("awaiting_confirmation", False)
                 session.context.set_variable("awaiting_confirmation_since", None)
@@ -5073,9 +5303,7 @@ class Agent:
                 "也不要问'有什么可以帮到您'之类的问题。"
             )
             if _last_user:
-                _context_hint += (
-                    f" 上一轮用户任务: {_last_user[:150]}"
-                )
+                _context_hint += f" 上一轮用户任务: {_last_user[:150]}"
 
             # 注入系统提示到消息列表末尾，让 LLM 理解"继续"语义
             _inject_msg = {
@@ -5452,9 +5680,8 @@ class Agent:
             f"{len(messages)} history msgs, has_history={_has_history}"
         )
 
-        if (
-            isinstance(compiled_message, str)
-            and _looks_like_previous_answer_replay_request(message, messages)
+        if isinstance(compiled_message, str) and _looks_like_previous_answer_replay_request(
+            message, messages
         ):
             compiled_message = _apply_previous_answer_replay_hint(compiled_message)
             logger.info(
@@ -5859,11 +6086,11 @@ class Agent:
                 )
             )
             task.add_done_callback(
-                lambda t, sid=session_id: logger.warning(
-                    "[Session:%s] 后台上下文压缩异常: %s", sid, t.exception()
+                lambda t, sid=session_id: (
+                    logger.warning("[Session:%s] 后台上下文压缩异常: %s", sid, t.exception())
+                    if not t.cancelled() and t.exception()
+                    else None
                 )
-                if not t.cancelled() and t.exception()
-                else None
             )
 
         # 12. TaskMonitor creation
@@ -6229,7 +6456,9 @@ class Agent:
             endpoint_policy = (
                 endpoint_policy
                 if explicit_endpoint
-                else self._endpoint_policy if endpoint_override == self._preferred_endpoint else "prefer"
+                else self._endpoint_policy
+                if endpoint_override == self._preferred_endpoint
+                else "prefer"
             )
         else:
             endpoint_policy = "prefer"
@@ -6405,10 +6634,7 @@ class Agent:
                     pass
                 _fast_handled = True
 
-            if (
-                _intent
-                and getattr(_intent, "raw_output", "") == "[confirmation-cancel]"
-            ):
+            if _intent and getattr(_intent, "raw_output", "") == "[confirmation-cancel]":
                 response_text = "任务已取消。有什么其他需要帮助的吗？"
                 _fast_handled = True
 
@@ -6524,9 +6750,7 @@ class Agent:
                         if _m.get("role") == "assistant":
                             _last_assist = str(_m.get("content", ""))[:2000]
                             break
-                    _trace = list(
-                        getattr(self.reasoning_engine, "_last_react_trace", None) or []
-                    )
+                    _trace = list(getattr(self.reasoning_engine, "_last_react_trace", None) or [])
                     _tool_summary: list[dict] = []
                     for _it in _trace[-3:]:
                         for _tc in _it.get("tool_calls", [])[-5:]:
@@ -6534,9 +6758,7 @@ class Agent:
                                 {
                                     "name": _tc.get("name", ""),
                                     "args": _tc.get("args", {}),
-                                    "result_preview": str(
-                                        _tc.get("result", "")
-                                    )[:500],
+                                    "result_preview": str(_tc.get("result", ""))[:500],
                                 }
                             )
                     snapshot = {
@@ -6642,7 +6864,9 @@ class Agent:
             endpoint_policy = (
                 endpoint_policy
                 if explicit_endpoint
-                else self._endpoint_policy if endpoint_override == self._preferred_endpoint else "prefer"
+                else self._endpoint_policy
+                if endpoint_override == self._preferred_endpoint
+                else "prefer"
             )
         else:
             endpoint_policy = "prefer"
@@ -7008,10 +7232,7 @@ class Agent:
                 result_holder["usage"] = None
                 result_holder["ok"] = False
 
-            if (
-                _intent
-                and getattr(_intent, "raw_output", "") == "[confirmation-cancel]"
-            ):
+            if _intent and getattr(_intent, "raw_output", "") == "[confirmation-cancel]":
                 _reply_text = "任务已取消。有什么其他需要帮助的吗？"
                 yield {"type": "text_delta", "content": _reply_text}
                 yield {"type": "done"}
@@ -7199,10 +7420,7 @@ class Agent:
 
             # 如果本轮推理因 ask_user 退出，设置 session 的 awaiting_confirmation 标记，
             # 使下一轮用户回复时 agent 能识别出"正在等待确认"状态，避免被 CHAT 快速路径忽略。
-            if (
-                session
-                and getattr(self.reasoning_engine, "_last_exit_reason", "") == "ask_user"
-            ):
+            if session and getattr(self.reasoning_engine, "_last_exit_reason", "") == "ask_user":
                 _now = time.time()
                 session.context.set_variable("awaiting_confirmation", True)
                 session.context.set_variable("awaiting_confirmation_since", _now)
@@ -7213,9 +7431,7 @@ class Agent:
                     if _m.get("role") == "assistant":
                         _last_assist = str(_m.get("content", ""))[:2000]
                         break
-                _trace = list(
-                    getattr(self.reasoning_engine, "_last_react_trace", None) or []
-                )
+                _trace = list(getattr(self.reasoning_engine, "_last_react_trace", None) or [])
                 _tool_summary: list[dict] = []
                 for _it in _trace[-3:]:
                     for _tc in _it.get("tool_calls", [])[-5:]:
@@ -7223,9 +7439,7 @@ class Agent:
                             {
                                 "name": _tc.get("name", ""),
                                 "args": _tc.get("args", {}),
-                                "result_preview": str(
-                                    _tc.get("result", "")
-                                )[:500],
+                                "result_preview": str(_tc.get("result", ""))[:500],
                             }
                         )
                 snapshot = {
@@ -7378,9 +7592,7 @@ class Agent:
         total_out = sum(t.get("tokens", {}).get("output", 0) for t in trace)
         usage_estimated = any(bool(t.get("usage_estimated")) for t in trace)
         usage_sources = {
-            str(t.get("usage_source"))
-            for t in trace
-            if str(t.get("usage_source") or "").strip()
+            str(t.get("usage_source")) for t in trace if str(t.get("usage_source") or "").strip()
         }
         summary = {
             "input_tokens": total_in,
@@ -7394,7 +7606,9 @@ class Agent:
             summary["billable_output_tokens"] = total_out
             summary["billable_total_tokens"] = total_in + total_out
         if usage_sources:
-            summary["usage_source"] = "mixed" if len(usage_sources) > 1 else next(iter(usage_sources))
+            summary["usage_source"] = (
+                "mixed" if len(usage_sources) > 1 else next(iter(usage_sources))
+            )
         try:
             re = self.reasoning_engine
             ctx_mgr = getattr(self, "context_manager", None) or getattr(
@@ -9495,6 +9709,7 @@ class Agent:
         if hasattr(self, "_task_executor") and self._task_executor:
             self._task_executor.gateway = gateway
             # 同时传递 persona/memory/proactive 引用，供活人感心跳等系统任务使用
+            self._task_executor.agent = self
             self._task_executor.persona_manager = getattr(self, "persona_manager", None)
             self._task_executor.memory_manager = getattr(self, "memory_manager", None)
             self._task_executor.kb_manager = getattr(self, "kb_manager", None)
@@ -9623,4 +9838,3 @@ class Agent:
     def get_memory_stats(self) -> dict:
         """获取记忆统计"""
         return self.memory_manager.get_stats()
-

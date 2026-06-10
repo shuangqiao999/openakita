@@ -118,6 +118,28 @@ class Settings(BaseSettings):
         description="自检时是否执行自动修复（设为 false 则只分析不修复）",
     )
 
+    # 自进化配置
+    auto_evolve_enabled: bool = Field(
+        default=True,
+        description="任务失败时是否自动分析缺失能力并生成技能",
+    )
+    benchmark_evolve_enabled: bool = Field(
+        default=True,
+        description="是否启用 benchmark 驱动的实验循环（定期自主优化）",
+    )
+    prompt_optimize_enabled: bool = Field(
+        default=True,
+        description="是否允许自主优化 prompt（修改→测试→保留/回滚）",
+    )
+    pattern_learn_enabled: bool = Field(
+        default=True,
+        description="是否从历史任务中学习高效工具调用模式",
+    )
+    research_org_enabled: bool = Field(
+        default=True,
+        description="是否启用 Multi-Agent 研究组织周期",
+    )
+
     # === 任务超时策略 ===
     # 默认对齐 Claude Code 哲学：CLI/IM 真人对话场景不做"agent 自检自杀"，
     # 卡死由用户主动按"停止"/Esc 中断。仅在程序化场景（CI/SDK 批跑）需要兜底时打开。
@@ -311,7 +333,7 @@ class Settings(BaseSettings):
                 "circuit_threshold": 3,
             },
             "batch_web_fetch": {
-                "timeout": None,            # None = inherit from web_fetch
+                "timeout": None,  # None = inherit from web_fetch
                 "cache_ttl": None,
                 "retries": 1,
                 "retry_delay": 0.5,
@@ -492,27 +514,32 @@ class Settings(BaseSettings):
     # === 知识库嵌入性能调优 (Knowledge Base Embedding Tuning) ===
     kb_embed_batch_size: int = Field(
         default=20,
-        ge=1, le=100,
+        ge=1,
+        le=100,
         description="KB 嵌入每批分块数 (本地模型建议 10-30，OpenAI API 可设 50-100)",
     )
     kb_embed_max_concurrent: int = Field(
         default=4,
-        ge=1, le=8,
+        ge=1,
+        le=8,
         description="KB 嵌入最大并发请求数 (LM Studio 支持 4，Ollama 建议 1-2，OpenAI API 可设 8)",
     )
     kb_embed_max_retries: int = Field(
         default=3,
-        ge=0, le=10,
+        ge=0,
+        le=10,
         description="KB 嵌入单批最大重试次数",
     )
     kb_embed_batch_delay: float = Field(
         default=0.0,
-        ge=0.0, le=5.0,
+        ge=0.0,
+        le=5.0,
         description="KB 嵌入批次间隔秒 (本地模型可设 0.02-0.1 节流，API 设 0)",
     )
     kb_embed_chunk_truncate: int = Field(
         default=1600,
-        ge=100, le=4000,
+        ge=100,
+        le=4000,
         description="KB 嵌入前单块最大字符数 (2K token 模型 600，8K+ 模型 2000)",
     )
 
@@ -678,7 +705,9 @@ class Settings(BaseSettings):
 
     # === 会话配置 ===
     session_timeout_minutes: int = Field(default=30, description="会话超时时间（分钟）")
-    session_max_history: int = Field(default=2000, description="会话消息硬上限（日常由 metadata trim 控制体积）")
+    session_max_history: int = Field(
+        default=2000, description="会话消息硬上限（日常由 metadata trim 控制体积）"
+    )
     session_storage_path: str = Field(default="data/sessions", description="会话存储路径")
 
     # === 多 Agent 模式 (Beta) ===
@@ -978,7 +1007,9 @@ class Settings(BaseSettings):
         default=False,
         description="是否启用运行时监督器 (RuntimeSupervisor)，默认关闭。开启后会在工具抖动/编辑抖动/推理死循环等模式被检测到时主动干预",
     )
-    task_budget_tokens: int = Field(default=0, description="单次任务最大 token 消耗，0=不限（默认）")
+    task_budget_tokens: int = Field(
+        default=0, description="单次任务最大 token 消耗，0=不限（默认）"
+    )
     task_budget_cost: float = Field(default=0.0, description="单次任务最大成本 USD，0=不限（默认）")
     task_budget_duration: int = Field(
         default=0,
@@ -1387,9 +1418,7 @@ class RuntimeState:
                     new_val = data[key]
                     if old_val != new_val:
                         setattr(settings, key, new_val)
-                        applied.append(
-                            f"{key}: {redact_value(old_val)} -> {redact_value(new_val)}"
-                        )
+                        applied.append(f"{key}: {redact_value(old_val)} -> {redact_value(new_val)}")
             if applied:
                 logger.info(f"[RuntimeState] Restored: {'; '.join(applied)}")
             else:
@@ -1435,10 +1464,7 @@ def _create_settings_safe() -> Settings:
 
             try:
                 lines = env_path.read_text(encoding="utf-8", errors="replace").splitlines()
-                cleaned = [
-                    ln for ln in lines
-                    if not ln.strip().startswith(f"{bad_field}=")
-                ]
+                cleaned = [ln for ln in lines if not ln.strip().startswith(f"{bad_field}=")]
                 env_path.write_text("\n".join(cleaned) + "\n", encoding="utf-8")
             except Exception as io_err:
                 logger.error(f"[Config] Failed to repair .env: {io_err}")

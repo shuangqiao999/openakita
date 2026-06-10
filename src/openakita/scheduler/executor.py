@@ -45,6 +45,7 @@ class TaskExecutor:
         self.gateway = gateway
         self.timeout_seconds = timeout_seconds
         # 可选：由 Agent 设置，用于活人感心跳等系统任务
+        self.agent = None  # 完整 Agent 实例，用于 benchmark/evolution 系统任务
         self.persona_manager = None
         self.memory_manager = None
         self.kb_manager = None  # KnowledgeBaseManager: 用于定时存储维护
@@ -329,9 +330,7 @@ class TaskExecutor:
 
 只回复 NO_ACTION 或 NEEDS_ACTION，不要有其他内容。"""
 
-                response = await brain.think(
-                    check_prompt, enable_thinking=False, max_tokens=16
-                )
+                response = await brain.think(check_prompt, enable_thinking=False, max_tokens=16)
                 result = response.content.strip().upper()
 
                 needs_action = "NEEDS_ACTION" in result
@@ -388,7 +387,9 @@ class TaskExecutor:
                     )
                     if not delivered:
                         error_msg = "任务已完成，但结果通知发送失败，请检查 IM 通道连接状态。"
-                        logger.warning(f"TaskExecutor: system task {task.id} result delivery failed")
+                        logger.warning(
+                            f"TaskExecutor: system task {task.id} result delivery failed"
+                        )
                         return False, error_msg
                 return system_success, system_result
 
@@ -398,8 +399,10 @@ class TaskExecutor:
             # 1.5. 防递归：禁止任务内再创建定时任务
             if task.no_schedule_tools:
                 agent._cron_disabled_tools = {
-                    "schedule_task", "update_scheduled_task",
-                    "cancel_scheduled_task", "trigger_scheduled_task",
+                    "schedule_task",
+                    "update_scheduled_task",
+                    "cancel_scheduled_task",
+                    "trigger_scheduled_task",
                 }
 
             # 2. 如果任务有 IM 通道信息，注入 IM 上下文
@@ -760,12 +763,22 @@ class TaskExecutor:
             "system:daily_memory": 1800,  # 30 分钟（含 LLM review 大量记忆）
             "system:workspace_backup": 300,  # 5 分钟
             "system:memory_nudge_review": 120,  # 2 分钟（轻量 LLM 审视）
+            "system:benchmark_evolve": 3600,  # 60 分钟（benchmark + 实验循环）
+            "system:pattern_learn": 600,  # 10 分钟
+            "system:research_org": 3600,  # 60 分钟（多 Agent 研究周期）
         }
         timeout = SYSTEM_TASK_TIMEOUTS.get(action)
         budget_tokens = (
             settings.scheduler_background_token_budget
             if action
-            in {"system:daily_selfcheck", "system:daily_memory", "system:memory_nudge_review"}
+            in {
+                "system:daily_selfcheck",
+                "system:daily_memory",
+                "system:memory_nudge_review",
+                "system:benchmark_evolve",
+                "system:pattern_learn",
+                "system:research_org",
+            }
             else 0
         )
         budget_token = set_token_budget(
@@ -786,6 +799,12 @@ class TaskExecutor:
                 coro = self._system_workspace_backup()
             elif action == "system:memory_nudge_review":
                 coro = self._system_memory_nudge_review()
+            elif action == "system:benchmark_evolve":
+                coro = self._system_benchmark_evolve()
+            elif action == "system:pattern_learn":
+                coro = self._system_pattern_learn()
+            elif action == "system:research_org":
+                coro = self._system_research_org()
             else:
                 return False, f"Unknown system action: {action}"
 
@@ -966,9 +985,7 @@ class TaskExecutor:
                             try:
                                 backend._get_embedder()
                                 breaker.mark_success()
-                                logger.info(
-                                    "[Maintenance] Embedding breaker '%s' recovered", bname
-                                )
+                                logger.info("[Maintenance] Embedding breaker '%s' recovered", bname)
                             except Exception:
                                 breaker.mark_failure("maintenance_probe")
                 for tbl_attr in ("_table", "_episodes_table"):
@@ -982,6 +999,7 @@ class TaskExecutor:
                         try:
                             if method_name == "optimize":
                                 from datetime import timedelta
+
                                 try:
                                     fn(cleanup_older_than=timedelta(0), delete_unverified=True)
                                 except TypeError:
@@ -990,12 +1008,15 @@ class TaskExecutor:
                                 fn(older_than=timedelta(0), delete_unverified=True)
                             logger.debug(
                                 "[Maintenance] Memory LanceDB %s %s completed",
-                                tbl_attr, method_name,
+                                tbl_attr,
+                                method_name,
                             )
                         except Exception as e:
                             logger.debug(
                                 "[Maintenance] Memory LanceDB %s %s skipped: %s",
-                                tbl_attr, method_name, e,
+                                tbl_attr,
+                                method_name,
+                                e,
                             )
         except Exception as e:
             logger.debug("Memory LanceDB maintenance skipped: %s", e)
@@ -1424,6 +1445,81 @@ class TaskExecutor:
 
         except Exception as e:
             logger.error(f"Workspace backup failed: {e}")
+            return False, str(e)
+
+    async def _system_benchmark_evolve(self) -> tuple[bool, str]:
+        """Benchmark 驱动的实验循环: 评测 + 假设 + 修改 + 验证 + 保留/回滚"""
+        if not self.agent:
+            return False, "Agent not available for benchmark"
+        try:
+            from ..evolution.benchmark import BenchmarkEngine
+            from ..evolution.experiment_loop import ExperimentLoop
+
+            agent = self.agent
+            engine = BenchmarkEngine()
+            report = await engine.run_suite(agent)
+            summary = (
+                f"Benchmark: 成功率={report.metrics.success_rate:.0%}, "
+                f"效率分={report.metrics.efficiency_score:.1f}"
+            )
+
+            loop = ExperimentLoop(agent)
+            results = await loop.run_cycle(benchmark_report=report)
+            kept = [r for r in results if r.action == "keep"]
+            summary += f" | 实验: {len(results)}次, 保留{len(kept)}项改进"
+
+            if not report.baseline_delta or kept:
+                engine.save_as_baseline(report)
+
+            logger.info(f"[BenchmarkEvolve] {summary}")
+            return True, summary
+        except Exception as e:
+            logger.error(f"[BenchmarkEvolve] Failed: {e}")
+            return False, str(e)
+
+    async def _system_pattern_learn(self) -> tuple[bool, str]:
+        """从历史成功任务中学习高效工具调用模式"""
+        if not self.agent:
+            return False, "Agent not available for pattern learning"
+        try:
+            from ..evolution.pattern_learner import PatternLearner
+
+            learner = PatternLearner(self.agent)
+            patterns = await learner.learn_from_history(days=7)
+            if patterns:
+                summary = f"学习到 {len(patterns)} 条高效模式: " + "; ".join(
+                    p.pattern[:40] for p in patterns[:3]
+                )
+            else:
+                summary = "历史数据不足或未发现新的高效模式"
+            logger.info(f"[PatternLearn] {summary}")
+            return True, summary
+        except Exception as e:
+            logger.error(f"[PatternLearn] Failed: {e}")
+            return False, str(e)
+
+    async def _system_research_org(self) -> tuple[bool, str]:
+        """Multi-Agent 研究周期: 分析→提案→审计→验证→采纳"""
+        if not self.agent:
+            return False, "Agent not available for research org"
+        try:
+            from ..evolution.research_org import ResearchOrg
+
+            org = ResearchOrg(self.agent)
+            result = await org.run_research_cycle()
+            summary = (
+                f"研究周期完成: {result.proposals_count}项提案, "
+                f"{result.approved_count}项通过审计, "
+                f"{result.adopted_count}项被采纳"
+            )
+            if result.improvements:
+                summary += " | 改进: " + ", ".join(
+                    imp["description"][:30] for imp in result.improvements[:3]
+                )
+            logger.info(f"[ResearchOrg] {summary}")
+            return True, summary
+        except Exception as e:
+            logger.error(f"[ResearchOrg] Failed: {e}")
             return False, str(e)
 
     def _find_all_im_targets(self) -> list[tuple[str, str]]:
