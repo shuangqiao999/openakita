@@ -461,6 +461,70 @@ class TestPatternLearner:
         assert "good" in text
         assert "bad" not in text
 
+    def test_extract_tool_names_nested(self):
+        data = {
+            "iterations": [
+                {"tool_name": "read_file", "result": "ok"},
+                {"tool_calls": [
+                    {"name": "grep", "tool_input": {"q": "x"}, "tool_call_id": "1"},
+                    {"name": "edit_file", "arguments": {}, "tool_call_id": "2"},
+                ]},
+                {"metadata": {"tool": "run_shell"}},
+            ]
+        }
+        tools = PatternLearner._extract_tool_names(data["iterations"])
+        assert "read_file" in tools
+        assert "grep" in tools
+        assert "edit_file" in tools
+        assert "run_shell" in tools
+
+    def test_extract_tool_names_flat(self):
+        data = [{"tool_name": "web_search"}, {"tool": "web_fetch"}]
+        tools = PatternLearner._extract_tool_names(data)
+        assert tools == ["web_search", "web_fetch"]
+
+    def test_efficient_cluster_uses_median(self):
+        from openakita.evolution.pattern_learner import ToolSequence as TS
+        seqs = [
+            TS(task_category="test", tools=["a"], tokens_used=100, success=True, time_seconds=1),
+            TS(task_category="test", tools=["b"], tokens_used=500, success=True, time_seconds=2),
+            TS(task_category="test", tools=["c"], tokens_used=1000, success=True, time_seconds=3),
+            TS(task_category="test", tools=["d"], tokens_used=2000, success=True, time_seconds=5),
+            TS(task_category="test", tools=["e"], tokens_used=3000, success=True, time_seconds=8),
+        ]
+        learner = PatternLearner(MagicMock(), data_dir="/tmp/pl_test")
+        clusters = {"test": seqs}
+        efficient = learner._find_efficient_clusters(clusters)
+        assert "test" in efficient
+        for s in efficient["test"]:
+            assert s.tokens_used <= 1000
+
+    def test_injection_text_truncation(self, tmp_path):
+        learner = PatternLearner(MagicMock(), data_dir=tmp_path)
+        patterns = [
+            ToolPattern(category=f"cat{i}", pattern="x" * 150, confidence=0.9, evidence_count=10)
+            for i in range(5)
+        ]
+        learner._save_patterns(patterns)
+        text = learner.get_injection_text(max_chars=500)
+        assert len(text) <= 510
+
+    def test_jaccard_dedup(self, tmp_path):
+        learner = PatternLearner(MagicMock(), data_dir=tmp_path)
+        patterns = [
+            ToolPattern(category="a", pattern="grep read_file edit_file run_shell check", confidence=0.9, evidence_count=10),
+            ToolPattern(category="b", pattern="grep edit_file read_file run_shell check lints", confidence=0.7, evidence_count=5),
+        ]
+        result = learner._deduplicate_patterns(patterns)
+        assert len(result) == 1
+        assert result[0].confidence == 0.9
+
+    def test_incremental_learning_state(self, tmp_path):
+        learner = PatternLearner(MagicMock(), data_dir=tmp_path)
+        assert learner._load_learn_state() == 0.0
+        learner._save_learn_state(12345.0)
+        assert learner._load_learn_state() == 12345.0
+
 
 class TestExecutorGuards:
     @pytest.mark.asyncio

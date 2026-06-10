@@ -2235,6 +2235,17 @@ def _build_memory_section(
         if experience_text:
             parts.append(experience_text)
 
+    # Layer 3.5: Learned Tool Patterns (从历史任务学习的高效工具调用模式)
+    try:
+        from ..evolution.pattern_learner import PatternLearner
+
+        _pl = PatternLearner(agent=None)
+        _pattern_text = _pl.get_injection_text()
+        if _pattern_text:
+            parts.append("## 高效工具使用模式（从历史经验学习）\n\n" + _pattern_text)
+    except Exception:
+        pass
+
     # Layer 4: Active Retrieval.
     if retrieval_query:
         retrieved = _retrieve_by_query(memory_manager, retrieval_query, max_tokens=500)
