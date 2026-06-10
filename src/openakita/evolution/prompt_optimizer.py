@@ -57,6 +57,7 @@ class VariantResult:
 class PromptOptimizer:
     OPTIMIZABLE_SECTIONS = [
         "identity/AGENT.md",
+        "identity/POLICIES.yaml",
     ]
 
     _evolve_lock: asyncio.Lock | None = None
@@ -155,7 +156,7 @@ class PromptOptimizer:
 如果当前 prompt 已经很好无需修改，返回 {{"skip": true}}
 """
         try:
-            response = await self._brain.chat_simple(prompt)
+            response = await asyncio.wait_for(self._brain.chat_simple(prompt), timeout=60)
             data = _parse_llm_json(response)
             if data.get("skip"):
                 return None
@@ -279,6 +280,8 @@ class PromptOptimizer:
             "hypothesis": variant.hypothesis,
             "adopted": adopted,
             "metrics": metrics,
+            "original": variant.original,
+            "proposed": variant.proposed,
             "proposed_length": len(variant.proposed),
             "original_length": len(variant.original),
         }

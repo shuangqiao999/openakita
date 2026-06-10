@@ -450,8 +450,8 @@ function PromptsTab({ api }: { api: string }) {
             <div className="text-xs text-muted-foreground mb-2">{diffTarget.hypothesis}</div>
             <div className="border rounded overflow-hidden text-xs">
               <ReactDiffViewer
-                oldValue={`[Original: ${diffTarget.original_length || "?"} chars]`}
-                newValue={`[Proposed: ${diffTarget.proposed_length || "?"} chars]`}
+                oldValue={diffTarget.original || `[Original: ${diffTarget.original_length || "?"} chars]`}
+                newValue={diffTarget.proposed || `[Proposed: ${diffTarget.proposed_length || "?"} chars]`}
                 splitView={true}
                 useDarkTheme={document.documentElement.classList.contains("dark")}
               />

@@ -339,8 +339,10 @@ class ExperimentLoop:
                     best_start = i
 
             if best_ratio >= _FUZZY_MATCH_THRESHOLD and best_start >= 0:
-                matched_text = "".join(lines_full[best_start : best_start + frag_len])
-                result = original_full.replace(matched_text, replacement, 1)
+                new_lines = lines_full[:best_start] + [replacement]
+                if best_start + frag_len < len(lines_full):
+                    new_lines += lines_full[best_start + frag_len :]
+                result = "".join(new_lines)
                 if result != original_full:
                     logger.info("[ExperimentLoop] 空白归一化匹配成功 (ratio=%.2f)", best_ratio)
                     return result, ""
@@ -361,8 +363,10 @@ class ExperimentLoop:
                 best_start = i
 
         if best_ratio >= _FUZZY_MATCH_THRESHOLD and best_start >= 0:
-            matched_text = "".join(lines_full[best_start : best_start + frag_len])
-            result = original_full.replace(matched_text, replacement, 1)
+            new_lines = lines_full[:best_start] + [replacement]
+            if best_start + frag_len < len(lines_full):
+                new_lines += lines_full[best_start + frag_len :]
+            result = "".join(new_lines)
             if result != original_full:
                 logger.info(
                     "[ExperimentLoop] 模糊匹配成功 (ratio=%.2f, line=%d)",

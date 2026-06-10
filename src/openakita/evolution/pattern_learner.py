@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections import defaultdict
@@ -227,7 +228,7 @@ class PatternLearner:
             "只输出一行文本，不要解释。"
         )
         try:
-            response = await self._brain.chat_simple(prompt)
+            response = await asyncio.wait_for(self._brain.chat_simple(prompt), timeout=60)
             text = response.strip().strip('"').strip("'")
             if not text or len(text) > _MAX_SUMMARY_LENGTH:
                 logger.debug(
