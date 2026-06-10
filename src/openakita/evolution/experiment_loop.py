@@ -306,6 +306,9 @@ class ExperimentLoop:
                     delta={k: new_metrics[k] - baseline_metrics[k] for k in baseline_metrics},
                     reason="指标未改善",
                 )
+        except asyncio.CancelledError:
+            target_path.write_text(original_full, encoding="utf-8")
+            raise
         except Exception as e:
             target_path.write_text(original_full, encoding="utf-8")
             return ExperimentResult(action="error", hypothesis=hypothesis, reason=str(e))

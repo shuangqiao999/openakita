@@ -78,6 +78,8 @@ class AutoEvolver:
         ts = self._recently_processed.get(name)
         if ts is not None and now - ts < _DEDUP_TTL_S:
             return True
+        if ts is not None:
+            del self._recently_processed[name]
         return False
 
     def _mark_processed(self, name: str) -> None:

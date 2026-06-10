@@ -491,11 +491,12 @@ function ApprovalsTab({ api }: { api: string }) {
     if (submitting) return;
     setSubmitting(true);
     try {
-      await safeFetch(`${api}/api/evolution/approvals/${id}`, {
+      const res = await safeFetch(`${api}/api/evolution/approvals/${id}`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "approve" }),
       });
-      toast.success(t("evolution.approvalApproved"));
+      const data = await res.json();
+      toast.success(data.message || t("evolution.approvalApproved"));
       load();
     } catch (e: any) { toast.error(e.message); } finally { setSubmitting(false); }
   };
@@ -531,10 +532,10 @@ function ApprovalsTab({ api }: { api: string }) {
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-center gap-2">
-        {["pending", "all", "approved", "rejected"].map((f) => (
+        {["pending", "all", "approved", "applied", "rejected"].map((f) => (
           <button key={f} onClick={() => setFilter(f)}
             className={`px-2.5 py-1 text-xs rounded ${filter === f ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}>
-            {f === "pending" ? `${t("evolution.pending")} (${pendingCount})` : f === "all" ? t("evolution.filterAll") : f === "approved" ? t("evolution.approved") : t("evolution.rejected")}
+            {f === "pending" ? `${t("evolution.pending")} (${pendingCount})` : f === "all" ? t("evolution.filterAll") : f === "approved" ? t("evolution.approvedNotApplied") : f === "applied" ? t("evolution.applied") : t("evolution.rejected")}
           </button>
         ))}
         <Button variant="outline" size="sm" onClick={load} className="ml-auto">{t("evolution.refresh")}</Button>
@@ -563,7 +564,7 @@ function ApprovalsTab({ api }: { api: string }) {
                       {t("evolution.targetFile")}: {a.target_file || "—"} · {a.created_at?.slice(0, 16) || ""}
                     </div>
                   </div>
-                  {a.status === "pending" && (
+                  {(a.status === "pending" || a.status === "approved") && (
                     <div className="flex gap-1.5 shrink-0">
                       <Button size="sm" variant="default" disabled={submitting} onClick={() => doApprove(a.id)}>
                         {t("evolution.approve")}
@@ -599,6 +600,11 @@ function ApprovalsTab({ api }: { api: string }) {
                 {a.reject_reason && (
                   <div className="text-xs text-destructive mt-2">
                     {t("evolution.rejectReason")}: {a.reject_reason}
+                  </div>
+                )}
+                {a.apply_error && (
+                  <div className="text-xs text-yellow-500 mt-2">
+                    {a.apply_error}
                   </div>
                 )}
               </CardContent>

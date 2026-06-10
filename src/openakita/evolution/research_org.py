@@ -402,7 +402,7 @@ class ResearchOrg:
             engine = BenchmarkEngine()
             report = await engine.run_suite(self._agent)
 
-            baseline_metrics = (performance_data or {}).get("metrics", {})
+            baseline_metrics = dict((performance_data or {}).get("metrics", {}))
             baseline_metrics.setdefault("avg_time", 0)
             new_metrics = {
                 "success_rate": report.metrics.success_rate,
@@ -419,6 +419,10 @@ class ResearchOrg:
 
             target.write_text(full, encoding="utf-8")
             return False
+        except asyncio.CancelledError:
+            if full is not None and target is not None:
+                target.write_text(full, encoding="utf-8")
+            raise
         except Exception as e:
             if full is not None and target is not None:
                 target.write_text(full, encoding="utf-8")

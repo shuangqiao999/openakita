@@ -236,8 +236,10 @@ class BenchmarkEngine:
             async with sem:
                 return await self._run_single(agent, task)
 
-        results = list(await asyncio.gather(*[_guarded(t) for t in tasks]))
-        self._cleanup_temp_files()
+        try:
+            results = list(await asyncio.gather(*[_guarded(t) for t in tasks]))
+        finally:
+            self._cleanup_temp_files()
 
         for task, result in zip(tasks, results, strict=False):
             logger.info(
@@ -332,7 +334,7 @@ class BenchmarkEngine:
                 error=str(e),
             )
         finally:
-            pass
+            pass  # cleanup moved to suite-level
 
     def _verify_outcome(self, task: BenchmarkTask, output: str) -> tuple[bool, str]:
         if not task.expected_outcome or not output:
