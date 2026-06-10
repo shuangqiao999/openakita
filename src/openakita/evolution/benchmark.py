@@ -302,6 +302,7 @@ class BenchmarkEngine:
             success = getattr(result, "success", False) if result else False
             iterations = getattr(result, "iterations", 0) or 0
             output = str(getattr(result, "data", ""))[:500]
+            task_error = getattr(result, "error", "") if result else ""
 
             tokens_after = self._token_counter(agent)
             tokens = max(0, tokens_after - tokens_before)
@@ -323,7 +324,7 @@ class BenchmarkEngine:
                 output_summary=output,
                 verification_passed=verification_passed,
                 verification_reason=verification_reason,
-                error=verification_reason if not success and verification_reason else None,
+                error=verification_reason or task_error or None,
             )
         except Exception as e:
             elapsed = time.perf_counter() - t0

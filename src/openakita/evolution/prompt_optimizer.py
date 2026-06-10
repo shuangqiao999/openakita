@@ -310,6 +310,7 @@ class PromptOptimizer:
                 return {
                     "success_rate": m.get("success_rate", 0),
                     "avg_tokens": m.get("avg_tokens", 0),
+                    "avg_time": m.get("avg_time", 0),
                     "efficiency_score": m.get("efficiency_score", 0),
                     "failure_patterns": "来自最近 benchmark",
                 }
@@ -321,12 +322,14 @@ class PromptOptimizer:
             return {
                 "success_rate": baseline.success_rate,
                 "avg_tokens": baseline.avg_tokens,
+                "avg_time": baseline.avg_time,
                 "efficiency_score": baseline.efficiency_score,
                 "failure_patterns": "来自 baseline",
             }
         return {
             "success_rate": 0,
             "avg_tokens": 0,
+            "avg_time": 0,
             "efficiency_score": 0,
             "failure_patterns": "无历史数据",
         }
