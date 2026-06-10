@@ -39,8 +39,6 @@ class EvolutionResult:
 
 
 class AutoEvolver:
-    _recently_processed: dict[str, float] = {}
-
     def __init__(
         self,
         agent: Any,
@@ -55,6 +53,7 @@ class AutoEvolver:
         self._installer = installer
         self._skill_gen = skill_gen or getattr(agent, "skill_generator", None)
         self._need_analyzer = need_analyzer
+        self._recently_processed: dict[str, float] = {}
 
     def _get_analyzer(self) -> Any:
         if self._need_analyzer:

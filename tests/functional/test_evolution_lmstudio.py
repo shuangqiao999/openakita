@@ -193,7 +193,6 @@ class TestAutoEvolverUnit:
     def test_dedup_cache(self):
         from openakita.evolution.auto_evolve import AutoEvolver
 
-        AutoEvolver._recently_processed.clear()
         evolver = AutoEvolver(MagicMock())
         assert not evolver._is_recently_processed("test_cap")
         evolver._mark_processed("test_cap")

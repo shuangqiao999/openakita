@@ -62,7 +62,6 @@ class TestAutoEvolver:
         assert result.action == "skip"
 
     def test_dedup_cache(self):
-        AutoEvolver._recently_processed.clear()
         evolver = AutoEvolver(MagicMock())
         assert not evolver._is_recently_processed("test_cap")
         evolver._mark_processed("test_cap")

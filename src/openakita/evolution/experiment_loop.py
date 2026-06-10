@@ -368,7 +368,7 @@ class ExperimentLoop:
 
         best_ratio = 0.0
         best_start = -1
-        for i in range(max(1, len(lines_full) - frag_len + 1)):
+        for i in range(len(lines_full) - frag_len + 1):
             candidate = lines_full[i : i + frag_len]
             ratio = SequenceMatcher(None, "".join(candidate), fragment).ratio()
             if ratio > best_ratio:
