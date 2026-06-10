@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -30,6 +31,13 @@ from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_llm_json(text: str) -> Any:
+    text = re.sub(r"^```(?:json)?\s*\n?", "", text.strip())
+    text = re.sub(r"\n?```\s*$", "", text)
+    return json.loads(text)
+
 
 _DEFAULT_LLM_TIMEOUT = 60
 _DEFAULT_IMPROVEMENT_THRESHOLD = 0.05
@@ -166,7 +174,7 @@ class ResearchOrg:
         if performance_data is None:
             performance_data = self._gather_performance_data()
 
-        if not performance_data.get("metrics", {}).get("success_rate"):
+        if performance_data.get("metrics", {}).get("success_rate") is None:
             logger.info("[ResearchOrg] 性能数据不足，跳过研究周期")
             return ResearchCycleResult(timestamp=datetime.now().isoformat())
 
@@ -232,7 +240,7 @@ class ResearchOrg:
         )
         try:
             response = await asyncio.wait_for(self._brain.chat_simple(prompt), timeout=timeout)
-            result = json.loads(response)
+            result = _parse_llm_json(response)
             if not isinstance(result, list):
                 logger.warning("[ResearchOrg] Analyst 返回非数组格式")
                 return []
@@ -271,7 +279,7 @@ class ResearchOrg:
         )
         try:
             response = await asyncio.wait_for(self._brain.chat_simple(prompt), timeout=timeout)
-            data = json.loads(response)
+            data = _parse_llm_json(response)
             if data.get("skip"):
                 return None
             return ResearchProposal(
@@ -291,7 +299,7 @@ class ResearchOrg:
         prompt = TOOL_DEVELOPER_PROMPT.format(opportunity=json.dumps(opp, ensure_ascii=False))
         try:
             response = await asyncio.wait_for(self._brain.chat_simple(prompt), timeout=timeout)
-            data = json.loads(response)
+            data = _parse_llm_json(response)
             if data.get("skip"):
                 return None
             return ResearchProposal(
@@ -325,7 +333,7 @@ class ResearchOrg:
             )
             try:
                 response = await asyncio.wait_for(self._brain.chat_simple(prompt), timeout=timeout)
-                data = json.loads(response)
+                data = _parse_llm_json(response)
                 verdicts.append(
                     AuditVerdict(
                         proposal_id=i,
@@ -395,6 +403,7 @@ class ResearchOrg:
             report = await engine.run_suite(self._agent)
 
             baseline_metrics = (performance_data or {}).get("metrics", {})
+            baseline_metrics.setdefault("avg_time", 0)
             new_metrics = {
                 "success_rate": report.metrics.success_rate,
                 "avg_tokens": report.metrics.avg_tokens,

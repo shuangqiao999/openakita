@@ -81,7 +81,11 @@ class AutoEvolver:
         return False
 
     def _mark_processed(self, name: str) -> None:
-        self._recently_processed[name] = time.monotonic()
+        now = time.monotonic()
+        self._recently_processed[name] = now
+        stale = [k for k, v in self._recently_processed.items() if now - v > _DEDUP_TTL_S]
+        for k in stale:
+            del self._recently_processed[k]
 
     def _skill_exists(self, name: str) -> bool:
         if not self._skill_registry:

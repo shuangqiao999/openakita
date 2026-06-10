@@ -30,6 +30,12 @@ _DEFAULT_MAX_CHANGE_RATIO = 0.2
 _DEFAULT_IMPROVEMENT_THRESHOLD = 0.05
 
 
+def _parse_llm_json(text: str) -> Any:
+    text = re.sub(r"^```(?:json)?\s*\n?", "", text.strip())
+    text = re.sub(r"\n?```\s*$", "", text)
+    return json.loads(text)
+
+
 @dataclass
 class PromptVariant:
     section: str
@@ -150,7 +156,7 @@ class PromptOptimizer:
 """
         try:
             response = await self._brain.chat_simple(prompt)
-            data = json.loads(response)
+            data = _parse_llm_json(response)
             if data.get("skip"):
                 return None
             return PromptVariant(
@@ -218,12 +224,14 @@ class PromptOptimizer:
             new_metrics = {
                 "success_rate": report.metrics.success_rate,
                 "avg_tokens": report.metrics.avg_tokens,
+                "avg_time": report.metrics.avg_time,
                 "efficiency_score": report.metrics.efficiency_score,
             }
 
             baseline_metrics = {
                 "success_rate": baseline_perf.get("success_rate", 0),
                 "avg_tokens": baseline_perf.get("avg_tokens", 0),
+                "avg_time": baseline_perf.get("avg_time", 0),
                 "efficiency_score": baseline_perf.get("efficiency_score", 0),
             }
 
@@ -247,6 +255,9 @@ class PromptOptimizer:
                 adopted=adopted,
                 reason="" if adopted else "指标未达到改进阈值",
             )
+        except asyncio.CancelledError:
+            target_path.write_text(original_full, encoding="utf-8")
+            raise
         except Exception as e:
             target_path.write_text(original_full, encoding="utf-8")
             return VariantResult(variant=variant, reason=f"测试异常: {e}")

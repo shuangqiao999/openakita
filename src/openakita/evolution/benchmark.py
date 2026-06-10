@@ -30,10 +30,12 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+import tempfile as _tempfile
+
 _BENCHMARK_TEMP_PATTERNS = [
-    "/tmp/bench_test*",
-    "/tmp/benchmark_*",
-    "/tmp/fib_*",
+    str(Path(_tempfile.gettempdir()) / "bench_test*"),
+    str(Path(_tempfile.gettempdir()) / "benchmark_*"),
+    str(Path(_tempfile.gettempdir()) / "fib_*"),
 ]
 
 
@@ -235,6 +237,7 @@ class BenchmarkEngine:
                 return await self._run_single(agent, task)
 
         results = list(await asyncio.gather(*[_guarded(t) for t in tasks]))
+        self._cleanup_temp_files()
 
         for task, result in zip(tasks, results, strict=False):
             logger.info(
@@ -329,7 +332,7 @@ class BenchmarkEngine:
                 error=str(e),
             )
         finally:
-            self._cleanup_temp_files()
+            pass
 
     def _verify_outcome(self, task: BenchmarkTask, output: str) -> tuple[bool, str]:
         if not task.expected_outcome or not output:

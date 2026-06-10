@@ -32,6 +32,14 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_EXPERIMENTS = 3
+
+
+def _parse_llm_json(text: str) -> Any:
+    text = re.sub(r"^```(?:json)?\s*\n?", "", text.strip())
+    text = re.sub(r"\n?```\s*$", "", text)
+    return json.loads(text)
+
+
 _DEFAULT_IMPROVEMENT_THRESHOLD = 0.02
 _DEFAULT_LLM_TIMEOUT = 60
 _BACKUP_MAX_AGE_DAYS = 7
@@ -195,7 +203,7 @@ class ExperimentLoop:
         llm_timeout = self._get_config("experiment_llm_timeout", _DEFAULT_LLM_TIMEOUT)
         try:
             response = await asyncio.wait_for(self._brain.chat_simple(prompt), timeout=llm_timeout)
-            data = json.loads(response)
+            data = _parse_llm_json(response)
             if data.get("skip"):
                 return None
             return Hypothesis(
@@ -302,7 +310,8 @@ class ExperimentLoop:
             target_path.write_text(original_full, encoding="utf-8")
             return ExperimentResult(action="error", hypothesis=hypothesis, reason=str(e))
         finally:
-            pass
+            if backup_path.exists():
+                backup_path.unlink(missing_ok=True)
 
     @staticmethod
     def _fuzzy_match_and_replace(
