@@ -84,15 +84,16 @@ class TestBenchmarkEngine:
         metrics = engine._compute_metrics([], [])
         assert metrics.success_rate == 0.0
 
-    def test_compute_metrics_with_results(self):
+    def test_compute_metrics_with_results(self, tmp_path):
         from openakita.evolution.benchmark import BenchmarkResult
 
-        engine = BenchmarkEngine()
+        engine = BenchmarkEngine(data_dir=tmp_path / "bench_metrics")
         tasks = [BenchmarkTask(id="t1", description="", category="test", expected_outcome="")]
         results = [BenchmarkResult(task_id="t1", success=True, tokens_used=1000, time_seconds=5.0)]
         metrics = engine._compute_metrics(results, tasks)
         assert metrics.success_rate == 1.0
         assert metrics.avg_tokens == 1000.0
+        assert metrics.efficiency_score == 100.0
 
     def test_save_and_load_baseline(self, tmp_path):
         engine = BenchmarkEngine(data_dir=tmp_path / "bench")
@@ -106,6 +107,129 @@ class TestBenchmarkEngine:
         loaded = engine._load_latest_baseline()
         assert loaded is not None
         assert loaded.success_rate == 0.8
+
+    @pytest.mark.asyncio
+    async def test_timeout_marks_failure(self):
+        async def slow_runner(agent, desc):
+            await asyncio.sleep(999)
+
+        engine = BenchmarkEngine(task_runner=slow_runner, token_counter=lambda a: 0)
+        task = BenchmarkTask(
+            id="timeout-test", description="slow", category="test",
+            expected_outcome="", timeout_seconds=1,
+        )
+        result = await engine._run_single(MagicMock(), task)
+        assert result.success is False
+        assert "超时" in (result.error or "")
+        assert result.time_seconds >= 0.9
+
+    @pytest.mark.asyncio
+    async def test_verify_outcome_keyword_match(self):
+        engine = BenchmarkEngine()
+        task = BenchmarkTask(
+            id="v1", description="", category="test",
+            expected_outcome="输出结果为 '4950'",
+        )
+        ok, _ = engine._verify_outcome(task, "计算结果是 4950，完成")
+        assert ok is True
+
+        fail, reason = engine._verify_outcome(task, "计算完成，结果是 1234")
+        assert fail is False
+        assert "4950" in reason
+
+    @pytest.mark.asyncio
+    async def test_false_positive_caught_by_verification(self):
+        async def fake_runner(agent, desc):
+            return MagicMock(success=True, data="我无法完成这个任务", iterations=1)
+
+        engine = BenchmarkEngine(task_runner=fake_runner, token_counter=lambda a: 0)
+        task = BenchmarkTask(
+            id="fp-test", description="test", category="test",
+            expected_outcome="输出 'BenchMark2026'", timeout_seconds=5,
+        )
+        result = await engine._run_single(MagicMock(), task)
+        assert result.success is False
+        assert result.verification_passed is False
+
+    @pytest.mark.asyncio
+    async def test_concurrent_execution_faster_than_serial(self):
+        call_count = 0
+
+        async def slow_runner(agent, desc):
+            nonlocal call_count
+            call_count += 1
+            await asyncio.sleep(0.3)
+            return MagicMock(success=True, data="ok", iterations=1)
+
+        engine = BenchmarkEngine(task_runner=slow_runner, token_counter=lambda a: 0, max_concurrent=3)
+        tasks = [
+            BenchmarkTask(id=f"c{i}", description="", category="test",
+                          expected_outcome="", timeout_seconds=5)
+            for i in range(3)
+        ]
+        t0 = asyncio.get_event_loop().time()
+        report = await engine.run_suite(MagicMock(), tasks)
+        elapsed = asyncio.get_event_loop().time() - t0
+        assert call_count == 3
+        assert report.metrics.success_rate == 1.0
+        assert elapsed < 1.0
+
+    def test_auto_save_baseline_first_run(self, tmp_path):
+        import asyncio as _aio
+
+        async def fake_runner(agent, desc):
+            return MagicMock(success=True, data="ok", iterations=1)
+
+        engine = BenchmarkEngine(
+            data_dir=tmp_path / "bench_auto",
+            task_runner=fake_runner,
+            token_counter=lambda a: 0,
+        )
+        assert engine._load_latest_baseline() is None
+        tasks = [
+            BenchmarkTask(id=f"auto-{i}", description="test", category="test",
+                          expected_outcome="", timeout_seconds=5)
+            for i in range(3)
+        ]
+        report = _aio.run(engine.run_suite(MagicMock(), tasks))
+        assert report.metrics.success_rate == 1.0
+        loaded = engine._load_latest_baseline()
+        assert loaded is not None
+        assert loaded.success_rate == 1.0
+
+    def test_custom_task_runner_called(self):
+        import asyncio as _aio
+
+        called_with = []
+
+        async def my_runner(agent, desc):
+            called_with.append(desc)
+            return MagicMock(success=True, data="custom", iterations=0)
+
+        engine = BenchmarkEngine(task_runner=my_runner, token_counter=lambda a: 0)
+        tasks = [BenchmarkTask(id="cr", description="hello", category="test",
+                               expected_outcome="", timeout_seconds=5)]
+        _aio.run(engine.run_suite(MagicMock(), tasks))
+        assert called_with == ["hello"]
+
+    def test_custom_token_counter(self):
+        import asyncio as _aio
+
+        async def runner(agent, desc):
+            return MagicMock(success=True, data="ok", iterations=0)
+
+        counter_calls = []
+
+        def my_counter(agent):
+            counter_calls.append(1)
+            return len(counter_calls) * 500
+
+        engine = BenchmarkEngine(task_runner=runner, token_counter=my_counter)
+        tasks = [BenchmarkTask(id="tc", description="", category="test",
+                               expected_outcome="", timeout_seconds=5)]
+        report = _aio.run(engine.run_suite(MagicMock(), tasks))
+        assert len(counter_calls) == 2
+        assert report.results[0].tokens_used == 500
 
 
 class TestExperimentLoopSafety:
