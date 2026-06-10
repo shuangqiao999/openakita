@@ -37,6 +37,16 @@ _DEFAULT_MAX_EXPERIMENTS = 3
 def _parse_llm_json(text: str) -> Any:
     text = re.sub(r"^```(?:json)?\s*\n?", "", text.strip())
     text = re.sub(r"\n?```\s*$", "", text)
+    start = text.find("{")
+    if start == -1:
+        start = text.find("[")
+    if start > 0:
+        text = text[start:]
+    end = text.rfind("}")
+    if end == -1:
+        end = text.rfind("]")
+    if 0 <= end < len(text) - 1:
+        text = text[: end + 1]
     return json.loads(text)
 
 
@@ -339,6 +349,9 @@ class ExperimentLoop:
                     best_start = i
 
             if best_ratio >= _FUZZY_MATCH_THRESHOLD and best_start >= 0:
+                matched = "".join(lines_full[best_start : best_start + frag_len])
+                if matched.endswith("\n") and not replacement.endswith("\n"):
+                    replacement += "\n"
                 new_lines = lines_full[:best_start] + [replacement]
                 if best_start + frag_len < len(lines_full):
                     new_lines += lines_full[best_start + frag_len :]
@@ -363,6 +376,9 @@ class ExperimentLoop:
                 best_start = i
 
         if best_ratio >= _FUZZY_MATCH_THRESHOLD and best_start >= 0:
+            matched = "".join(lines_full[best_start : best_start + frag_len])
+            if matched.endswith("\n") and not replacement.endswith("\n"):
+                replacement += "\n"
             new_lines = lines_full[:best_start] + [replacement]
             if best_start + frag_len < len(lines_full):
                 new_lines += lines_full[best_start + frag_len :]

@@ -254,9 +254,13 @@ async def activate_prompt_variant(request: Request, filename: str, body: PromptA
         raise HTTPException(404, "Target file not found")
 
     content = target.read_text(encoding="utf-8")
-    new_content = content.replace(body.original, body.proposed, 1)
-    if new_content == content:
-        raise HTTPException(400, "Original fragment not found in target file")
+    from openakita.evolution.experiment_loop import ExperimentLoop
+
+    new_content, match_err = ExperimentLoop._fuzzy_match_and_replace(
+        content, body.original, body.proposed
+    )
+    if new_content is None:
+        raise HTTPException(400, match_err)
     target.write_text(new_content, encoding="utf-8")
     return {"status": "ok", "section": body.section}
 

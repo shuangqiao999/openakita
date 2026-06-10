@@ -33,6 +33,16 @@ _DEFAULT_IMPROVEMENT_THRESHOLD = 0.05
 def _parse_llm_json(text: str) -> Any:
     text = re.sub(r"^```(?:json)?\s*\n?", "", text.strip())
     text = re.sub(r"\n?```\s*$", "", text)
+    start = text.find("{")
+    if start == -1:
+        start = text.find("[")
+    if start > 0:
+        text = text[start:]
+    end = text.rfind("}")
+    if end == -1:
+        end = text.rfind("]")
+    if 0 <= end < len(text) - 1:
+        text = text[: end + 1]
     return json.loads(text)
 
 

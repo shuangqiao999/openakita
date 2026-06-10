@@ -299,7 +299,7 @@ class BenchmarkEngine:
                 )
 
             elapsed = time.perf_counter() - t0
-            success = result.success if result else False
+            success = getattr(result, "success", False) if result else False
             iterations = getattr(result, "iterations", 0) or 0
             output = str(getattr(result, "data", ""))[:500]
 
