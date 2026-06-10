@@ -249,7 +249,7 @@ class TestExperimentLoopSafety:
 
     @pytest.mark.asyncio
     async def test_rejects_path_traversal(self, mock_agent, tmp_path):
-        loop = ExperimentLoop(mock_agent)
+        loop = ExperimentLoop(mock_agent, project_root=tmp_path)
         hypothesis = Hypothesis(
             target="../../../etc/passwd",
             description="test",
@@ -264,43 +264,120 @@ class TestExperimentLoopSafety:
 
     @pytest.mark.asyncio
     async def test_rejects_oversized_change(self, mock_agent, tmp_path):
-        with patch("openakita.config.settings") as mock_settings:
-            mock_settings.project_root = tmp_path
-            target_file = tmp_path / "identity" / "AGENT.md"
-            target_file.parent.mkdir(parents=True)
-            target_file.write_text("short content", encoding="utf-8")
+        target_file = tmp_path / "identity" / "AGENT.md"
+        target_file.parent.mkdir(parents=True)
+        target_file.write_text("short content", encoding="utf-8")
 
-            loop = ExperimentLoop(mock_agent, data_dir=tmp_path / "exp")
-            hypothesis = Hypothesis(
-                target="identity/AGENT.md",
-                description="test",
-                original_content="short content",
-                proposed_content="replacement",
-                rationale="test",
-            )
-            result = await loop._run_experiment(hypothesis, MagicMock(), {})
-            assert result.action == "error"
-            assert "30%" in result.reason
+        loop = ExperimentLoop(mock_agent, data_dir=tmp_path / "exp", project_root=tmp_path)
+        hypothesis = Hypothesis(
+            target="identity/AGENT.md",
+            description="test",
+            original_content="short content",
+            proposed_content="replacement text here",
+            rationale="test",
+        )
+        result = await loop._run_experiment(hypothesis, MagicMock(), {})
+        assert result.action == "error"
+        assert "30%" in result.reason
 
     @pytest.mark.asyncio
     async def test_rejects_short_replacement(self, mock_agent, tmp_path):
-        with patch("openakita.config.settings") as mock_settings:
-            mock_settings.project_root = tmp_path
-            target_file = tmp_path / "identity" / "AGENT.md"
-            target_file.parent.mkdir(parents=True)
-            target_file.write_text("x" * 1000, encoding="utf-8")
+        target_file = tmp_path / "identity" / "AGENT.md"
+        target_file.parent.mkdir(parents=True)
+        target_file.write_text("x" * 1000, encoding="utf-8")
 
-            loop = ExperimentLoop(mock_agent, data_dir=tmp_path / "exp")
-            hypothesis = Hypothesis(
-                target="identity/AGENT.md",
-                description="test",
-                original_content="xxx",
-                proposed_content="y",
-                rationale="test",
+        loop = ExperimentLoop(mock_agent, data_dir=tmp_path / "exp", project_root=tmp_path)
+        hypothesis = Hypothesis(
+            target="identity/AGENT.md",
+            description="test",
+            original_content="xxx",
+            proposed_content="y",
+            rationale="test",
+        )
+        result = await loop._run_experiment(hypothesis, MagicMock(), {})
+        assert result.action == "error"
+        assert "过短" in result.reason
+
+    def test_fuzzy_match_whitespace_difference(self):
+        original = "line one\n  line  two\nline three\n"
+        fragment = "line one\nline two\nline three\n"
+        replacement = "REPLACED\n"
+        result, err = ExperimentLoop._fuzzy_match_and_replace(original, fragment, replacement)
+        assert result is not None
+        assert "REPLACED" in result
+
+    def test_fuzzy_match_exact(self):
+        original = "hello world"
+        result, err = ExperimentLoop._fuzzy_match_and_replace(original, "hello", "HI")
+        assert result == "HI world"
+
+    def test_fuzzy_match_no_match(self):
+        original = "hello world"
+        result, err = ExperimentLoop._fuzzy_match_and_replace(original, "completely different text here", "x")
+        assert result is None
+        assert "无法匹配" in err
+
+    def test_syntax_validation_python_valid(self):
+        ok, _ = ExperimentLoop._validate_syntax(Path("test.py"), "x = 1\nprint(x)\n")
+        assert ok is True
+
+    def test_syntax_validation_python_invalid(self):
+        ok, reason = ExperimentLoop._validate_syntax(Path("test.py"), "def foo(\n")
+        assert ok is False
+        assert "语法错误" in reason
+
+    def test_syntax_validation_yaml_valid(self):
+        ok, _ = ExperimentLoop._validate_syntax(Path("test.yaml"), "key: value\n")
+        assert ok is True
+
+    def test_syntax_validation_markdown_always_valid(self):
+        ok, _ = ExperimentLoop._validate_syntax(Path("test.md"), "# bad {{{{ syntax")
+        assert ok is True
+
+    def test_success_rate_hard_constraint(self):
+        old = {"success_rate": 0.8, "avg_tokens": 5000, "avg_time": 10}
+        new_worse_sr = {"success_rate": 0.6, "avg_tokens": 1000, "avg_time": 3}
+        assert ExperimentLoop._is_improvement(old, new_worse_sr) is False
+
+    def test_improvement_accepted_when_sr_equal(self):
+        old = {"success_rate": 0.8, "avg_tokens": 5000, "avg_time": 10}
+        new_better = {"success_rate": 0.8, "avg_tokens": 2000, "avg_time": 5}
+        assert ExperimentLoop._is_improvement(old, new_better) is True
+
+    def test_backup_cleanup(self, tmp_path):
+        loop = ExperimentLoop(MagicMock(), data_dir=tmp_path / "exp", project_root=tmp_path)
+        backups = loop._backups_dir
+        old_backup = backups / "backup_old_123"
+        old_backup.write_text("old", encoding="utf-8")
+        import os
+        os.utime(old_backup, (0, 0))
+        recent_backup = backups / "backup_recent_456"
+        recent_backup.write_text("recent", encoding="utf-8")
+        loop._cleanup_old_backups(max_age_days=1)
+        assert not old_backup.exists()
+        assert recent_backup.exists()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_lock(self, mock_agent, tmp_path):
+        ExperimentLoop._cycle_lock = None
+        call_order = []
+
+        async def fake_suite(agent, **kw):
+            call_order.append("start")
+            await asyncio.sleep(0.2)
+            call_order.append("end")
+            return MagicMock(
+                metrics=MagicMock(success_rate=1.0, avg_tokens=0, avg_time=0, efficiency_score=100)
             )
-            result = await loop._run_experiment(hypothesis, MagicMock(), {})
-            assert result.action == "error"
-            assert "过短" in result.reason
+
+        from openakita.evolution.benchmark import BenchmarkEngine
+        with patch.object(BenchmarkEngine, "run_suite", side_effect=fake_suite):
+            loop = ExperimentLoop(mock_agent, data_dir=tmp_path / "exp", project_root=tmp_path)
+            loop._brain = None
+            t1 = asyncio.create_task(loop.run_cycle())
+            t2 = asyncio.create_task(loop.run_cycle())
+            await asyncio.gather(t1, t2)
+        assert call_order == ["start", "end", "start", "end"]
 
 
 class TestPromptOptimizerSafety:

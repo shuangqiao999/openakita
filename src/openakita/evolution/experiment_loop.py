@@ -2,27 +2,45 @@
 实验循环 (autoresearch 核心思路移植)
 
 修改一个变量 → 运行 benchmark → 对比指标 → 保留/回滚 → 重复
+
+改进:
+- P0-1: difflib 鲁棒匹配替换
+- P0-2: ast/yaml 语法验证
+- P0-3: asyncio.Lock 并发互斥
+- P0-4: 备份集中管理 + 定期清理
+- P1-5: 成功率不下降硬约束
+- P1-6: 历史失败原因反馈给 LLM
+- P1-7: LLM 调用超时控制
+- P1-8: 配置化参数
+- P2-9: project_root 解耦
+- P2-10: 备份目录集中管理
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-IMPROVEMENT_THRESHOLD = 0.02
-MAX_EXPERIMENTS_PER_CYCLE = 3
+_DEFAULT_MAX_EXPERIMENTS = 3
+_DEFAULT_IMPROVEMENT_THRESHOLD = 0.02
+_DEFAULT_LLM_TIMEOUT = 60
+_BACKUP_MAX_AGE_DAYS = 7
+_FUZZY_MATCH_THRESHOLD = 0.85
 
 
 @dataclass
 class Hypothesis:
-    target: str  # 修改目标（文件路径或参数名）
+    target: str
     description: str
     original_content: str
     proposed_content: str
@@ -45,15 +63,50 @@ class ExperimentLoop:
         "identity/POLICIES.yaml",
     ]
 
-    def __init__(self, agent: Any, data_dir: str | Path = "data/evolution/experiments") -> None:
+    _cycle_lock: asyncio.Lock | None = None
+
+    def __init__(
+        self,
+        agent: Any,
+        data_dir: str | Path = "data/evolution/experiments",
+        *,
+        project_root: Path | None = None,
+    ) -> None:
         self._agent = agent
         self._brain = getattr(agent, "brain", None)
         self._data_dir = Path(data_dir)
         self._data_dir.mkdir(parents=True, exist_ok=True)
-        self._baselines_dir = self._data_dir / "baselines"
-        self._baselines_dir.mkdir(parents=True, exist_ok=True)
+        self._backups_dir = self._data_dir / "backups"
+        self._backups_dir.mkdir(parents=True, exist_ok=True)
+
+        if project_root is not None:
+            self._project_root = project_root
+        else:
+            try:
+                from ..config import settings
+
+                self._project_root = settings.project_root
+            except Exception:
+                self._project_root = Path(".")
+
+        self._cleanup_old_backups()
+
+    def _get_config(self, key: str, default: Any) -> Any:
+        try:
+            from ..config import settings
+
+            return getattr(settings, key, default)
+        except Exception:
+            return default
 
     async def run_cycle(self, benchmark_report: Any = None) -> list[ExperimentResult]:
+        if ExperimentLoop._cycle_lock is None:
+            ExperimentLoop._cycle_lock = asyncio.Lock()
+
+        async with ExperimentLoop._cycle_lock:
+            return await self._run_cycle_locked(benchmark_report)
+
+    async def _run_cycle_locked(self, benchmark_report: Any = None) -> list[ExperimentResult]:
         from .benchmark import BenchmarkEngine
 
         engine = BenchmarkEngine()
@@ -67,8 +120,9 @@ class ExperimentLoop:
             "efficiency_score": benchmark_report.metrics.efficiency_score,
         }
 
+        max_experiments = self._get_config("experiments_per_cycle", _DEFAULT_MAX_EXPERIMENTS)
         results: list[ExperimentResult] = []
-        for _ in range(MAX_EXPERIMENTS_PER_CYCLE):
+        for _ in range(max_experiments):
             hypothesis = await self._generate_hypothesis(baseline_metrics, results)
             if not hypothesis:
                 break
@@ -90,22 +144,31 @@ class ExperimentLoop:
 
         prior_summary = ""
         if prior_results:
-            prior_summary = "\n".join(
-                f"- {r.hypothesis.description if r.hypothesis else '?'}: {r.action}"
-                for r in prior_results
-            )
+            lines = []
+            for r in prior_results:
+                desc = r.hypothesis.description if r.hypothesis else "?"
+                line = f"- {desc}: {r.action}"
+                if r.reason:
+                    line += f" (原因: {r.reason})"
+                lines.append(line)
+            prior_summary = "\n".join(lines)
 
         targets_content = {}
-        from ..config import settings
-
         for target in self.MUTABLE_TARGETS:
-            p = settings.project_root / target
+            p = self._project_root / target
             if p.exists():
                 targets_content[target] = p.read_text(encoding="utf-8")[:2000]
+
+        if not targets_content:
+            return None
 
         targets_display = "\n\n".join(
             f"### {name}\n```\n{content}\n```" for name, content in targets_content.items()
         )
+
+        prior_section = ""
+        if prior_summary:
+            prior_section = "已尝试的实验（请避免重复失败方向）:\n" + prior_summary
 
         prompt = f"""你是一个 AI 系统优化研究员。当前系统性能指标:
 - 成功率: {current_metrics.get("success_rate", 0):.1%}
@@ -113,7 +176,7 @@ class ExperimentLoop:
 - 平均耗时: {current_metrics.get("avg_time", 0):.1f}s
 - 效率分: {current_metrics.get("efficiency_score", 0):.1f}
 
-{f"已尝试的实验: {prior_summary}" if prior_summary else ""}
+{prior_section}
 
 可修改的目标文件及当前内容:
 {targets_display}
@@ -129,19 +192,22 @@ class ExperimentLoop:
 
 如果没有好的改进思路，返回 {{"skip": true}}
 """
+        llm_timeout = self._get_config("experiment_llm_timeout", _DEFAULT_LLM_TIMEOUT)
         try:
-            response = await self._brain.chat_simple(prompt)
+            response = await asyncio.wait_for(self._brain.chat_simple(prompt), timeout=llm_timeout)
             data = json.loads(response)
             if data.get("skip"):
                 return None
-            target = data["target"]
             return Hypothesis(
-                target=target,
+                target=data["target"],
                 description=data["description"],
                 original_content=data.get("original_fragment", ""),
                 proposed_content=data.get("proposed_change", ""),
                 rationale=data["rationale"],
             )
+        except TimeoutError:
+            logger.warning("[ExperimentLoop] LLM 假设生成超时 (%ds)", llm_timeout)
+            return None
         except Exception as e:
             logger.warning("[ExperimentLoop] 假设生成失败: %s", e)
             return None
@@ -152,16 +218,13 @@ class ExperimentLoop:
         engine: Any,
         baseline_metrics: dict[str, float],
     ) -> ExperimentResult:
-        from ..config import settings
-
         if hypothesis.target not in self.MUTABLE_TARGETS:
             return ExperimentResult(
                 action="error", hypothesis=hypothesis, reason="目标不在允许列表中"
             )
 
-        target_path = (settings.project_root / hypothesis.target).resolve()
-        project_root_resolved = settings.project_root.resolve()
-        if not target_path.is_relative_to(project_root_resolved):
+        target_path = (self._project_root / hypothesis.target).resolve()
+        if not target_path.is_relative_to(self._project_root.resolve()):
             return ExperimentResult(
                 action="error", hypothesis=hypothesis, reason="路径遍历检测: 目标在项目外"
             )
@@ -182,23 +245,27 @@ class ExperimentLoop:
                     action="error", hypothesis=hypothesis, reason="替换内容过短"
                 )
 
-        backup_path = self._data_dir / f"backup_{target_path.name}_{int(time.time())}"
+        if not hypothesis.original_content or not hypothesis.proposed_content:
+            return ExperimentResult(action="error", hypothesis=hypothesis, reason="修改内容为空")
+
+        new_content, match_err = self._fuzzy_match_and_replace(
+            original_full, hypothesis.original_content, hypothesis.proposed_content
+        )
+        if new_content is None:
+            return ExperimentResult(action="error", hypothesis=hypothesis, reason=match_err)
+
+        valid, syntax_err = self._validate_syntax(target_path, new_content)
+        if not valid:
+            logger.warning("[ExperimentLoop] 语法验证失败: %s", syntax_err)
+            return ExperimentResult(
+                action="error", hypothesis=hypothesis, reason=f"语法验证失败: {syntax_err}"
+            )
+
+        backup_path = self._backups_dir / f"backup_{target_path.name}_{int(time.time())}"
         backup_path.write_text(original_full, encoding="utf-8")
 
         try:
-            if hypothesis.original_content and hypothesis.proposed_content:
-                new_content = original_full.replace(
-                    hypothesis.original_content, hypothesis.proposed_content, 1
-                )
-                if new_content == original_full:
-                    return ExperimentResult(
-                        action="error", hypothesis=hypothesis, reason="未找到替换目标"
-                    )
-                target_path.write_text(new_content, encoding="utf-8")
-            else:
-                return ExperimentResult(
-                    action="error", hypothesis=hypothesis, reason="修改内容为空"
-                )
+            target_path.write_text(new_content, encoding="utf-8")
 
             report = await engine.run_suite(self._agent)
             new_metrics = {
@@ -208,7 +275,10 @@ class ExperimentLoop:
                 "efficiency_score": report.metrics.efficiency_score,
             }
 
-            if self._is_improvement(baseline_metrics, new_metrics):
+            threshold = self._get_config(
+                "experiment_improvement_threshold", _DEFAULT_IMPROVEMENT_THRESHOLD
+            )
+            if self._is_improvement(baseline_metrics, new_metrics, threshold):
                 logger.info("[ExperimentLoop] ✓ 保留改进: %s", hypothesis.description)
                 return ExperimentResult(
                     action="keep",
@@ -232,12 +302,100 @@ class ExperimentLoop:
             target_path.write_text(original_full, encoding="utf-8")
             return ExperimentResult(action="error", hypothesis=hypothesis, reason=str(e))
         finally:
-            if backup_path.exists():
-                backup_path.unlink(missing_ok=True)
+            pass
 
-    def _is_improvement(self, old: dict[str, float], new: dict[str, float]) -> bool:
+    @staticmethod
+    def _fuzzy_match_and_replace(
+        original_full: str, fragment: str, replacement: str
+    ) -> tuple[str | None, str]:
+        if fragment in original_full:
+            return original_full.replace(fragment, replacement, 1), ""
+
+        normalized_full = re.sub(r"\s+", " ", original_full)
+        normalized_frag = re.sub(r"\s+", " ", fragment)
+        if normalized_frag in normalized_full:
+            lines_full = original_full.splitlines(keepends=True)
+            lines_frag = fragment.splitlines(keepends=True)
+            best_ratio = 0.0
+            best_start = -1
+            frag_len = len(lines_frag)
+            for i in range(len(lines_full) - frag_len + 1):
+                candidate = lines_full[i : i + frag_len]
+                ratio = SequenceMatcher(None, "".join(candidate), fragment).ratio()
+                if ratio > best_ratio:
+                    best_ratio = ratio
+                    best_start = i
+
+            if best_ratio >= _FUZZY_MATCH_THRESHOLD and best_start >= 0:
+                matched_text = "".join(lines_full[best_start : best_start + frag_len])
+                result = original_full.replace(matched_text, replacement, 1)
+                if result != original_full:
+                    logger.info("[ExperimentLoop] 空白归一化匹配成功 (ratio=%.2f)", best_ratio)
+                    return result, ""
+
+        lines_full = original_full.splitlines(keepends=True)
+        lines_frag = fragment.splitlines(keepends=True)
+        frag_len = len(lines_frag)
+        if frag_len == 0:
+            return None, "替换片段为空"
+
+        best_ratio = 0.0
+        best_start = -1
+        for i in range(max(1, len(lines_full) - frag_len + 1)):
+            candidate = lines_full[i : i + frag_len]
+            ratio = SequenceMatcher(None, "".join(candidate), fragment).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_start = i
+
+        if best_ratio >= _FUZZY_MATCH_THRESHOLD and best_start >= 0:
+            matched_text = "".join(lines_full[best_start : best_start + frag_len])
+            result = original_full.replace(matched_text, replacement, 1)
+            if result != original_full:
+                logger.info(
+                    "[ExperimentLoop] 模糊匹配成功 (ratio=%.2f, line=%d)",
+                    best_ratio,
+                    best_start,
+                )
+                return result, ""
+
+        return (
+            None,
+            f"无法匹配替换片段 (最佳相似度={best_ratio:.2f}, 阈值={_FUZZY_MATCH_THRESHOLD})",
+        )
+
+    @staticmethod
+    def _validate_syntax(filepath: Path, content: str) -> tuple[bool, str]:
+        suffix = filepath.suffix.lower()
+        if suffix == ".py":
+            try:
+                import ast
+
+                ast.parse(content)
+                return True, ""
+            except SyntaxError as e:
+                return False, f"Python 语法错误 (line {e.lineno}): {e.msg}"
+        elif suffix in (".yaml", ".yml"):
+            try:
+                import yaml
+
+                yaml.safe_load(content)
+                return True, ""
+            except Exception as e:
+                return False, f"YAML 格式错误: {e}"
+        return True, ""
+
+    @staticmethod
+    def _is_improvement(
+        old: dict[str, float],
+        new: dict[str, float],
+        threshold: float = _DEFAULT_IMPROVEMENT_THRESHOLD,
+    ) -> bool:
         sr_old = old.get("success_rate", 0)
         sr_new = new.get("success_rate", 0)
+        if sr_new < sr_old:
+            return False
+
         tok_old = old.get("avg_tokens", 1)
         tok_new = new.get("avg_tokens", 1)
         time_old = old.get("avg_time", 1)
@@ -248,7 +406,17 @@ class ExperimentLoop:
             + 0.3 * (tok_old - tok_new) / max(tok_old, 1)
             + 0.2 * (time_old - time_new) / max(time_old, 1)
         )
-        return score_delta > IMPROVEMENT_THRESHOLD
+        return score_delta > threshold
+
+    def _cleanup_old_backups(self, max_age_days: int = _BACKUP_MAX_AGE_DAYS) -> None:
+        cutoff = time.time() - max_age_days * 86400
+        for f in self._backups_dir.glob("backup_*"):
+            try:
+                if f.stat().st_mtime < cutoff:
+                    f.unlink(missing_ok=True)
+                    logger.debug("[ExperimentLoop] 清理过期备份: %s", f.name)
+            except Exception:
+                pass
 
     def _save_cycle(self, results: list[ExperimentResult]) -> None:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")

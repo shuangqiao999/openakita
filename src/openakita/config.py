@@ -131,6 +131,18 @@ class Settings(BaseSettings):
         default=True,
         description="是否允许自主优化 prompt（修改→测试→保留/回滚）",
     )
+    experiments_per_cycle: int = Field(
+        default=3,
+        description="每次实验循环最大实验数",
+    )
+    experiment_improvement_threshold: float = Field(
+        default=0.02,
+        description="实验改进阈值（加权综合分提升需超过此值才采纳）",
+    )
+    experiment_llm_timeout: int = Field(
+        default=60,
+        description="实验假设生成 LLM 调用超时秒数",
+    )
     pattern_learn_enabled: bool = Field(
         default=True,
         description="是否从历史任务中学习高效工具调用模式",
