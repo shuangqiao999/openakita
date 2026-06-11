@@ -157,7 +157,7 @@ class PromptOptimizer:
 """
         try:
             llm_timeout = self._get_config("experiment_llm_timeout", 600)
-            response = await asyncio.wait_for(self._brain.chat_simple(prompt), timeout=llm_timeout)
+            response = await asyncio.wait_for(self._brain.think(prompt), timeout=llm_timeout)
             data = _parse_llm_json(response)
             if data.get("skip"):
                 return None

@@ -239,7 +239,7 @@ class PatternLearner:
                     llm_timeout = v
             except Exception:
                 pass
-            response = await asyncio.wait_for(self._brain.chat_simple(prompt), timeout=llm_timeout)
+            response = await asyncio.wait_for(self._brain.think(prompt), timeout=llm_timeout)
             if isinstance(response, str):
                 text = response.strip().strip('"').strip("'")
             else:

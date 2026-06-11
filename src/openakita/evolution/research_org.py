@@ -243,7 +243,7 @@ class ResearchOrg:
             tool_stats=json.dumps(performance_data.get("tool_stats", {}), ensure_ascii=False),
         )
         try:
-            response = await asyncio.wait_for(self._brain.chat_simple(prompt), timeout=timeout)
+            response = await asyncio.wait_for(self._brain.think(prompt), timeout=timeout)
             result = _parse_llm_json(response)
             if not isinstance(result, list):
                 logger.warning("[ResearchOrg] Analyst 返回非数组格式")
@@ -286,7 +286,7 @@ class ResearchOrg:
             current_prompt=current_prompt,
         )
         try:
-            response = await asyncio.wait_for(self._brain.chat_simple(prompt), timeout=timeout)
+            response = await asyncio.wait_for(self._brain.think(prompt), timeout=timeout)
             data = _parse_llm_json(response)
             if data.get("skip"):
                 return None
@@ -306,7 +306,7 @@ class ResearchOrg:
     async def _engineer_tool(self, opp: dict, timeout: int) -> ResearchProposal | None:
         prompt = TOOL_DEVELOPER_PROMPT.format(opportunity=json.dumps(opp, ensure_ascii=False))
         try:
-            response = await asyncio.wait_for(self._brain.chat_simple(prompt), timeout=timeout)
+            response = await asyncio.wait_for(self._brain.think(prompt), timeout=timeout)
             data = _parse_llm_json(response)
             if data.get("skip"):
                 return None
@@ -340,7 +340,7 @@ class ResearchOrg:
                 )
             )
             try:
-                response = await asyncio.wait_for(self._brain.chat_simple(prompt), timeout=timeout)
+                response = await asyncio.wait_for(self._brain.think(prompt), timeout=timeout)
                 data = _parse_llm_json(response)
                 verdicts.append(
                     AuditVerdict(
