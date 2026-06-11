@@ -1021,10 +1021,8 @@ def build_mode_rules(mode: str) -> str:
         if plan_file.exists():
             try:
                 return plan_file.read_text(encoding="utf-8").strip()
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).debug("[PromptBuilder] 模式注入失败: %s", e)
-        return _PLAN_MODE_FALLBACK
+            except Exception:
+                return _PLAN_MODE_FALLBACK
 
     if mode == "ask":
         return _ASK_MODE_RULES
@@ -2244,8 +2242,9 @@ def _build_memory_section(
         _pattern_text = _pl.get_injection_text()
         if _pattern_text:
             parts.append("## 高效工具使用模式（从历史经验学习）\n\n" + _pattern_text)
-    except Exception:
-        pass
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).debug("[PromptBuilder] 模式注入失败: %s", e)
 
     # Layer 4: Active Retrieval.
     if retrieval_query:
