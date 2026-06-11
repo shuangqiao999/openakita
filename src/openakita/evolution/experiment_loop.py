@@ -35,19 +35,9 @@ _DEFAULT_MAX_EXPERIMENTS = 3
 
 
 def _parse_llm_json(text: str) -> Any:
-    text = re.sub(r"^```(?:json)?\s*\n?", "", text.strip())
-    text = re.sub(r"\n?```\s*$", "", text)
-    start = text.find("{")
-    if start == -1:
-        start = text.find("[")
-    if start > 0:
-        text = text[start:]
-    end = text.rfind("}")
-    if end == -1:
-        end = text.rfind("]")
-    if 0 <= end < len(text) - 1:
-        text = text[: end + 1]
-    return json.loads(text)
+    from . import strip_json_fences
+
+    return json.loads(strip_json_fences(text))
 
 
 _DEFAULT_IMPROVEMENT_THRESHOLD = 0.02
@@ -331,6 +321,8 @@ class ExperimentLoop:
         original_full: str, fragment: str, replacement: str
     ) -> tuple[str | None, str]:
         if fragment in original_full:
+            if fragment.endswith("\n") and not replacement.endswith("\n"):
+                replacement += "\n"
             return original_full.replace(fragment, replacement, 1), ""
 
         normalized_full = re.sub(r"\s+", " ", original_full)

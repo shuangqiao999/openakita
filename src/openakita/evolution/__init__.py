@@ -11,14 +11,16 @@ def strip_json_fences(text: str) -> str:
     m = re.match(r"^```(?:json)?\s*\n?(.*?)```\s*$", text, re.DOTALL)
     if m:
         return m.group(1).strip()
-    start = text.find("{")
-    if start == -1:
-        start = text.find("[")
+    start_brace = text.find("{")
+    start_bracket = text.find("[")
+    start = start_brace if start_brace >= 0 else float("inf")
+    if start_bracket >= 0:
+        start = min(start, start_bracket)
+    if isinstance(start, float):
+        start = -1
     if start > 0:
         text = text[start:]
-    end = text.rfind("}")
-    if end == -1:
-        end = text.rfind("]")
+    end = max(text.rfind("}"), text.rfind("]"))
     if end >= 0 and end < len(text) - 1:
         text = text[: end + 1]
     return text

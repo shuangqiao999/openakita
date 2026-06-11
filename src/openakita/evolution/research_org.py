@@ -34,19 +34,9 @@ logger = logging.getLogger(__name__)
 
 
 def _parse_llm_json(text: str) -> Any:
-    text = re.sub(r"^```(?:json)?\s*\n?", "", text.strip())
-    text = re.sub(r"\n?```\s*$", "", text)
-    start = text.find("{")
-    if start == -1:
-        start = text.find("[")
-    if start > 0:
-        text = text[start:]
-    end = text.rfind("}")
-    if end == -1:
-        end = text.rfind("]")
-    if 0 <= end < len(text) - 1:
-        text = text[: end + 1]
-    return json.loads(text)
+    from . import strip_json_fences
+
+    return json.loads(strip_json_fences(text))
 
 
 _DEFAULT_LLM_TIMEOUT = 60
