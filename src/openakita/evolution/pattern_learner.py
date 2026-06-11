@@ -231,7 +231,10 @@ class PatternLearner:
             llm_timeout = 600
             try:
                 from ..config import settings
-                llm_timeout = getattr(settings, "experiment_llm_timeout", 600) or 600
+
+                v = getattr(settings, "experiment_llm_timeout", 600)
+                if v and v > 0:
+                    llm_timeout = v
             except Exception:
                 pass
             response = await asyncio.wait_for(self._brain.chat_simple(prompt), timeout=llm_timeout)

@@ -194,7 +194,7 @@ class BenchmarkEngine:
         *,
         task_runner: Callable[..., Any] | None = None,
         token_counter: Callable[..., int] | None = None,
-        max_concurrent: int = 2,
+        max_concurrent: int = 1,
     ) -> None:
         if data_dir is None:
             try:
@@ -237,10 +237,12 @@ class BenchmarkEngine:
             tasks = self.load_tasks()
         try:
             from openakita.config import settings
-            global_timeout = getattr(settings, "benchmark_task_timeout", 0)
+
+            global_timeout = getattr(settings, "benchmark_task_timeout", 600)
             if global_timeout > 0:
-                for t in tasks:
-                    t.timeout_seconds = max(t.timeout_seconds, global_timeout)
+                from dataclasses import replace as _replace
+
+                tasks = [_replace(t, timeout_seconds=max(t.timeout_seconds, global_timeout)) for t in tasks]
         except Exception:
             pass
         mc = max_concurrent or self._max_concurrent

@@ -89,7 +89,10 @@ class PromptOptimizer:
         try:
             from ..config import settings
 
-            return getattr(settings, key, default)
+            v = getattr(settings, key, default)
+            if v is None or (isinstance(v, (int, float)) and v <= 0):
+                return default
+            return v
         except Exception:
             return default
 
