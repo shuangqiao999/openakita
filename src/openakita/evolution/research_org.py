@@ -222,10 +222,12 @@ class ResearchOrg:
                 continue
             if benchmark_count >= max_benchmarks:
                 break
-            success = await self._apply_and_verify(proposal, performance_data)
+            success, new_metrics = await self._apply_and_verify(proposal, performance_data)
             benchmark_count += 1
             if success:
                 adopted.append({"role": proposal.agent_role, "description": proposal.description})
+                if new_metrics:
+                    performance_data["metrics"] = new_metrics
 
         result = ResearchCycleResult(
             timestamp=datetime.now().isoformat(),
@@ -362,16 +364,16 @@ class ResearchOrg:
 
     async def _apply_and_verify(
         self, proposal: ResearchProposal, performance_data: dict | None = None
-    ) -> bool:
+    ) -> tuple[bool, dict | None]:
         if proposal.agent_role == "prompt_engineer":
             return await self._apply_prompt_change(proposal, performance_data)
         elif proposal.agent_role == "tool_developer":
-            return await self._generate_skill(proposal)
-        return False
+            return await self._generate_skill(proposal), None
+        return False, None
 
     async def _apply_prompt_change(
         self, proposal: ResearchProposal, performance_data: dict | None = None
-    ) -> bool:
+    ) -> tuple[bool, dict | None]:
         from .experiment_loop import ExperimentLoop
 
         full = None
@@ -382,31 +384,45 @@ class ResearchOrg:
             proposed = data.get("proposed", "")
             section = data.get("section", "")
             if not original or not proposed or not section:
-                return False
+                return False, None
 
             if section not in self.ALLOWED_SECTIONS:
                 logger.warning("[ResearchOrg] 非法目标: %s", section)
-                return False
+                return False, None
 
             target = (self._project_root / section).resolve()
             if not target.is_relative_to(self._project_root.resolve()):
-                return False
+                return False, None
             if not target.exists():
-                return False
+                return False, None
 
             full = target.read_text(encoding="utf-8")
+
+            touched_ratio = len(original) / max(len(full), 1)
+            if touched_ratio > 0.3:
+                return False, None
+            if len(proposed) < 10:
+                return False, None
 
             new_content, match_err = ExperimentLoop._fuzzy_match_and_replace(
                 full, original, proposed
             )
             if new_content is None:
                 logger.warning("[ResearchOrg] 匹配失败: %s", match_err)
-                return False
+                return False, None
 
             valid, syntax_err = ExperimentLoop._validate_syntax(target, new_content)
             if not valid:
                 logger.warning("[ResearchOrg] 语法验证失败: %s", syntax_err)
-                return False
+                return False, None
+
+            if target.suffix.lower() == ".md":
+                import re
+
+                opens = len(re.findall(r"\{\{", new_content))
+                closes = len(re.findall(r"\}\}", new_content))
+                if opens != closes:
+                    return False, None
 
             target.write_text(new_content, encoding="utf-8")
             from .benchmark import BenchmarkEngine
@@ -427,10 +443,10 @@ class ResearchOrg:
             )
             if ExperimentLoop._is_improvement(baseline_metrics, new_metrics, threshold):
                 logger.info("[ResearchOrg] ✓ Prompt 变更已采纳")
-                return True
+                return True, new_metrics
 
             target.write_text(full, encoding="utf-8")
-            return False
+            return False, None
         except asyncio.CancelledError:
             if full is not None and target is not None:
                 target.write_text(full, encoding="utf-8")
@@ -439,7 +455,7 @@ class ResearchOrg:
             if full is not None and target is not None:
                 target.write_text(full, encoding="utf-8")
             logger.warning("[ResearchOrg] Prompt 应用失败: %s", e)
-            return False
+            return False, None
 
     async def _generate_skill(self, proposal: ResearchProposal) -> bool:
         skill_gen = getattr(self._agent, "skill_generator", None)

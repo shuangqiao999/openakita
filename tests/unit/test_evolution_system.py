@@ -530,8 +530,8 @@ class TestResearchOrgSafety:
             target="src/openakita/core/brain.py",
             content=json.dumps({"section": "src/openakita/core/brain.py", "original": "a", "proposed": "b"}),
         )
-        result = await org._apply_prompt_change(proposal, {})
-        assert result is False
+        success, _ = await org._apply_prompt_change(proposal, {})
+        assert success is False
 
     @pytest.mark.asyncio
     async def test_concurrent_lock(self, mock_agent):

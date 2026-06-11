@@ -302,6 +302,7 @@ class PatternLearner:
             if p.category in existing_cats:
                 existing = [e for e in existing if e.category != p.category]
             existing.append(p)
+            existing_cats.add(p.category)
         existing = self._deduplicate_patterns(existing)
         existing = sorted(existing, key=lambda p: -p.confidence)[:MAX_PATTERNS]
         data = [

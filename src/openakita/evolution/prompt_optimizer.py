@@ -166,7 +166,8 @@ class PromptOptimizer:
 如果当前 prompt 已经很好无需修改，返回 {{"skip": true}}
 """
         try:
-            response = await asyncio.wait_for(self._brain.chat_simple(prompt), timeout=60)
+            llm_timeout = self._get_config("experiment_llm_timeout", 60)
+            response = await asyncio.wait_for(self._brain.chat_simple(prompt), timeout=llm_timeout)
             data = _parse_llm_json(response)
             if data.get("skip"):
                 return None
