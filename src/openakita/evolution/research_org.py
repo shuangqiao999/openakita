@@ -23,7 +23,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -407,11 +406,10 @@ class ResearchOrg:
                 return False, None
 
             if target.suffix.lower() == ".md":
-                import re
+                from .prompt_optimizer import PromptOptimizer
 
-                opens = len(re.findall(r"\{\{", new_content))
-                closes = len(re.findall(r"\}\}", new_content))
-                if opens != closes:
+                tpl_ok, tpl_err = PromptOptimizer._validate_template_vars(new_content)
+                if not tpl_ok:
                     return False, None
 
             target.write_text(new_content, encoding="utf-8")
@@ -534,7 +532,7 @@ class ResearchOrg:
             from ..config import settings
 
             fa_dir = settings.data_dir / "failure_analysis"
-            if fa_dir.exists():
+            if fa_dir.is_dir():
                 for date_dir in sorted(fa_dir.iterdir(), reverse=True)[:3]:
                     if not date_dir.is_dir():
                         continue
@@ -557,7 +555,7 @@ class ResearchOrg:
             from ..config import settings
 
             traces_dir = settings.data_dir / "react_traces"
-            if traces_dir.exists():
+            if traces_dir.is_dir():
                 from .pattern_learner import PatternLearner
 
                 all_tools = PatternLearner._extract_tool_names(

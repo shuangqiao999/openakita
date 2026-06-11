@@ -338,8 +338,10 @@ class BenchmarkEngine:
             pass  # cleanup moved to suite-level
 
     def _verify_outcome(self, task: BenchmarkTask, output: str) -> tuple[bool, str]:
-        if not task.expected_outcome or not output:
+        if not task.expected_outcome:
             return True, ""
+        if not output or not output.strip():
+            return False, "输出为空"
 
         expected = task.expected_outcome
         output_lower = output.lower()
@@ -352,7 +354,7 @@ class BenchmarkEngine:
             if kw.lower() not in output_lower:
                 return False, f"输出缺少关键内容: '{kw}'"
 
-        numbers = re.findall(r"\b\d{2,}\b", expected)
+        numbers = re.findall(r"\b\d+\b", expected)
         for num in numbers:
             if num not in output:
                 return False, f"输出缺少数值: {num}"

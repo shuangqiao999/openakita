@@ -102,7 +102,7 @@ async def list_benchmarks(request: Request, limit: int = 20):
 async def list_experiments(request: Request, limit: int = 50, status: str | None = None):
     exp_dir = _data_dir() / "experiments"
     all_entries = []
-    for f in _list_json_files(exp_dir)[:limit]:
+    for f in _list_json_files(exp_dir):
         data = _read_json(f)
         if isinstance(data, list):
             for entry in data:

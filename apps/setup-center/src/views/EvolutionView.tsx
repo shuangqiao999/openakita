@@ -425,7 +425,7 @@ function PromptsTab({ api }: { api: string }) {
           </TableHeader>
           <TableBody>
             {variants.map((v, i) => (
-              <TableRow key={i} className="cursor-pointer" onClick={() => setDiffTarget(diffTarget === v ? null : v)}>
+              <TableRow key={i} className="cursor-pointer" onClick={() => setDiffTarget(diffTarget?._file === v._file ? null : v)}>
                 <TableCell className="text-xs">{v._file?.split("_adopted")[0]?.split("_rejected")[0] || "—"}</TableCell>
                 <TableCell className="text-sm truncate max-w-[300px]">{v.hypothesis || "—"}</TableCell>
                 <TableCell className="text-xs">{v.section || "—"}</TableCell>

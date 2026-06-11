@@ -94,7 +94,7 @@ class ExperimentLoop:
                 from ..config import settings
 
                 self._project_root = settings.project_root
-            except Exception:
+            except (ImportError, AttributeError):
                 self._project_root = Path(".")
 
         self._cleanup_old_backups()
@@ -103,7 +103,7 @@ class ExperimentLoop:
         try:
             from ..config import settings
 
-            return getattr(settings, key, default)
+            return getattr(settings, key, default) or default
         except Exception:
             return default
 
