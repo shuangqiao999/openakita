@@ -194,7 +194,7 @@ class BenchmarkEngine:
         *,
         task_runner: Callable[..., Any] | None = None,
         token_counter: Callable[..., int] | None = None,
-        max_concurrent: int = 1,
+        max_concurrent: int = 2,
     ) -> None:
         if data_dir is None:
             try:
