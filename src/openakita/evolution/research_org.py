@@ -244,7 +244,7 @@ class ResearchOrg:
         )
         try:
             response = await asyncio.wait_for(self._brain.think(prompt), timeout=timeout)
-            result = _parse_llm_json(response)
+            result = _parse_llm_json(response.content)
             if not isinstance(result, list):
                 logger.warning("[ResearchOrg] Analyst 返回非数组格式")
                 return []
@@ -287,7 +287,7 @@ class ResearchOrg:
         )
         try:
             response = await asyncio.wait_for(self._brain.think(prompt), timeout=timeout)
-            data = _parse_llm_json(response)
+            data = _parse_llm_json(response.content)
             if data.get("skip"):
                 return None
             return ResearchProposal(
@@ -307,7 +307,7 @@ class ResearchOrg:
         prompt = TOOL_DEVELOPER_PROMPT.format(opportunity=json.dumps(opp, ensure_ascii=False))
         try:
             response = await asyncio.wait_for(self._brain.think(prompt), timeout=timeout)
-            data = _parse_llm_json(response)
+            data = _parse_llm_json(response.content)
             if data.get("skip"):
                 return None
             return ResearchProposal(
@@ -341,7 +341,7 @@ class ResearchOrg:
             )
             try:
                 response = await asyncio.wait_for(self._brain.think(prompt), timeout=timeout)
-                data = _parse_llm_json(response)
+                data = _parse_llm_json(response.content)
                 verdicts.append(
                     AuditVerdict(
                         proposal_id=i,

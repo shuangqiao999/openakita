@@ -145,7 +145,7 @@ class Settings(BaseSettings):
         description="实验假设生成 LLM 调用超时秒数",
     )
     benchmark_max_concurrent: int = Field(
-        default=3,
+        default=1,
         ge=1,
         description="benchmark 并发任务数",
     )

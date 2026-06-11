@@ -203,7 +203,7 @@ class ExperimentLoop:
         llm_timeout = self._get_config("experiment_llm_timeout", _DEFAULT_LLM_TIMEOUT)
         try:
             response = await asyncio.wait_for(self._brain.think(prompt), timeout=llm_timeout)
-            data = _parse_llm_json(response)
+            data = _parse_llm_json(response.content)
             if data.get("skip"):
                 return None
             return Hypothesis(
