@@ -207,9 +207,9 @@ class BenchmarkEngine:
             try:
                 from openakita.config import settings
 
-                max_concurrent = getattr(settings, "benchmark_max_concurrent", 3)
+                max_concurrent = settings.benchmark_max_concurrent
             except Exception:
-                max_concurrent = 3
+                max_concurrent = 1
         self._data_dir = Path(data_dir)
         self._data_dir.mkdir(parents=True, exist_ok=True)
         self._tasks_file = self._data_dir / "tasks.json"
