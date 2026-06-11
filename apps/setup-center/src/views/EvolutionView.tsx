@@ -453,7 +453,7 @@ function PromptsTab({ api }: { api: string }) {
                 oldValue={diffTarget.original || `[Original: ${diffTarget.original_length || "?"} chars]`}
                 newValue={diffTarget.proposed || `[Proposed: ${diffTarget.proposed_length || "?"} chars]`}
                 splitView={true}
-                useDarkTheme={document.documentElement.classList.contains("dark")}
+                useDarkTheme={typeof window !== "undefined" && document.documentElement.classList.contains("dark")}
               />
             </div>
           </CardContent>
@@ -592,7 +592,7 @@ function ApprovalsTab({ api }: { api: string }) {
                       oldValue={a.original_content}
                       newValue={a.proposed_content}
                       splitView={true}
-                      useDarkTheme={document.documentElement.classList.contains("dark")}
+                      useDarkTheme={typeof window !== "undefined" && document.documentElement.classList.contains("dark")}
                     />
                   </div>
                 )}

@@ -1021,8 +1021,9 @@ def build_mode_rules(mode: str) -> str:
         if plan_file.exists():
             try:
                 return plan_file.read_text(encoding="utf-8").strip()
-            except Exception:
-                pass
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).debug("[PromptBuilder] 模式注入失败: %s", e)
         return _PLAN_MODE_FALLBACK
 
     if mode == "ask":

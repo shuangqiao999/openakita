@@ -253,8 +253,10 @@ class ExperimentLoop:
                     action="error", hypothesis=hypothesis, reason="替换内容过短"
                 )
 
-        if not hypothesis.original_content or not hypothesis.proposed_content:
-            return ExperimentResult(action="error", hypothesis=hypothesis, reason="修改内容为空")
+        if not hypothesis.original_content:
+            return ExperimentResult(action="error", hypothesis=hypothesis, reason="原始片段为空")
+        if not hypothesis.proposed_content:
+            return ExperimentResult(action="error", hypothesis=hypothesis, reason="替换内容为空")
 
         new_content, match_err = self._fuzzy_match_and_replace(
             original_full, hypothesis.original_content, hypothesis.proposed_content
