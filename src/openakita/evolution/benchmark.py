@@ -257,7 +257,7 @@ class BenchmarkEngine:
         finally:
             self._cleanup_temp_files()
 
-        for task, result in zip(tasks, results, strict=False):
+        for task, result in zip(tasks, results, strict=True):
             logger.info(
                 "[Benchmark] %s: %s (%.1fs, %d tok, verify=%s)",
                 task.id,
@@ -416,7 +416,7 @@ class BenchmarkEngine:
             efficiency = success_rate * 100
 
         categories: dict[str, list[bool]] = {}
-        for task, result in zip(tasks, results, strict=False):
+        for task, result in zip(tasks, results, strict=True):
             categories.setdefault(task.category, []).append(result.success)
         cat_scores = {cat: sum(v) / len(v) for cat, v in categories.items()}
 

@@ -275,10 +275,12 @@ class ResearchOrg:
         return proposals
 
     async def _engineer_prompt(self, opp: dict, timeout: int) -> ResearchProposal | None:
-        current_prompt = ""
-        agent_md = self._project_root / "identity" / "AGENT.md"
-        if agent_md.exists():
-            current_prompt = agent_md.read_text(encoding="utf-8")[:2000]
+        current_prompt_parts = []
+        for section in self.ALLOWED_SECTIONS:
+            p = self._project_root / section
+            if p.exists():
+                current_prompt_parts.append(p.read_text(encoding="utf-8")[:1000])
+        current_prompt = "\n".join(current_prompt_parts) if current_prompt_parts else ""
         prompt = PROMPT_ENGINEER_PROMPT.format(
             opportunity=json.dumps(opp, ensure_ascii=False),
             current_prompt=current_prompt,
@@ -456,7 +458,8 @@ class ResearchOrg:
             desc = proposal.description
             try:
                 spec = json.loads(proposal.content)
-                desc = spec.get("description", desc)
+                if isinstance(spec, dict):
+                    desc = spec.get("description", desc)
             except Exception:
                 pass
             result = await skill_gen.generate(desc)
@@ -536,7 +539,7 @@ class ResearchOrg:
 
             fa_dir = settings.data_dir / "failure_analysis"
             if fa_dir.is_dir():
-                for date_dir in sorted(fa_dir.iterdir(), reverse=True)[:3]:
+                for date_dir in sorted(fa_dir.iterdir(), key=lambda d: d.stat().st_mtime, reverse=True)[:3]:
                     if not date_dir.is_dir():
                         continue
                     for f in sorted(date_dir.glob("*.json"), reverse=True)[:5]:

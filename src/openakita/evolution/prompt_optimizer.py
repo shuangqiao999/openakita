@@ -126,7 +126,7 @@ class PromptOptimizer:
         for section in self.OPTIMIZABLE_SECTIONS:
             p = self._project_root / section
             if p.exists():
-                sections_content[section] = p.read_text(encoding="utf-8")[:3000]
+                sections_content[section] = p.read_text(encoding="utf-8")[:2000]
 
         if not sections_content:
             return None

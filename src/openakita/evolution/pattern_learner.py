@@ -148,7 +148,7 @@ class PatternLearner:
 
         processed = 0
         skipped_old = 0
-        for trace_file in trace_files[:200]:
+        for trace_file in trace_files[:500]:  # 上限500，避免窗口内旧文件被忽略
             try:
                 mtime = trace_file.stat().st_mtime
                 if mtime < cutoff:
@@ -164,7 +164,7 @@ class PatternLearner:
 
                 raw_steps = data.get("iterations", data.get("steps", []))
                 tools = self._extract_tool_names(raw_steps)
-                tools = list(dict.fromkeys(tools))
+                tools = list(dict.fromkeys(tools))  # 去重保序(Python 3.7+)
 
                 if tools:
                     sequences.append(
