@@ -194,7 +194,7 @@ class BenchmarkEngine:
         *,
         task_runner: Callable[..., Any] | None = None,
         token_counter: Callable[..., int] | None = None,
-        max_concurrent: int = 3,
+        max_concurrent: int = 2,
     ) -> None:
         if data_dir is None:
             try:
@@ -203,6 +203,12 @@ class BenchmarkEngine:
                 data_dir = settings.data_dir / "evolution" / "benchmarks"
             except Exception:
                 data_dir = Path("data/evolution/benchmarks")
+        try:
+            from openakita.config import settings
+
+            max_concurrent = getattr(settings, "benchmark_max_concurrent", max_concurrent)
+        except Exception:
+            pass
         self._data_dir = Path(data_dir)
         self._data_dir.mkdir(parents=True, exist_ok=True)
         self._tasks_file = self._data_dir / "tasks.json"

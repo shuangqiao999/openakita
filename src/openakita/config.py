@@ -140,8 +140,12 @@ class Settings(BaseSettings):
         description="实验改进阈值（加权综合分提升需超过此值才采纳）",
     )
     experiment_llm_timeout: int = Field(
-        default=60,
+        default=600,
         description="实验假设生成 LLM 调用超时秒数",
+    )
+    benchmark_max_concurrent: int = Field(
+        default=2,
+        description="benchmark 并发任务数",
     )
     prompt_improvement_threshold: float = Field(
         default=0.05,
