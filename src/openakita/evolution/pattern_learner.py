@@ -240,7 +240,10 @@ class PatternLearner:
             except Exception:
                 pass
             response = await asyncio.wait_for(self._brain.chat_simple(prompt), timeout=llm_timeout)
-            text = response.strip().strip('"').strip("'")
+            if isinstance(response, str):
+                text = response.strip().strip('"').strip("'")
+            else:
+                text = str(getattr(response, "content", "")) if response else ""
             if not text or len(text) > _MAX_SUMMARY_LENGTH:
                 logger.debug(
                     "[PatternLearner] LLM 输出不合规 (len=%d), 回退规则模式",

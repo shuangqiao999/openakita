@@ -85,7 +85,7 @@ function DashboardTab({ api }: { api: string }) {
     try {
       const res = await safeFetch(`${api}/api/evolution/dashboard`);
       setData(await res.json());
-    } catch { /* ignore */ } finally { setLoading(false); }
+    } catch (e: any) { console.error("[EvolutionView] load dashboard", e); } finally { setLoading(false); }
   }, [api]);
 
   useEffect(() => { load(); }, [load]);
@@ -182,7 +182,7 @@ function ExperimentsTab({ api }: { api: string }) {
       const res = await safeFetch(`${api}/api/evolution/experiments${params}`);
       const data = await res.json();
       setExperiments(data.experiments || []);
-    } catch { /* ignore */ } finally { setLoading(false); }
+    } catch (e: any) { console.error("[EvolutionView] load dashboard", e); } finally { setLoading(false); }
   }, [api, filter]);
 
   useEffect(() => { load(); }, [load]);
@@ -246,7 +246,7 @@ function SkillsTab({ api }: { api: string }) {
       const res = await safeFetch(`${api}/api/evolution/skills`);
       const data = await res.json();
       setSkills(data.skills || []);
-    } catch { /* ignore */ } finally { setLoading(false); }
+    } catch (e: any) { console.error("[EvolutionView] load dashboard", e); } finally { setLoading(false); }
   }, [api]);
 
   useEffect(() => { load(); }, [load]);
@@ -330,7 +330,7 @@ function PatternsTab({ api }: { api: string }) {
       const res = await safeFetch(`${api}/api/evolution/patterns`);
       const data = await res.json();
       setPatterns(data.patterns || []);
-    } catch { /* ignore */ } finally { setLoading(false); }
+    } catch (e: any) { console.error("[EvolutionView] load dashboard", e); } finally { setLoading(false); }
   }, [api]);
 
   useEffect(() => { load(); }, [load]);
@@ -397,7 +397,7 @@ function PromptsTab({ api }: { api: string }) {
       const res = await safeFetch(`${api}/api/evolution/prompts`);
       const data = await res.json();
       setVariants(data.variants || []);
-    } catch { /* ignore */ } finally { setLoading(false); }
+    } catch (e: any) { console.error("[EvolutionView] load dashboard", e); } finally { setLoading(false); }
   }, [api]);
 
   useEffect(() => { load(); }, [load]);
@@ -482,7 +482,7 @@ function ApprovalsTab({ api }: { api: string }) {
       const data = await res.json();
       setApprovals(data.approvals || []);
       setPendingCount(data.pending_count || 0);
-    } catch { /* ignore */ } finally { setLoading(false); }
+    } catch (e: any) { console.error("[EvolutionView] load dashboard", e); } finally { setLoading(false); }
   }, [api, filter]);
 
   useEffect(() => { load(); }, [load]);
