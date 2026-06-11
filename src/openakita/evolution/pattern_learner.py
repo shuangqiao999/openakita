@@ -111,7 +111,9 @@ class PatternLearner:
         return patterns
 
     @staticmethod
-    def _extract_tool_names(data: Any) -> list[str]:
+    def _extract_tool_names(data: Any, _depth: int = 0) -> list[str]:
+        if _depth > 20:
+            return []
         tools: list[str] = []
         if isinstance(data, dict):
             for key in ("tool_name", "tool"):
@@ -123,10 +125,10 @@ class PatternLearner:
                     tools.append(data["name"])
             for v in data.values():
                 if isinstance(v, (dict, list)):
-                    tools.extend(PatternLearner._extract_tool_names(v))
+                    tools.extend(PatternLearner._extract_tool_names(v, _depth + 1))
         elif isinstance(data, list):
             for item in data:
-                tools.extend(PatternLearner._extract_tool_names(item))
+                tools.extend(PatternLearner._extract_tool_names(item, _depth + 1))
         return tools
 
     def _extract_sequences(self, days: int, *, since_mtime: float = 0.0) -> list[ToolSequence]:

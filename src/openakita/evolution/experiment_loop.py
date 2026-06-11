@@ -71,7 +71,7 @@ class ExperimentLoop:
         "identity/POLICIES.yaml",
     ]
 
-    _cycle_lock: asyncio.Lock | None = None
+    _cycle_lock = asyncio.Lock()
 
     def __init__(
         self,
@@ -111,9 +111,6 @@ class ExperimentLoop:
             return default
 
     async def run_cycle(self, benchmark_report: Any = None) -> list[ExperimentResult]:
-        if ExperimentLoop._cycle_lock is None:
-            ExperimentLoop._cycle_lock = asyncio.Lock()
-
         async with ExperimentLoop._cycle_lock:
             return await self._run_cycle_locked(benchmark_report)
 

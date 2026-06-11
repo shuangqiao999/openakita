@@ -60,7 +60,7 @@ class PromptOptimizer:
         "identity/POLICIES.yaml",
     ]
 
-    _evolve_lock: asyncio.Lock | None = None
+    _evolve_lock = asyncio.Lock()
 
     def __init__(
         self,
@@ -97,9 +97,6 @@ class PromptOptimizer:
             return default
 
     async def evolve_step(self, performance_data: dict | None = None) -> VariantResult | None:
-        if PromptOptimizer._evolve_lock is None:
-            PromptOptimizer._evolve_lock = asyncio.Lock()
-
         async with PromptOptimizer._evolve_lock:
             return await self._evolve_step_locked(performance_data)
 

@@ -406,7 +406,6 @@ class TestExperimentLoopSafety:
 
     @pytest.mark.asyncio
     async def test_concurrent_lock(self, mock_agent, tmp_path):
-        ExperimentLoop._cycle_lock = None
         call_order = []
 
         async def fake_suite(agent, **kw):
@@ -501,7 +500,6 @@ class TestPromptOptimizerSafety:
 
     @pytest.mark.asyncio
     async def test_concurrent_lock(self, mock_agent, tmp_path):
-        PromptOptimizer._evolve_lock = None
         call_order = []
 
         async def fake_propose(self_ref, perf):
@@ -535,7 +533,6 @@ class TestResearchOrgSafety:
 
     @pytest.mark.asyncio
     async def test_concurrent_lock(self, mock_agent):
-        ResearchOrg._cycle_lock = None
         call_order = []
 
         def fake_gather(self_ref):

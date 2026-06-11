@@ -119,12 +119,14 @@ class ApprovalQueue:
         except OSError as e:
             return False, f"无法读取目标文件: {e}"
 
-        new_content = content.replace(original, proposed, 1)
-        if new_content == content:
+        from .experiment_loop import ExperimentLoop
+
+        new_content, match_err = ExperimentLoop._fuzzy_match_and_replace(content, original, proposed)
+        if new_content is None:
             data["status"] = "pending"
-            data["apply_error"] = "原始片段未找到（文件可能已变更），请重新审查"
+            data["apply_error"] = f"无法匹配: {match_err}"
             self._save_dict(req_id, data)
-            return False, "原始片段未找到，已恢复为待审批状态"
+            return False, "无法匹配原始片段，已恢复为待审批状态"
 
         try:
             target.write_text(new_content, encoding="utf-8")

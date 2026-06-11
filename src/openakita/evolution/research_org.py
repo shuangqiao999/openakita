@@ -127,7 +127,7 @@ SAFETY_AUDITOR_PROMPT = """你是安全审计员。审查以下拟议修改:
 class ResearchOrg:
     ALLOWED_SECTIONS = frozenset({"identity/AGENT.md", "identity/POLICIES.yaml"})
 
-    _cycle_lock: asyncio.Lock | None = None
+    _cycle_lock = asyncio.Lock()
 
     def __init__(
         self,
