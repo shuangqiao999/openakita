@@ -235,6 +235,14 @@ class BenchmarkEngine:
     ) -> BenchmarkReport:
         if tasks is None:
             tasks = self.load_tasks()
+        try:
+            from openakita.config import settings
+            global_timeout = getattr(settings, "benchmark_task_timeout", 0)
+            if global_timeout > 0:
+                for t in tasks:
+                    t.timeout_seconds = max(t.timeout_seconds, global_timeout)
+        except Exception:
+            pass
         mc = max_concurrent or self._max_concurrent
         sem = asyncio.Semaphore(mc)
 

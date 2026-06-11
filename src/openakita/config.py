@@ -144,8 +144,12 @@ class Settings(BaseSettings):
         description="实验假设生成 LLM 调用超时秒数",
     )
     benchmark_max_concurrent: int = Field(
-        default=2,
+        default=1,
         description="benchmark 并发任务数",
+    )
+    benchmark_task_timeout: int = Field(
+        default=600,
+        description="benchmark 单任务超时秒数（覆盖内置任务默认值）",
     )
     prompt_improvement_threshold: float = Field(
         default=0.05,
@@ -168,7 +172,7 @@ class Settings(BaseSettings):
         description="研究周期每次最大 benchmark 运行数",
     )
     research_llm_timeout: int = Field(
-        default=60,
+        default=600,
         description="研究周期 LLM 调用超时秒数",
     )
     pattern_learn_enabled: bool = Field(

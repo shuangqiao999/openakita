@@ -228,7 +228,13 @@ class PatternLearner:
             "只输出一行文本，不要解释。"
         )
         try:
-            response = await asyncio.wait_for(self._brain.chat_simple(prompt), timeout=60)
+            llm_timeout = 600
+            try:
+                from ..config import settings
+                llm_timeout = getattr(settings, "experiment_llm_timeout", 600) or 600
+            except Exception:
+                pass
+            response = await asyncio.wait_for(self._brain.chat_simple(prompt), timeout=llm_timeout)
             text = response.strip().strip('"').strip("'")
             if not text or len(text) > _MAX_SUMMARY_LENGTH:
                 logger.debug(
