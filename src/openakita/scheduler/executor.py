@@ -1499,11 +1499,41 @@ class TaskExecutor:
                             if tid not in success_history:
                                 success_history[tid] = 1.0 if r["success"] else 0.0
 
-                    tasks = await generator.maintain_task_pool(
-                        engine.load_tasks(), success_history
+                    original_tasks = engine.load_tasks()
+                    original_ids = {t.id for t in original_tasks}
+                    all_tasks = await generator.maintain_task_pool(
+                        original_tasks, success_history
                     )
-                    save_tasks_to_file(tasks, engine._data_dir / "tasks.json")
-                    summary += f" | 任务池: {len(tasks)}个"
+
+                    # 原有任务 → tasks.json（已审批）
+                    keep = [t for t in all_tasks if t.id in original_ids]
+                    save_tasks_to_file(keep, engine._data_dir / "tasks.json")
+
+                    # 新增变体 → draft_tasks.json（待审批）
+                    new_variants = [t for t in all_tasks if t.id not in original_ids]
+                    if new_variants:
+                        draft_path = engine._data_dir / "draft_tasks.json"
+                        existing = (
+                            _json.loads(draft_path.read_text(encoding="utf-8"))
+                            if draft_path.exists()
+                            else []
+                        )
+                        existing += [
+                            {
+                                "id": t.id,
+                                "description": t.description,
+                                "category": t.category,
+                                "expected_outcome": t.expected_outcome,
+                                "timeout_seconds": t.timeout_seconds,
+                                "difficulty": t.difficulty,
+                            }
+                            for t in new_variants
+                        ]
+                        draft_path.write_text(
+                            _json.dumps(existing, ensure_ascii=False, indent=2),
+                            encoding="utf-8",
+                        )
+                    summary += f" | 任务池: {len(all_tasks)}个({'新增'+str(len(new_variants))+'个待审批' if new_variants else '无新增'})"
             except Exception as e:
                 logger.warning("[BenchmarkEvolve] 任务池维护失败: %s", e)
 
