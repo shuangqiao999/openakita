@@ -20,8 +20,8 @@ val = tuner.read("BENCHMARK_MAX_CONCURRENT")
 assert val == "1", f"Expected 1, got {val}"
 print(f"  [PASS] read BENCHMARK_MAX_CONCURRENT=1")
 
-backup = tuner.apply("BENCHMARK_MAX_CONCURRENT", "3")
-assert tuner.read("BENCHMARK_MAX_CONCURRENT") == "3"
+backup, ok = tuner.apply("BENCHMARK_MAX_CONCURRENT", "3")
+assert ok and tuner.read("BENCHMARK_MAX_CONCURRENT") == "3"
 assert backup is not None and backup.exists()
 print(f"  [PASS] apply 3, backup={backup.name}")
 
@@ -29,8 +29,8 @@ tuner.rollback(backup)
 assert tuner.read("BENCHMARK_MAX_CONCURRENT") == "1"
 print(f"  [PASS] rollback to 1")
 
-backup2 = tuner.apply("NEW_PARAM", "42")
-assert tuner.read("NEW_PARAM") == "42"
+backup2, ok2 = tuner.apply("NEW_PARAM", "42")
+assert ok2 and tuner.read("NEW_PARAM") == "42"
 print(f"  [PASS] add new param NEW_PARAM=42")
 
 tuner.rollback(backup2)

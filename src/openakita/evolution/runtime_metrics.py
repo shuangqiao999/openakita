@@ -57,6 +57,7 @@ class RuntimeMetricsCollector:
 
     def collect(self) -> RuntimeSnapshot:
         snapshot = RuntimeSnapshot(timestamp=datetime.now().isoformat())
+        collect_start = time.time()
         last_ts = 0.0
 
         try:
@@ -69,7 +70,7 @@ class RuntimeMetricsCollector:
         self._collect_memory_stats(snapshot)
         self._collect_tool_stats(snapshot, last_ts)
         self._collect_user_feedback(snapshot, last_ts)
-        self._save_last_ts(time.time())
+        self._save_last_ts(collect_start)
         return snapshot
 
     def _collect_memory_stats(self, snapshot: RuntimeSnapshot) -> None:

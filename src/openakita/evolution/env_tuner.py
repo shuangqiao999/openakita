@@ -35,14 +35,15 @@ class EnvTuner:
                 return val.strip('"').strip("'")
         return None
 
-    def apply(self, key: str, value: str) -> Path | None:
-        """原子修改 .env，返回备份文件路径"""
+    def apply(self, key: str, value: str) -> tuple[Path | None, bool]:
+        """原子修改 .env，返回 (备份路径, 是否成功)"""
         content = ""
         if self._env_path.exists():
             content = self._env_path.read_text(encoding="utf-8")
 
-        backup = self._backup_dir / f"env_backup_{int(time.time() * 1000)}"
+        backup = None
         if self._env_path.exists():
+            backup = self._backup_dir / f"env_backup_{int(time.time() * 1000)}"
             shutil.copy2(self._env_path, backup)
 
         new_lines = []
@@ -56,20 +57,23 @@ class EnvTuner:
                 new_lines.append(line)
 
         if not found:
-            if new_lines and new_lines[-1] != "":
-                new_lines.append("")
             new_lines.append(f"{key}={value}")
 
         new_content = "\n".join(new_lines).strip() + "\n"
 
-        tmp = self._env_path.with_suffix(".tmp")
+        tmp = self._env_path.with_suffix(".env.tmp")
         tmp.write_text(new_content, encoding="utf-8")
         tmp.replace(self._env_path)
 
-        logger.info("[EnvTuner] %s=%s (备份: %s)", key, value, backup.name)
-        return backup if backup.exists() else None
+        logger.info("[EnvTuner] %s=%s (备份: %s)", key, value, backup.name if backup else "无")
+        return backup, True
 
-    def rollback(self, backup_path: Path) -> None:
+    def rollback(self, backup_path: Path | None) -> None:
+        if backup_path is None:
+            if self._env_path.exists():
+                self._env_path.unlink()
+                logger.info("[EnvTuner] 回滚: 删除新建文件")
+            return
         if backup_path.exists():
             shutil.copy2(backup_path, self._env_path)
             backup_path.unlink()
