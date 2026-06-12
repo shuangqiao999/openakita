@@ -199,6 +199,13 @@ class Settings(BaseSettings):
     user_feedback_weight: float = Field(default=0.15, ge=0.0, le=1.0)
     tool_failure_alert_threshold: float = Field(default=0.30, ge=0.0, le=1.0)
 
+    # .env 动态调优
+    env_tuning_enabled: bool = Field(default=True)
+    auto_approve_dynamic_tasks: bool = Field(default=False)
+    runtime_metrics_incremental: bool = Field(default=True)
+    quality_eval_validate_enabled: bool = Field(default=True)
+    implicit_feedback_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
+
     # === 任务超时策略 ===
     # 默认对齐 Claude Code 哲学：CLI/IM 真人对话场景不做"agent 自检自杀"，
     # 卡死由用户主动按"停止"/Esc 中断。仅在程序化场景（CI/SDK 批跑）需要兜底时打开。
@@ -1534,6 +1541,20 @@ def _create_settings_safe() -> Settings:
 
 # 全局配置实例
 settings = _create_settings_safe()
+
+# (default, min, max, needs_restart)
+EVOLVABLE_ENV_PARAMS: dict[str, tuple[float, float, float, bool]] = {
+    "BENCHMARK_MAX_CONCURRENT": (1, 1, 8, False),
+    "EXPERIMENTS_PER_CYCLE": (2, 1, 5, False),
+    "EXPERIMENT_IMPROVEMENT_THRESHOLD": (0.02, 0.0, 0.2, False),
+    "QUALITY_WEIGHT_IN_IMPROVEMENT": (0.30, 0.0, 0.8, False),
+    "RESEARCH_MAX_PROPOSALS": (2, 1, 4, False),
+    "PROMPT_MAX_CHANGE_RATIO": (0.2, 0.05, 0.5, True),
+    "DYNAMIC_BENCHMARK_MAX_TASKS": (30, 10, 50, False),
+    "BENCHMARK_TASK_TIMEOUT": (600, 120, 3600, False),
+    "EXPERIMENT_LLM_TIMEOUT": (600, 60, 1800, False),
+    "RESEARCH_LLM_TIMEOUT": (600, 60, 1800, False),
+}
 
 # 全局运行时状态管理器
 runtime_state = RuntimeState()

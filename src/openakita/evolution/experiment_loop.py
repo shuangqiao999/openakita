@@ -227,9 +227,11 @@ class ExperimentLoop:
         baseline_metrics: dict[str, float],
     ) -> ExperimentResult:
         if hypothesis.target not in self.MUTABLE_TARGETS:
-            return ExperimentResult(
-                action="error", hypothesis=hypothesis, reason="目标不在允许列表中"
-            )
+            if not hypothesis.target.startswith("env:"):
+                return ExperimentResult(
+                    action="error", hypothesis=hypothesis, reason="目标不在允许列表中"
+                )
+            return await self._run_env_experiment(hypothesis, engine, baseline_metrics)
 
         target_path = (self._project_root / hypothesis.target).resolve()
         if not target_path.is_relative_to(self._project_root.resolve()):
@@ -317,6 +319,75 @@ class ExperimentLoop:
         finally:
             if backup_path.exists():
                 backup_path.unlink(missing_ok=True)
+
+    async def _run_env_experiment(
+        self, hypothesis: Hypothesis, engine: Any, baseline_metrics: dict[str, float]
+    ) -> ExperimentResult:
+        """处理 env:PARAM 类型的目标 — 修改 .env 文件中的参数"""
+        param = hypothesis.target[4:]
+        try:
+            from openakita.config import EVOLVABLE_ENV_PARAMS, settings
+        except ImportError:
+            return ExperimentResult(action="error", hypothesis=hypothesis, reason="无法加载EVOLVABLE_ENV_PARAMS")
+
+        if param not in EVOLVABLE_ENV_PARAMS:
+            return ExperimentResult(action="error", hypothesis=hypothesis, reason="参数不在白名单中")
+
+        default_val, min_val, max_val, needs_restart = EVOLVABLE_ENV_PARAMS[param]
+        try:
+            num_val = float(hypothesis.proposed_content.strip())
+        except ValueError:
+            return ExperimentResult(action="error", hypothesis=hypothesis, reason="非数字值")
+
+        if num_val < min_val or num_val > max_val:
+            return ExperimentResult(
+                action="error", hypothesis=hypothesis,
+                reason=f"值 {num_val} 超出范围 [{min_val}, {max_val}]",
+            )
+
+        from .env_tuner import EnvTuner
+
+        tuner = EnvTuner(settings.project_root / ".env")
+        tuner.cleanup_backups()
+        backup = tuner.apply(param, str(num_val))
+
+        if backup is None:
+            return ExperimentResult(action="error", hypothesis=hypothesis, reason=".env 写入失败")
+
+        if not needs_restart:
+            changed = settings.reload()
+            logger.info("[EnvTuner] 热重载: %s (changed=%s)", param, changed)
+
+        try:
+            report = await engine.run_suite(self._agent)
+            new_metrics = {
+                "success_rate": report.metrics.success_rate,
+                "avg_tokens": report.metrics.avg_tokens,
+                "avg_time": report.metrics.avg_time,
+                "efficiency_score": report.metrics.efficiency_score,
+            }
+            threshold = self._get_config("experiment_improvement_threshold", _DEFAULT_IMPROVEMENT_THRESHOLD)
+            if self._is_improvement(baseline_metrics, new_metrics, threshold):
+                logger.info("[EnvTuner] ✓ 保留 env:%s=%s", param, num_val)
+                return ExperimentResult(
+                    action="keep", hypothesis=hypothesis,
+                    baseline_metrics=baseline_metrics, new_metrics=new_metrics,
+                    delta={k: new_metrics[k] - baseline_metrics[k] for k in baseline_metrics},
+                )
+            else:
+                tuner.rollback(backup)
+                if not needs_restart:
+                    settings.reload()
+                logger.info("[EnvTuner] ✗ 回滚 env:%s", param)
+                return ExperimentResult(
+                    action="discard", hypothesis=hypothesis,
+                    reason=f"指标未改善{' (需重启生效)' if needs_restart else ''}",
+                )
+        except Exception as e:
+            tuner.rollback(backup)
+            if not needs_restart:
+                settings.reload()
+            return ExperimentResult(action="error", hypothesis=hypothesis, reason=str(e))
 
     @staticmethod
     def _fuzzy_match_and_replace(

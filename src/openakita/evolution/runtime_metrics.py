@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -38,14 +39,37 @@ class RuntimeMetricsCollector:
     def __init__(self, data_dir: str | Path = "data/evolution/metrics") -> None:
         self._data_dir = Path(data_dir)
         self._data_dir.mkdir(parents=True, exist_ok=True)
+        self._state_file = self._data_dir / "last_collect.json"
+
+    def _load_last_ts(self) -> float:
+        if not self._state_file.exists():
+            return 0.0
+        try:
+            return json.loads(self._state_file.read_text(encoding="utf-8")).get("ts", 0.0)
+        except Exception:
+            return 0.0
+
+    def _save_last_ts(self, ts: float) -> None:
+        self._state_file.write_text(
+            json.dumps({"ts": ts, "time": datetime.now().isoformat()}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
 
     def collect(self) -> RuntimeSnapshot:
         snapshot = RuntimeSnapshot(timestamp=datetime.now().isoformat())
+        last_ts = 0.0
+
+        try:
+            from openakita.config import settings
+            if getattr(settings, "runtime_metrics_incremental", True):
+                last_ts = self._load_last_ts()
+        except Exception:
+            pass
 
         self._collect_memory_stats(snapshot)
-        self._collect_tool_stats(snapshot)
-        self._collect_user_feedback(snapshot)
-
+        self._collect_tool_stats(snapshot, last_ts)
+        self._collect_user_feedback(snapshot, last_ts)
+        self._save_last_ts(time.time())
         return snapshot
 
     def _collect_memory_stats(self, snapshot: RuntimeSnapshot) -> None:
@@ -64,7 +88,7 @@ class RuntimeMetricsCollector:
         except Exception:
             pass
 
-    def _collect_tool_stats(self, snapshot: RuntimeSnapshot) -> None:
+    def _collect_tool_stats(self, snapshot: RuntimeSnapshot, last_ts: float = 0.0) -> None:
         try:
             from openakita.config import settings
             from openakita.evolution.pattern_learner import PatternLearner
@@ -84,6 +108,8 @@ class RuntimeMetricsCollector:
 
             for f in trace_files[:50]:
                 try:
+                    if last_ts > 0 and f.stat().st_mtime <= last_ts:
+                        continue
                     data = json.loads(f.read_text(encoding="utf-8"))
                     raw = data.get("iterations", data.get("steps", []))
                     tools = PatternLearner._extract_tool_names(raw)
@@ -104,7 +130,7 @@ class RuntimeMetricsCollector:
         except Exception:
             pass
 
-    def _collect_user_feedback(self, snapshot: RuntimeSnapshot) -> None:
+    def _collect_user_feedback(self, snapshot: RuntimeSnapshot, last_ts: float = 0.0) -> None:
         try:
             from openakita.config import settings
 
@@ -121,6 +147,8 @@ class RuntimeMetricsCollector:
 
             for f in trace_files[:30]:
                 try:
+                    if last_ts > 0 and f.stat().st_mtime <= last_ts:
+                        continue
                     data = json.loads(f.read_text(encoding="utf-8"))
                     for step in data.get("iterations", data.get("steps", [])):
                         q = step.get("user_message", step.get("query", ""))

@@ -32,6 +32,7 @@ from .auto_evolve import AutoEvolver
 from .benchmark import BenchmarkEngine
 from .conversation_quality import ConversationQualityEvaluator, QualityScore
 from .dynamic_benchmark import DynamicBenchmarkGenerator
+from .env_tuner import EnvTuner
 from .experiment_loop import ExperimentLoop
 from .generator import SkillGenerator
 from .installer import AutoInstaller
@@ -51,6 +52,7 @@ __all__ = [
     "ConversationQualityEvaluator",
     "QualityScore",
     "DynamicBenchmarkGenerator",
+    "EnvTuner",
     "ExperimentLoop",
     "PromptOptimizer",
     "PatternLearner",
