@@ -311,3 +311,44 @@ async def resolve_approval(request: Request, req_id: str, body: ApprovalDecision
         return {"status": "rejected"}
     else:
         raise HTTPException(400, f"Invalid action: {body.action}")
+
+
+# ── Draft Tasks ──
+
+
+@router.get("/draft-tasks")
+async def list_draft_tasks(request: Request):
+    base = _data_dir()
+    path = base / "benchmarks" / "draft_tasks.json"
+    data = _read_json(path)
+    if not isinstance(data, list):
+        data = []
+    return {"draft_tasks": data, "total": len(data)}
+
+
+class DraftTaskDecision(BaseModel):
+    action: str  # "approve" / "reject"
+
+
+@router.post("/draft-tasks/{idx}")
+async def resolve_draft_task(request: Request, idx: int, body: DraftTaskDecision):
+    base = _data_dir()
+    draft_path = base / "benchmarks" / "draft_tasks.json"
+    tasks_path = base / "benchmarks" / "tasks.json"
+
+    draft_data = _read_json(draft_path)
+    if not isinstance(draft_data, list) or idx < 0 or idx >= len(draft_data):
+        raise HTTPException(404, "Draft task not found")
+
+    task = draft_data.pop(idx)
+    draft_path.write_text(json.dumps(draft_data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    if body.action == "approve":
+        existing = _read_json(tasks_path)
+        if not isinstance(existing, list):
+            existing = []
+        existing.append(task)
+        tasks_path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {"status": "approved", "task_id": task.get("id", "")}
+    else:
+        return {"status": "rejected"}

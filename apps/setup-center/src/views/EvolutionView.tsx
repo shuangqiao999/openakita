@@ -633,6 +633,62 @@ function ApprovalsTab({ api }: { api: string }) {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      <DraftTasksSection api={api} />
+    </div>
+  );
+}
+
+function DraftTasksSection({ api }: { api: string }) {
+  const { t } = useTranslation();
+  const [drafts, setDrafts] = useState<any[]>([]);
+  const [draftLoading, setDraftLoading] = useState(true);
+
+  const loadDrafts = useCallback(async () => {
+    setDraftLoading(true);
+    try {
+      const res = await safeFetch(`${api}/api/evolution/draft-tasks`);
+      const data = await res.json();
+      setDrafts(data.draft_tasks || []);
+    } catch { /* ignore */ } finally { setDraftLoading(false); }
+  }, [api]);
+
+  useEffect(() => { loadDrafts(); }, [loadDrafts]);
+
+  const doDraftAction = async (idx: number, action: string) => {
+    try {
+      await safeFetch(`${api}/api/evolution/draft-tasks/${idx}`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      loadDrafts();
+    } catch (e: any) { toast.error(e.message); }
+  };
+
+  if (draftLoading) return null;
+  if (drafts.length === 0) return null;
+
+  return (
+    <div className="border rounded-lg p-3 mb-2">
+      <div className="text-sm font-medium mb-2">{t("evolution.draftTasks", "\u5f85\u5ba1\u6838\u4efb\u52a1")} ({drafts.length})</div>
+      <div className="grid gap-2 md:grid-cols-2">
+        {drafts.map((d, i) => (
+          <div key={i} className="flex items-start justify-between gap-2 text-xs border rounded p-2">
+            <div className="flex-1 min-w-0">
+              <div className="font-medium truncate">{d.id || `#${i}`}</div>
+              <div className="text-muted-foreground truncate">{d.description?.slice(0, 80)}</div>
+              <div className="text-muted-foreground/70">{d.category} · {d.difficulty}</div>
+            </div>
+            <div className="flex gap-1 shrink-0">
+              <Button size="sm" variant="default" className="h-6 text-xs" onClick={() => doDraftAction(i, "approve")}>
+                {t("evolution.approve")}
+              </Button>
+              <Button size="sm" variant="outline" className="h-6 text-xs" onClick={() => doDraftAction(i, "reject")}>
+                {t("evolution.reject")}
+              </Button>
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
