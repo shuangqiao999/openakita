@@ -183,6 +183,7 @@ class ResearchOrg:
         timeout = self._get_config("research_llm_timeout", _DEFAULT_LLM_TIMEOUT)
         opportunities = await self._run_analyst(performance_data, timeout)
         if not opportunities:
+            logger.info("[ResearchOrg] Analyst 未返回改进机会，跳过研究周期")
             return ResearchCycleResult(timestamp=datetime.now().isoformat())
 
         proposals = await self._run_engineers(opportunities, timeout)
@@ -242,8 +243,10 @@ class ResearchOrg:
             failures=json.dumps(performance_data.get("failures", [])[:5], ensure_ascii=False),
             tool_stats=json.dumps(performance_data.get("tool_stats", {}), ensure_ascii=False),
         )
+        logger.info("[ResearchOrg] Analyst 调用 LLM (prompt长度=%d, timeout=%ds)", len(prompt), timeout)
         try:
             response = await asyncio.wait_for(self._brain.think(prompt), timeout=timeout)
+            logger.info("[ResearchOrg] Analyst LLM 返回 (len=%d)", len(response.content))
             result = _parse_llm_json(response.content)
             if not isinstance(result, list):
                 logger.warning("[ResearchOrg] Analyst 返回非数组格式")
