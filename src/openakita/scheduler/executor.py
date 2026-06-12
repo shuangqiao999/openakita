@@ -386,11 +386,10 @@ class TaskExecutor:
                         message=system_result,
                     )
                     if not delivered:
-                        error_msg = "任务已完成，但结果通知发送失败，请检查 IM 通道连接状态。"
                         logger.warning(
                             f"TaskExecutor: system task {task.id} result delivery failed"
                         )
-                        return False, error_msg
+                        return system_success, f"{system_result}（但通知发送失败）"
                 return system_success, system_result
 
             # 1. 创建 Agent
@@ -451,9 +450,7 @@ class TaskExecutor:
             if not agent_sent and not skip_end_notification:
                 delivered = await self._send_end_notification(task, success=True, message=result)
                 if not delivered:
-                    error_msg = "任务已完成，但结果通知发送失败，请检查 IM 通道连接状态。"
                     logger.warning(f"TaskExecutor: task {task.id} result delivery failed")
-                    return False, error_msg
 
             logger.info(f"TaskExecutor: task {task.id} completed successfully")
             return True, result

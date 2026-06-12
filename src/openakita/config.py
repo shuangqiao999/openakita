@@ -626,7 +626,7 @@ class Settings(BaseSettings):
         default=1200, description="定时任务执行超时时间（秒），默认 1200 秒（20分钟）"
     )
     scheduler_background_token_budget: int = Field(
-        default=120000,
+        default=5_000_000,
         description="单次后台系统任务的 token 预算，达到后在安全检查点暂停（0=不限制）",
     )
     scheduler_selfcheck_fix_token_budget: int = Field(
