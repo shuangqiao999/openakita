@@ -41,7 +41,7 @@ class EnvTuner:
         if self._env_path.exists():
             content = self._env_path.read_text(encoding="utf-8")
 
-        backup = self._backup_dir / f"env_backup_{int(time.time())}"
+        backup = self._backup_dir / f"env_backup_{int(time.time() * 1000)}"
         if self._env_path.exists():
             shutil.copy2(self._env_path, backup)
 

@@ -333,7 +333,7 @@ class ExperimentLoop:
         if param not in EVOLVABLE_ENV_PARAMS:
             return ExperimentResult(action="error", hypothesis=hypothesis, reason="参数不在白名单中")
 
-        default_val, min_val, max_val, needs_restart = EVOLVABLE_ENV_PARAMS[param]
+        _, min_val, max_val, needs_restart = EVOLVABLE_ENV_PARAMS[param]
         try:
             num_val = float(hypothesis.proposed_content.strip())
         except ValueError:
@@ -383,6 +383,11 @@ class ExperimentLoop:
                     action="discard", hypothesis=hypothesis,
                     reason=f"指标未改善{' (需重启生效)' if needs_restart else ''}",
                 )
+        except asyncio.CancelledError:
+            tuner.rollback(backup)
+            if not needs_restart:
+                settings.reload()
+            raise
         except Exception as e:
             tuner.rollback(backup)
             if not needs_restart:
