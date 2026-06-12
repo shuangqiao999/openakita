@@ -887,7 +887,8 @@ class Brain:
 
     async def _record_usage(self, response: LLMResponse) -> None:
         """从 LLMResponse 提取 token 用量并投递到追踪队列。"""
-        self._record_usage_sync(response)
+        async with self._token_lock:
+            self._record_usage_sync(response)
 
     def _record_usage_sync(self, response: LLMResponse) -> None:
         """同步版本（供 sync 函数调用），无锁保护（asyncio 协作多任务天然安全）。"""
@@ -899,14 +900,24 @@ class Brain:
             self._acc_tokens_in += usage.input_tokens
             self._acc_tokens_out += usage.output_tokens
 
+            ep_name = response.endpoint_name or self.get_current_endpoint_info().get("name", "")
+            cost = 0.0
+            for ep in self._llm_client.endpoints:
+                if ep.name == ep_name:
+                    cost = ep.calculate_cost(
+                        input_tokens=usage.input_tokens,
+                        output_tokens=usage.output_tokens,
+                        cache_read_tokens=usage.cache_read_input_tokens,
+                    )
+                    break
             _record_token_usage(
                 model=response.model or "",
-                endpoint_name=response.endpoint_name or "",
+                endpoint_name=ep_name,
                 input_tokens=usage.input_tokens,
                 output_tokens=usage.output_tokens,
                 cache_creation_tokens=usage.cache_creation_input_tokens,
                 cache_read_tokens=usage.cache_read_input_tokens,
-                estimated_cost=0.0,
+                estimated_cost=cost,
             )
         except Exception as e:
             logger.debug(f"[Brain] _record_usage_sync failed (non-fatal): {e}")
