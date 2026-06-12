@@ -491,4 +491,9 @@ class BenchmarkEngine:
     @staticmethod
     def _default_token_counter(agent: Any) -> int:
         brain = getattr(agent, "brain", None)
-        return getattr(brain, "total_tokens_used", 0) if brain else 0
+        if not brain:
+            return 0
+        total = getattr(brain, "total_tokens_used", 0)
+        if total <= 0:
+            total = getattr(brain, "_acc_tokens_in", 0) + getattr(brain, "_acc_tokens_out", 0)
+        return total

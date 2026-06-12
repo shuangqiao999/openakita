@@ -134,6 +134,10 @@ class Brain:
         self._acc_tokens_in: int = 0
         self._acc_tokens_out: int = 0
 
+    @property
+    def total_tokens_used(self) -> int:
+        return self._acc_tokens_in + self._acc_tokens_out
+
         # 启动信息
         endpoints = self._llm_client.endpoints
         logger.info(f"Brain initialized with {len(endpoints)} endpoints via LLMClient")
