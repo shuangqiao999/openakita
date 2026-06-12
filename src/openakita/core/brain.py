@@ -133,6 +133,7 @@ class Brain:
         self._acc_calls: int = 0
         self._acc_tokens_in: int = 0
         self._acc_tokens_out: int = 0
+        self._token_lock = asyncio.Lock()
 
     @property
     def total_tokens_used(self) -> int:
@@ -314,7 +315,7 @@ class Brain:
                     max_tokens=max_tokens,
                 )
                 self._compiler_on_success()
-                self._record_usage(response)
+                await self._record_usage(response)
                 result = self._llm_response_to_response(response)
                 self._dump_llm_request(system, messages, [], caller="compiler_think")
                 self._dump_llm_response(
@@ -884,16 +885,17 @@ class Brain:
     # Token 用量记录
     # ========================================================================
 
-    def _record_usage(self, response: LLMResponse) -> None:
+    async def _record_usage(self, response: LLMResponse) -> None:
         """从 LLMResponse 提取 token 用量并投递到追踪队列。"""
         try:
             usage = response.usage
             if not usage:
                 return
 
-            self._acc_calls += 1
-            self._acc_tokens_in += usage.input_tokens
-            self._acc_tokens_out += usage.output_tokens
+            async with self._token_lock:
+                self._acc_calls += 1
+                self._acc_tokens_in += usage.input_tokens
+                self._acc_tokens_out += usage.output_tokens
 
             ep_name = response.endpoint_name or self.get_current_endpoint_info().get("name", "")
             cost = 0.0
