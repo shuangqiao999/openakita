@@ -65,6 +65,25 @@ class ExperimentResult:
     reason: str = ""
 
 
+def _get_env_targets_display() -> str:
+    try:
+        from openakita.config import EVOLVABLE_ENV_PARAMS, settings
+    except ImportError:
+        return ""
+    lines = []
+    for key, (default_val, lo, hi, restart) in sorted(EVOLVABLE_ENV_PARAMS.items()):
+        current = settings
+        for part in key.lower().split("_"):
+            current = getattr(current, part, None)
+            if current is None:
+                break
+        if current is None:
+            current = getattr(settings, key, default_val)
+        restart_note = " (需重启)" if restart else ""
+        lines.append(f"- env:{key} = {current} (范围 {lo}-{hi}){restart_note}")
+    return "\n".join(lines) if lines else ""
+
+
 class ExperimentLoop:
     MUTABLE_TARGETS = [
         "identity/AGENT.md",
@@ -189,13 +208,16 @@ class ExperimentLoop:
 可修改的目标文件及当前内容:
 {targets_display}
 
+可调参数 (env: 前缀):
+{_get_env_targets_display()}
+
 请提出一个具体的改进假设。输出 JSON:
 {{
-    "target": "目标文件路径（必须从上面的文件中选择）",
+    "target": "目标文件路径（从上面的文件选择）或 env:参数名",
     "description": "改进描述（一句话）",
     "rationale": "为什么这个改动会提升性能",
-    "proposed_change": "具体的修改内容（完整替换片段）",
-    "original_fragment": "被替换的原始片段（必须在原文件中精确存在）"
+    "proposed_change": "具体的修改内容（完整替换片段，对 env: 目标直接写数值）",
+    "original_fragment": "被替换的原始片段（对 env: 目标写当前参数值）"
 }}
 
 如果没有好的改进思路，返回 {{"skip": true}}
@@ -345,11 +367,13 @@ class ExperimentLoop:
                 reason=f"值 {num_val} 超出范围 [{min_val}, {max_val}]",
             )
 
+        value_str = str(int(num_val)) if num_val == int(num_val) else str(num_val)
+
         from .env_tuner import EnvTuner
 
         tuner = EnvTuner(settings.project_root / ".env")
         tuner.cleanup_backups()
-        backup = tuner.apply(param, str(num_val))
+        backup = tuner.apply(param, value_str)
 
         if backup is None:
             return ExperimentResult(action="error", hypothesis=hypothesis, reason=".env 写入失败")
