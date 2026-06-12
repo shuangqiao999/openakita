@@ -188,6 +188,17 @@ class Settings(BaseSettings):
         description="是否启用 Multi-Agent 研究组织周期",
     )
 
+    # 动态 Benchmark
+    dynamic_benchmark_enabled: bool = Field(default=True)
+    dynamic_benchmark_max_tasks: int = Field(default=30, ge=8)
+    dynamic_benchmark_mutation_threshold: float = Field(default=0.95)
+    runtime_metrics_enabled: bool = Field(default=True)
+    conversation_quality_enabled: bool = Field(default=True)
+    quality_weight_in_improvement: float = Field(default=0.30, ge=0.0, le=1.0)
+    quality_sample_rate: float = Field(default=0.10, ge=0.01, le=1.0)
+    user_feedback_weight: float = Field(default=0.15, ge=0.0, le=1.0)
+    tool_failure_alert_threshold: float = Field(default=0.30, ge=0.0, le=1.0)
+
     # === 任务超时策略 ===
     # 默认对齐 Claude Code 哲学：CLI/IM 真人对话场景不做"agent 自检自杀"，
     # 卡死由用户主动按"停止"/Esc 中断。仅在程序化场景（CI/SDK 批跑）需要兜底时打开。

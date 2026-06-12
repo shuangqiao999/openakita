@@ -1468,6 +1468,45 @@ class TaskExecutor:
             if not report.baseline_delta or kept:
                 engine.save_as_baseline(report)
 
+            # 运行时指标采集
+            try:
+                from ..evolution.runtime_metrics import RuntimeMetricsCollector
+                collector = RuntimeMetricsCollector()
+                snapshot = collector.collect()
+                collector.save_snapshot(snapshot)
+                summary += f" | 指标: {snapshot.memory_total}条记忆, {len(snapshot.tool_frequencies)}种工具"
+            except Exception as e:
+                logger.debug("[BenchmarkEvolve] 指标采集跳过: %s", e)
+
+            # 动态任务池维护
+            try:
+                from ..config import settings
+
+                if getattr(settings, "dynamic_benchmark_enabled", True):
+                    import json as _json
+
+                    from ..evolution.dynamic_benchmark import (
+                        DynamicBenchmarkGenerator,
+                        save_tasks_to_file,
+                    )
+
+                    generator = DynamicBenchmarkGenerator(self.agent)
+                    success_history: dict[str, float] = {}
+                    for f in sorted(engine._results_dir.glob("*.json"))[-10:]:
+                        data = _json.loads(f.read_text(encoding="utf-8"))
+                        for r in data.get("results", []):
+                            tid = r["task_id"]
+                            if tid not in success_history:
+                                success_history[tid] = 1.0 if r["success"] else 0.0
+
+                    tasks = await generator.maintain_task_pool(
+                        engine.load_tasks(), success_history
+                    )
+                    save_tasks_to_file(tasks, engine._data_dir / "tasks.json")
+                    summary += f" | 任务池: {len(tasks)}个"
+            except Exception as e:
+                logger.warning("[BenchmarkEvolve] 任务池维护失败: %s", e)
+
             logger.info(f"[BenchmarkEvolve] {summary}")
             return True, summary
         except Exception as e:

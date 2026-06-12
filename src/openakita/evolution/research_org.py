@@ -583,6 +583,28 @@ class ResearchOrg:
             len(failures),
             len(tool_stats),
         )
+
+        if not tool_stats or not failures:
+            try:
+                from .runtime_metrics import RuntimeMetricsCollector
+
+                collector = RuntimeMetricsCollector()
+                snapshot = collector.collect()
+                if not tool_stats:
+                    tool_stats = snapshot.tool_frequencies
+                if not failures:
+                    failures = [
+                        {
+                            "root_cause": "tool_failure",
+                            "harness_gap": "missing_tool",
+                            "suggestion": f"{k} 失败率 {v:.0%}",
+                        }
+                        for k, v in snapshot.tool_failure_rates.items()
+                        if v > 0.3
+                    ][:5]
+            except Exception:
+                pass
+
         return {
             "metrics": metrics,
             "failures": failures[:5],

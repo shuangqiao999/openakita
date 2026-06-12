@@ -416,6 +416,8 @@ class ExperimentLoop:
         old: dict[str, float],
         new: dict[str, float],
         threshold: float = _DEFAULT_IMPROVEMENT_THRESHOLD,
+        quality_delta: float = 0.0,
+        quality_weight: float = 0.0,
     ) -> bool:
         sr_old = old.get("success_rate", 0)
         sr_new = new.get("success_rate", 0)
@@ -427,10 +429,12 @@ class ExperimentLoop:
         time_old = old.get("avg_time", 1)
         time_new = new.get("avg_time", 1)
 
+        w = max(0.0, 1.0 - quality_weight)
         score_delta = (
-            0.5 * (sr_new - sr_old)
-            + 0.3 * (tok_old - tok_new) / max(tok_old, 1)
-            + 0.2 * (time_old - time_new) / max(time_old, 1)
+            w * 0.5 * (sr_new - sr_old)
+            + w * 0.3 * (tok_old - tok_new) / max(tok_old, 1)
+            + w * 0.2 * (time_old - time_new) / max(time_old, 1)
+            + quality_weight * quality_delta
         )
         return score_delta > threshold
 
