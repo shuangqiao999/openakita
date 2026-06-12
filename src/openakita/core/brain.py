@@ -345,7 +345,7 @@ class Brain:
             enable_thinking=False,
             max_tokens=_fallback_max,
         )
-        self._record_usage(response)
+        await self._record_usage(response)
         req_id = self._dump_llm_request(system, messages, [], caller="compiler_think")
         self._dump_llm_response(
             response,
@@ -418,7 +418,7 @@ class Brain:
             response, caller=f"think_lightweight_{client_name}", request_id=req_id
         )
 
-        self._record_usage(response)
+        await self._record_usage(response)
         return self._llm_response_to_response(response)
 
     async def think_lightweight_stream(
@@ -703,7 +703,7 @@ class Brain:
         self._dump_llm_response(response, caller="messages_create", request_id=req_id)
 
         # 记录 token 用量
-        self._record_usage(response)
+        self._record_usage_sync(response)
 
         # 转换响应: LLMClient -> Anthropic Message
         return self._convert_response_to_anthropic(response)
@@ -799,7 +799,7 @@ class Brain:
         self._dump_llm_response(response, caller="messages_create_async", request_id=req_id)
 
         # 记录 token 用量
-        self._record_usage(response)
+        await self._record_usage(response)
 
         return self._convert_response_to_anthropic(response)
 
@@ -887,37 +887,29 @@ class Brain:
 
     async def _record_usage(self, response: LLMResponse) -> None:
         """从 LLMResponse 提取 token 用量并投递到追踪队列。"""
+        self._record_usage_sync(response)
+
+    def _record_usage_sync(self, response: LLMResponse) -> None:
+        """同步版本（供 sync 函数调用），无锁保护（asyncio 协作多任务天然安全）。"""
         try:
             usage = response.usage
             if not usage:
                 return
+            self._acc_calls += 1
+            self._acc_tokens_in += usage.input_tokens
+            self._acc_tokens_out += usage.output_tokens
 
-            async with self._token_lock:
-                self._acc_calls += 1
-                self._acc_tokens_in += usage.input_tokens
-                self._acc_tokens_out += usage.output_tokens
-
-            ep_name = response.endpoint_name or self.get_current_endpoint_info().get("name", "")
-            cost = 0.0
-            for ep in self._llm_client.endpoints:
-                if ep.name == ep_name:
-                    cost = ep.calculate_cost(
-                        input_tokens=usage.input_tokens,
-                        output_tokens=usage.output_tokens,
-                        cache_read_tokens=usage.cache_read_input_tokens,
-                    )
-                    break
             _record_token_usage(
                 model=response.model or "",
-                endpoint_name=ep_name,
+                endpoint_name=response.endpoint_name or "",
                 input_tokens=usage.input_tokens,
                 output_tokens=usage.output_tokens,
                 cache_creation_tokens=usage.cache_creation_input_tokens,
                 cache_read_tokens=usage.cache_read_input_tokens,
-                estimated_cost=cost,
+                estimated_cost=0.0,
             )
         except Exception as e:
-            logger.debug(f"[Brain] _record_usage failed (non-fatal): {e}")
+            logger.debug(f"[Brain] _record_usage_sync failed (non-fatal): {e}")
 
     def drain_usage_accumulator(self) -> dict:
         """Return accumulated LLM usage since last drain, then reset counters."""
@@ -1449,7 +1441,7 @@ class Brain:
         # 保存响应到调试文件
         self._dump_llm_response(response, caller="_chat_with_llm_client", request_id=req_id)
 
-        self._record_usage(response)
+        await self._record_usage(response)
 
         # 转换响应
         content = response.text
