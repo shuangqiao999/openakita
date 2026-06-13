@@ -212,10 +212,11 @@ class ExperimentLoop:
         avg_quality = 0.0
         if self._quality_eval is not None:
             try:
-                avg_quality = self._quality_eval.load_weekly_average(min_samples=1) or 0.0
+                avg_quality = self._quality_eval.load_weekly_average(min_samples=1)
+                if avg_quality is not None:
+                    quality_delta = avg_quality - 0.5
             except Exception:
-                avg_quality = 0.0
-            quality_delta = avg_quality - 0.5
+                pass
 
         results: list[ExperimentResult] = []
         for _ in range(max_experiments):
