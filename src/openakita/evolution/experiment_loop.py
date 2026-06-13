@@ -37,6 +37,8 @@ _DEFAULT_MAX_EXPERIMENTS = 3
 def _parse_llm_json(text: str) -> Any:
     from . import strip_json_fences
 
+    if not isinstance(text, str):
+        text = str(text) if text is not None else ""
     return json.loads(strip_json_fences(text))
 
 
@@ -122,8 +124,11 @@ def _get_env_targets_display() -> str:
     lines = []
     for key, (default_val, lo, hi, restart) in sorted(EVOLVABLE_ENV_PARAMS.items()):
         current = getattr(settings, key.lower(), default_val)
-        restart_note = " (需重启)" if restart else ""
-        lines.append(f"- env:{key} = {current} (范围 {lo}-{hi}){restart_note}")
+        if isinstance(default_val, (int, float)) and isinstance(lo, (int, float)) and isinstance(hi, (int, float)):
+            restart_note = " (需重启)" if restart else ""
+            lines.append(f"- env:{key} = {current} (范围 {lo}-{hi}){restart_note}")
+        else:
+            lines.append(f"- env:{key} = {current}")
     return "\n".join(lines) if lines else ""
 
 
@@ -683,7 +688,7 @@ class ExperimentLoop:
             if path.exists():
                 data = json.loads(path.read_text(encoding="utf-8"))
                 w = data.get("weight", 0.10)
-                if isinstance(w, (int, float)) and 0.0 <= w <= 0.8:
+                if isinstance(w, (int, float)) and 0.0 <= w <= 0.30:
                     return float(w)
         except Exception:
             pass

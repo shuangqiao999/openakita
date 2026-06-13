@@ -210,7 +210,7 @@ class Settings(BaseSettings):
     memory_tuning_cooldown_hours: int = Field(default=24, ge=1)
     memory_usage_low_threshold: float = Field(default=0.3, ge=0.0, le=1.0)
     memory_retrieval_tuning_enabled: bool = Field(default=True)
-    benchmark_generate_from_traces: bool = Field(default=True)
+    benchmark_generate_from_traces: bool = Field(default=False)
 
     # === 任务超时策略 ===
     # 默认对齐 Claude Code 哲学：CLI/IM 真人对话场景不做"agent 自检自杀"，
@@ -1553,7 +1553,7 @@ EVOLVABLE_ENV_PARAMS: dict[str, tuple[float, float, float, bool]] = {
     "BENCHMARK_MAX_CONCURRENT": (1, 1, 8, False),
     "EXPERIMENTS_PER_CYCLE": (3, 1, 5, False),
     "EXPERIMENT_IMPROVEMENT_THRESHOLD": (0.02, 0.0, 0.2, False),
-    "QUALITY_WEIGHT_IN_IMPROVEMENT": (0.10, 0.0, 0.8, False),
+    "QUALITY_WEIGHT_IN_IMPROVEMENT": (0.10, 0.0, 0.30, False),
     "RESEARCH_MAX_PROPOSALS": (2, 1, 4, False),
     "PROMPT_MAX_CHANGE_RATIO": (0.2, 0.05, 0.5, True),
     "DYNAMIC_BENCHMARK_MAX_TASKS": (30, 10, 50, False),
