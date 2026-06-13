@@ -227,11 +227,11 @@ class ExperimentLoop:
             results.append(result)
             if result.action == "keep":
                 baseline_metrics = result.new_metrics
-                if result.quality_score is not None and self._quality_eval is not None:
-                    try:
-                        self._quality_eval.save_score(result.quality_score, "")
-                    except Exception:
-                        pass
+            if result.action in ("keep", "discard") and result.quality_score is not None and self._quality_eval is not None:
+                try:
+                    self._quality_eval.save_score(result.quality_score, "")
+                except Exception:
+                    pass
 
         if self._quality_eval is not None and results:
             try:
@@ -259,9 +259,13 @@ class ExperimentLoop:
             lines = []
             for r in prior_results:
                 desc = r.hypothesis.description if r.hypothesis else "?"
-                line = f"- {desc}: {r.action}"
+                target = r.hypothesis.target if r.hypothesis else "?"
+                line = f"- [{target}] {desc}: {r.action}"
                 if r.reason:
                     line += f" (原因: {r.reason})"
+                if r.delta:
+                    delta_str = ", ".join(f"{k}={v:+.3f}" for k, v in r.delta.items())
+                    line += f" [Δ: {delta_str}]"
                 lines.append(line)
             prior_summary = "\n".join(lines)
 
@@ -429,6 +433,7 @@ class ExperimentLoop:
                     new_metrics=new_metrics,
                     delta={k: new_metrics[k] - baseline_metrics[k] for k in baseline_metrics},
                     reason="指标未改善",
+                    quality_score=quality_score,
                 )
         except asyncio.CancelledError:
             target_path.write_text(original_full, encoding="utf-8")
@@ -518,7 +523,11 @@ class ExperimentLoop:
                 return ExperimentResult(
                     action="discard",
                     hypothesis=hypothesis,
+                    baseline_metrics=baseline_metrics,
+                    new_metrics=new_metrics,
+                    delta={k: new_metrics[k] - baseline_metrics[k] for k in baseline_metrics},
                     reason=f"指标未改善{' (需重启生效)' if needs_restart else ''}",
+                    quality_score=quality_score,
                 )
         except asyncio.CancelledError:
             tuner.rollback(backup)
