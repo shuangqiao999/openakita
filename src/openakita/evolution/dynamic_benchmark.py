@@ -92,7 +92,7 @@ class DynamicBenchmarkGenerator:
 """
         try:
             response = await self._brain.think(prompt)
-            data = json.loads(strip_json(response))
+            data = json.loads(strip_json(response.content))
             ok, reason = self.validate_task(
                 data["description"],
                 data.get("expected_outcome", ""),
