@@ -210,7 +210,7 @@ class Settings(BaseSettings):
     memory_tuning_cooldown_hours: int = Field(default=24, ge=1)
     memory_usage_low_threshold: float = Field(default=0.3, ge=0.0, le=1.0)
     memory_retrieval_tuning_enabled: bool = Field(default=True)
-    benchmark_generate_from_traces: bool = Field(default=False)
+    benchmark_generate_from_traces: bool = Field(default=True)
 
     # === 任务超时策略 ===
     # 默认对齐 Claude Code 哲学：CLI/IM 真人对话场景不做"agent 自检自杀"，

@@ -136,7 +136,7 @@ assert settings.quality_min_weekly_samples == 10
 assert settings.memory_tuning_cooldown_hours == 24
 assert settings.memory_usage_low_threshold == 0.3
 assert settings.memory_retrieval_tuning_enabled is True
-assert settings.benchmark_generate_from_traces is False
+assert settings.benchmark_generate_from_traces is True
 print("  [PASS] 5 new config fields verified")
 
 # ================================================================
