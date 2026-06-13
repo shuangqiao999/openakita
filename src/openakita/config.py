@@ -1560,6 +1560,8 @@ EVOLVABLE_ENV_PARAMS: dict[str, tuple[float, float, float, bool]] = {
     "BENCHMARK_TASK_TIMEOUT": (600, 120, 3600, False),
     "EXPERIMENT_LLM_TIMEOUT": (600, 60, 1800, False),
     "RESEARCH_LLM_TIMEOUT": (600, 60, 1800, False),
+    "RETRIEVAL_TOP_K": (5, 1, 20, False),
+    "MEMORY_SIMILARITY_THRESHOLD": (0.7, 0.5, 0.95, False),
 }
 
 # 全局运行时状态管理器

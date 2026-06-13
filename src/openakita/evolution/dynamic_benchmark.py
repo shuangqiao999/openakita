@@ -148,6 +148,77 @@ class DynamicBenchmarkGenerator:
 
         return result
 
+    async def generate_from_traces(self, max_tasks: int = 3) -> list[dict]:
+        """从最近成功会话中提取用户任务类型，生成场景化 benchmark 任务"""
+        if not self._brain:
+            return []
+
+        traces = self._load_successful_traces(30)
+        if len(traces) < 5:
+            logger.info("[DynamicBench] 成功会话不足(%d条)，跳过场景化生成", len(traces))
+            return []
+
+        user_messages = []
+        for t in traces:
+            for step in t.get("iterations", []):
+                msg = step.get("user_message", step.get("query", ""))
+                if msg:
+                    user_messages.append(msg[:200])
+                    break
+
+        if not user_messages:
+            return []
+
+        prompt = f"""从以下用户真实对话中识别最常见的任务类型，为每种类型生成一个 Benchmark 任务:
+
+用户消息样本:
+{chr(10).join(f'- {m}' for m in user_messages[:20])}
+
+输出 JSON 数组:
+[{{"category": "coding/research/writing/tool_use/memory", "description": "具体任务描述", "expected_outcome": "可验证的预期结果(含具体数值/关键词)", "difficulty": "medium", "timeout_seconds": 300}}]
+
+最多生成 {max_tasks} 个不同类别的任务。只输出 JSON 数组，不要解释。"""
+        try:
+            import json as _json
+
+            response = await self._brain.think(prompt)
+            tasks = _json.loads(_strip_json(response.content))
+            if not isinstance(tasks, list):
+                return []
+            valid = [t for t in tasks if self._is_task_valid(t)]
+            skipped = len(tasks) - len(valid)
+            if skipped:
+                logger.warning("[DynamicBench] 过滤 %d 个无效场景化任务", skipped)
+            return valid[:max_tasks]
+        except Exception as e:
+            logger.warning("[DynamicBench] 场景化任务生成失败: %s", e)
+            return []
+
+    def _load_successful_traces(self, limit: int = 30) -> list[dict]:
+        from openakita.config import settings
+
+        traces = []
+        traces_dir = settings.data_dir / "react_traces"
+        if not traces_dir.is_dir():
+            return traces
+
+        files = []
+        for d in traces_dir.iterdir():
+            if d.is_dir():
+                files.extend(d.glob("*.json"))
+        files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+
+        import json as _json
+
+        for f in files[:limit]:
+            try:
+                data = _json.loads(f.read_text(encoding="utf-8"))
+                if data.get("result") == "success":
+                    traces.append(data)
+            except Exception:
+                continue
+        return traces
+
 
     @staticmethod
     def _is_task_valid(task: dict) -> bool:

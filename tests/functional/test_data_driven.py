@@ -115,6 +115,11 @@ print("  [PASS] coding without code words rejected")
 
 # ================================================================
 print("\n=== 5. 记忆调优冷却 ===")
+import shutil
+_cd = Path("/tmp/rm_cooldown_test")
+if _cd.exists():
+    shutil.rmtree(str(_cd))
+_cd.mkdir(parents=True)
 collector = RuntimeMetricsCollector(data_dir="/tmp/rm_cooldown_test")
 assert collector.get_last_tuning_time() == 0.0
 print("  [PASS] get_last_tuning_time default = 0")

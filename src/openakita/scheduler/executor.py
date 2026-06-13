@@ -1537,6 +1537,31 @@ class TaskExecutor:
             except Exception as e:
                 logger.warning("[BenchmarkEvolve] 任务池维护失败: %s", e)
 
+            # 场景化任务生成（从真实会话生成 Benchmark 任务）
+            try:
+                from ..config import settings
+
+                if getattr(settings, "benchmark_generate_from_traces", False):
+                    from ..evolution.dynamic_benchmark import DynamicBenchmarkGenerator
+
+                    gen = DynamicBenchmarkGenerator(self.agent)
+                    trace_tasks = await gen.generate_from_traces(max_tasks=3)
+                    if trace_tasks:
+                        draft_path = engine._data_dir / "draft_tasks.json"
+                        existing = (
+                            _json.loads(draft_path.read_text(encoding="utf-8"))
+                            if draft_path.exists()
+                            else []
+                        )
+                        existing += trace_tasks
+                        draft_path.write_text(
+                            _json.dumps(existing, ensure_ascii=False, indent=2),
+                            encoding="utf-8",
+                        )
+                        summary += f" | 场景化: +{len(trace_tasks)}个任务"
+            except Exception as e:
+                logger.debug("[BenchmarkEvolve] 场景化任务生成跳过: %s", e)
+
             logger.info(f"[BenchmarkEvolve] {summary}")
             return True, summary
         except Exception as e:

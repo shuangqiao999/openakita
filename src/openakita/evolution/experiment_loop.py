@@ -65,6 +65,45 @@ class ExperimentResult:
     reason: str = ""
 
 
+def _get_memory_tuning_hint() -> str:
+    try:
+        from openakita.config import settings
+
+        if not getattr(settings, "memory_retrieval_tuning_enabled", True):
+            return ""
+        collector = None
+        try:
+            from .runtime_metrics import RuntimeMetricsCollector
+
+            collector = RuntimeMetricsCollector()
+        except Exception:
+            return ""
+
+        usage_rate = getattr(settings, "memory_usage_low_threshold", 0.3)
+        cooldown = getattr(settings, "memory_tuning_cooldown_hours", 24)
+
+        import time as _time
+
+        last_tune = collector.get_last_tuning_time() if collector else 0.0
+        if _time.time() - last_tune < cooldown * 3600:
+            return ""
+
+        if not collector:
+            return ""
+        snap = collector.collect()
+        if snap.memory_usage_rate >= usage_rate:
+            return ""
+
+        return (
+            f"\n⚠ 记忆使用率: {snap.memory_usage_rate:.0%} (阈值 {usage_rate:.0%})\n"
+            "建议调整记忆检索参数以提升召回率:\n"
+            "- env:RETRIEVAL_TOP_K (1-20): 增大可召回更多记忆\n"
+            "- env:MEMORY_SIMILARITY_THRESHOLD (0.5-0.95): 降低可放宽匹配\n"
+        )
+    except Exception:
+        return ""
+
+
 def _get_env_targets_display() -> str:
     try:
         from openakita.config import EVOLVABLE_ENV_PARAMS, settings
@@ -191,6 +230,9 @@ class ExperimentLoop:
         if prior_summary:
             prior_section = "已尝试的实验（请避免重复失败方向）:\n" + prior_summary
 
+        memory_hint = self._get_memory_tuning_hint()
+        env_targets = _get_env_targets_display()
+
         prompt = f"""你是一个 AI 系统优化研究员。当前系统性能指标:
 - 成功率: {current_metrics.get("success_rate", 0):.1%}
 - 平均 token: {current_metrics.get("avg_tokens", 0):.0f}
@@ -198,12 +240,12 @@ class ExperimentLoop:
 - 效率分: {current_metrics.get("efficiency_score", 0):.1f}
 
 {prior_section}
-
+{memory_hint}
 可修改的目标文件及当前内容:
 {targets_display}
 
 可调参数 (env: 前缀):
-{_get_env_targets_display()}
+{env_targets}
 
 请提出一个具体的改进假设。输出 JSON:
 {{
