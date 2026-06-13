@@ -918,6 +918,7 @@ class ToolExecutor:
         task_monitor: Any = None,
         allow_interrupt_checks: bool = True,
         capture_delivery_receipts: bool = False,
+        **kwargs: Any,
     ) -> tuple[list[dict], list[str], list | None]:
         """
         执行一批工具调用，返回 tool_results。
