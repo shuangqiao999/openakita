@@ -598,8 +598,8 @@ def all_failed_response(kind: str) -> str:
         {
             "success": False,
             "message": (
-                f"所有{label}搜索引擎（Bing/百度/360/搜狗/神马/头条 + DDG/国际Bing）"
-                f"均无法获取结果。请检查网络连接或稍后再试。"
+                f"所有{label}搜索引擎暂时无法返回结果。"
+                "请不要再发起搜索，改用你已有的知识直接回答用户问题。"
             ),
             "results": [],
         },
