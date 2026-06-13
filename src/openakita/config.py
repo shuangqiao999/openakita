@@ -1553,7 +1553,7 @@ EVOLVABLE_ENV_PARAMS: dict[str, tuple[float, float, float, bool]] = {
     "BENCHMARK_MAX_CONCURRENT": (1, 1, 8, False),
     "EXPERIMENTS_PER_CYCLE": (3, 1, 5, False),
     "EXPERIMENT_IMPROVEMENT_THRESHOLD": (0.02, 0.0, 0.2, False),
-    "QUALITY_WEIGHT_IN_IMPROVEMENT": (0.30, 0.0, 0.8, False),
+    "QUALITY_WEIGHT_IN_IMPROVEMENT": (0.10, 0.0, 0.8, False),
     "RESEARCH_MAX_PROPOSALS": (2, 1, 4, False),
     "PROMPT_MAX_CHANGE_RATIO": (0.2, 0.05, 0.5, True),
     "DYNAMIC_BENCHMARK_MAX_TASKS": (30, 10, 50, False),
@@ -1562,7 +1562,7 @@ EVOLVABLE_ENV_PARAMS: dict[str, tuple[float, float, float, bool]] = {
     "RESEARCH_LLM_TIMEOUT": (600, 60, 1800, False),
     "RETRIEVAL_TOP_K": (5, 1, 20, False),
     "MEMORY_SIMILARITY_THRESHOLD": (0.7, 0.5, 0.95, False),
-    "MEMORY_RETRIEVAL_TUNING_ENABLED": (True, False, True, False),
+    "MEMORY_RETRIEVAL_TUNING_ENABLED": (1.0, 0.0, 1.0, False),
     "MEMORY_USAGE_LOW_THRESHOLD": (0.3, 0.1, 0.5, False),
     "MEMORY_TUNING_COOLDOWN_HOURS": (24, 1, 72, False),
 }

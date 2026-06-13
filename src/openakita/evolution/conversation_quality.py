@@ -103,30 +103,33 @@ JSON:
     def adjust_quality_weight(self, current_weight: float) -> float:
         from openakita.config import settings
 
-        feedback_dir = settings.data_dir / "evolution" / "feedback.json"
-        if not feedback_dir.exists():
+        feedback_path = settings.data_dir / "evolution" / "feedback.json"
+        if not feedback_path.exists():
             return current_weight
 
         try:
-            data = json.loads(feedback_dir.read_text(encoding="utf-8"))
+            data = json.loads(feedback_path.read_text(encoding="utf-8"))
             if not isinstance(data, list) or len(data) < 5:
                 return current_weight
 
             matches = 0
+            valid = 0
             for fb in data:
-                score_file = self._data_dir / f"{fb.get('session_id', '')[:8]}.json"
-                if not score_file.exists():
+                sid = fb.get("session_id", "")
+                candidates = list(self._data_dir.glob(f"*_{sid[:8]}.json"))
+                if not candidates:
                     continue
-                score_data = json.loads(score_file.read_text(encoding="utf-8"))
+                score_data = json.loads(candidates[0].read_text(encoding="utf-8"))
                 eval_score = score_data.get("overall", 0.5)
                 user_liked = fb.get("rating") == "good"
                 if (eval_score >= 0.7 and user_liked) or (eval_score < 0.4 and not user_liked):
                     matches += 1
+                valid += 1
 
-            if len(data) < 5:
+            if valid < 3:
                 return current_weight
 
-            correlation = matches / len(data)
+            correlation = matches / valid
             if correlation > 0.6:
                 new_weight = min(current_weight + 0.01, 0.30)
             elif correlation < 0.3:

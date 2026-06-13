@@ -1472,7 +1472,7 @@ class TaskExecutor:
             try:
                 from ..evolution.runtime_metrics import RuntimeMetricsCollector
                 collector = RuntimeMetricsCollector()
-                snapshot = collector.collect()
+                snapshot = await asyncio.to_thread(collector.collect)
                 collector.save_snapshot(snapshot)
                 summary += f" | 指标: {snapshot.memory_total}条记忆, {len(snapshot.tool_frequencies)}种工具"
             except Exception as e:

@@ -437,7 +437,10 @@ class ResearchOrg:
             threshold = self._get_config(
                 "research_improvement_threshold", _DEFAULT_IMPROVEMENT_THRESHOLD
             )
-            if ExperimentLoop._is_improvement(baseline_metrics, new_metrics, threshold):
+            qw = self._get_config("quality_weight_in_improvement", 0.10)
+            if ExperimentLoop._is_improvement(
+                baseline_metrics, new_metrics, threshold, quality_weight=qw
+            ):
                 logger.info("[ResearchOrg] ✓ Prompt 变更已采纳")
                 return True, new_metrics
 

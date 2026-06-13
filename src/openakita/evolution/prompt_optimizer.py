@@ -240,7 +240,10 @@ class PromptOptimizer:
             threshold = self._get_config(
                 "prompt_improvement_threshold", _DEFAULT_IMPROVEMENT_THRESHOLD
             )
-            adopted = ExperimentLoop._is_improvement(baseline_metrics, new_metrics, threshold)
+            qw = self._get_config("quality_weight_in_improvement", 0.10)
+            adopted = ExperimentLoop._is_improvement(
+                baseline_metrics, new_metrics, threshold, quality_weight=qw
+            )
 
             if adopted:
                 self._archive_variant(variant, new_metrics, adopted=True)

@@ -71,12 +71,30 @@ class RuntimeMetricsCollector:
             pass
 
         self._collect_memory_stats(snapshot)
-        self._collect_tool_stats(snapshot, last_ts)
-        self._collect_user_feedback(snapshot, last_ts)
-        self._collect_conversation_metrics(snapshot, last_ts)
+        trace_files = self._scan_traces_dir()
+        self._collect_tool_stats(snapshot, last_ts, trace_files)
+        self._collect_user_feedback(snapshot, last_ts, trace_files)
+        self._collect_conversation_metrics(snapshot, last_ts, trace_files)
         self._collect_memory_usage_rate(snapshot)
         self._save_last_ts(collect_start)
         return snapshot
+
+    @staticmethod
+    def _scan_traces_dir() -> list:
+        try:
+            from openakita.config import settings
+
+            traces_dir = settings.data_dir / "react_traces"
+            if not traces_dir.is_dir():
+                return []
+            files = []
+            for d in traces_dir.iterdir():
+                if d.is_dir():
+                    files.extend(d.glob("*.json"))
+            files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+            return files
+        except Exception:
+            return []
 
     def _collect_memory_stats(self, snapshot: RuntimeSnapshot) -> None:
         try:
@@ -94,25 +112,18 @@ class RuntimeMetricsCollector:
         except Exception:
             pass
 
-    def _collect_tool_stats(self, snapshot: RuntimeSnapshot, last_ts: float = 0.0) -> None:
+    def _collect_tool_stats(self, snapshot: RuntimeSnapshot, last_ts: float = 0.0, trace_files: list | None = None) -> None:
         try:
-            from openakita.config import settings
             from openakita.evolution.pattern_learner import PatternLearner
 
-            traces_dir = settings.data_dir / "react_traces"
-            if not traces_dir.is_dir():
+            files = trace_files if trace_files is not None else self._scan_traces_dir()
+            if not files:
                 return
 
             tool_total: dict[str, int] = defaultdict(int)
             tool_fails: dict[str, int] = defaultdict(int)
 
-            trace_files = []
-            for d in traces_dir.iterdir():
-                if d.is_dir():
-                    trace_files.extend(d.glob("*.json"))
-            trace_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
-
-            for f in trace_files[:50]:
+            for f in files[:50]:
                 try:
                     if last_ts > 0 and f.stat().st_mtime <= last_ts:
                         continue
@@ -136,22 +147,15 @@ class RuntimeMetricsCollector:
         except Exception:
             pass
 
-    def _collect_user_feedback(self, snapshot: RuntimeSnapshot, last_ts: float = 0.0) -> None:
+    def _collect_user_feedback(self, snapshot: RuntimeSnapshot, last_ts: float = 0.0, trace_files: list | None = None) -> None:
         try:
-            from openakita.config import settings
-
-            traces_dir = settings.data_dir / "react_traces"
-            if not traces_dir.is_dir():
+            files = trace_files if trace_files is not None else self._scan_traces_dir()
+            if not files:
                 return
 
             queries: list[str] = []
-            trace_files = []
-            for d in traces_dir.iterdir():
-                if d.is_dir():
-                    trace_files.extend(d.glob("*.json"))
-            trace_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
 
-            for f in trace_files[:30]:
+            for f in files[:30]:
                 try:
                     if last_ts > 0 and f.stat().st_mtime <= last_ts:
                         continue
@@ -207,23 +211,16 @@ class RuntimeMetricsCollector:
                 total += tokens.get("input", 0) + tokens.get("output", 0)
         return total
 
-    def _collect_conversation_metrics(self, snapshot: RuntimeSnapshot, last_ts: float = 0.0) -> None:
+    def _collect_conversation_metrics(self, snapshot: RuntimeSnapshot, last_ts: float = 0.0, trace_files: list | None = None) -> None:
         try:
-            from openakita.config import settings
-
-            traces_dir = settings.data_dir / "react_traces"
-            if not traces_dir.is_dir():
+            files = trace_files if trace_files is not None else self._scan_traces_dir()
+            if not files:
                 return
-            traces = []
-            for d in traces_dir.iterdir():
-                if d.is_dir():
-                    traces.extend(d.glob("*.json"))
-            traces.sort(key=lambda f: f.stat().st_mtime, reverse=True)
 
             total = 0
             succeeded = 0
             all_tokens = []
-            for f in traces[:50]:
+            for f in files[:50]:
                 try:
                     if last_ts > 0 and f.stat().st_mtime <= last_ts:
                         continue

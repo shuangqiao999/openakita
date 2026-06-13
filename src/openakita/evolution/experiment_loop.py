@@ -63,6 +63,7 @@ class ExperimentResult:
     new_metrics: dict[str, float] = field(default_factory=dict)
     delta: dict[str, float] = field(default_factory=dict)
     reason: str = ""
+    quality_score: Any = None
 
 
 async def _get_memory_tuning_hint() -> str:
@@ -71,15 +72,11 @@ async def _get_memory_tuning_hint() -> str:
 
         if not getattr(settings, "memory_retrieval_tuning_enabled", True):
             return ""
-        collector = None
         try:
             from .runtime_metrics import RuntimeMetricsCollector
 
             collector = RuntimeMetricsCollector()
         except Exception:
-            return ""
-
-        if not collector:
             return ""
 
         usage_rate = getattr(settings, "memory_usage_low_threshold", 0.3)
@@ -138,6 +135,15 @@ class ExperimentLoop:
         self._data_dir.mkdir(parents=True, exist_ok=True)
         self._backups_dir = self._data_dir / "backups"
         self._backups_dir.mkdir(parents=True, exist_ok=True)
+        self._quality_eval = None
+        try:
+            from .conversation_quality import ConversationQualityEvaluator
+
+            self._quality_eval = ConversationQualityEvaluator(
+                agent, data_dir=str(self._data_dir / "quality_scores")
+            )
+        except Exception:
+            self._quality_eval = None
 
         if project_root is not None:
             self._project_root = project_root
@@ -181,15 +187,39 @@ class ExperimentLoop:
         }
 
         max_experiments = self._get_config("experiments_per_cycle", _DEFAULT_MAX_EXPERIMENTS)
+        quality_weight = self._get_config("quality_weight_in_improvement", 0.10)
+        quality_delta = 0.0
+        avg_quality = 0.0
+        if self._quality_eval is not None:
+            try:
+                avg_quality = self._quality_eval.load_weekly_average(min_samples=3) or 0.0
+            except Exception:
+                avg_quality = 0.0
+            quality_delta = avg_quality - 0.5
+
         results: list[ExperimentResult] = []
         for _ in range(max_experiments):
             hypothesis = await self._generate_hypothesis(baseline_metrics, results)
             if not hypothesis:
                 break
-            result = await self._run_experiment(hypothesis, engine, baseline_metrics)
+            result = await self._run_experiment(
+                hypothesis, engine, baseline_metrics,
+                quality_weight=quality_weight, quality_delta=quality_delta,
+            )
             results.append(result)
             if result.action == "keep":
                 baseline_metrics = result.new_metrics
+                if result.quality_score is not None and self._quality_eval is not None:
+                    try:
+                        self._quality_eval.save_score(result.quality_score, "")
+                    except Exception:
+                        pass
+
+        if self._quality_eval is not None and results:
+            try:
+                self._quality_eval.adjust_quality_weight(quality_weight)
+            except Exception:
+                pass
 
         self._save_cycle(results)
         return results
@@ -283,13 +313,18 @@ class ExperimentLoop:
         hypothesis: Hypothesis,
         engine: Any,
         baseline_metrics: dict[str, float],
+        quality_weight: float = 0.0,
+        quality_delta: float = 0.0,
     ) -> ExperimentResult:
         if hypothesis.target not in self.MUTABLE_TARGETS:
             if not hypothesis.target.startswith("env:"):
                 return ExperimentResult(
                     action="error", hypothesis=hypothesis, reason="目标不在允许列表中"
                 )
-            return await self._run_env_experiment(hypothesis, engine, baseline_metrics)
+            return await self._run_env_experiment(
+                hypothesis, engine, baseline_metrics,
+                quality_weight=quality_weight, quality_delta=quality_delta,
+            )
 
         target_path = (self._project_root / hypothesis.target).resolve()
         if not target_path.is_relative_to(self._project_root.resolve()):
@@ -348,7 +383,11 @@ class ExperimentLoop:
             threshold = self._get_config(
                 "experiment_improvement_threshold", _DEFAULT_IMPROVEMENT_THRESHOLD
             )
-            if self._is_improvement(baseline_metrics, new_metrics, threshold):
+            quality_score = self._compute_quality_score(report)
+            if self._is_improvement(
+                baseline_metrics, new_metrics, threshold,
+                quality_delta=quality_delta, quality_weight=quality_weight,
+            ):
                 logger.info("[ExperimentLoop] ✓ 保留改进: %s", hypothesis.description)
                 return ExperimentResult(
                     action="keep",
@@ -356,6 +395,7 @@ class ExperimentLoop:
                     baseline_metrics=baseline_metrics,
                     new_metrics=new_metrics,
                     delta={k: new_metrics[k] - baseline_metrics[k] for k in baseline_metrics},
+                    quality_score=quality_score,
                 )
             else:
                 target_path.write_text(original_full, encoding="utf-8")
@@ -379,7 +419,8 @@ class ExperimentLoop:
                 backup_path.unlink(missing_ok=True)
 
     async def _run_env_experiment(
-        self, hypothesis: Hypothesis, engine: Any, baseline_metrics: dict[str, float]
+        self, hypothesis: Hypothesis, engine: Any, baseline_metrics: dict[str, float],
+        quality_weight: float = 0.0, quality_delta: float = 0.0,
     ) -> ExperimentResult:
         """处理 env:PARAM 类型的目标 — 修改 .env 文件中的参数"""
         param = hypothesis.target[4:]
@@ -433,7 +474,11 @@ class ExperimentLoop:
             threshold = self._get_config(
                 "experiment_improvement_threshold", _DEFAULT_IMPROVEMENT_THRESHOLD
             )
-            if self._is_improvement(baseline_metrics, new_metrics, threshold):
+            quality_score = self._compute_quality_score(report)
+            if self._is_improvement(
+                baseline_metrics, new_metrics, threshold,
+                quality_delta=quality_delta, quality_weight=quality_weight,
+            ):
                 logger.info("[EnvTuner] ✓ 保留 env:%s=%s", param, num_val)
                 return ExperimentResult(
                     action="keep",
@@ -441,6 +486,7 @@ class ExperimentLoop:
                     baseline_metrics=baseline_metrics,
                     new_metrics=new_metrics,
                     delta={k: new_metrics[k] - baseline_metrics[k] for k in baseline_metrics},
+                    quality_score=quality_score,
                 )
             else:
                 tuner.rollback(backup)
@@ -582,6 +628,25 @@ class ExperimentLoop:
             + quality_weight * quality_delta
         )
         return score_delta > threshold
+
+    @staticmethod
+    def _compute_quality_score(report: Any) -> Any:
+        try:
+            from .conversation_quality import QualityScore
+
+            s = QualityScore()
+            metric = getattr(report, "metrics", None)
+            if metric is not None:
+                s.relevance = min(1.0, max(0.0, metric.success_rate))
+                s.correctness = min(1.0, max(0.0, metric.success_rate))
+                s.completeness = 0.5
+                s.efficiency = min(
+                    1.0, max(0.0, 1.0 - metric.avg_tokens / max(metric.avg_time, 1) * 0.01)
+                )
+                s.compute_overall()
+            return s
+        except Exception:
+            return None
 
     def _cleanup_old_backups(self, max_age_days: int = _BACKUP_MAX_AGE_DAYS) -> None:
         cutoff = time.time() - max_age_days * 86400

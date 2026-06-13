@@ -1,9 +1,10 @@
 import re
 
 
-def strip_json(text: str) -> str:
-    text = re.sub(r"^```(?:json)?\s*\n?", "", text.strip())
-    text = re.sub(r"\n?```\s*$", "", text)
+def strip_json_fences(text: str) -> str:
+    m = re.match(r"^```(?:json)?\s*\n?(.*?)```\s*$", text.strip(), re.DOTALL)
+    if m:
+        return m.group(1).strip()
     sb = text.find("{")
     sq = text.find("[")
     s = min(x for x in (sb, sq) if x >= 0) if (sb >= 0 or sq >= 0) else -1
@@ -13,3 +14,6 @@ def strip_json(text: str) -> str:
     if 0 <= e < len(text) - 1:
         text = text[: e + 1]
     return text
+
+
+strip_json = strip_json_fences
