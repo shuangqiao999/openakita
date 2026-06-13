@@ -194,7 +194,7 @@ class Settings(BaseSettings):
     dynamic_benchmark_mutation_threshold: float = Field(default=0.95)
     runtime_metrics_enabled: bool = Field(default=True)
     conversation_quality_enabled: bool = Field(default=True)
-    quality_weight_in_improvement: float = Field(default=0.30, ge=0.0, le=1.0)
+    quality_weight_in_improvement: float = Field(default=0.10, ge=0.05, le=0.30)
     quality_sample_rate: float = Field(default=0.10, ge=0.01, le=1.0)
     user_feedback_weight: float = Field(default=0.15, ge=0.0, le=1.0)
     tool_failure_alert_threshold: float = Field(default=0.30, ge=0.0, le=1.0)
@@ -205,6 +205,12 @@ class Settings(BaseSettings):
     runtime_metrics_incremental: bool = Field(default=True)
     quality_eval_validate_enabled: bool = Field(default=True)
     implicit_feedback_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
+
+    quality_min_weekly_samples: int = Field(default=10, ge=1)
+    memory_tuning_cooldown_hours: int = Field(default=24, ge=1)
+    memory_usage_low_threshold: float = Field(default=0.3, ge=0.0, le=1.0)
+    memory_retrieval_tuning_enabled: bool = Field(default=True)
+    benchmark_generate_from_traces: bool = Field(default=False)
 
     # === 任务超时策略 ===
     # 默认对齐 Claude Code 哲学：CLI/IM 真人对话场景不做"agent 自检自杀"，

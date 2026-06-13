@@ -33,6 +33,9 @@ class RuntimeSnapshot:
     tool_failure_rates: dict[str, float] = field(default_factory=dict)
     user_corrections: int = 0
     repeated_queries: int = 0
+    conversation_success_rate: float = 0.0
+    conversation_avg_tokens: float = 0.0
+    memory_usage_rate: float = 0.0
 
 
 class RuntimeMetricsCollector:
@@ -70,6 +73,8 @@ class RuntimeMetricsCollector:
         self._collect_memory_stats(snapshot)
         self._collect_tool_stats(snapshot, last_ts)
         self._collect_user_feedback(snapshot, last_ts)
+        self._collect_conversation_metrics(snapshot, last_ts)
+        self._collect_memory_usage_rate(snapshot)
         self._save_last_ts(collect_start)
         return snapshot
 
@@ -185,3 +190,90 @@ class RuntimeMetricsCollector:
     @staticmethod
     def extract_memory_ids(text: str) -> set[str]:
         return set(_MEMORY_ID_RE.findall(text))
+
+    @staticmethod
+    def _extract_total_tokens(data: dict) -> int:
+        if "total_tokens" in data:
+            tt = data["total_tokens"]
+            if isinstance(tt, dict):
+                return tt.get("input", 0) + tt.get("output", 0)
+            if isinstance(tt, (int, float)):
+                return int(tt)
+        total = 0
+        for step in data.get("iterations", []):
+            total += step.get("tokens_used", 0)
+            tokens = step.get("tokens", {})
+            if isinstance(tokens, dict):
+                total += tokens.get("input", 0) + tokens.get("output", 0)
+        return total
+
+    def _collect_conversation_metrics(self, snapshot: RuntimeSnapshot, last_ts: float = 0.0) -> None:
+        try:
+            from openakita.config import settings
+
+            traces_dir = settings.data_dir / "react_traces"
+            if not traces_dir.is_dir():
+                return
+            traces = []
+            for d in traces_dir.iterdir():
+                if d.is_dir():
+                    traces.extend(d.glob("*.json"))
+            traces.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+
+            total = 0
+            succeeded = 0
+            all_tokens = []
+            for f in traces[:50]:
+                try:
+                    if last_ts > 0 and f.stat().st_mtime <= last_ts:
+                        continue
+                    data = json.loads(f.read_text(encoding="utf-8"))
+                    total += 1
+                    if data.get("result") == "success":
+                        succeeded += 1
+                    all_tokens.append(self._extract_total_tokens(data))
+                except Exception:
+                    continue
+
+            if total > 0:
+                snapshot.conversation_success_rate = round(succeeded / total, 3)
+                snapshot.conversation_avg_tokens = round(
+                    sum(all_tokens) / max(len(all_tokens), 1), 1
+                )
+        except Exception:
+            pass
+
+    def _collect_memory_usage_rate(self, snapshot: RuntimeSnapshot) -> None:
+        try:
+            from openakita.config import settings
+
+            db_path = settings.data_dir / "memory" / "openakita.db"
+            if not db_path.exists():
+                return
+            import sqlite3
+
+            conn = sqlite3.connect(str(db_path))
+            total = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+            used = conn.execute(
+                "SELECT COUNT(*) FROM memories WHERE access_count > 0"
+            ).fetchone()[0]
+            conn.close()
+            if total > 0:
+                snapshot.memory_usage_rate = round(used / total, 3)
+        except Exception:
+            pass
+
+    def get_last_tuning_time(self) -> float:
+        path = self._data_dir / "last_memory_tuning.json"
+        if path.exists():
+            try:
+                return json.loads(path.read_text(encoding="utf-8")).get("ts", 0.0)
+            except Exception:
+                return 0.0
+        return 0.0
+
+    def record_tuning_time(self) -> None:
+        (self._data_dir / "last_memory_tuning.json").write_text(
+            json.dumps({"ts": time.time()}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )

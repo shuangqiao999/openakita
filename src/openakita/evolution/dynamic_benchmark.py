@@ -149,6 +149,38 @@ class DynamicBenchmarkGenerator:
         return result
 
 
+    @staticmethod
+    def _is_task_valid(task: dict) -> bool:
+        desc = task.get("description", "")
+        expected = task.get("expected_outcome", "")
+        timeout = task.get("timeout_seconds", 300)
+        category = task.get("category", "")
+
+        verbs = re.compile(
+            r"创建|编写|搜索|计算|修复|重构|查找|列出|下载|生成|总结|读取|运行|执行"
+            r"|create|write|search|compute|fix|find|list|generate|read|run",
+            re.I,
+        )
+        if not verbs.search(desc):
+            logger.warning("[DynamicBench] 任务验证失败: 缺少动作动词 — %s", desc[:50])
+            return False
+
+        if len(expected) < 10:
+            logger.warning("[DynamicBench] 任务验证失败: 预期过短 — %s", expected[:50])
+            return False
+
+        if not (30 <= timeout <= 1800):
+            logger.warning("[DynamicBench] 任务验证失败: 超时越界 %d", timeout)
+            return False
+
+        if category == "coding":
+            if not re.search(r"代码|成功|无报错|测试|通过|输出|返回", expected):
+                logger.warning("[DynamicBench] coding 任务缺少验证词: %s", expected[:50])
+                return False
+
+        return True
+
+
 def _strip_json(text: str) -> str:
     text = re.sub(r"^```(?:json)?\s*\n?", "", text.strip())
     text = re.sub(r"\n?```\s*$", "", text)

@@ -84,7 +84,7 @@ JSON:
         path.write_text(json.dumps(asdict(score), ensure_ascii=False, indent=2), encoding="utf-8")
         return path
 
-    def load_weekly_average(self) -> float:
+    def load_weekly_average(self, min_samples: int = 10) -> float | None:
         cutoff = datetime.now().timestamp() - 7 * 86400
         scores = []
         for f in sorted(self._data_dir.glob("*.json")):
@@ -94,7 +94,52 @@ JSON:
                     scores.append(data.get("overall", 0.5))
                 except Exception:
                     continue
-        return sum(scores) / len(scores) if scores else 0.5
+        if len(scores) < min_samples:
+            return None
+        return sum(scores) / len(scores)
+
+    def adjust_quality_weight(self, current_weight: float) -> float:
+        from openakita.config import settings
+
+        feedback_dir = settings.data_dir / "evolution" / "feedback.json"
+        if not feedback_dir.exists():
+            return current_weight
+
+        try:
+            data = json.loads(feedback_dir.read_text(encoding="utf-8"))
+            if not isinstance(data, list) or len(data) < 5:
+                return current_weight
+
+            matches = 0
+            for fb in data:
+                score_file = self._data_dir / f"{fb.get('session_id', '')[:8]}.json"
+                if not score_file.exists():
+                    continue
+                score_data = json.loads(score_file.read_text(encoding="utf-8"))
+                eval_score = score_data.get("overall", 0.5)
+                user_liked = fb.get("rating") == "good"
+                if (eval_score >= 0.7 and user_liked) or (eval_score < 0.4 and not user_liked):
+                    matches += 1
+
+            if len(data) < 5:
+                return current_weight
+
+            correlation = matches / len(data)
+            if correlation > 0.6:
+                new_weight = min(current_weight + 0.01, 0.30)
+            elif correlation < 0.3:
+                new_weight = max(current_weight - 0.01, 0.05)
+            else:
+                return current_weight
+
+            if abs(new_weight - current_weight) > 0.001:
+                logger.info(
+                    "[QualityEval] 权重调整: %.2f→%.2f (匹配率=%.2f)",
+                    current_weight, new_weight, correlation,
+                )
+            return new_weight
+        except Exception:
+            return current_weight
 
     def should_sample(self) -> bool:
         return random.random() < self._sample_rate
