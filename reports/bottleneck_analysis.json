@@ -1,0 +1,158 @@
+{
+  "summary": {
+    "avg": 94341.4,
+    "median": 46291.6,
+    "p95": 296784.7,
+    "p99": 362931.3,
+    "min": 15494.6,
+    "max": 379467.9,
+    "avg_output_tokens": 351330.0,
+    "total_tests_ran": 6,
+    "overall_success_rate": 1.0
+  },
+  "by_test": [
+    {
+      "test_id": "code_gen",
+      "category": "coding",
+      "success_rate": 1.0,
+      "avg_total_ms": 44419.1,
+      "p95_total_ms": 44419.1,
+      "avg_llm_ms": 54309.5,
+      "avg_tool_ms": 0,
+      "avg_overhead_ms": 0,
+      "avg_output_tokens": 75677
+    },
+    {
+      "test_id": "long_context",
+      "category": "writing",
+      "success_rate": 1.0,
+      "avg_total_ms": 48164.1,
+      "p95_total_ms": 48164.1,
+      "avg_llm_ms": 38641.3,
+      "avg_tool_ms": 0,
+      "avg_overhead_ms": 9522.8,
+      "avg_output_tokens": 34687
+    },
+    {
+      "test_id": "memory_recall",
+      "category": "memory",
+      "success_rate": 1.0,
+      "avg_total_ms": 29767.6,
+      "p95_total_ms": 29767.6,
+      "avg_llm_ms": 30614.5,
+      "avg_tool_ms": 0,
+      "avg_overhead_ms": 0,
+      "avg_output_tokens": 20548
+    },
+    {
+      "test_id": "multi_step",
+      "category": "research",
+      "success_rate": 1.0,
+      "avg_total_ms": 48735.2,
+      "p95_total_ms": 48735.2,
+      "avg_llm_ms": 56447.6,
+      "avg_tool_ms": 0,
+      "avg_overhead_ms": 0,
+      "avg_output_tokens": 32361
+    },
+    {
+      "test_id": "qa_simple",
+      "category": "chat",
+      "success_rate": 1.0,
+      "avg_total_ms": 15494.6,
+      "p95_total_ms": 15494.6,
+      "avg_llm_ms": 16447.1,
+      "avg_tool_ms": 0,
+      "avg_overhead_ms": 0,
+      "avg_output_tokens": 16101
+    },
+    {
+      "test_id": "tool_search",
+      "category": "tool_use",
+      "success_rate": 1.0,
+      "avg_total_ms": 379467.9,
+      "p95_total_ms": 379467.9,
+      "avg_llm_ms": 325780.6,
+      "avg_tool_ms": 0,
+      "avg_overhead_ms": 53687.3,
+      "avg_output_tokens": 1928604
+    }
+  ],
+  "breakdown": {
+    "llm_calls": {
+      "avg": 87040.1,
+      "median": 46475.4,
+      "p95": 258447.3,
+      "p99": 312314.0,
+      "min": 16447.1,
+      "max": 325780.6,
+      "percent": 89.2
+    },
+    "tool_calls": {
+      "avg": 0,
+      "median": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "min": 0,
+      "max": 0,
+      "percent": 0.0
+    },
+    "overhead": {
+      "avg": 10535.0,
+      "median": 0.0,
+      "p95": 42646.2,
+      "p99": 51479.1,
+      "min": 0,
+      "max": 53687.3,
+      "percent": 10.8
+    },
+    "total": {
+      "avg": 94341.4,
+      "median": 46291.6,
+      "p95": 296784.7,
+      "p99": 362931.3,
+      "min": 15494.6,
+      "max": 379467.9
+    }
+  },
+  "bottleneck": {
+    "stage": "llm_calls",
+    "percent": 89.2,
+    "avg_ms": 87040.1
+  },
+  "slowest_tests": [
+    {
+      "test_id": "tool_search",
+      "category": "tool_use",
+      "success_rate": 1.0,
+      "avg_total_ms": 379467.9,
+      "p95_total_ms": 379467.9,
+      "avg_llm_ms": 325780.6,
+      "avg_tool_ms": 0,
+      "avg_overhead_ms": 53687.3,
+      "avg_output_tokens": 1928604
+    },
+    {
+      "test_id": "multi_step",
+      "category": "research",
+      "success_rate": 1.0,
+      "avg_total_ms": 48735.2,
+      "p95_total_ms": 48735.2,
+      "avg_llm_ms": 56447.6,
+      "avg_tool_ms": 0,
+      "avg_overhead_ms": 0,
+      "avg_output_tokens": 32361
+    },
+    {
+      "test_id": "long_context",
+      "category": "writing",
+      "success_rate": 1.0,
+      "avg_total_ms": 48164.1,
+      "p95_total_ms": 48164.1,
+      "avg_llm_ms": 38641.3,
+      "avg_tool_ms": 0,
+      "avg_overhead_ms": 9522.8,
+      "avg_output_tokens": 34687
+    }
+  ]
+}

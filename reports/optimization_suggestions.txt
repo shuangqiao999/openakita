@@ -1,0 +1,29 @@
+OpenAkita 性能剖析 —— 优化建议
+==================================================
+
+测试概况: 6 次执行 (1 轮 × 6 用例)
+模型: qwen/qwen3.5-9b
+平均总耗时: 94341ms
+P95 总耗时: 296785ms
+成功率: 100%
+
+## 耗时分布
+  llm_calls:  avg=87040ms  p95=258447ms  占比=89.2%
+  tool_calls:  avg=0ms  p95=0ms  占比=0.0%
+  overhead:  avg=10535ms  p95=42646ms  占比=10.8%
+
+[WARN] 瓶颈: LLM 推理占 89%
+  -> 当前 avg=87040ms/次调用
+  -> 建议: 1) 使用更小的模型 (如 2B) 2) 检查 LMStudio GPU 加速是否启用
+  -> 建议: 3) 减小 MAX_TOKENS 限制 4) 检查 prompt 长度是否可压缩
+
+## 最慢的测试用例
+  tool_search: avg=379468ms  p95=379468ms  llm=325781ms  overhead=53687ms
+  multi_step: avg=48735ms  p95=48735ms  llm=56448ms  overhead=0ms
+  long_context: avg=48164ms  p95=48164ms  llm=38641ms  overhead=9523ms
+
+## 可与自进化系统联动优化
+  1. 将 profile 输出作为 benchmark 任务的新指标维度
+  2. 如果 LLM 占比较高 -> 让实验循环尝试调整 BENCHMARK_TASK_TIMEOUT
+  3. 如果 overhead 较高 -> 触发 _get_memory_tuning_hint 自动建议参数调整
+  4. 定期运行 profile 对比，验证自进化是否真正降低了延迟
