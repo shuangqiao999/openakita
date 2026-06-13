@@ -1562,6 +1562,9 @@ EVOLVABLE_ENV_PARAMS: dict[str, tuple[float, float, float, bool]] = {
     "RESEARCH_LLM_TIMEOUT": (600, 60, 1800, False),
     "RETRIEVAL_TOP_K": (5, 1, 20, False),
     "MEMORY_SIMILARITY_THRESHOLD": (0.7, 0.5, 0.95, False),
+    "MEMORY_RETRIEVAL_TUNING_ENABLED": (True, False, True, False),
+    "MEMORY_USAGE_LOW_THRESHOLD": (0.3, 0.1, 0.5, False),
+    "MEMORY_TUNING_COOLDOWN_HOURS": (24, 1, 72, False),
 }
 
 # 全局运行时状态管理器

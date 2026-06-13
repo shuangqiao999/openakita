@@ -18,6 +18,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from ._utils import strip_json
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_TASKS = 30
@@ -90,7 +92,7 @@ class DynamicBenchmarkGenerator:
 """
         try:
             response = await self._brain.think(prompt)
-            data = json.loads(_strip_json(response))
+            data = json.loads(strip_json(response))
             ok, reason = self.validate_task(
                 data["description"],
                 data.get("expected_outcome", ""),
@@ -182,7 +184,7 @@ class DynamicBenchmarkGenerator:
             import json as _json
 
             response = await self._brain.think(prompt)
-            tasks = _json.loads(_strip_json(response.content))
+            tasks = _json.loads(strip_json(response.content))
             if not isinstance(tasks, list):
                 return []
             valid = [t for t in tasks if self._is_task_valid(t)]
@@ -250,20 +252,6 @@ class DynamicBenchmarkGenerator:
                 return False
 
         return True
-
-
-def _strip_json(text: str) -> str:
-    text = re.sub(r"^```(?:json)?\s*\n?", "", text.strip())
-    text = re.sub(r"\n?```\s*$", "", text)
-    sb = text.find("{")
-    sq = text.find("[")
-    s = min(x for x in (sb, sq) if x >= 0) if (sb >= 0 or sq >= 0) else -1
-    if s > 0:
-        text = text[s:]
-    e = max(text.rfind("}"), text.rfind("]"))
-    if 0 <= e < len(text) - 1:
-        text = text[: e + 1]
-    return text
 
 
 def save_tasks_to_file(tasks: list[Any], path: Path) -> None:

@@ -14,6 +14,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from ._utils import strip_json
+
 logger = logging.getLogger(__name__)
 
 
@@ -65,7 +67,7 @@ JSON:
 """
         try:
             response = await self._brain.think(prompt)
-            data = json.loads(_strip_json(response.content))
+            data = json.loads(strip_json(response.content))
             s = QualityScore(
                 relevance=data.get("relevance", 5) / 10,
                 correctness=data.get("correctness", 5) / 10,
@@ -143,19 +145,3 @@ JSON:
 
     def should_sample(self) -> bool:
         return random.random() < self._sample_rate
-
-
-def _strip_json(text: str) -> str:
-    import re
-
-    text = re.sub(r"^```(?:json)?\s*\n?", "", text.strip())
-    text = re.sub(r"\n?```\s*$", "", text)
-    sb = text.find("{")
-    sq = text.find("[")
-    s = min(x for x in (sb, sq) if x >= 0) if (sb >= 0 or sq >= 0) else -1
-    if s > 0:
-        text = text[s:]
-    e = max(text.rfind("}"), text.rfind("]"))
-    if 0 <= e < len(text) - 1:
-        text = text[: e + 1]
-    return text

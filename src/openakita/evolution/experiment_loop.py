@@ -65,7 +65,7 @@ class ExperimentResult:
     reason: str = ""
 
 
-def _get_memory_tuning_hint() -> str:
+async def _get_memory_tuning_hint() -> str:
     try:
         from openakita.config import settings
 
@@ -79,21 +79,21 @@ def _get_memory_tuning_hint() -> str:
         except Exception:
             return ""
 
+        if not collector:
+            return ""
+
         usage_rate = getattr(settings, "memory_usage_low_threshold", 0.3)
         cooldown = getattr(settings, "memory_tuning_cooldown_hours", 24)
 
-        import time as _time
-
-        last_tune = collector.get_last_tuning_time() if collector else 0.0
-        if _time.time() - last_tune < cooldown * 3600:
+        last_tune = collector.get_last_tuning_time()
+        if time.time() - last_tune < cooldown * 3600:
             return ""
 
-        if not collector:
-            return ""
-        snap = collector.collect()
+        snap = await asyncio.to_thread(collector.collect)
         if snap.memory_usage_rate >= usage_rate:
             return ""
 
+        collector.record_tuning_time()
         return (
             f"\n⚠ 记忆使用率: {snap.memory_usage_rate:.0%} (阈值 {usage_rate:.0%})\n"
             "建议调整记忆检索参数以提升召回率:\n"
@@ -230,7 +230,7 @@ class ExperimentLoop:
         if prior_summary:
             prior_section = "已尝试的实验（请避免重复失败方向）:\n" + prior_summary
 
-        memory_hint = self._get_memory_tuning_hint()
+        memory_hint = await _get_memory_tuning_hint()
         env_targets = _get_env_targets_display()
 
         prompt = f"""你是一个 AI 系统优化研究员。当前系统性能指标:

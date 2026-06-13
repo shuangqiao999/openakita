@@ -82,13 +82,13 @@ class RuntimeMetricsCollector:
         try:
             from openakita.config import settings
 
-            db_path = settings.data_dir.parent / "data" / "memory" / "openakita.db"
+            db_path = settings.data_dir / "memory" / "openakita.db"
             if not db_path.exists():
                 return
             import sqlite3
 
             conn = sqlite3.connect(str(db_path))
-            cur = conn.execute("SELECT COUNT(*) FROM memories WHERE active_only IS NULL OR 1=1")
+            cur = conn.execute("SELECT COUNT(*) FROM memories")
             snapshot.memory_total = cur.fetchone()[0]
             conn.close()
         except Exception:
