@@ -197,6 +197,8 @@ class ExperimentLoop:
         if benchmark_report is None:
             benchmark_report = await engine.run_suite(self._agent)
 
+        cycle_sid = datetime.now().strftime("%Y%m%d_%H%M%S")
+
         baseline_metrics = {
             "success_rate": benchmark_report.metrics.success_rate,
             "avg_tokens": benchmark_report.metrics.avg_tokens,
@@ -229,13 +231,13 @@ class ExperimentLoop:
                 baseline_metrics = result.new_metrics
             if result.action in ("keep", "discard") and result.quality_score is not None and self._quality_eval is not None:
                 try:
-                    self._quality_eval.save_score(result.quality_score, "")
+                    self._quality_eval.save_score(result.quality_score, cycle_sid)
                 except Exception:
                     pass
 
         if self._quality_eval is not None and results:
             try:
-                self._write_feedback(results)
+                self._write_feedback(results, cycle_sid)
                 new_qw = self._quality_eval.adjust_quality_weight(quality_weight)
                 self._save_quality_weight(new_qw)
                 if abs(new_qw - quality_weight) > 0.001:
@@ -409,7 +411,9 @@ class ExperimentLoop:
             threshold = self._get_config(
                 "experiment_improvement_threshold", _DEFAULT_IMPROVEMENT_THRESHOLD
             )
-            quality_score = self._compute_quality_score(report)
+            quality_score = self._compute_quality_score(
+                report, baseline_metrics=baseline_metrics, new_metrics=new_metrics
+            )
             if self._is_improvement(
                 baseline_metrics, new_metrics, threshold,
                 quality_delta=quality_delta, quality_weight=quality_weight,
@@ -465,7 +469,13 @@ class ExperimentLoop:
 
         _, min_val, max_val, needs_restart = EVOLVABLE_ENV_PARAMS[param]
         try:
-            num_val = float(hypothesis.proposed_content.strip())
+            import re as _re
+
+            raw = hypothesis.proposed_content.strip()
+            m = _re.search(r"[-+]?\d*\.?\d+", raw)
+            if not m:
+                return ExperimentResult(action="error", hypothesis=hypothesis, reason=f"无法解析数值: {raw[:40]}")
+            num_val = float(m.group())
         except ValueError:
             return ExperimentResult(action="error", hypothesis=hypothesis, reason="非数字值")
 
@@ -501,7 +511,9 @@ class ExperimentLoop:
             threshold = self._get_config(
                 "experiment_improvement_threshold", _DEFAULT_IMPROVEMENT_THRESHOLD
             )
-            quality_score = self._compute_quality_score(report)
+            quality_score = self._compute_quality_score(
+                report, baseline_metrics=baseline_metrics, new_metrics=new_metrics
+            )
             if self._is_improvement(
                 baseline_metrics, new_metrics, threshold,
                 quality_delta=quality_delta, quality_weight=quality_weight,
@@ -667,7 +679,11 @@ class ExperimentLoop:
         return score_delta > threshold
 
     @staticmethod
-    def _compute_quality_score(report: Any) -> Any:
+    def _compute_quality_score(
+        report: Any,
+        baseline_metrics: dict[str, float] | None = None,
+        new_metrics: dict[str, float] | None = None,
+    ) -> Any:
         try:
             from .conversation_quality import QualityScore
 
@@ -683,11 +699,21 @@ class ExperimentLoop:
                 else:
                     s.correctness = min(1.0, max(0.0, metric.success_rate))
                     s.completeness = 0.5
-                s.efficiency = round(
-                    0.5 * (1.0 - min(1.0, metric.avg_time / 600.0))
-                    + 0.5 * (1.0 - min(1.0, metric.avg_tokens / 10000.0)),
-                    3,
+
+                # 混合效率分: 全局水平(0.5) + 实验改善幅度(0.5)
+                global_eff = 0.5 * (1.0 - min(1.0, metric.avg_time / 600.0)) + 0.5 * (
+                    1.0 - min(1.0, metric.avg_tokens / 10000.0)
                 )
+                delta_eff = 0.5
+                if baseline_metrics and new_metrics:
+                    tok_old = baseline_metrics.get("avg_tokens", 1)
+                    tok_new = new_metrics.get("avg_tokens", 1)
+                    time_old = baseline_metrics.get("avg_time", 1)
+                    time_new = new_metrics.get("avg_time", 1)
+                    tok_improve = max(-1.0, min(1.0, (tok_old - tok_new) / max(tok_old, 1)))
+                    time_improve = max(-1.0, min(1.0, (time_old - time_new) / max(time_old, 1)))
+                    delta_eff = 0.5 + 0.25 * tok_improve + 0.25 * time_improve
+                s.efficiency = round(0.5 * global_eff + 0.5 * delta_eff, 3)
                 s.compute_overall()
             return s
         except Exception:
@@ -725,7 +751,7 @@ class ExperimentLoop:
         except Exception:
             pass
 
-    def _write_feedback(self, results: list[ExperimentResult]) -> None:
+    def _write_feedback(self, results: list[ExperimentResult], cycle_sid: str = "") -> None:
         try:
             from openakita.config import settings
 
@@ -742,7 +768,7 @@ class ExperimentLoop:
             for r in results:
                 if r.action in ("keep", "discard"):
                     existing.append({
-                        "session_id": datetime.now().strftime("%Y%m%d%H%M%S"),
+                        "session_id": cycle_sid,
                         "rating": "good" if r.action == "keep" else "bad",
                         "description": r.hypothesis.description if r.hypothesis else "",
                     })
@@ -765,6 +791,8 @@ class ExperimentLoop:
                     {
                         "overall": r.quality_score.overall,
                         "relevance": r.quality_score.relevance,
+                        "correctness": getattr(r.quality_score, "correctness", 0),
+                        "completeness": getattr(r.quality_score, "completeness", 0),
                         "efficiency": r.quality_score.efficiency,
                     }
                     if r.quality_score is not None

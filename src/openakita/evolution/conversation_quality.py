@@ -153,9 +153,9 @@ JSON:
                 return current_weight
 
             if avg > 0.55:
-                new_weight = min(current_weight + 0.005, 0.25)
+                new_weight = min(current_weight + 0.01, 0.25)
             elif avg < 0.45:
-                new_weight = max(current_weight - 0.005, 0.05)
+                new_weight = max(current_weight - 0.01, 0.05)
             else:
                 return current_weight
 
