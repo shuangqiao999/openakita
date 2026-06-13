@@ -101,6 +101,19 @@ async def _get_memory_tuning_hint() -> str:
         return ""
 
 
+def _load_quality_delta(data_dir: str = "data/evolution/experiments/quality_scores") -> float:
+    try:
+        from .conversation_quality import ConversationQualityEvaluator
+
+        evaluator = ConversationQualityEvaluator(agent=None, data_dir=data_dir)
+        avg = evaluator.load_weekly_average(min_samples=1)
+        if avg is None:
+            return 0.0
+        return avg - 0.5
+    except Exception:
+        return 0.0
+
+
 def _get_env_targets_display() -> str:
     try:
         from openakita.config import EVOLVABLE_ENV_PARAMS, settings
@@ -217,6 +230,7 @@ class ExperimentLoop:
 
         if self._quality_eval is not None and results:
             try:
+                self._write_feedback(results)
                 new_qw = self._quality_eval.adjust_quality_weight(quality_weight)
                 self._save_quality_weight(new_qw)
                 if abs(new_qw - quality_weight) > 0.001:
@@ -643,7 +657,11 @@ class ExperimentLoop:
                 s.relevance = min(1.0, max(0.0, metric.success_rate))
                 s.correctness = min(1.0, max(0.0, metric.success_rate))
                 s.completeness = 0.5
-                s.efficiency = min(1.0, max(0.0, 1.0 - metric.avg_tokens / max(metric.avg_tokens + metric.avg_time, 1)))
+                s.efficiency = round(
+                    0.5 * (1.0 - min(1.0, metric.avg_time / 600.0))
+                    + 0.5 * (1.0 - min(1.0, metric.avg_tokens / 10000.0)),
+                    3,
+                )
                 s.compute_overall()
             return s
         except Exception:
@@ -678,6 +696,33 @@ class ExperimentLoop:
                 json.dumps({"weight": round(weight, 3), "ts": time.time()}, ensure_ascii=False),
                 encoding="utf-8",
             )
+        except Exception:
+            pass
+
+    def _write_feedback(self, results: list[ExperimentResult]) -> None:
+        try:
+            from openakita.config import settings
+
+            fb_path = settings.data_dir / "evolution" / "feedback.json"
+            fb_path.parent.mkdir(parents=True, exist_ok=True)
+            existing: list[dict] = []
+            if fb_path.exists():
+                try:
+                    existing = json.loads(fb_path.read_text(encoding="utf-8"))
+                    if not isinstance(existing, list):
+                        existing = []
+                except Exception:
+                    existing = []
+            for r in results:
+                if r.action in ("keep", "discard"):
+                    existing.append({
+                        "session_id": datetime.now().strftime("%Y%m%d%H%M%S"),
+                        "rating": "good" if r.action == "keep" else "bad",
+                        "description": r.hypothesis.description if r.hypothesis else "",
+                    })
+            if len(existing) > 100:
+                existing = existing[-100:]
+            fb_path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:
             pass
 

@@ -96,19 +96,6 @@ class PromptOptimizer:
         except Exception:
             return default
 
-    @staticmethod
-    def _load_quality_delta() -> float:
-        try:
-            from .conversation_quality import ConversationQualityEvaluator
-
-            evaluator = ConversationQualityEvaluator(agent=None)
-            avg = evaluator.load_weekly_average(min_samples=1)
-            if avg is None:
-                return 0.0
-            return avg - 0.5
-        except Exception:
-            return 0.0
-
     async def evolve_step(self, performance_data: dict | None = None) -> VariantResult | None:
         async with PromptOptimizer._evolve_lock:
             return await self._evolve_step_locked(performance_data)
@@ -254,7 +241,9 @@ class PromptOptimizer:
                 "prompt_improvement_threshold", _DEFAULT_IMPROVEMENT_THRESHOLD
             )
             qw = self._get_config("quality_weight_in_improvement", 0.10)
-            qd = self._load_quality_delta()
+            from .experiment_loop import _load_quality_delta
+
+            qd = _load_quality_delta()
             adopted = ExperimentLoop._is_improvement(
                 baseline_metrics, new_metrics, threshold,
                 quality_weight=qw, quality_delta=qd,
