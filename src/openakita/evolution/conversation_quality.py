@@ -105,12 +105,12 @@ JSON:
 
         feedback_path = settings.data_dir / "evolution" / "feedback.json"
         if not feedback_path.exists():
-            return current_weight
+            return self._adjust_by_quality_trend(current_weight)
 
         try:
             data = json.loads(feedback_path.read_text(encoding="utf-8"))
             if not isinstance(data, list) or len(data) < 5:
-                return current_weight
+                return self._adjust_by_quality_trend(current_weight)
 
             matches = 0
             valid = 0
@@ -127,7 +127,7 @@ JSON:
                 valid += 1
 
             if valid < 3:
-                return current_weight
+                return self._adjust_by_quality_trend(current_weight)
 
             correlation = matches / valid
             if correlation > 0.6:
@@ -141,6 +141,28 @@ JSON:
                 logger.info(
                     "[QualityEval] 权重调整: %.2f→%.2f (匹配率=%.2f)",
                     current_weight, new_weight, correlation,
+                )
+            return new_weight
+        except Exception:
+            return current_weight
+
+    def _adjust_by_quality_trend(self, current_weight: float) -> float:
+        try:
+            avg = self.load_weekly_average(min_samples=2)
+            if avg is None:
+                return current_weight
+
+            if avg > 0.55:
+                new_weight = min(current_weight + 0.005, 0.25)
+            elif avg < 0.45:
+                new_weight = max(current_weight - 0.005, 0.05)
+            else:
+                return current_weight
+
+            if abs(new_weight - current_weight) > 0.001:
+                logger.info(
+                    "[QualityEval] 趋势自调: %.2f→%.2f (质量均值=%.3f)",
+                    current_weight, new_weight, avg,
                 )
             return new_weight
         except Exception:

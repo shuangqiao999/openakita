@@ -643,7 +643,13 @@ class ExperimentLoop:
     ) -> bool:
         sr_old = old.get("success_rate", 0)
         sr_new = new.get("success_rate", 0)
-        if sr_new < sr_old:
+
+        # 成功率天花板容错: 已接近满分时允许小幅波动
+        # 避免因 100% 基线导致任何实验都无法被判定为"改善"
+        if sr_old >= 0.95:
+            if sr_new < 0.85:
+                return False
+        elif sr_new < sr_old:
             return False
 
         tok_old = old.get("avg_tokens", 1)
@@ -669,8 +675,14 @@ class ExperimentLoop:
             metric = getattr(report, "metrics", None)
             if metric is not None:
                 s.relevance = min(1.0, max(0.0, metric.success_rate))
-                s.correctness = min(1.0, max(0.0, metric.success_rate))
-                s.completeness = 0.5
+                cat_scores = getattr(metric, "category_scores", {})
+                if cat_scores and len(cat_scores) > 0:
+                    vals = list(cat_scores.values())
+                    s.correctness = round(sum(vals) / len(vals), 3)
+                    s.completeness = round(1.0 - (max(vals) - min(vals)) / max(max(vals), 0.01), 3)
+                else:
+                    s.correctness = min(1.0, max(0.0, metric.success_rate))
+                    s.completeness = 0.5
                 s.efficiency = round(
                     0.5 * (1.0 - min(1.0, metric.avg_time / 600.0))
                     + 0.5 * (1.0 - min(1.0, metric.avg_tokens / 10000.0)),
