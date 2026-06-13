@@ -162,7 +162,7 @@ class ExperimentLoop:
             from ..config import settings
 
             v = getattr(settings, key, default)
-            if v is None or (isinstance(v, (int, float)) and v <= 0):
+            if v is None or (isinstance(v, (int, float)) and v < 0):
                 return default
             return v
         except Exception:
@@ -187,12 +187,12 @@ class ExperimentLoop:
         }
 
         max_experiments = self._get_config("experiments_per_cycle", _DEFAULT_MAX_EXPERIMENTS)
-        quality_weight = self._get_config("quality_weight_in_improvement", 0.10)
+        quality_weight = self._load_quality_weight()
         quality_delta = 0.0
         avg_quality = 0.0
         if self._quality_eval is not None:
             try:
-                avg_quality = self._quality_eval.load_weekly_average(min_samples=3) or 0.0
+                avg_quality = self._quality_eval.load_weekly_average(min_samples=1) or 0.0
             except Exception:
                 avg_quality = 0.0
             quality_delta = avg_quality - 0.5
@@ -217,7 +217,10 @@ class ExperimentLoop:
 
         if self._quality_eval is not None and results:
             try:
-                self._quality_eval.adjust_quality_weight(quality_weight)
+                new_qw = self._quality_eval.adjust_quality_weight(quality_weight)
+                self._save_quality_weight(new_qw)
+                if abs(new_qw - quality_weight) > 0.001:
+                    logger.info("[ExperimentLoop] 质量权重自适应: %.3f→%.3f", quality_weight, new_qw)
             except Exception:
                 pass
 
@@ -640,9 +643,7 @@ class ExperimentLoop:
                 s.relevance = min(1.0, max(0.0, metric.success_rate))
                 s.correctness = min(1.0, max(0.0, metric.success_rate))
                 s.completeness = 0.5
-                s.efficiency = min(
-                    1.0, max(0.0, 1.0 - metric.avg_tokens / max(metric.avg_time, 1) * 0.01)
-                )
+                s.efficiency = min(1.0, max(0.0, 1.0 - metric.avg_tokens / max(metric.avg_tokens + metric.avg_time, 1)))
                 s.compute_overall()
             return s
         except Exception:
@@ -658,6 +659,28 @@ class ExperimentLoop:
             except Exception:
                 pass
 
+    def _load_quality_weight(self) -> float:
+        try:
+            path = self._data_dir / "quality_weight.json"
+            if path.exists():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                w = data.get("weight", 0.10)
+                if isinstance(w, (int, float)) and 0.0 <= w <= 0.8:
+                    return float(w)
+        except Exception:
+            pass
+        return self._get_config("quality_weight_in_improvement", 0.10)
+
+    def _save_quality_weight(self, weight: float) -> None:
+        try:
+            path = self._data_dir / "quality_weight.json"
+            path.write_text(
+                json.dumps({"weight": round(weight, 3), "ts": time.time()}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+
     def _save_cycle(self, results: list[ExperimentResult]) -> None:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         path = self._data_dir / f"{ts}_cycle.json"
@@ -667,6 +690,15 @@ class ExperimentLoop:
                 "description": r.hypothesis.description if r.hypothesis else "",
                 "delta": r.delta,
                 "reason": r.reason,
+                "quality_score": (
+                    {
+                        "overall": r.quality_score.overall,
+                        "relevance": r.quality_score.relevance,
+                        "efficiency": r.quality_score.efficiency,
+                    }
+                    if r.quality_score is not None
+                    else None
+                ),
             }
             for r in results
         ]
