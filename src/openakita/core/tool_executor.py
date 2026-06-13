@@ -289,6 +289,7 @@ class ToolExecutor:
         self._PER_TURN_LIMITS: dict[str, int] = {
             "web_search": 8,
             "news_search": 8,
+            "web_fetch": 5,
         }
 
         # Tool result cache for pure-read tools (P2-2 optimization)
