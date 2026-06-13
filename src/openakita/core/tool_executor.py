@@ -284,6 +284,13 @@ class ToolExecutor:
         # Extra permission rules injected by AgentFactory (profile rules)
         self._extra_permission_rules: list | None = None
 
+        # 每轮工具调用次数限制 (防止 Agent 无休止循环)
+        self._turn_call_counts: dict[str, int] = {}
+        self._PER_TURN_LIMITS: dict[str, int] = {
+            "web_search": 8,
+            "news_search": 8,
+        }
+
         # Tool result cache for pure-read tools (P2-2 optimization)
         # key: (tool_name, args_hash) → (timestamp, result_str)
         self._tool_result_cache: dict[tuple[str, int], tuple[float, str]] = {}
@@ -944,6 +951,9 @@ class ToolExecutor:
         if not tool_calls:
             return [], executed_tool_names, delivery_receipts
 
+        # 每轮开始时重置工具调用计数
+        self._turn_call_counts.clear()
+
         # 并行策略决策
         allow_parallel_with_interrupts = bool(
             getattr(settings, "allow_parallel_tools_with_interrupt_checks", False)
@@ -961,6 +971,27 @@ class ToolExecutor:
 
             if isinstance(tool_input, dict):
                 tool_input = normalize_tool_input(tool_name, tool_input)
+
+            # 每轮工具调用次数上限检查
+            limit = self._PER_TURN_LIMITS.get(tool_name)
+            if limit:
+                count = self._turn_call_counts.get(tool_name, 0) + 1
+                self._turn_call_counts[tool_name] = count
+                if count > limit:
+                    return (
+                        idx,
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tool_use_id,
+                            "content": (
+                                f"已达到本轮 {tool_name} 调用上限（{limit} 次）。"
+                                "请基于已有的结果直接回答用户问题，不要再发起新的调用。"
+                            ),
+                            "is_error": False,
+                        },
+                        None,
+                        None,
+                    )
 
             # 检查取消
             if state and state.cancelled:

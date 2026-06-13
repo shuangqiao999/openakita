@@ -3,34 +3,27 @@ Web Search 处理器
 委托给 openakita.search.engines 共享模块 — 六引擎并行搜索 + DDG/国际Bing兜底。
 """
 import asyncio
-import contextvars
 import hashlib
-import json
 import logging
 import time
 from typing import Any
 
 from openakita.config import settings
 from openakita.search.engines import (
-    ENGINE_TIMEOUT,
     MERGE_LIMIT,
-    get_web_engines,
-    get_news_engines,
-    engine_search_with_retry,
-    merge_dedup_results,
-    format_engine_summary,
-    ddg_web_search,
+    all_failed_response,
     ddg_news_search,
+    ddg_web_search,
+    engine_search_with_retry,
     fallback_engines_search,
     filter_search_results,
-    all_failed_response,
+    format_engine_summary,
+    get_news_engines,
+    get_web_engines,
+    merge_dedup_results,
 )
 
 logger = logging.getLogger(__name__)
-
-# 每个会话轮次的搜索计数 (contextvars 自动按 async task 隔离)
-_search_call_count: contextvars.ContextVar[int] = contextvars.ContextVar("web_search_count", default=0)
-_MAX_SEARCHES_PER_TURN = 8
 
 
 class _NoResultError(Exception):
@@ -90,14 +83,6 @@ class WebSearchHandler:
             kind = "news"
         else:
             return f"Unknown web search tool: {tool_name}"
-
-        count = _search_call_count.get() + 1
-        _search_call_count.set(count)
-        if count > _MAX_SEARCHES_PER_TURN:
-            return (
-                f"已达到本轮搜索上限（{_MAX_SEARCHES_PER_TURN} 次）。"
-                "请基于已有的搜索结果直接回答用户问题，不要再发起新的搜索。"
-            )
 
         # 结果缓存检查
         cache_key = _search_cache_key(params.get("query", ""), params.get("max_results", 5), kind)
