@@ -1,334 +1,241 @@
-# OpenAkita 自进化系统指南
+# OpenAkita 自进化系统
 
-## 概述
+## 背景
 
-OpenAkita 自进化系统是一个多层级的自主改进引擎，使 Agent 能够从失败中学习、自动补全缺失能力、持续优化行为策略，并通过 Benchmark 量化验证改进效果。
+OpenAkita 是一个多智能体 AI 助手，其行为由提示词（`identity/AGENT.md`、`identity/POLICIES.yaml`）和运行时参数（`.env`）共同决定。传统的调优方式依赖人工反复试错——修改参数、观察效果、再调整——效率低且容易顾此失彼。
 
-**核心理念**：从"坏了才修"的被动维修，转变为"主动实验、持续改进、有指标有回滚"的自主研究。
-
----
-
-## 系统架构
+自进化系统的核心理念是：**让 AI 自己优化自己**。通过 Benchmark 驱动的实验循环，系统自动提出改进假设、验证效果、保留有效改善、回滚无效尝试，形成一个完整的闭环。
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│ P0: 实时层 — 失败即时响应                                │
-│ AutoEvolver → 能力分析 → 依赖安装 → 技能生成             │
-├─────────────────────────────────────────────────────────┤
-│ P1: 周期层 — Benchmark 驱动实验循环 (每周一/四 02:00)    │
-│ Benchmark → 实验循环 → 假设→修改→验证→保留/回滚          │
-│ PromptOptimizer → 自动改进行为指令                        │
-├─────────────────────────────────────────────────────────┤
-│ P3: 学习层 — 工具模式学习 (每周日 05:00)                  │
-│ PatternLearner → 从历史成功任务提取高效模式 → 注入 prompt │
-├─────────────────────────────────────────────────────────┤
-│ P4: 研究层 — 多 Agent 协作 (每月 1/15 号 01:00)          │
-│ ResearchOrg → Analyst→Engineer→Auditor 协作              │
-│ 高风险变更 → 审批队列 → 人工确认                          │
-└─────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────┐
+│                                                    │
+│  Benchmark → 假设生成 → 参数修改 → 重测 → 对比    │
+│       ↑                                        ↓    │
+│       └────────── 保留/回滚 ←──────────────────┘    │
+│                                                    │
+└─────────────────────────────────────────────────┘
 ```
 
----
+## 触发方式
 
-## 各模块详解
+### 定时触发（推荐）
 
-### P0: AutoEvolver — 自动进化响应器
+系统内置定时任务，默认可每 2 次/周自动运行：
 
-**触发时机**: Agent 任务失败且根因为 `missing_tool` 或 `insufficient_docs` 时自动触发。
+| 任务 | 默认频率 | 控制开关 |
+|------|----------|----------|
+| `system:benchmark_evolve` | 周一/周四 02:00 | `.env` 中 `BENCHMARK_EVOLVE_ENABLED=True` |
 
-**工作流程**:
-1. `NeedAnalyzer` 用 LLM 分析任务描述，识别缺失的能力
-2. `AutoInstaller` 尝试 `pip install` 或 `npm install` 安装依赖
-3. `SkillGenerator` 对无法安装的能力自动生成 `SKILL.md` 技能文件
-
-**去重机制**: 5 分钟内同一能力的重复失败只处理一次，避免资源浪费。
-
-**文件位置**: `src/openakita/evolution/auto_evolve.py`
-
-**配置**:
-- `auto_evolve_enabled: bool` (默认 `True`) — 是否启用失败自动进化
-
----
-
-### P1: Benchmark 引擎 + 实验循环
-
-#### BenchmarkEngine
-
-**功能**: 定义标准化任务集，量化评估 Agent 性能。
-
-**内置任务 (8 项)**:
-| 任务 ID | 类别 | 描述 |
-|----------|------|------|
-| `tool-file-edit` | tool_use | 创建并验证文件 |
-| `tool-shell-exec` | tool_use | 执行 shell 命令并验证结果 |
-| `code-fibonacci` | coding | 实现斐波那契函数 |
-| `code-bug-fix` | coding | 修复除零 bug |
-| `research-web` | research | 搜索 Python 3.12 新特性 |
-| `memory-store-recall` | memory | 存储并回忆信息 |
-| `writing-summary` | writing | 中文摘要写作 |
-| `code-refactor` | coding | 列表推导式重构 |
-
-**评估指标**:
-- `success_rate`: 任务成功率
-- `avg_tokens`: 平均 Token 消耗
-- `avg_time`: 平均耗时
-- `efficiency_score`: 综合效率分
-- `category_scores`: 各分类得分
-
-**结果验证**: 使用关键词匹配检查 Agent 输出是否符合 `expected_outcome`。包含引号内容精确匹配 + 数字验证。
-
-**文件位置**: `src/openakita/evolution/benchmark.py`
-
-#### ExperimentLoop (实验循环)
-
-**功能**: `假设生成 → 修改文件 → Benchmark 验证 → 保留/回滚`
-
-**可修改的目标**:
-- `identity/AGENT.md` — Agent 行为指令
-- `identity/POLICIES.yaml` — 策略配置
-
-**安全护栏**:
-- 白名单校验：只允许修改 `MUTABLE_TARGETS` 中的文件
-- 路径遍历检测：`is_relative_to()` 防止写到项目外
-- 变更比例限制：替换区域 ≤ 30% 文件内容
-- 替换内容最小长度：≥ 10 字符
-- 语法验证：Python 文件 `ast.parse()`，YAML 文件 `yaml.safe_load()`
-- 模糊匹配：`difflib.SequenceMatcher`（0.85 阈值）+ 空白归一化
-- 成功率不下降：`success_rate` 降低时直接拒绝
-- 并发互斥：`asyncio.Lock` 防止多实验同时修改同一文件
-- 文件回滚：异常/取消时自动恢复原始内容
-
-**改进判定公式**:
-```
-score_delta = 0.5 × (sr_new - sr_old) + 0.3 × (tok_saved/tok_old) + 0.2 × (time_saved/time_old)
-保留条件: score_delta > improvement_threshold AND sr_new >= sr_old
-```
-
-**文件位置**: `src/openakita/evolution/experiment_loop.py`
-
----
-
-### P2: PromptOptimizer — Prompt 自主优化器
-
-**功能**: 分析性能数据 → 生成 Prompt 变体 → Benchmark 验证 → 采纳/回滚
-
-**工作流程**:
-1. 从最近 Benchmark 结果读取当前性能
-2. LLM 提出 Prompt 改进方案（JSON 格式，含原文和替换内容）
-3. 模糊匹配替换 + 语法验证
-4. 运行 Benchmark 对比效果
-5. `_is_improvement` 判定（成功率硬约束 + 加权公式）
-
-**额外验证**:
-- 模板变量平衡检查：`{{` 和 `}}` 数量必须相等
-- 变更比例限制：≤ 20% 文件内容
-
-**文件位置**: `src/openakita/evolution/prompt_optimizer.py`
-
----
-
-### P3: PatternLearner — 工具模式学习器
-
-**功能**: 从历史成功任务的 ReAct trace 中提取高效工具调用序列，总结为 best practices，注入到系统 prompt 中。
-
-**工作流程**:
-1. 扫描 `data/react_traces/` 中最近 7 天的成功任务 trace
-2. 递归提取每个 trace 中使用的工具名称
-3. 按类别聚类，筛选 tokens + 时间均低于中位数的"高效序列"
-4. LLM 总结为一行 best practice
-5. Jaccard 语义去重（相似度 ≥ 0.8 保留高置信度）
-6. 注入到 `prompt/builder.py` 的 "高效工具使用模式" 段落
-
-**注入格式**:
-```
-## 高效工具使用模式（从历史经验学习）
-- 在修改代码文件时，应该 grep 定位 → read_file 确认 → edit_file 修改 → read_lints 检查
-- 在搜索信息时，应该 web_search 获取链接 → web_fetch 读取详情
-```
-
-**输出限制**: 最多注入 500 字符，超过则截断。
-
-**文件位置**: `src/openakita/evolution/pattern_learner.py`
-
-**数据文件**: `data/evolution/patterns/effective_patterns.json`
-
----
-
-### P4: ResearchOrg — 多 Agent 研究组织
-
-**功能**: 多个专职 Agent 协作驱动系统进化。
-
-**角色分工**:
-
-| 角色 | 职责 | LLM 调用 |
-|------|------|----------|
-| **Analyst** | 分析性能数据 + 失败记录 + 工具统计，识别 3 个最大改进机会 | `_run_analyst` |
-| **Prompt Engineer** | 针对 prompt 类机会生成具体修改方案（JSON） | `_engineer_prompt` |
-| **Tool Developer** | 针对 tool 类机会设计新工具/技能规范（JSON） | `_engineer_tool` |
-| **Safety Auditor** | 审查所有提案的安全性（是否破坏核心逻辑/引入漏洞/性能退化） | `_run_auditor` |
-
-**审批流程**:
-- 低/中风险：自动应用 + Benchmark 验证
-- 高风险：提交到审批队列 → 前端审批→人工确认→应用
-
-**文件位置**: `src/openakita/evolution/research_org.py`
-
----
-
-## 定时任务调度
-
-| 任务 | CRON | 说明 |
-|------|------|------|
-| `system:daily_selfcheck` | `0 4 * * *` | 每日自检：分析错误日志，自动修复工具问题 |
-| `system:benchmark_evolve` | `0 2 * * 1,4` | 每周一/四：Benchmark 评测 + 实验循环 |
-| `system:pattern_learn` | `0 5 * * 0` | 每周日：学习高效工具调用模式 |
-| `system:research_org` | `0 1 1,15 * *` | 每月 1/15 号：多 Agent 研究周期 |
-
----
-
-## 前端监控面板
-
-**访问路径**: 侧边栏 → 监控 → 自进化
-
-**页面 Tab**:
-
-| Tab | 功能 |
-|-----|------|
-| 概览 | 健康度/成功率/Token/耗时指标卡 + ECharts 趋势图 + 最近实验摘要 |
-| 实验 | 筛选(全部/采纳/回滚) + 描述/Δ指标/状态 |
-| 技能 | 自动生成技能卡片 + 启用/禁用 + 删除 |
-| 模式 | 工具模式列表 + 置信度/证据数 + 注入开关 |
-| Prompt | 变体历史 + 采纳/拒绝 + Diff 对比视图 |
-| 审批 | 待审批卡片 + 风险标签 + 批准/拒绝 + Diff + 拒绝原因 |
-
-**API 端点** (14 个): `GET/POST/PUT/DELETE /api/evolution/*`
-
----
-
-## 配置项
-
-所有配置位于 `src/openakita/config.py`：
-
-| 配置项 | 默认值 | 说明 |
-|--------|--------|------|
-| `auto_evolve_enabled` | `True` | 是否启用失败自动进化 |
-| `benchmark_evolve_enabled` | `True` | 是否启用 Benchmark 实验循环 |
-| `prompt_optimize_enabled` | `True` | 是否启用 Prompt 自主优化 |
-| `pattern_learn_enabled` | `True` | 是否启用工具模式学习 |
-| `research_org_enabled` | `True` | 是否启用多 Agent 研究组织 |
-| `experiment_llm_timeout` | `600` | 实验 LLM 调用超时（秒） |
-| `research_llm_timeout` | `600` | 研究周期 LLM 超时（秒） |
-| `benchmark_max_concurrent` | `1` | Benchmark 并发任务数 |
-| `benchmark_task_timeout` | `600` | Benchmark 单任务超时（秒） |
-| `experiments_per_cycle` | `3` | 每实验周期最大实验数 |
-| `experiment_improvement_threshold` | `0.02` | 实验改进阈值 |
-| `prompt_improvement_threshold` | `0.05` | Prompt 采纳阈值 |
-| `prompt_max_change_ratio` | `0.2` | Prompt 单次修改最大比例 |
-| `research_max_proposals` | `2` | 研究周期最大提案数 |
-
----
-
-## 数据文件结构
-
-```
-data/evolution/
-├── benchmarks/
-│   ├── tasks.json              # 自定义 Benchmark 任务
-│   ├── baseline.json           # 当前基线指标
-│   └── results/                # 历史 Benchmark 结果
-├── experiments/
-│   ├── *_cycle.json            # 实验周期的实验记录
-│   └── backups/                # 文件备份（7天自动清理）
-├── patterns/
-│   ├── effective_patterns.json # 当前活跃工具模式
-│   └── last_learn.json         # 增量学习进度
-├── prompt_variants/
-│   └── archive/                # Prompt 变体历史
-├── research/
-│   └── *_research_cycle.json   # 研究周期结果
-└── approvals/
-    └── *.json                  # 审批队列
-```
-
----
-
-## 快速使用指南
-
-### 1. 查看进化状态
-
-打开前端 → 监控 → 自进化 → 概览 Tab。查看健康度评分和 Benchmark 趋势。
-
-### 2. 启用/禁用功能
-
-```python
-# config.py
-auto_evolve_enabled = True    # 任务失败自动补全能力
-benchmark_evolve_enabled = True  # Benchmark + 实验循环
-prompt_optimize_enabled = True   # Prompt 优化
-pattern_learn_enabled = True     # 工具模式学习
-research_org_enabled = True      # 多 Agent 研究
-```
-
-### 3. 添加自定义 Benchmark 任务
-
-编辑 `data/evolution/benchmarks/tasks.json`：
-
-```json
-[
-  {
-    "id": "my-custom-task",
-    "description": "搜索最新的 Rust 异步运行时对比",
-    "category": "research",
-    "expected_outcome": "返回至少 2 个运行时名称和对比",
-    "timeout_seconds": 600,
-    "difficulty": "medium"
-  }
-]
-```
-
-### 4. 审批高风险变更
-
-前端 → 监控 → 自进化 → 审批 Tab。查看待审批的高风险变更，点击"批准"应用或"拒绝"并填写原因。
-
-### 5. 触发手动进化
-
-```python
-from openakita.evolution import AutoEvolver
-evolver = AutoEvolver(agent)
-result = await evolver.respond_to_failure(
-    task_description="从网页提取表格数据",
-    harness_gap="missing_tool",
-    suggestion="建议使用 pandas read_html"
-)
-```
-
----
-
-## 本地模型调优
-
-若使用本地 LLM（如 LMStudio/Ollama），建议调整：
-
-```python
-# config.py
-benchmark_max_concurrent = 1     # 串行执行，避免冲垮本地模型
-benchmark_task_timeout = 600     # 600 秒超时
-experiment_llm_timeout = 600     # 实验假设生成超时
-research_llm_timeout = 600       # 研究周期 LLM 超时
-experiments_per_cycle = 2        # 减少每周期实验数
-research_max_proposals = 1       # 减少提案数
-```
-
----
-
-## 测试
+启动服务后自动生效，无需干预：
 
 ```bash
-# 单元测试
-pytest tests/unit/test_evolution_system.py tests/unit/test_defect_regression.py
+openakita serve
+```
 
-# 功能测试（需要 LMStudio 运行在 localhost:1234）
-python tests/functional/test_evolution_live.py
+### 手动触发
 
-# 全部测试
-pytest tests/unit/test_evolution_system.py tests/unit/test_defect_regression.py tests/unit/test_memory_reconnect_and_scope.py
+在 CLI 交互模式下运行 Benchmark：
+
+```bash
+openakita
+>>> /benchmark
+```
+
+或直接运行单次实验循环：
+
+```python
+from openakita.evolution.benchmark import BenchmarkEngine
+from openakita.evolution.experiment_loop import ExperimentLoop
+
+engine = BenchmarkEngine()
+report = await engine.run_suite(agent)
+
+loop = ExperimentLoop(agent)
+results = await loop.run_cycle(benchmark_report=report)
+
+kept = [r for r in results if r.action == "keep"]
+print(f"实验 {len(results)} 次，保留 {len(kept)} 项改进")
+```
+
+## 核心机制
+
+### 1. Benchmark 引擎
+
+运行 8 项固定任务，覆盖 5 个类别：
+
+| 任务 | 类别 | 验证方式 |
+|------|------|----------|
+| `tool-file-edit` | tool_use | 文件内容校验 |
+| `tool-shell-exec` | tool_use | 命令输出校验 |
+| `code-fibonacci` | coding | 代码正确性 |
+| `code-bug-fix` | coding | 修复结果验证 |
+| `code-refactor` | coding | 重构后功能不变 |
+| `research-web` | research | 搜索结果关键字 |
+| `memory-store-recall` | memory | 记忆存储+召回 |
+| `writing-summary` | writing | 总结内容关键字 |
+
+每项任务产出 success / tokens / time 指标，加权汇总为效率分。
+
+### 2. 实验循环
+
+每个周期运行 3 轮实验：
+
+- **假设生成**：LLM 读取当前 `AGENT.md`、`POLICIES.yaml` 和 14 个可调参数，提出改进假设
+- **应用修改**：对文件做模糊匹配替换（容忍空白/格式差异）或修改 `.env` 参数值
+- **语法验证**：Python 文件做 `ast.parse`，YAML 文件做 `yaml.safe_load`
+- **重跑 Benchmark**：用修改后的配置跑一次完整 Benchmark
+- **对比判定**：基于成功率、token 消耗、时间消耗、质量评分四个维度综合判断
+- **保留或回滚**：改善则保留，未改善则恢复原状
+
+### 3. 可调参数
+
+系统可通过修改 `.env` 中的以下参数进行自动调优：
+
+| 参数 | 默认值 | 范围 | 说明 |
+|------|--------|------|------|
+| `BENCHMARK_MAX_CONCURRENT` | 1 | 1-8 | Benchmark 并发数 |
+| `EXPERIMENTS_PER_CYCLE` | 3 | 1-5 | 每周期实验次数 |
+| `EXPERIMENT_IMPROVEMENT_THRESHOLD` | 0.02 | 0-0.2 | 改善判定阈值 |
+| `QUALITY_WEIGHT_IN_IMPROVEMENT` | 0.10 | 0-0.30 | 质量分在改善判定中的权重 |
+| `DYNAMIC_BENCHMARK_MAX_TASKS` | 30 | 10-50 | 动态任务池上限 |
+| `BENCHMARK_TASK_TIMEOUT` | 600 | 120-3600 | 单任务超时(秒) |
+| `RETRIEVAL_TOP_K` | 5 | 1-20 | 记忆检索返回条数 |
+| `MEMORY_SIMILARITY_THRESHOLD` | 0.7 | 0.5-0.95 | 记忆匹配相似度阈值 |
+
+全部参数定义在 `config.py` 的 `EVOLVABLE_ENV_PARAMS` 中。
+
+### 4. 质量管线
+
+用于辅助改善判定的数据驱动系统：
+
+- **质量评分**：每次实验后根据 Benchmark 结果自动生成 `QualityScore`（relevance/correctness/completeness/efficiency）
+- **质量趋势**：读取最近 7 天的评分，计算趋势 → 自适应调整 `quality_weight`
+- **用户反馈关联**：将实验的 keep/discard 结果写入 `feedback.json`，与质量评分做 correlation 分析
+- **质量权重自适应**：初始 0.10，每次周期 +0.01（质量趋势 >0.55 时），上限 0.25
+
+### 5. 工具调用限频
+
+防止 Agent 在单轮对话中无休止循环：
+
+| 工具 | 每轮上限 | 超限行为 |
+|------|----------|----------|
+| `web_search` | 8 次 | 返回"已达到上限，请基于已有结果回答" |
+| `news_search` | 8 次 | 同上 |
+| `web_fetch` | 5 次 | 同上 |
+
+### 6. 动态任务池
+
+- **难度升级**：成功率 ≥95% 的任务自动生成 harder 变体 → `draft_tasks.json`
+- **场景化生成**：从真实用户对话 trace 中提取任务类型，LLM 聚类生成新 Benchmark 任务
+- **审批门控**：新任务先进入 `draft_tasks.json`，需人工审批后才进入正式任务池
+
+### 7. 运行时监控
+
+每次 Benchmark 周期自动采集：
+
+- 记忆使用率（`access_count > 0` 的记忆占比）
+- 工具调用频率 + 失败率
+- 对话成功率 + 平均 token
+- 用户纠正次数 + 重复查询次数
+
+输出到 `data/evolution/metrics/` 目录。
+
+## 数据文件说明
+
+| 路径 | 用途 | 写入者 |
+|------|------|--------|
+| `data/evolution/experiments/*_cycle.json` | 每周期实验记录 | ExperimentLoop |
+| `data/evolution/experiments/quality_weight.json` | 当前质量权重 | ExperimentLoop |
+| `data/evolution/experiments/quality_scores/*.json` | 每次实验的质量评分 | ExperimentLoop |
+| `data/evolution/feedback.json` | 实验 keep/discard 反馈 | ExperimentLoop |
+| `data/evolution/benchmarks/baseline.json` | 性能基线 | BenchmarkEngine |
+| `data/evolution/benchmarks/tasks.json` | 当前任务池 | DynamicBenchmarkGenerator |
+| `data/evolution/benchmarks/draft_tasks.json` | 待审批变体任务 | DynamicBenchmarkGenerator |
+| `data/evolution/metrics/*_snapshot.json` | 运行时指标快照 | RuntimeMetricsCollector |
+| `data/evolution/approvals/*.json` | 审批队列 | ApprovalQueue |
+
+## 注意事项
+
+### Agent 重启
+
+部分参数修改需要重启 Agent 才能生效（如 `PROMPT_MAX_CHANGE_RATIO`）。这些参数在 `EVOLVABLE_ENV_PARAMS` 中标记为 `needs_restart=True`，LLM 提出的实验会被自动标记为"需重启生效"。
+
+### 成功率天花板
+
+当 Benchmark 成功率接近 100% 时（8 个任务全部通过），系统会自动切换策略：成功率只要不低于 85% 就允许实验通过，主要依据 token 和时间消耗来判定改善。这样即使在"已最优"状态下，系统仍能通过降低资源消耗来持续优化。
+
+### 质量权重磨合期
+
+质量权重从 0.10 起步，每周期 +0.01，需要约 15 个周期（~2 个月）才能达到上限 0.25。如果想加速磨合，可在 `.env` 中手动设置：
+
+```env
+QUALITY_WEIGHT_IN_IMPROVEMENT=0.15
+```
+
+### Benchmark 任务难度
+
+默认 8 个固定任务对 9B+ 模型来说偏简单。系统运行一段时间后，会自动通过 `generate_from_traces`（需要 ≥5 条真实用户对话记录）和 `generate_harder_variant`（需要任务成功率 ≥95%）生成更难的场景化任务，逐步提升评估区分度。
+
+### 安全性
+
+- 所有实验修改都通过 **模糊匹配** 定位原文 → 语 **法验证** → **备份** → 应用 → **回滚**，任何一步失败都回退
+- `.env` 参数修改范围受 `EVOLVABLE_ENV_PARAMS` 白名单 + min/max 约束
+- 文件修改限制在 `MUTABLE_TARGETS` 白名单内（`identity/AGENT.md`、`identity/POLICIES.yaml`）
+- 审批队列对高风险变更需人工确认
+- 工具调用有每轮上限，防止 Agent 无休止循环
+
+### 性能剖析
+
+系统附带独立的性能剖析脚本，可随时运行以了解各环节耗时：
+
+```bash
+python profile_akita.py --iterations 3 --output reports/
+```
+
+输出三份报告：`performance_report.json`、`bottleneck_analysis.json`、`optimization_suggestions.txt`。
+
+支持与历史基准对比：
+```bash
+python profile_akita.py --compare reports/baseline.json
+```
+
+## 带来的变化与好处
+
+### 短期（1-2 周）
+
+- **参数自动收敛**：`BENCHMARK_MAX_CONCURRENT`、`RETRIEVAL_TOP_K` 等参数逐步调整到最优值
+- **质量意识增强**：改善判定不再只看成功率，也考虑 token 消耗和回答质量
+- **工具调用优化**：搜索类工具不会无休止循环
+
+### 中期（1-2 个月）
+
+- **个性化 Benchmark**：任务池从固定 8 个扩展到包含贴合实际使用场景的 20+ 个任务
+- **质量权重收敛**：`quality_weight` 逐步找到最佳的 % 占比（0.15-0.25），改善判定更精准
+- **记忆调优**：系统自动发现记忆使用率偏低时，建议调整检索参数
+
+### 长期（3 个月以上）
+
+- **持续自优化**：无需人工干预，系统根据用户的实际使用模式持续调整
+- **退化检测**：任何改进如果导致性能退化，会被自动回滚
+- **可审计**：每周期产生完整的实验记录、质量评分、反馈数据，随时可追溯优化历史
+
+## 快速启动清单
+
+```bash
+# 1. 确保定时任务启用
+echo "BENCHMARK_EVOLVE_ENABLED=True" >> .env
+
+# 2. 首次手动跑一次验证（可选）
+openakita
+>>> /benchmark
+
+# 3. 启动服务（定时任务自动生效）
+openakita serve
+
+# 4. 观察效果（第一次运行后查看数据）
+ls data/evolution/experiments/
+cat data/evolution/experiments/quality_weight.json
+
+# 5. 性能剖析（可选）
+python profile_akita.py --iterations 2 --output reports/
 ```
