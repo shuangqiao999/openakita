@@ -100,7 +100,6 @@ class ApprovalQueue:
         proposed = data.get("proposed_content", "")
 
         if not target_file or not original or not proposed:
-            data["retry_count"] = data.get("retry_count", 0) + 1
             data["status"] = "approved"
             data["resolved_at"] = datetime.now().isoformat()
             data["resolved_by"] = "human"
