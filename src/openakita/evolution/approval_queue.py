@@ -39,6 +39,7 @@ class ApprovalRequest:
     resolved_by: str = ""
     reject_reason: str = ""
     apply_error: str = ""
+    retry_count: int = 0
 
 
 class ApprovalQueue:
@@ -106,6 +107,16 @@ class ApprovalQueue:
             self._save_dict(req_id, data)
             return True, "已批准（无可自动应用的内容，需手动处理）"
 
+        data["retry_count"] = data.get("retry_count", 0) + 1
+        if data["retry_count"] >= 3:
+            data["status"] = "rejected"
+            data["resolved_at"] = datetime.now().isoformat()
+            data["resolved_by"] = "system"
+            data["reject_reason"] = f"超过最大重试次数（{data['retry_count']}次），自动拒绝"
+            self._save_dict(req_id, data)
+            logger.warning("[ApprovalQueue] 自动拒绝 %s: 重试 %d 次均失败", req_id, data["retry_count"])
+            return False, f"已连续失败 {data['retry_count']} 次，自动拒绝"
+
         from ..config import settings
 
         target = (settings.project_root / target_file).resolve()
@@ -124,9 +135,9 @@ class ApprovalQueue:
         new_content, match_err = ExperimentLoop._fuzzy_match_and_replace(content, original, proposed)
         if new_content is None:
             data["status"] = "pending"
-            data["apply_error"] = f"无法匹配: {match_err}"
+            data["apply_error"] = f"无法匹配: {match_err} (已尝试 {data['retry_count']}/3 次)"
             self._save_dict(req_id, data)
-            return False, "无法匹配原始片段，已恢复为待审批状态"
+            return False, f"无法匹配原始片段（第 {data['retry_count']} 次），已恢复为待审批状态"
 
         try:
             target.write_text(new_content, encoding="utf-8")

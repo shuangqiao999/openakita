@@ -276,7 +276,9 @@ class ExperimentLoop:
         for target in self.MUTABLE_TARGETS:
             p = self._project_root / target
             if p.exists():
-                targets_content[target] = p.read_text(encoding="utf-8")[:2000]
+                targets_content[target] = await asyncio.to_thread(
+                    lambda fp=p: fp.read_text(encoding="utf-8")[:2000]
+                )
 
         if not targets_content:
             return None

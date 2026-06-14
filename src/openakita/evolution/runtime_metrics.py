@@ -17,6 +17,7 @@ from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,26 @@ class RuntimeMetricsCollector:
         self._data_dir = Path(data_dir)
         self._data_dir.mkdir(parents=True, exist_ok=True)
         self._state_file = self._data_dir / "last_collect.json"
+        self._db_conn: Any = None
+
+    def _get_db(self):
+        if self._db_conn is not None:
+            return self._db_conn
+        from openakita.config import settings
+
+        db_path = settings.data_dir / "memory" / "openakita.db"
+        if not db_path.exists():
+            return None
+        import sqlite3
+
+        self._db_conn = sqlite3.connect(str(db_path))
+        self._db_conn.execute("PRAGMA journal_mode=WAL")
+        return self._db_conn
+
+    def close(self) -> None:
+        if self._db_conn is not None:
+            self._db_conn.close()
+            self._db_conn = None
 
     def _load_last_ts(self) -> float:
         if not self._state_file.exists():
@@ -98,17 +119,11 @@ class RuntimeMetricsCollector:
 
     def _collect_memory_stats(self, snapshot: RuntimeSnapshot) -> None:
         try:
-            from openakita.config import settings
-
-            db_path = settings.data_dir / "memory" / "openakita.db"
-            if not db_path.exists():
+            conn = self._get_db()
+            if conn is None:
                 return
-            import sqlite3
-
-            conn = sqlite3.connect(str(db_path))
             cur = conn.execute("SELECT COUNT(*) FROM memories")
             snapshot.memory_total = cur.fetchone()[0]
-            conn.close()
         except Exception:
             pass
 
@@ -242,19 +257,13 @@ class RuntimeMetricsCollector:
 
     def _collect_memory_usage_rate(self, snapshot: RuntimeSnapshot) -> None:
         try:
-            from openakita.config import settings
-
-            db_path = settings.data_dir / "memory" / "openakita.db"
-            if not db_path.exists():
+            conn = self._get_db()
+            if conn is None:
                 return
-            import sqlite3
-
-            conn = sqlite3.connect(str(db_path))
             total = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
             used = conn.execute(
                 "SELECT COUNT(*) FROM memories WHERE access_count > 0"
             ).fetchone()[0]
-            conn.close()
             if total > 0:
                 snapshot.memory_usage_rate = round(used / total, 3)
         except Exception:

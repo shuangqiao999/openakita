@@ -5,6 +5,7 @@
 """
 
 import logging
+import re
 from dataclasses import dataclass
 
 from ..skills.registry import SkillRegistry
@@ -109,8 +110,16 @@ class AutoInstaller:
                 break
 
         if not package:
-            # 直接尝试用能力名作为包名
             package = gap.name.lower().replace(" ", "-")
+
+        if not re.match(r"^[a-zA-Z0-9_.-]+$", package):
+            logger.warning("[AutoInstaller] 拒绝非法的包名: %s", package)
+            return InstallResult(
+                success=False,
+                capability=gap.name,
+                method="pip",
+                details=f"包名包含非法字符: {package}",
+            )
 
         logger.info(f"Trying pip install: {package}")
 
