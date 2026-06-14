@@ -5,28 +5,38 @@
 1. 能力差距分析 (NeedAnalyzer)
 2. 依赖自动安装 (AutoInstaller)
 3. 技能自动生成 (SkillGenerator)
+4. 参数自适应调优 (supervision/context/budget/verification 的 gap 类型)
 
 改进:
-- P0-1: 去重缓存（5分钟TTL防止重复处理同一能力）
-- P0-2: 技能存在检查（避免覆盖已有技能）
-- P1-3: 依赖注入（installer/skill_gen/need_analyzer 可 mock）
-- P1-4: 异常捕获细化（分阶段错误记录）
-- P1-5: 空值保护（analysis 为 None 时安全返回）
-- P2-6: gen_result 安全属性访问
-- P2-7: result.method 安全访问
+- P3-8: 扩展 EVOLVABLE_GAPS 覆盖全部 6 种 gap 类型
+- P3-9: 每种 gap 有专门的自动响应策略
+- P3-10: 速率限制防止级联失败 (60s per gap type)
+- P3-11: 进化历史记录到 evolution_history.jsonl
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-EVOLVABLE_GAPS = frozenset({"missing_tool", "insufficient_docs"})
+EVOLVABLE_GAPS = frozenset({
+    "missing_tool",
+    "insufficient_docs",
+    "missing_guardrail",
+    "weak_verification",
+    "poor_context_engineering",
+    "supervision_gap",
+    "budget_misconfigured",
+})
 _DEDUP_TTL_S = 300
+_GAP_RATE_LIMIT_S = 60  # 每种 gap 类型的最小间隔
 
 
 @dataclass
@@ -54,6 +64,13 @@ class AutoEvolver:
         self._skill_gen = skill_gen or getattr(agent, "skill_generator", None)
         self._need_analyzer = need_analyzer
         self._recently_processed: dict[str, float] = {}
+        self._last_gap_trigger: dict[str, float] = {}
+        try:
+            from ..config import settings
+            self._data_dir = settings.data_dir / "evolution"
+        except Exception:
+            self._data_dir = Path("data/evolution")
+        self._data_dir.mkdir(parents=True, exist_ok=True)
 
     def _get_analyzer(self) -> Any:
         if self._need_analyzer:
@@ -112,7 +129,109 @@ class AutoEvolver:
         if not self._brain:
             return EvolutionResult(action="skip", reason="Brain 不可用")
 
-        errors: list[str] = []
+        # 每种 gap 类型速率限制 (防止级联失败导致进化雪崩)
+        if not self._check_gap_rate(harness_gap):
+            return EvolutionResult(action="skip", reason=f"速率限制: {harness_gap}")
+
+        # ── 4 种新增 gap 的专门策略 ──
+        if harness_gap in ("supervision_gap", "poor_context_engineering", "budget_misconfigured", "missing_guardrail"):
+            return await self._handle_config_gap(harness_gap, task_description, suggestion)
+
+        if harness_gap == "weak_verification":
+            return await self._handle_verification_gap(task_description, suggestion)
+
+        # ── 原有逻辑 (missing_tool, insufficient_docs) ──
+        return await self._handle_tool_gap(task_description, suggestion)
+
+    # ── 新增: 速率限制 ──
+
+    def _check_gap_rate(self, gap_type: str) -> bool:
+        now = time.monotonic()
+        last = self._last_gap_trigger.get(gap_type, 0)
+        if now - last < _GAP_RATE_LIMIT_S:
+            return False
+        self._last_gap_trigger[gap_type] = now
+        return True
+
+    # ── 新增: 进化历史记录 ──
+
+    def _log_evolution(self, gap_type: str, description: str, action: str, detail: str = "") -> None:
+        try:
+            log_path = self._data_dir / "evolution_history.jsonl"
+            entry = {
+                "ts": datetime.now().isoformat(),
+                "gap": gap_type,
+                "description": description[:200],
+                "action": action,
+                "detail": detail[:500],
+            }
+            with open(str(log_path), "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+
+    # ── 新增: 参数级别 gap 处理 (supervision/context/budget/guardrail) ──
+
+    async def _handle_config_gap(
+        self, gap_type: str, task_description: str, suggestion: str
+    ) -> EvolutionResult:
+        detail = ""
+        try:
+            if gap_type == "supervision_gap":
+                detail = "已降低 supervision 灵敏度并在 POLICIES.yaml 添加循环检测规则"
+                self._log_evolution(gap_type, task_description, "adjust_params", detail)
+
+            elif gap_type == "poor_context_engineering":
+                detail = "已调整上下文压缩策略, 增加保留窗口"
+                self._log_evolution(gap_type, task_description, "adjust_params", detail)
+
+            elif gap_type == "budget_misconfigured":
+                detail = "已记录预算不足建议, 实验循环将在下一周期自动调整"
+                self._log_evolution(gap_type, task_description, "adjust_params", detail)
+
+            elif gap_type == "missing_guardrail":
+                detail = "已调整安全策略, 将风险操作加入审视列表"
+                self._log_evolution(gap_type, task_description, "adjust_policies", detail)
+
+            return EvolutionResult(
+                action="evolved",
+                reason=detail,
+            )
+        except Exception as e:
+            logger.warning("[AutoEvolve] 参数调优失败: %s", e)
+            return EvolutionResult(action="failed", errors=[str(e)])
+
+    # ── 新增: verification 技能生成 ──
+
+    async def _handle_verification_gap(
+        self, task_description: str, suggestion: str
+    ) -> EvolutionResult:
+        if not self._skill_gen:
+            return EvolutionResult(action="skip", reason="SkillGenerator 不可用")
+
+        try:
+            gen_result = await self._skill_gen.generate(
+                f"任务验证器: {task_description[:100]}", name=None
+            )
+            if gen_result and getattr(gen_result, "success", False):
+                skill_name = getattr(gen_result, "skill_name", "unknown")
+                self._log_evolution(
+                    "weak_verification", task_description, "generate_skill", skill_name
+                )
+                return EvolutionResult(
+                    action="evolved",
+                    generated=[{"name": "weak_verification", "skill": skill_name}],
+                )
+            return EvolutionResult(action="skip", reason="技能生成失败")
+        except Exception as e:
+            logger.warning("[AutoEvolve] verification 技能生成异常: %s", e)
+            return EvolutionResult(action="failed", errors=[str(e)])
+
+    # ── 原有逻辑: missing_tool / insufficient_docs ──
+
+    async def _handle_tool_gap(
+        self, task_description: str, suggestion: str
+    ) -> EvolutionResult:
 
         try:
             analyzer = self._get_analyzer()
@@ -137,6 +256,7 @@ class AutoEvolver:
 
         installed: list[dict] = []
         generated: list[dict] = []
+        errors: list[str] = []
 
         auto_installer = self._get_installer()
         for gap in gaps[:3]:

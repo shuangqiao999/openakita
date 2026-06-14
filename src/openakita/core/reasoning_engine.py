@@ -1254,7 +1254,7 @@ class ReasoningEngine:
                 settings.auto_evolve_enabled
                 and result
                 and hasattr(result, "harness_gap")
-                and result.harness_gap in ("missing_tool", "insufficient_docs")
+                and str(result.harness_gap) not in ("none", "")
             ):
                 import asyncio
 

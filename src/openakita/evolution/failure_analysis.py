@@ -306,31 +306,36 @@ class FailureAnalyzer:
             "上下文丢失导致失败。建议：\n"
             "1. 检查 ContextRewriter 是否正确注入 Plan 状态\n"
             "2. 增加 Scratchpad 中的关键决策记录\n"
-            "3. 考虑降低压缩阈值保留更多上下文"
+            "3. 考虑降低压缩阈值保留更多上下文\n"
+            "4. [Auto] 调整 context compression 参数, 扩大保留窗口"
         ),
         RootCause.TOOL_LIMITATION: (
             "工具能力不足。建议：\n"
             "1. 检查是否需要新增工具或技能\n"
             "2. 现有工具的错误处理是否充分\n"
-            "3. 工具参数验证是否完善"
+            "3. 工具参数验证是否完善\n"
+            "4. [Auto] 尝试 pip install 或自动生成辅助技能"
         ),
         RootCause.PLAN_DEFICIENCY: (
             "计划不充分导致超时。建议：\n"
             "1. 检查 Plan 步骤是否足够细粒度\n"
             "2. 是否有未预见的依赖关系\n"
-            "3. 验证器是否在 Plan 未完成时正确拦截"
+            "3. 验证器是否在 Plan 未完成时正确拦截\n"
+            "4. [Auto] 尝试生成 verification 辅助工具或调整 planning prompt"
         ),
         RootCause.LOOP_DETECTED: (
             "推理陷入循环。建议：\n"
             "1. 检查 Supervisor 的循环检测阈值是否合适\n"
             "2. 回滚策略是否注入了足够的差异化提示\n"
-            "3. 是否需要更早期的干预"
+            "3. 是否需要更早期的干预\n"
+            "4. [Auto] 调整 supervisor 灵敏度并将循环工具加入 circuit breaker"
         ),
         RootCause.BUDGET_EXHAUSTION: (
             "预算耗尽。建议：\n"
             "1. 评估预算配置是否合理\n"
             "2. 检查是否有 token 浪费（重复读取大文件等）\n"
-            "3. 考虑是否需要更便宜的模型降级策略"
+            "3. 考虑是否需要更便宜的模型降级策略\n"
+            "4. [Auto] 递增 TOKEN_BUDGET (上限 3x) 并裁剪冗余 tool descriptions"
         ),
         RootCause.EXTERNAL_FAILURE: (
             "外部依赖失败。建议：\n"
