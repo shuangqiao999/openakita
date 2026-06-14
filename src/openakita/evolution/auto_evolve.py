@@ -158,8 +158,9 @@ class AutoEvolver:
     def _log_evolution(self, gap_type: str, description: str, action: str, detail: str = "") -> None:
         try:
             log_path = self._data_dir / "evolution_history.jsonl"
+            ts = datetime.now().isoformat(timespec="microseconds")
             entry = {
-                "ts": datetime.now().isoformat(),
+                "ts": ts,
                 "gap": gap_type,
                 "description": description[:200],
                 "action": action,
@@ -178,20 +179,20 @@ class AutoEvolver:
         detail = ""
         try:
             if gap_type == "supervision_gap":
-                detail = "已降低 supervision 灵敏度并在 POLICIES.yaml 添加循环检测规则"
-                self._log_evolution(gap_type, task_description, "adjust_params", detail)
+                detail = "[标记] 建议: 降低 supervisor 灵敏度, 在 POLICIES.yaml 添加循环检测规则"
+                self._log_evolution(gap_type, task_description, "flag", detail)
 
             elif gap_type == "poor_context_engineering":
-                detail = "已调整上下文压缩策略, 增加保留窗口"
-                self._log_evolution(gap_type, task_description, "adjust_params", detail)
+                detail = "[标记] 建议: 调整上下文压缩策略, 增加保留窗口"
+                self._log_evolution(gap_type, task_description, "flag", detail)
 
             elif gap_type == "budget_misconfigured":
-                detail = "已记录预算不足建议, 实验循环将在下一周期自动调整"
-                self._log_evolution(gap_type, task_description, "adjust_params", detail)
+                detail = "[标记] 建议: 递增 TOKEN_BUDGET (上限 3x), 裁剪冗余 tool descriptions"
+                self._log_evolution(gap_type, task_description, "flag", detail)
 
             elif gap_type == "missing_guardrail":
-                detail = "已调整安全策略, 将风险操作加入审视列表"
-                self._log_evolution(gap_type, task_description, "adjust_policies", detail)
+                detail = "[标记] 建议: 调整安全策略, 将风险操作加入审视列表"
+                self._log_evolution(gap_type, task_description, "flag", detail)
 
             return EvolutionResult(
                 action="evolved",
@@ -299,6 +300,11 @@ class AutoEvolver:
                     errors.append(f"技能生成异常({gap.name}): {e}")
 
         if installed or generated:
+            self._log_evolution(
+                "missing_tool" if "missing_tool" in [g.name for g in gaps] else "insufficient_docs",
+                task_description, "evolved",
+                f"installed={[i['method'] for i in installed]}, generated={[g['skill'] for g in generated]}",
+            )
             return EvolutionResult(
                 action="evolved",
                 installed=installed,
@@ -306,6 +312,8 @@ class AutoEvolver:
                 errors=errors,
             )
         elif errors:
+            self._log_evolution("missing_tool", task_description, "failed", str(errors))
             return EvolutionResult(action="failed", errors=errors)
         else:
+            self._log_evolution("missing_tool", task_description, "skip", "no_actionable_gaps")
             return EvolutionResult(action="skip", reason="所有能力缺口均无法自动补全")
