@@ -56,7 +56,7 @@ class RuntimeMetricsCollector:
             return None
         import sqlite3
 
-        self._db_conn = sqlite3.connect(str(db_path))
+        self._db_conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._db_conn.execute("PRAGMA journal_mode=WAL")
         return self._db_conn
 
@@ -64,6 +64,12 @@ class RuntimeMetricsCollector:
         if self._db_conn is not None:
             self._db_conn.close()
             self._db_conn = None
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def _load_last_ts(self) -> float:
         if not self._state_file.exists():

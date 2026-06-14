@@ -276,9 +276,12 @@ class ExperimentLoop:
         for target in self.MUTABLE_TARGETS:
             p = self._project_root / target
             if p.exists():
-                targets_content[target] = await asyncio.to_thread(
-                    lambda fp=p: fp.read_text(encoding="utf-8")[:2000]
-                )
+                try:
+                    targets_content[target] = await asyncio.to_thread(
+                        lambda fp=p: fp.read_text(encoding="utf-8")[:2000]
+                    )
+                except Exception as exc:
+                    logger.debug("[ExperimentLoop] 读取目标文件失败 %s: %s", target, exc)
 
         if not targets_content:
             return None
