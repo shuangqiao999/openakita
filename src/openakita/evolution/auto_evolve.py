@@ -41,7 +41,7 @@ _GAP_RATE_LIMIT_S = 60  # 每种 gap 类型的最小间隔
 
 @dataclass
 class EvolutionResult:
-    action: str  # "skip" / "evolved" / "partial" / "failed"
+    action: str  # "skip" / "evolved" / "flagged" / "partial" / "failed"
     reason: str = ""
     installed: list[Any] = field(default_factory=list)
     generated: list[Any] = field(default_factory=list)
@@ -141,7 +141,7 @@ class AutoEvolver:
             return await self._handle_verification_gap(task_description, suggestion)
 
         # ── 原有逻辑 (missing_tool, insufficient_docs) ──
-        return await self._handle_tool_gap(task_description, suggestion)
+        return await self._handle_tool_gap(harness_gap, task_description, suggestion)
 
     # ── 新增: 速率限制 ──
 
@@ -180,22 +180,21 @@ class AutoEvolver:
         try:
             if gap_type == "supervision_gap":
                 detail = "[标记] 建议: 降低 supervisor 灵敏度, 在 POLICIES.yaml 添加循环检测规则"
-                self._log_evolution(gap_type, task_description, "flag", detail)
-
             elif gap_type == "poor_context_engineering":
                 detail = "[标记] 建议: 调整上下文压缩策略, 增加保留窗口"
-                self._log_evolution(gap_type, task_description, "flag", detail)
-
             elif gap_type == "budget_misconfigured":
                 detail = "[标记] 建议: 递增 TOKEN_BUDGET (上限 3x), 裁剪冗余 tool descriptions"
-                self._log_evolution(gap_type, task_description, "flag", detail)
-
             elif gap_type == "missing_guardrail":
                 detail = "[标记] 建议: 调整安全策略, 将风险操作加入审视列表"
-                self._log_evolution(gap_type, task_description, "flag", detail)
+            else:
+                detail = "[标记] 建议: 人工介入检查"
+
+            if suggestion:
+                detail += f" | 分析建议: {suggestion[:200]}"
+            self._log_evolution(gap_type, task_description, "flagged", detail)
 
             return EvolutionResult(
-                action="evolved",
+                action="flagged",
                 reason=detail,
             )
         except Exception as e:
@@ -231,7 +230,7 @@ class AutoEvolver:
     # ── 原有逻辑: missing_tool / insufficient_docs ──
 
     async def _handle_tool_gap(
-        self, task_description: str, suggestion: str
+        self, harness_gap: str, task_description: str, suggestion: str
     ) -> EvolutionResult:
 
         try:
@@ -312,8 +311,8 @@ class AutoEvolver:
                 errors=errors,
             )
         elif errors:
-            self._log_evolution("missing_tool", task_description, "failed", str(errors))
+            self._log_evolution(harness_gap, task_description, "failed", str(errors))
             return EvolutionResult(action="failed", errors=errors)
         else:
-            self._log_evolution("missing_tool", task_description, "skip", "no_actionable_gaps")
+            self._log_evolution(harness_gap, task_description, "skip", "no_actionable_gaps")
             return EvolutionResult(action="skip", reason="所有能力缺口均无法自动补全")

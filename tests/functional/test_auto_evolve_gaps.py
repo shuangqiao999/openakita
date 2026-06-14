@@ -98,17 +98,17 @@ async def test_respond_to_failure():
 
     # 2d: supervision_gap → evolved (config adjustment)
     result = await evolver.respond_to_failure(task, "supervision_gap")
-    check("supervision_gap → evolved", result.action == "evolved")
+    check("supervision_gap → flagged", result.action == "flagged")
     check("  原因非空", bool(result.reason))
 
     # 2e: poor_context_engineering
     result = await evolver.respond_to_failure(task, "poor_context_engineering")
-    check("poor_context_engineering → evolved", result.action == "evolved")
+    check("poor_context_engineering → flagged", result.action == "flagged")
     check("  原因非空", bool(result.reason))
 
     # 2f: budget_misconfigured
     result = await evolver.respond_to_failure(task, "budget_misconfigured")
-    check("budget_misconfigured → evolved", result.action == "evolved")
+    check("budget_misconfigured → flagged", result.action == "flagged")
 
     # 2g: weak_verification
     result = await evolver.respond_to_failure(task, "weak_verification")
@@ -116,7 +116,7 @@ async def test_respond_to_failure():
 
     # 2h: missing_guardrail
     result = await evolver.respond_to_failure(task, "missing_guardrail")
-    check("missing_guardrail → evolved", result.action == "evolved")
+    check("missing_guardrail → flagged", result.action == "flagged")
     check("  原因非空", bool(result.reason))
 
     await agent.close() if hasattr(agent, "close") else None
