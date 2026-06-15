@@ -131,11 +131,16 @@ class DynamicBenchmarkGenerator:
             rate = success_history.get(task.id, 0)
             if rate >= threshold:
                 variant = await self.generate_harder_variant(task)
-                if variant and not self._is_duplicate(
-                    variant.description, result + [t for t in tasks if t.id != task.id]
-                ):
-                    result.append(variant)
-                    logger.info("[DynamicBench] 新变体: %s", variant.id)
+                if variant:
+                    # 前缀去重: 已有同 base task 的任何 variant 则跳过
+                    prefix = f"{task.id}-v"
+                    if any(getattr(t, "id", str(t)).startswith(prefix) for t in result):
+                        logger.debug("[DynamicBench] 已有变体, 跳过: %s", task.id)
+                    elif not self._is_duplicate(
+                        variant.description, result + [t for t in tasks if t.id != task.id]
+                    ):
+                        result.append(variant)
+                        logger.info("[DynamicBench] 新变体: %s", variant.id)
 
         if len(result) > max_tasks:
             sorted_tasks = sorted(result, key=lambda t: success_history.get(t.id, 0), reverse=True)
