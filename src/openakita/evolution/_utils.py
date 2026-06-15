@@ -17,3 +17,13 @@ def strip_json_fences(text: str) -> str:
 
 
 strip_json = strip_json_fences
+
+
+def validate_template_vars(content: str) -> tuple[bool, str]:
+    import re
+
+    opens = len(re.findall(r"\{\{", content))
+    closes = len(re.findall(r"\}\}", content))
+    if opens != closes:
+        return False, f"模板变量不平衡: {{{{ {opens} vs }}}} {closes}"
+    return True, ""

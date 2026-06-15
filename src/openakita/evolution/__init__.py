@@ -15,7 +15,6 @@ from .generator import SkillGenerator
 from .installer import AutoInstaller
 from .log_analyzer import ErrorPattern, LogAnalyzer, LogEntry
 from .pattern_learner import PatternLearner
-from .prompt_optimizer import PromptOptimizer
 from .research_org import ResearchOrg
 from .runtime_metrics import RuntimeMetricsCollector, RuntimeSnapshot
 from .self_check import SelfChecker
@@ -32,7 +31,6 @@ __all__ = [
     "DynamicBenchmarkGenerator",
     "EnvTuner",
     "ExperimentLoop",
-    "PromptOptimizer",
     "PatternLearner",
     "ResearchOrg",
     "RuntimeMetricsCollector",

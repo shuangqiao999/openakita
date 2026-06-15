@@ -127,10 +127,6 @@ class Settings(BaseSettings):
         default=True,
         description="是否启用 benchmark 驱动的实验循环（定期自主优化）",
     )
-    prompt_optimize_enabled: bool = Field(
-        default=True,
-        description="是否允许自主优化 prompt（修改→测试→保留/回滚）",
-    )
     experiments_per_cycle: int = Field(
         default=3,
         description="每次实验循环最大实验数",

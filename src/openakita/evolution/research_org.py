@@ -414,9 +414,9 @@ class ResearchOrg:
                 return False, None
 
             if target.suffix.lower() == ".md":
-                from .prompt_optimizer import PromptOptimizer
+                from ._utils import validate_template_vars
 
-                tpl_ok, tpl_err = PromptOptimizer._validate_template_vars(new_content)
+                tpl_ok, tpl_err = validate_template_vars(new_content)
                 if not tpl_ok:
                     return False, None
 
