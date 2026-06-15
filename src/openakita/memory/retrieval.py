@@ -141,14 +141,7 @@ class RetrievalEngine:
 
         self._dispatch_on_retrieve_sync(query, ranked)
 
-        # 批量更新 access_count + last_accessed_at
-        if ranked:
-            try:
-                mids = [c.memory_id for c in ranked if c.memory_id]
-                if mids:
-                    self.store.bump_access(mids)
-            except Exception:
-                pass
+        self._bump_ranked(ranked)
 
         return self._format_within_budget(ranked, max_tokens)
 
@@ -179,13 +172,7 @@ class RetrievalEngine:
         ranked = self._rerank(candidates, query)
         self._dispatch_on_retrieve_sync(query, ranked)
 
-        if ranked:
-            try:
-                mids = [c.memory_id for c in ranked if c.memory_id]
-                if mids:
-                    self.store.bump_access(mids)
-            except Exception:
-                pass
+        self._bump_ranked(ranked)
 
         return ranked[:limit]
 
@@ -267,6 +254,15 @@ class RetrievalEngine:
     # ==================================================================
     # Multi-way Recall
     # ==================================================================
+
+
+    def _bump_ranked(self, ranked: list) -> None:
+        try:
+            mids = [c.memory_id for c in ranked if c.memory_id]
+            if mids:
+                self.store.bump_access(mids)
+        except Exception:
+            pass
 
     def _search_semantic(self, query: str, limit: int = 15) -> list[RetrievalCandidate]:
         now = datetime.now()

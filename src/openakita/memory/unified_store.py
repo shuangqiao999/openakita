@@ -479,14 +479,25 @@ class UnifiedStore:
         if not memory_ids:
             return
         now = datetime.now().isoformat()
-        for mid in memory_ids:
-            self.db.update_memory(
-                mid,
-                {
-                    "access_count": (self.db.get_memory(mid) or {}).get("access_count", 0) + 1,
-                    "last_accessed_at": now,
-                },
-            )
+        try:
+            if getattr(self.db, "_ensure_conn", lambda: False)():
+                placeholders = ",".join("?" for _ in memory_ids)
+                self.db._conn.execute(
+                    f"UPDATE memories SET access_count = access_count + 1, "
+                    f"last_accessed_at = ? WHERE id IN ({placeholders})",
+                    [now] + list(memory_ids),
+                )
+                self.db._conn.commit()
+        except Exception:
+            # fallback to per-ID update
+            for mid in memory_ids:
+                self.db.update_memory(
+                    mid,
+                    {
+                        "access_count": (self.db.get_memory(mid) or {}).get("access_count", 0) + 1,
+                        "last_accessed_at": now,
+                    },
+                )
 
     def get_semantic(
         self, memory_id: str, *, include_inactive: bool = False
