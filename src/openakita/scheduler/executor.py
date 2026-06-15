@@ -1518,22 +1518,34 @@ class TaskExecutor:
                             if draft_path.exists()
                             else []
                         )
-                        existing += [
-                            {
-                                "id": t.id,
-                                "description": t.description,
-                                "category": t.category,
-                                "expected_outcome": t.expected_outcome,
-                                "timeout_seconds": t.timeout_seconds,
-                                "difficulty": t.difficulty,
-                            }
-                            for t in new_variants
-                        ]
+                        # SimHash 去重: 跳过已存在的 draft
+                        import hashlib, re
+                        def _sh(desc):
+                            words = sorted(set(re.findall(r"\b\w+\b", str(desc).lower())))
+                            return hashlib.md5(" ".join(words).encode()).hexdigest()
+                        existing_hashes = {_sh(e.get("description","")) for e in existing}
+                        added = 0
+                        for t in new_variants:
+                            if _sh(t.description) in existing_hashes:
+                                logger.debug("[BenchmarkEvolve] 跳过重复draft: %s", t.id)
+                                continue
+                            existing_hashes.add(_sh(t.description))
+                            existing.append(
+                                {
+                                    "id": t.id,
+                                    "description": t.description,
+                                    "category": t.category,
+                                    "expected_outcome": t.expected_outcome,
+                                    "timeout_seconds": t.timeout_seconds,
+                                    "difficulty": t.difficulty,
+                                }
+                            )
+                            added += 1
                         draft_path.write_text(
                             _json.dumps(existing, ensure_ascii=False, indent=2),
                             encoding="utf-8",
                         )
-                    summary += f" | 任务池: {len(all_tasks)}个({'新增'+str(len(new_variants))+'个待审批' if new_variants else '无新增'})"
+                    summary += f" | 任务池: {len(all_tasks)}个({'新增'+str(added)+'个待审批' if added else '无新增'})"
             except Exception as e:
                 logger.warning("[BenchmarkEvolve] 任务池维护失败: %s", e)
 
@@ -1553,7 +1565,11 @@ class TaskExecutor:
                             if draft_path.exists()
                             else []
                         )
-                        existing += trace_tasks
+                        existing_ids = {e.get("id", "") for e in existing}
+                        for t in trace_tasks:
+                            if t.get("id", "") not in existing_ids:
+                                existing.append(t)
+                                existing_ids.add(t.get("id", ""))
                         draft_path.write_text(
                             _json.dumps(existing, ensure_ascii=False, indent=2),
                             encoding="utf-8",

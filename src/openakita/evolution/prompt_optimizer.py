@@ -1,16 +1,8 @@
 """
-Prompt 自主优化器
+Prompt 自主优化器 (未启用)
 
-分析性能数据 → 生成 prompt 变体 → benchmark 验证 → 保留/回滚
-
-改进:
-- P0-1: 采纳决策复用 ExperimentLoop._is_improvement（成功率硬约束+加权公式）
-- P0-2: 模糊匹配替换复用 ExperimentLoop._fuzzy_match_and_replace
-- P1-3: 变更比例校验增加最小长度
-- P1-4: 语法验证复用 ExperimentLoop._validate_syntax + 模板变量检查
-- P1-5: 性能数据优先读最新 result
-- P2-6: asyncio.Lock 并发控制
-- P2-7: 配置化参数
+当前 prompt 优化由 ExperimentLoop 的文件突变实验路径处理。
+本类保留供未来独立 prompt 优化管道使用。
 """
 
 from __future__ import annotations
