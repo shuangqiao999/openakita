@@ -1546,7 +1546,6 @@ settings = _create_settings_safe()
 
 # (default, min, max, needs_restart)
 EVOLVABLE_ENV_PARAMS: dict[str, tuple[float, float, float, bool]] = {
-    "BENCHMARK_MAX_CONCURRENT": (1, 1, 8, False),
     "EXPERIMENTS_PER_CYCLE": (3, 1, 5, False),
     "EXPERIMENT_IMPROVEMENT_THRESHOLD": (0.02, 0.0, 0.2, False),
     "QUALITY_WEIGHT_IN_IMPROVEMENT": (0.10, 0.0, 0.30, False),
