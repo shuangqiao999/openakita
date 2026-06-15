@@ -167,13 +167,27 @@ class PatternLearner:
                 tools = list(dict.fromkeys(tools))  # 去重保序(Python 3.7+)
 
                 if tools:
+                    tt = data.get("total_tokens", 0)
+                    if isinstance(tt, dict):
+                        tt = tt.get("input", 0) + tt.get("output", 0)
+                    elapsed = data.get("elapsed_seconds", 0)
+                    if elapsed == 0:
+                        try:
+                            sa = data.get("started_at", "")
+                            ea = data.get("ended_at", "")
+                            if sa and ea:
+                                st = datetime.fromisoformat(sa)
+                                et = datetime.fromisoformat(ea)
+                                elapsed = (et - st).total_seconds()
+                        except Exception:
+                            elapsed = 0
                     sequences.append(
                         ToolSequence(
                             task_category=data.get("category", "general"),
                             tools=tools,
-                            tokens_used=data.get("total_tokens", 0),
+                            tokens_used=tt,
                             success=True,
-                            time_seconds=data.get("elapsed_seconds", 0),
+                            time_seconds=elapsed,
                             file_mtime=mtime,
                         )
                     )
