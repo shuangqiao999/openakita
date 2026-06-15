@@ -121,7 +121,7 @@ class PatternLearner:
                 if isinstance(val, str) and val:
                     tools.append(val)
             if "name" in data and isinstance(data.get("name"), str) and data["name"]:
-                if any(k in data for k in ("tool_input", "arguments", "params", "tool_call_id")):
+                if any(k in data for k in ("tool_input", "arguments", "params", "tool_call_id", "input", "id")):
                     tools.append(data["name"])
             for v in data.values():
                 if isinstance(v, (dict, list)):

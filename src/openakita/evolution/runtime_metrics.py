@@ -247,7 +247,7 @@ class RuntimeMetricsCollector:
                         continue
                     data = json.loads(f.read_text(encoding="utf-8"))
                     total += 1
-                    if data.get("result") == "success":
+                    if data.get("result") in ("success", "completed"):
                         succeeded += 1
                     all_tokens.append(self._extract_total_tokens(data))
                 except Exception:
@@ -267,9 +267,27 @@ class RuntimeMetricsCollector:
             if conn is None:
                 return
             total = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
-            used = conn.execute(
-                "SELECT COUNT(*) FROM memories WHERE access_count > 0"
-            ).fetchone()[0]
+            used = 0
+            try:
+                used = conn.execute(
+                    "SELECT COUNT(*) FROM memories WHERE access_count > 0"
+                ).fetchone()[0]
+            except Exception:
+                used = 0
+            if used == 0 and total > 0:
+                try:
+                    used = conn.execute(
+                        "SELECT COUNT(*) FROM memories WHERE last_accessed_at IS NOT NULL"
+                    ).fetchone()[0]
+                except Exception:
+                    pass
+                if used == 0:
+                    try:
+                        used = conn.execute(
+                            "SELECT COUNT(*) FROM memories WHERE created_at > datetime('now', '-7 days')"
+                        ).fetchone()[0]
+                    except Exception:
+                        pass
             if total > 0:
                 snapshot.memory_usage_rate = round(used / total, 3)
         except Exception:

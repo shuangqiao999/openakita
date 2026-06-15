@@ -215,7 +215,7 @@ class DynamicBenchmarkGenerator:
         for f in files[:limit]:
             try:
                 data = _json.loads(f.read_text(encoding="utf-8"))
-                if data.get("result") == "success":
+                if data.get("result") in ("success", "completed"):
                     traces.append(data)
             except Exception:
                 continue
