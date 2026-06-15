@@ -283,7 +283,17 @@ class AutoEvolver:
         if self._skill_gen and remaining:
             for gap in remaining[:2]:
                 if self._skill_exists(gap.name):
-                    logger.info("[AutoEvolve] 技能已存在: %s, 跳过", gap.name)
+                    logger.info("[AutoEvolve] 技能已存在: %s, 尝试改进", gap.name)
+                    try:
+                        improved = await self._skill_gen.improve(gap.name, gap.description or f"改进: {gap.name}")
+                        if improved and getattr(improved, "success", False):
+                            skill_name = getattr(improved, "skill_name", gap.name)
+                            generated.append({"name": gap.name, "skill": skill_name})
+                            logger.info("[AutoEvolve] 已改进技能: %s", skill_name)
+                        else:
+                            logger.info("[AutoEvolve] 技能改进失败: %s", gap.name)
+                    except Exception as e:
+                        logger.warning("[AutoEvolve] 技能改进异常(%s): %s", gap.name, e)
                     self._mark_processed(gap.name)
                     continue
                 try:

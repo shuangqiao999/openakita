@@ -290,6 +290,8 @@ class ExperimentLoop:
             f"### {name}\n```\n{content}\n```" for name, content in targets_content.items()
         )
 
+        pattern_hint = self._load_pattern_hint()
+
         prior_section = ""
         if prior_summary:
             prior_section = "已尝试的实验（请避免重复失败方向）:\n" + prior_summary
@@ -305,6 +307,7 @@ class ExperimentLoop:
 
 {prior_section}
 {memory_hint}
+{pattern_hint}
 可修改的目标文件及当前内容:
 {targets_display}
 
@@ -783,6 +786,31 @@ class ExperimentLoop:
             fb_path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:
             pass
+
+    @staticmethod
+    def _load_pattern_hint() -> str:
+        try:
+            from ..config import settings
+
+            patterns_path = settings.data_dir / "evolution" / "patterns" / "effective_patterns.json"
+            if not patterns_path.exists():
+                return ""
+            import json as _json
+
+            data = _json.loads(patterns_path.read_text(encoding="utf-8"))
+            if not isinstance(data, list) or len(data) == 0:
+                return ""
+            lines = []
+            for p in data[:3]:
+                tools = p.get("sequence", p.get("tools", []))
+                freq = p.get("frequency", p.get("count", "?"))
+                if isinstance(tools, list) and tools:
+                    lines.append(f"- {' → '.join(str(t) for t in tools[:5])} (频率: {freq})")
+            if lines:
+                return "\n已学习的高效工具链模式 (可参考用于优化工具组合):\n" + "\n".join(lines)
+        except Exception:
+            pass
+        return ""
 
     def _save_cycle(self, results: list[ExperimentResult]) -> None:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
