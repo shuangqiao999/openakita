@@ -1524,12 +1524,14 @@ class TaskExecutor:
                             words = sorted(set(re.findall(r"\b\w+\b", str(desc).lower())))
                             return hashlib.md5(" ".join(words).encode()).hexdigest()
                         existing_hashes = {_sh(e.get("description","")) for e in existing}
+                        existing_ids = {e.get("id", "") for e in existing}
                         added = 0
                         for t in new_variants:
-                            if _sh(t.description) in existing_hashes:
+                            if _sh(t.description) in existing_hashes or t.id in existing_ids:
                                 logger.debug("[BenchmarkEvolve] 跳过重复draft: %s", t.id)
                                 continue
                             existing_hashes.add(_sh(t.description))
+                            existing_ids.add(t.id)
                             existing.append(
                                 {
                                     "id": t.id,

@@ -158,7 +158,7 @@ class PatternLearner:
                     continue
                 data = json.loads(trace_file.read_text(encoding="utf-8"))
                 result_val = data.get("result", "")
-                is_success = result_val == "success" or data.get("success", False)
+                is_success = result_val in ("success", "completed") or data.get("success", False)
                 if not is_success:
                     continue
 

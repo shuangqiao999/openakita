@@ -488,8 +488,18 @@ class UnifiedStore:
                     [now] + list(memory_ids),
                 )
                 self.db._conn.commit()
+            else:
+                # fallback to per-ID update
+                for mid in memory_ids:
+                    self.db.update_memory(
+                        mid,
+                        {
+                            "access_count": (self.db.get_memory(mid) or {}).get("access_count", 0) + 1,
+                            "last_accessed_at": now,
+                        },
+                    )
         except Exception:
-            # fallback to per-ID update
+            # fallback to per-ID update (batch SQL failed)
             for mid in memory_ids:
                 self.db.update_memory(
                     mid,

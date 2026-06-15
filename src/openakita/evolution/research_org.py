@@ -609,6 +609,8 @@ class ResearchOrg:
                         for k, v in snapshot.tool_failure_rates.items()
                         if v > 0.3
                     ][:5]
+                if metrics.get("success_rate") is None and snapshot.conversation_success_rate > 0:
+                    metrics["success_rate"] = snapshot.conversation_success_rate
             except Exception:
                 pass
 
