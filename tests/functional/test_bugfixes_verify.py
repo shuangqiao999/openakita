@@ -51,6 +51,72 @@ def clean():
 
 
 # ====================================================================
+# 0. 生产 DB schema 一致性检查
+# ====================================================================
+def test_schema_consistency():
+    print("\n" + "=" * 60)
+    print("0. 生产 DB schema 一致性")
+
+    PROD_DB = Path(r"D:\Akita\workspaces\default\data\memory\openakita.db")
+    if not PROD_DB.exists():
+        check("生产 DB 存在", False, str(PROD_DB))
+        return
+
+    import sqlite3
+
+    # 1. 读取生产 schema
+    prod_conn = sqlite3.connect(str(PROD_DB))
+    prod_cols = {c[1] for c in prod_conn.execute("PRAGMA table_info(memories)").fetchall()}
+    check(f"生产 DB: {len(prod_cols)} 列", len(prod_cols) >= 20)
+    prod_conn.close()
+
+    # 2. 创建与生产一致的测试表
+    test_db = OUT_DIR / "schema_test.db"
+    conn = sqlite3.connect(str(test_db))
+    # 只创建关键列 (完整 25 列太冗长，生产列中引用到的列)
+    required = ["id", "access_count", "last_accessed_at", "created_at"]
+    create_sql = "CREATE TABLE IF NOT EXISTS memories (id TEXT PRIMARY KEY"
+    for col in required[1:]:
+        if col in prod_cols:
+            create_sql += f", {col} TEXT"
+    create_sql += ")"
+    conn.execute(create_sql)
+    conn.execute("DELETE FROM memories")
+    conn.execute("INSERT INTO memories (id, access_count) VALUES ('x', 0)")
+    conn.execute("INSERT INTO memories (id, access_count) VALUES ('y', 1)")
+    conn.execute("INSERT INTO memories (id, access_count, last_accessed_at) VALUES ('z', 3, '2026-06-01')")
+    conn.execute("INSERT INTO memories (id, access_count, created_at) VALUES ('w', 5, '2026-06-15')")
+    conn.commit()
+
+    # 3. 验证 RuntimeMetricsCollector 的查询在生产列下正常
+    for col in ("access_count", "last_accessed_at", "created_at"):
+        check(f"  列 {col} 在生产 DB 中", col in prod_cols)
+
+    # access_count > 0
+    r = conn.execute("SELECT COUNT(*) FROM memories WHERE access_count > 0").fetchone()[0]
+    check(f"  access_count>0: {r} (应=3)", r == 3)
+
+    # last_accessed_at IS NOT NULL
+    r = conn.execute("SELECT COUNT(*) FROM memories WHERE last_accessed_at IS NOT NULL").fetchone()[0]
+    check(f"  last_accessed_at IS NOT NULL: {r} (应=1)", r == 1)
+
+    # created_at 7d fallback
+    r = conn.execute("SELECT COUNT(*) FROM memories WHERE created_at > datetime('now', '-7 days')").fetchone()[0]
+    check(f"  created_at 7d: {r} (应>=1)", r >= 1)
+
+    # bump_access 批量 UPDATE 语法兼容
+    conn.execute(
+        "UPDATE memories SET access_count = access_count + 1, last_accessed_at = ? WHERE id IN (?,?)",
+        ["2026-06-16", "x", "y"],
+    )
+    conn.commit()
+    nx = int(conn.execute("SELECT access_count FROM memories WHERE id='x'").fetchone()[0])
+    ny = int(conn.execute("SELECT access_count FROM memories WHERE id='y'").fetchone()[0])
+    check(f"  bump UPDATE: x={nx}, y={ny}", nx == 1 and ny == 2)
+    conn.close()
+
+
+# ====================================================================
 # 1. bump_access 回退路径
 # ====================================================================
 def test_bump_access_fallback():
@@ -252,6 +318,7 @@ async def amain():
     print("=" * 60)
 
     clean()
+    test_schema_consistency()
     test_bump_access_fallback()
     test_pattern_learner_result()
     test_research_org_fallback()
