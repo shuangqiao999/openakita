@@ -1573,11 +1573,6 @@ class TaskExecutor:
                         if aq.pending_count() == 0:
                             promoted = drafts.pop(0)
                             original = engine.load_tasks()
-                            original_ids = {t.id for t in original}
-                            max_vid = 1
-                            while f"{promoted['id']}-v{max_vid}" in original_ids:
-                                max_vid += 1
-                            from dataclasses import replace
                             from ..evolution.benchmark import BenchmarkTask
                             new_task = BenchmarkTask(
                                 id=f"{promoted['id']}-auto",
