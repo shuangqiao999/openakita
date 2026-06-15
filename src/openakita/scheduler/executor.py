@@ -1562,38 +1562,6 @@ class TaskExecutor:
             except Exception as e:
                 logger.debug("[BenchmarkEvolve] 场景化任务生成跳过: %s", e)
 
-            # 自动提升: draft 累积 ≥3 个且审批队列为空时, 自动 promote 到 tasks
-            try:
-                draft_path = engine._data_dir / "draft_tasks.json"
-                if draft_path.exists():
-                    drafts = _json.loads(draft_path.read_text(encoding="utf-8"))
-                    if len(drafts) >= 3:
-                        from ..evolution.approval_queue import ApprovalQueue
-                        aq = ApprovalQueue()
-                        if aq.pending_count() == 0:
-                            promoted = drafts.pop(0)
-                            original = engine.load_tasks()
-                            from ..evolution.benchmark import BenchmarkTask
-                            new_task = BenchmarkTask(
-                                id=f"{promoted['id']}-auto",
-                                description=promoted["description"],
-                                category=promoted.get("category", "tool_use"),
-                                expected_outcome=promoted.get("expected_outcome", ""),
-                                timeout_seconds=promoted.get("timeout_seconds", 300),
-                                difficulty=promoted.get("difficulty", "hard"),
-                            )
-                            original.append(new_task)
-                            from ..evolution.dynamic_benchmark import save_tasks_to_file
-                            save_tasks_to_file(original, engine._data_dir / "tasks.json")
-                            draft_path.write_text(
-                                _json.dumps(drafts, ensure_ascii=False, indent=2),
-                                encoding="utf-8",
-                            )
-                            summary += f" | 自动提升: {new_task.id}"
-                            logger.info("[BenchmarkEvolve] 自动提升draft: %s → tasks", promoted["id"])
-            except Exception as e:
-                logger.debug("[BenchmarkEvolve] 自动提升跳过: %s", e)
-
             logger.info(f"[BenchmarkEvolve] {summary}")
             return True, summary
         except Exception as e:
