@@ -529,6 +529,10 @@ class ExperimentLoop:
                 quality_delta=quality_delta, quality_weight=quality_weight,
             ):
                 logger.info("[EnvTuner] ✓ 保留 env:%s=%s", param, num_val)
+                if needs_restart:
+                    from openakita import config
+                    config._restart_requested = True
+                    logger.info("[EnvTuner] 已请求重启以应用 env:%s", param)
                 return ExperimentResult(
                     action="keep",
                     hypothesis=hypothesis,

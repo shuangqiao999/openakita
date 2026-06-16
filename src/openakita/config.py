@@ -1550,7 +1550,7 @@ EVOLVABLE_ENV_PARAMS: dict[str, tuple[float, float, float, bool]] = {
     "EXPERIMENT_IMPROVEMENT_THRESHOLD": (0.02, 0.0, 0.2, False),
     "QUALITY_WEIGHT_IN_IMPROVEMENT": (0.10, 0.0, 0.30, False),
     "RESEARCH_MAX_PROPOSALS": (2, 1, 4, False),
-    "PROMPT_MAX_CHANGE_RATIO": (0.2, 0.05, 0.5, True),
+    "PROMPT_MAX_CHANGE_RATIO": (0.2, 0.05, 0.5, False),
     "DYNAMIC_BENCHMARK_MAX_TASKS": (30, 10, 50, False),
     "BENCHMARK_TASK_TIMEOUT": (600, 120, 3600, False),
     "EXPERIMENT_LLM_TIMEOUT": (600, 60, 1800, False),
