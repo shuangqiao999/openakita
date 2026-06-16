@@ -81,7 +81,7 @@ JSON:
             return QualityScore()
 
     def save_score(self, score: QualityScore, session_id: str = "") -> Path:
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         path = self._data_dir / f"{ts}_{session_id[:8]}.json"
         path.write_text(json.dumps(asdict(score), ensure_ascii=False, indent=2), encoding="utf-8")
         return path
