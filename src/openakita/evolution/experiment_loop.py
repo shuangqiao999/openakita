@@ -125,6 +125,8 @@ def _get_env_targets_display() -> str:
     lines = []
     for key, (default_val, lo, hi, restart) in sorted(EVOLVABLE_ENV_PARAMS.items()):
         current = getattr(settings, key.lower(), default_val)
+        if isinstance(current, bool):
+            current = 1 if current else 0
         if isinstance(default_val, (int, float)) and isinstance(lo, (int, float)) and isinstance(hi, (int, float)):
             restart_note = " (需重启)" if restart else ""
             lines.append(f"- env:{key} = {current} (范围 {lo}-{hi}){restart_note}")
