@@ -106,6 +106,13 @@ class ChatControlRequest(BaseModel):
     message: str = Field("", description="User message (only for insert)")
 
 
+class ChatFeedbackRequest(BaseModel):
+    """对话反馈请求 (👍/👎)"""
+
+    session_id: str = Field(..., min_length=1, max_length=128, description="会话 ID")
+    rating: str = Field(..., pattern=r"^(good|bad)$", description="good 或 bad")
+
+
 class HealthCheckRequest(BaseModel):
     """Health check request."""
 

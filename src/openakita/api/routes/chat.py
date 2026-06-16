@@ -1,4 +1,4 @@
-"""
+﻿"""
 Chat route: POST /api/chat (SSE streaming)
 
 流式返回 AI 对话响应，包含思考内容、文本、工具调用、Plan 等事件。
@@ -21,7 +21,7 @@ from openakita.core.engine_bridge import engine_stream, is_dual_loop, to_engine
 from openakita.core.security_actions import execute_controlled_action
 from openakita.core.trusted_paths import grant_session_trust
 
-from ..schemas import ChatAnswerRequest, ChatControlRequest, ChatRequest
+from ..schemas import ChatAnswerRequest, ChatControlRequest, ChatFeedbackRequest, ChatRequest
 from .conversation_lifecycle import get_lifecycle_manager
 
 logger = logging.getLogger(__name__)
@@ -1812,3 +1812,38 @@ async def dismiss_plan_approval(request: Request):
         pending_map.pop(conversation_id, None)
     return {"ok": True}
 
+
+
+@router.post("/api/chat/feedback")
+async def chat_feedback(body: ChatFeedbackRequest) -> JSONResponse:
+    """记录用户对话反馈 (好/坏)"""
+    import json, logging
+    from datetime import datetime
+
+    from openakita.config import settings
+
+    logger = logging.getLogger(__name__)
+    fb_path = settings.data_dir / "evolution" / "feedback.json"
+    fb_path.parent.mkdir(parents=True, exist_ok=True)
+
+    existing = []
+    if fb_path.exists():
+        try:
+            existing = json.loads(fb_path.read_text(encoding="utf-8"))
+            if not isinstance(existing, list):
+                existing = []
+        except Exception:
+            pass
+
+    existing.append({
+        "session_id": body.session_id,
+        "rating": body.rating,
+        "timestamp": datetime.now().isoformat(),
+    })
+
+    if len(existing) > 200:
+        existing = existing[-200:]
+
+    fb_path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+    logger.info("[Feedback] session=%s rating=%s", body.session_id[:20], body.rating)
+    return JSONResponse({"ok": True})

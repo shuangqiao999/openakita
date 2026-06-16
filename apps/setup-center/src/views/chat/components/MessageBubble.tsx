@@ -1,8 +1,9 @@
-import { memo } from "react";
+import { memo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { ChatMessage, ChatAttachment, MdModules } from "../utils/chatTypes";
 import { stripLegacySummary } from "../utils/chatHelpers";
 import { formatTime } from "../../../utils";
+import { apiPost } from "../../../api";
 import { ThinkingChain, ThinkingBlock, ToolCallsGroup } from "./ThinkingChain";
 import { ArtifactList } from "./Artifacts";
 import { AskUserBlock } from "./AskUser";
@@ -48,6 +49,15 @@ export const MessageBubble = memo(function MessageBubble({
   onPlanStepAction?: (action: "skip" | "retry", stepIdx: number, description: string) => void;
 }) {
   const { t } = useTranslation();
+  const [feedback, setFeedback] = useState<"good" | "bad" | null>(null);
+
+  const sendFeedback = async (rating: "good" | "bad") => {
+    if (feedback || !conversationId) return;
+    setFeedback(rating);
+    try {
+      await apiPost(`${apiBaseUrl || ""}/api/chat/feedback`, { session_id: conversationId, rating });
+    } catch { /* 静默失败，用户无需感知 */ }
+  };
   const isUser = msg.role === "user";
   const isAssistant = msg.role === "assistant";
   const usageTotal = msg.usage
@@ -160,6 +170,18 @@ export const MessageBubble = memo(function MessageBubble({
         )}
         {isAssistant && !msg.streaming && onRegenerate && (
           <button className="msgActionBtn" onClick={() => onRegenerate(msg.id)} title={t("chat.regenerate", "重新生成")}><IconRefresh size={13} /></button>
+        )}
+        {isAssistant && !msg.streaming && msg.content && (
+          <>
+            <button className="msgActionBtn" onClick={() => sendFeedback("good")}
+              title={feedback === "good" ? t("chat.liked","已赞") : t("chat.like","赞")}
+              style={feedback === "good" ? { opacity:1,color:"#22c55e" } : feedback ? { opacity:0.2 } : {}}
+              disabled={!!feedback}>👍</button>
+            <button className="msgActionBtn" onClick={() => sendFeedback("bad")}
+              title={feedback === "bad" ? t("chat.disliked","已踩") : t("chat.dislike","踩")}
+              style={feedback === "bad" ? { opacity:1,color:"#ef4444" } : feedback ? { opacity:0.2 } : {}}
+              disabled={!!feedback}>👎</button>
+          </>
         )}
         {!isLast && !msg.streaming && onRewind && (
           <button className="msgActionBtn" onClick={() => onRewind(msg.id)} title={t("chat.rewind", "回到这里")}><IconRewind size={13} /></button>
