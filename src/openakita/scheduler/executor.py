@@ -1480,9 +1480,9 @@ class TaskExecutor:
 
             # 动态任务池维护
             try:
-                from ..config import settings
+                from ..config import parse_bool, settings
 
-                if getattr(settings, "dynamic_benchmark_enabled", True):
+                if parse_bool(getattr(settings, "dynamic_benchmark_enabled", True), default=True):
                     import json as _json
 
                     from ..evolution.dynamic_benchmark import (
@@ -1553,9 +1553,9 @@ class TaskExecutor:
 
             # 场景化任务生成（从真实会话生成 Benchmark 任务）
             try:
-                from ..config import settings
+                from ..config import parse_bool, settings
 
-                if getattr(settings, "benchmark_generate_from_traces", False):
+                if parse_bool(getattr(settings, "benchmark_generate_from_traces", False), default=False):
                     from ..evolution.dynamic_benchmark import DynamicBenchmarkGenerator
 
                     gen = DynamicBenchmarkGenerator(self.agent)

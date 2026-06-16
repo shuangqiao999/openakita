@@ -1570,3 +1570,33 @@ runtime_state = RuntimeState()
 # ---------------------------------------------------------------------------
 # 由 /api/config/restart 端点设置，main.py serve() 循环检测此标志决定是否重启。
 _restart_requested: bool = False
+
+
+# ── 工具函数 ──────────────────────────────────────────────────
+
+
+def parse_bool(value, *, default: bool = False) -> bool:
+    """将各种类型输入解析为布尔值.
+
+    支持: bool / int / float / str ("true","false","1","0","yes","no","on","off","enabled","disabled")
+    None 或无法解析时返回 default.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value > 0
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in ("true", "1", "yes", "on", "enabled", "enable"):
+            return True
+        if v in ("false", "0", "no", "off", "disabled", "disable"):
+            return False
+        try:
+            return float(v) > 0
+        except ValueError:
+            pass
+    import logging
+    logging.getLogger(__name__).debug("parse_bool: 无法解析 %r, 使用默认 %s", value, default)
+    return default

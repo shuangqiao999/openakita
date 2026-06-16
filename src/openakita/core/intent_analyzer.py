@@ -1086,12 +1086,9 @@ def _parse_list(value: str) -> list[str]:
 
 
 def _parse_bool(value: str, default: bool = False) -> bool:
-    normalized = str(value or "").strip().lower()
-    if normalized in {"true", "yes", "1", "是", "需要"}:
-        return True
-    if normalized in {"false", "no", "0", "否", "不需要"}:
-        return False
-    return default
+    from openakita.config import parse_bool
+
+    return parse_bool(value, default=default)
 
 
 def _parse_enum(value: str, enum_cls: type[Enum], default: Enum) -> Enum:

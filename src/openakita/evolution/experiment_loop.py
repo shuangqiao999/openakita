@@ -70,14 +70,9 @@ class ExperimentResult:
 
 async def _get_memory_tuning_hint() -> str:
     try:
-        from openakita.config import settings
+        from openakita.config import parse_bool, settings
 
-        try:
-            enabled = getattr(settings, "memory_retrieval_tuning_enabled", True)
-            if isinstance(enabled, (int, float)):
-                enabled = enabled > 0.5
-        except Exception:
-            enabled = True
+        enabled = parse_bool(getattr(settings, "memory_retrieval_tuning_enabled", True), default=True)
         if not enabled:
             return ""
         try:

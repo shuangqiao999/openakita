@@ -91,8 +91,8 @@ class RuntimeMetricsCollector:
         last_ts = 0.0
 
         try:
-            from openakita.config import settings
-            if getattr(settings, "runtime_metrics_incremental", True):
+            from openakita.config import parse_bool, settings
+            if parse_bool(getattr(settings, "runtime_metrics_incremental", True), default=True):
                 last_ts = self._load_last_ts()
         except Exception:
             pass
