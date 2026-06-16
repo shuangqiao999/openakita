@@ -72,7 +72,13 @@ async def _get_memory_tuning_hint() -> str:
     try:
         from openakita.config import settings
 
-        if not getattr(settings, "memory_retrieval_tuning_enabled", True):
+        try:
+            enabled = getattr(settings, "memory_retrieval_tuning_enabled", True)
+            if isinstance(enabled, (int, float)):
+                enabled = enabled > 0.5
+        except Exception:
+            enabled = True
+        if not enabled:
             return ""
         try:
             from .runtime_metrics import RuntimeMetricsCollector
@@ -480,7 +486,7 @@ class ExperimentLoop:
         try:
             import re as _re
 
-            raw = hypothesis.proposed_content.strip()
+            raw = str(hypothesis.proposed_content).strip()
             m = _re.search(r"[-+]?\d*\.?\d+", raw)
             if not m:
                 return ExperimentResult(action="error", hypothesis=hypothesis, reason=f"无法解析数值: {raw[:40]}")
