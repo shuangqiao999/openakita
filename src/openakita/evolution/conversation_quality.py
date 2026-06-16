@@ -82,7 +82,7 @@ JSON:
 
     def save_score(self, score: QualityScore, session_id: str = "") -> Path:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        path = self._data_dir / f"{ts}_{session_id[:8]}.json"
+        path = self._data_dir / f"{ts}_{session_id}.json"
         path.write_text(json.dumps(asdict(score), ensure_ascii=False, indent=2), encoding="utf-8")
         return path
 
@@ -116,7 +116,7 @@ JSON:
             valid = 0
             for fb in data:
                 sid = fb.get("session_id", "")
-                candidates = list(self._data_dir.glob(f"*_{sid[:8]}.json"))
+                candidates = list(self._data_dir.glob(f"*_{sid}.json"))
                 if not candidates:
                     continue
                 score_data = json.loads(candidates[0].read_text(encoding="utf-8"))
