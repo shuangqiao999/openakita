@@ -502,7 +502,7 @@ def _infer_tool_action_hints(message: str) -> tuple[list[str], bool]:
         add_hint("Browser")
     if _DESKTOP_SCREENSHOT_RE.search(message):
         add_hint("Desktop")
-    if re.search(r"(?:GitHub|issue|网页|搜索|下载|仓库)", message, flags=re.IGNORECASE):
+    if re.search(r"(?:GitHub|issue|网页|搜索|下载|仓库|新闻|最新|趋势|动态|论文|研究|开源|技术博客|AI|大模型|深度学习|机器学习|科技|文档|Stack.?Overflow|官方文档|API文档)", message, flags=re.IGNORECASE):
         add_hint("Web Search")
     if re.search(r"(?:日志|报错|警告|错误|文件|目录|项目|代码|skill|技能|配置|数据库|命令|脚本)", message):
         add_hint("File System")

@@ -804,6 +804,7 @@ MEDIUM_CTX_EXTRA_TOOLS = {
     "get_skill_info",
     "run_skill_script",
     "web_search",
+    "fetch_bookmarked",
     "browser_navigate",
     "call_mcp_tool",
     "list_mcp_servers",
@@ -823,6 +824,7 @@ MINIMAL_PROMPT_TOOLS = {
     "semantic_search",
     "web_search",
     "web_fetch",
+    "fetch_bookmarked",
 }
 
 

@@ -19,7 +19,13 @@ priority: high
 │   └─ web_fetch（最快，无需浏览器）
 │
 ├─ 只需搜索信息
-│   └─ web_search（六引擎并行搜索）
+│   │
+│   ├─ 用户兴趣属于权威主题领域？
+│   │   └─ YES → fetch_bookmarked（技术新闻/AI研究/学术论文/开源动态/科技商业/官方文档 等）
+│   │       └─ 比 web_search 更快、来源更可靠
+│   │
+│   └─ 通用搜索 / 非特定领域
+│       └─ web_search（六引擎并行搜索）
 │
 ├─ 需要交互（点击、填表、登录）
 │   │
@@ -36,6 +42,21 @@ priority: high
 └─ 需要截图验证？
     └─ browser_screenshot → view_image
 ```
+
+## fetch_bookmarked 适用领域
+
+| 用户意图关键词 | purpose 参数 | 示例书签 |
+|----------|----------|----------|
+| 最新技术新闻、GitHub趋势、Hacker News | `daily_tech_news` | GitHub Trending, Hacker News, 阮一峰 |
+| AI最新进展、OpenAI、DeepSeek | `ai_research` | OpenAI Blog, DeepSeek Blog, Anthropic |
+| 学术论文、arXiv、顶会 | `academic_papers` | arXiv CS, ACL Anthology, Papers With Code |
+| 开源项目、Gitee、GitHub动态 | `development` | Gitee 趋势, GitHub Changelog, 开源中国 |
+| 技术博客、美团/微软工程 | `technical_blog` | 美团技术, Microsoft Dev, AWS Architecture |
+| 科技商业、36Kr、VentureBeat | `tech_news` | 36氪, TechCrunch, VentureBeat |
+| 公开数据集、World Bank | `public_data` | World Bank, Common Crawl, Data.gov |
+| 国际新闻、Reuters | `general_news` | Reuters, Guardian, AP News |
+| Stack Overflow 技术问答 | `technical_qna` | Stack Overflow, 思否 SegmentFault |
+| Python/C++ 官方文档 | `official_doc` | Python Docs, C++ Reference |
 
 ## 桌面软件操作
 
