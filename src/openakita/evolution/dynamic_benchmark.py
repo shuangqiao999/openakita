@@ -74,8 +74,10 @@ class DynamicBenchmarkGenerator:
     # ── 变体生成 ──
 
     def _next_variant_id(self, base_id: str) -> int:
-        self._variant_counters[base_id] = self._variant_counters.get(base_id, 0) + 1
-        return self._variant_counters[base_id]
+        # 剥离已有 -v\d+ 后缀, 取 root ID, 防止 -v1-v1-v1 链式增长
+        root_id = re.sub(r"(-v\d+)+$", "", base_id)
+        self._variant_counters[root_id] = self._variant_counters.get(root_id, 0) + 1
+        return self._variant_counters[root_id]
 
     async def generate_harder_variant(self, task: Any) -> Any | None:
         if not self._brain:
@@ -102,9 +104,10 @@ class DynamicBenchmarkGenerator:
                 logger.warning("[DynamicBench] 验证失败: %s", reason)
                 return None
             vid = self._next_variant_id(task.id)
+            root_id = re.sub(r"(-v\d+)+$", "", task.id)
             return replace(
                 task,
-                id=f"{task.id}-v{vid}",
+                id=f"{root_id}-v{vid}",
                 description=data["description"],
                 expected_outcome=data.get("expected_outcome", task.expected_outcome),
                 difficulty=data.get("difficulty", "hard"),

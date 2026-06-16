@@ -483,6 +483,12 @@ class BenchmarkEngine:
         path.write_text(
             json.dumps(report.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
         )
+        # 保存原始基线 (仅首次)
+        orig = self._data_dir / "original_baseline.json"
+        if not orig.exists():
+            orig.write_text(
+                json.dumps(report.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
+            )
 
     @staticmethod
     async def _default_task_runner(agent: Any, description: str) -> Any:

@@ -199,21 +199,21 @@ class ResearchOrg:
         adopted = []
         queued = []
         rejected_reasons = [v.reason for v in verdicts if not v.approved]
+        adoption_failures: list[str] = []
 
         max_benchmarks = self._get_config("research_max_benchmarks", _DEFAULT_MAX_BENCHMARKS)
         benchmark_count = 0
         for _i, (proposal, verdict) in enumerate(approved_pairs):
             if verdict.risk_level == "high" and proposal.agent_role == "prompt_engineer":
                 req_id = self._submit_to_approval_queue(proposal, verdict, performance_data)
-                queued.append(
-                    {
-                        "role": proposal.agent_role,
-                        "description": proposal.description,
-                        "approval_id": req_id,
-                    }
-                )
+                queued.append({
+                    "role": proposal.agent_role,
+                    "description": proposal.description,
+                    "approval_id": req_id,
+                })
                 continue
             if benchmark_count >= max_benchmarks:
+                adoption_failures.append(f"超出benchmark上限({max_benchmarks}): {proposal.description[:60]}")
                 break
             success, new_metrics = await self._apply_and_verify(proposal, performance_data)
             benchmark_count += 1
@@ -221,6 +221,8 @@ class ResearchOrg:
                 adopted.append({"role": proposal.agent_role, "description": proposal.description})
                 if new_metrics:
                     performance_data["metrics"] = new_metrics
+            else:
+                adoption_failures.append(f"验证未通过: {proposal.description[:60]}")
 
         result = ResearchCycleResult(
             timestamp=datetime.now().isoformat(),
@@ -228,7 +230,7 @@ class ResearchOrg:
             approved_count=len(approved_pairs),
             adopted_count=len(adopted),
             queued_count=len(queued),
-            rejected_reasons=rejected_reasons,
+            rejected_reasons=rejected_reasons + adoption_failures,
             improvements=adopted,
             queued_for_approval=queued,
         )

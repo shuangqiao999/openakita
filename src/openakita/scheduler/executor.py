@@ -1472,6 +1472,10 @@ class TaskExecutor:
             try:
                 from ..evolution.runtime_metrics import RuntimeMetricsCollector
                 collector = RuntimeMetricsCollector()
+                # 每 4 次采集做一次全量重扫，避免增量导致的指标归零
+                self._metrics_scan_count = getattr(self, "_metrics_scan_count", 0) + 1
+                if self._metrics_scan_count % 4 == 0:
+                    collector.reset_state()
                 snapshot = await asyncio.to_thread(collector.collect)
                 collector.save_snapshot(snapshot)
                 summary += f" | 指标: {snapshot.memory_total}条记忆, {len(snapshot.tool_frequencies)}种工具"
@@ -1594,7 +1598,10 @@ class TaskExecutor:
             from ..evolution.pattern_learner import PatternLearner
 
             learner = PatternLearner(self.agent)
-            patterns = await learner.learn_from_history(days=7)
+            # 每 4 次学习做一次全量重学，避免增量模式导致模式冻结
+            self._pattern_learn_count = getattr(self, "_pattern_learn_count", 0) + 1
+            full_relearn = self._pattern_learn_count % 4 == 0
+            patterns = await learner.learn_from_history(days=7, full_relearn=full_relearn)
             if patterns:
                 summary = f"学习到 {len(patterns)} 条高效模式: " + "; ".join(
                     p.pattern[:40] for p in patterns[:3]

@@ -85,17 +85,18 @@ class RuntimeMetricsCollector:
             encoding="utf-8",
         )
 
-    def collect(self) -> RuntimeSnapshot:
+    def collect(self, *, full_rescan: bool = False) -> RuntimeSnapshot:
         snapshot = RuntimeSnapshot(timestamp=datetime.now().isoformat())
         collect_start = time.time()
         last_ts = 0.0
 
-        try:
-            from openakita.config import parse_bool, settings
-            if parse_bool(getattr(settings, "runtime_metrics_incremental", True), default=True):
-                last_ts = self._load_last_ts()
-        except Exception:
-            pass
+        if not full_rescan:
+            try:
+                from openakita.config import parse_bool, settings
+                if parse_bool(getattr(settings, "runtime_metrics_incremental", True), default=True):
+                    last_ts = self._load_last_ts()
+            except Exception:
+                pass
 
         self._collect_memory_stats(snapshot)
         trace_files = self._scan_traces_dir()
@@ -105,6 +106,13 @@ class RuntimeMetricsCollector:
         self._collect_memory_usage_rate(snapshot)
         self._save_last_ts(collect_start)
         return snapshot
+
+    def reset_state(self) -> None:
+        import os
+        try:
+            os.remove(str(self._state_file))
+        except OSError:
+            pass
 
     @staticmethod
     def _scan_traces_dir() -> list:
