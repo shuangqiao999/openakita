@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 import time
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
@@ -45,25 +46,28 @@ class RuntimeMetricsCollector:
         self._data_dir.mkdir(parents=True, exist_ok=True)
         self._state_file = self._data_dir / "last_collect.json"
         self._db_conn: Any = None
+        self._db_lock = threading.Lock()
 
     def _get_db(self):
-        if self._db_conn is not None:
+        with self._db_lock:
+            if self._db_conn is not None:
+                return self._db_conn
+            from openakita.config import settings
+
+            db_path = settings.data_dir / "memory" / "openakita.db"
+            if not db_path.exists():
+                return None
+            import sqlite3
+
+            self._db_conn = sqlite3.connect(str(db_path), check_same_thread=False)
+            self._db_conn.execute("PRAGMA journal_mode=WAL")
             return self._db_conn
-        from openakita.config import settings
-
-        db_path = settings.data_dir / "memory" / "openakita.db"
-        if not db_path.exists():
-            return None
-        import sqlite3
-
-        self._db_conn = sqlite3.connect(str(db_path), check_same_thread=False)
-        self._db_conn.execute("PRAGMA journal_mode=WAL")
-        return self._db_conn
 
     def close(self) -> None:
-        if self._db_conn is not None:
-            self._db_conn.close()
-            self._db_conn = None
+        with self._db_lock:
+            if self._db_conn is not None:
+                self._db_conn.close()
+                self._db_conn = None
 
     def __del__(self) -> None:
         try:
@@ -108,6 +112,8 @@ class RuntimeMetricsCollector:
         return snapshot
 
     def reset_state(self) -> None:
+        """删除增量状态文件，使下次 collect() 从 epoch 0 开始全量扫描。
+        executor 现使用 full_rescan=True 显式触发全扫，此方法保留作手动调用入口。"""
         import os
         try:
             os.remove(str(self._state_file))

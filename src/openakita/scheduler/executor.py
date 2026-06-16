@@ -1469,18 +1469,24 @@ class TaskExecutor:
                 engine.save_as_baseline(report)
 
             # 运行时指标采集
+            collector = None
             try:
                 from ..evolution.runtime_metrics import RuntimeMetricsCollector
                 collector = RuntimeMetricsCollector()
                 # 每 4 次采集做一次全量重扫，避免增量导致的指标归零
                 self._metrics_scan_count = getattr(self, "_metrics_scan_count", 0) + 1
-                if self._metrics_scan_count % 4 == 0:
-                    collector.reset_state()
-                snapshot = await asyncio.to_thread(collector.collect)
+                full = self._metrics_scan_count % 4 == 0
+                snapshot = await asyncio.to_thread(collector.collect, full_rescan=full)
                 collector.save_snapshot(snapshot)
                 summary += f" | 指标: {snapshot.memory_total}条记忆, {len(snapshot.tool_frequencies)}种工具"
             except Exception as e:
                 logger.debug("[BenchmarkEvolve] 指标采集跳过: %s", e)
+            finally:
+                if collector is not None:
+                    try:
+                        collector.close()
+                    except Exception:
+                        pass
 
             # 动态任务池维护
             try:
@@ -1523,7 +1529,8 @@ class TaskExecutor:
                             else []
                         )
                         # SimHash 去重: 跳过已存在的 draft
-                        import hashlib, re
+                        import hashlib
+                        import re
                         def _sh(desc):
                             words = sorted(set(re.findall(r"\b\w+\b", str(desc).lower())))
                             return hashlib.md5(" ".join(words).encode()).hexdigest()

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -65,6 +66,7 @@ class AutoEvolver:
         self._need_analyzer = need_analyzer
         self._recently_processed: dict[str, float] = {}
         self._last_gap_trigger: dict[str, float] = {}
+        self._state_lock = threading.Lock()
         try:
             from ..config import settings
             self._data_dir = settings.data_dir / "evolution"
@@ -91,19 +93,21 @@ class AutoEvolver:
 
     def _is_recently_processed(self, name: str) -> bool:
         now = time.monotonic()
-        ts = self._recently_processed.get(name)
-        if ts is not None and now - ts < _DEDUP_TTL_S:
-            return True
-        if ts is not None:
-            del self._recently_processed[name]
+        with self._state_lock:
+            ts = self._recently_processed.get(name)
+            if ts is not None and now - ts < _DEDUP_TTL_S:
+                return True
+            if ts is not None:
+                del self._recently_processed[name]
         return False
 
     def _mark_processed(self, name: str) -> None:
         now = time.monotonic()
-        self._recently_processed[name] = now
-        stale = [k for k, v in self._recently_processed.items() if now - v > _DEDUP_TTL_S]
-        for k in stale:
-            del self._recently_processed[k]
+        with self._state_lock:
+            self._recently_processed[name] = now
+            stale = [k for k, v in list(self._recently_processed.items()) if now - v > _DEDUP_TTL_S]
+            for k in stale:
+                del self._recently_processed[k]
 
     def _skill_exists(self, name: str) -> bool:
         if not self._skill_registry:
@@ -113,8 +117,8 @@ class AutoEvolver:
                 return self._skill_registry.get_skill(name) is not None
             if hasattr(self._skill_registry, "skills"):
                 return name in self._skill_registry.skills
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("[AutoEvolver] 技能检查异常: %s", e)
         return False
 
     async def respond_to_failure(
@@ -147,10 +151,11 @@ class AutoEvolver:
 
     def _check_gap_rate(self, gap_type: str) -> bool:
         now = time.monotonic()
-        last = self._last_gap_trigger.get(gap_type, 0)
-        if now - last < _GAP_RATE_LIMIT_S:
-            return False
-        self._last_gap_trigger[gap_type] = now
+        with self._state_lock:
+            last = self._last_gap_trigger.get(gap_type, 0)
+            if now - last < _GAP_RATE_LIMIT_S:
+                return False
+            self._last_gap_trigger[gap_type] = now
         return True
 
     # ── 新增: 进化历史记录 ──
@@ -168,8 +173,8 @@ class AutoEvolver:
             }
             with open(str(log_path), "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        except Exception:
-            pass
+        except OSError as e:
+            logger.warning("[AutoEvolver] 进化历史写入失败: %s", e)
 
     # ── 新增: 参数级别 gap 处理 (supervision/context/budget/guardrail) ──
 

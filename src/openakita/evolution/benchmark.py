@@ -36,6 +36,7 @@ _BENCHMARK_TEMP_PATTERNS = [
     str(Path(_tempfile.gettempdir()) / "bench_test*"),
     str(Path(_tempfile.gettempdir()) / "benchmark_*"),
     str(Path(_tempfile.gettempdir()) / "fib_*"),
+    "data/bench_test.py",
 ]
 
 
@@ -110,7 +111,7 @@ class BenchmarkReport:
 _DEFAULT_BENCHMARK_TASKS: list[dict[str, Any]] = [
     {
         "id": "tool-file-edit",
-        "description": "创建文件 /tmp/bench_test.py 内容为 print('hello')，然后读取验证内容正确",
+        "description": "创建文件 data/bench_test.py 内容为 print('hello')，然后读取验证内容正确",
         "category": "tool_use",
         "expected_outcome": "文件创建成功且内容为 print('hello')",
         "timeout_seconds": 30,
@@ -243,7 +244,7 @@ class BenchmarkEngine:
             if global_timeout > 0:
                 from dataclasses import replace as _replace
 
-                tasks = [_replace(t, timeout_seconds=max(t.timeout_seconds, global_timeout)) for t in tasks]
+                tasks = [_replace(t, timeout_seconds=min(t.timeout_seconds or global_timeout, global_timeout)) for t in tasks]
         except Exception:
             pass
         mc = max_concurrent or self._max_concurrent

@@ -46,13 +46,18 @@ class DynamicBenchmarkGenerator:
     # ── 验证器 ──
 
     @staticmethod
-    def validate_task(desc: str, expected: str, timeout: int) -> tuple[bool, str]:
+    def validate_task(desc: str, expected: str, timeout: int, *, category: str = "") -> tuple[bool, str]:
         if not re.search(_ACTION_VERBS_RE, desc):
             return False, "缺少动作动词"
+        if not expected or len(expected) < 10:
+            return False, "预期结果过短/不可验证"
         if not re.search(_VERIFIABLE_RE, expected):
             return False, "预期结果不可验证"
         if not (10 <= timeout <= _DEFAULT_MAX_TIMEOUT):
             return False, f"超时不合理: {timeout}s"
+        if category == "coding":
+            if not re.search(r"代码|成功|无报错|测试|通过|输出|返回", expected):
+                return False, "coding任务缺少验证词"
         return True, ""
 
     # ── SimHash 去重 ──
@@ -236,30 +241,10 @@ class DynamicBenchmarkGenerator:
         expected = task.get("expected_outcome", "")
         timeout = task.get("timeout_seconds", 300)
         category = task.get("category", "")
-
-        verbs = re.compile(
-            r"创建|编写|搜索|计算|修复|重构|查找|列出|下载|生成|总结|读取|运行|执行"
-            r"|create|write|search|compute|fix|find|list|generate|read|run",
-            re.I,
-        )
-        if not verbs.search(desc):
-            logger.warning("[DynamicBench] 任务验证失败: 缺少动作动词 — %s", desc[:50])
-            return False
-
-        if len(expected) < 10:
-            logger.warning("[DynamicBench] 任务验证失败: 预期过短 — %s", expected[:50])
-            return False
-
-        if not (30 <= timeout <= 1800):
-            logger.warning("[DynamicBench] 任务验证失败: 超时越界 %d", timeout)
-            return False
-
-        if category == "coding":
-            if not re.search(r"代码|成功|无报错|测试|通过|输出|返回", expected):
-                logger.warning("[DynamicBench] coding 任务缺少验证词: %s", expected[:50])
-                return False
-
-        return True
+        ok, reason = DynamicBenchmarkGenerator.validate_task(desc, expected, timeout, category=category)
+        if not ok:
+            logger.warning("[DynamicBench] 任务验证失败: %s — %s", reason, desc[:50])
+        return ok
 
 
 def save_tasks_to_file(tasks: list[Any], path: Path) -> None:

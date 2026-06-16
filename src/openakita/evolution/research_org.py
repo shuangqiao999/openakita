@@ -163,9 +163,6 @@ class ResearchOrg:
             return default
 
     async def run_research_cycle(self, performance_data: dict | None = None) -> ResearchCycleResult:
-        if ResearchOrg._cycle_lock is None:
-            ResearchOrg._cycle_lock = asyncio.Lock()
-
         async with ResearchOrg._cycle_lock:
             return await self._run_cycle_locked(performance_data)
 
@@ -442,7 +439,7 @@ class ResearchOrg:
             qw = self._get_config("quality_weight_in_improvement", 0.10)
             from .experiment_loop import _load_quality_delta
 
-            qd = _load_quality_delta()
+            qd = _load_quality_delta(str(self._data_dir / "quality_scores"))
             if ExperimentLoop._is_improvement(
                 baseline_metrics, new_metrics, threshold,
                 quality_weight=qw, quality_delta=qd,

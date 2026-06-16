@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -140,8 +141,11 @@ class ApprovalQueue:
             return False, f"无法匹配原始片段（第 {data['retry_count']} 次），已恢复为待审批状态"
 
         try:
-            target.write_text(new_content, encoding="utf-8")
+            tmp = target.with_suffix(target.suffix + f".{os.getpid()}.tmp")
+            tmp.write_text(new_content, encoding="utf-8")
+            tmp.replace(target)
         except OSError as e:
+            tmp.unlink(missing_ok=True)
             return False, f"写入目标文件失败: {e}"
 
         data["status"] = "applied"
