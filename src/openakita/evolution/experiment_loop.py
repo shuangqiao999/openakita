@@ -285,12 +285,16 @@ class ExperimentLoop:
                             "[ExperimentLoop] 全局回归检测: current=%.3f < anchor=%.3f - %.2f, 回滚本轮实验",
                             current_sr, anchor_sr, tolerance,
                         )
+                        # 跟踪每个目标只回滚一次 (取首个 kept 实验的原始内容)
+                        rolled_back: set[str] = set()
                         for r in kept:
                             if not r.hypothesis:
                                 continue
                             target = r.hypothesis.target
+                            if target in rolled_back:
+                                continue
+                            rolled_back.add(target)
                             if target.startswith("env:") and r.original_content:
-                                # env 实验: 用 EnvTuner 恢复原始值
                                 from .env_tuner import EnvTuner
                                 param = target[4:]
                                 tuner = EnvTuner(settings.project_root / ".env")
@@ -300,7 +304,6 @@ class ExperimentLoop:
                                 except Exception:
                                     pass
                             elif r.original_content:
-                                # 文件实验: 写回原始内容
                                 p = self._project_root / target
                                 p.write_text(r.original_content, encoding="utf-8")
                             r.action = "reverted"
