@@ -277,12 +277,19 @@ class BenchmarkEngine:
         times = [r.time_seconds for r in active_results if r.time_seconds > 0]
         tools = [r.tool_calls for r in active_results]
         sr = success / n if n > 0 else 0
+        avg_tokens_val = round(sum(tokens) / len(tokens), 1) if tokens else 0
+        baseline = self._load_latest_baseline()
+        if baseline and getattr(baseline, "avg_tokens", 0) > 0 and avg_tokens_val > 0:
+            token_ratio = min(0.5, (avg_tokens_val / baseline.avg_tokens) * 0.3)
+            efficiency = sr * 100 * (1 - token_ratio)
+        else:
+            efficiency = sr * 100
         return BenchmarkMetrics(
             success_rate=round(sr, 3),
-            avg_tokens=round(sum(tokens) / len(tokens), 1) if tokens else 0,
+            avg_tokens=avg_tokens_val,
             avg_time=round(sum(times) / len(times), 3) if times else 0,
             avg_tool_calls=round(sum(tools) / n, 1) if n else 0,
-            efficiency_score=round(sr * 100, 1),
+            efficiency_score=round(efficiency, 1),
             category_scores=report.metrics.category_scores,
         )
 
@@ -558,6 +565,17 @@ class BenchmarkEngine:
             orig.write_text(
                 json.dumps(report.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
             )
+
+    @staticmethod
+    async def _warmup(agent: Any) -> None:
+        """跑一个极轻任务预热工具系统，确保 tool handler 就绪"""
+        try:
+            await asyncio.wait_for(
+                agent.execute_task_from_message("记住: 基准测试预热"),
+                timeout=5,
+            )
+        except Exception:
+            pass
 
     @staticmethod
     async def _default_task_runner(agent: Any, description: str) -> Any:

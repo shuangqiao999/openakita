@@ -258,7 +258,20 @@ class ExperimentLoop:
 
         # 全局回归围栏: 本轮有 keep 的实验后, 重新 benchmark 对比原始基线
         kept = [r for r in results if r.action == "keep"]
-        if kept:
+        # 过滤: 跳过 needs_restart 的 env 实验 (重启后才生效, re-benchmark 测不到)
+        active_kept = []
+        for r in kept:
+            if r.hypothesis and r.hypothesis.target.startswith("env:"):
+                param = r.hypothesis.target[4:]
+                try:
+                    from openakita.config import EVOLVABLE_ENV_PARAMS
+                    if EVOLVABLE_ENV_PARAMS.get(param, (None, None, None, False))[3]:
+                        continue  # needs_restart, 跳过
+                except Exception:
+                    pass
+            active_kept.append(r)
+
+        if active_kept:
             try:
                 from openakita.config import parse_bool, settings
                 if parse_bool(getattr(settings, "regression_guard_enabled", True), default=True):
@@ -551,6 +564,8 @@ class ExperimentLoop:
             )
 
         value_str = str(int(num_val)) if num_val == int(num_val) else str(num_val)
+        # 保存当前值作回滚参考 (从 settings 读取, 精确可靠)
+        orig_env_val = str(getattr(settings, param.lower(), EVOLVABLE_ENV_PARAMS[param][0]))
 
         from .env_tuner import EnvTuner
 
@@ -595,7 +610,7 @@ class ExperimentLoop:
                     new_metrics=new_metrics,
                     delta={k: new_metrics[k] - baseline_metrics[k] for k in baseline_metrics},
                     quality_score=quality_score,
-                    original_content=hypothesis.original_content,  # 原始env值, 用于回归回滚
+                    original_content=orig_env_val,  # settings 读取的精确值, 用于回归回滚
                 )
             else:
                 tuner.rollback(backup)
