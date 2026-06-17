@@ -219,6 +219,72 @@ class BenchmarkEngine:
         self._task_runner = task_runner or self._default_task_runner
         self._token_counter = token_counter or self._default_token_counter
         self._max_concurrent = max(1, max_concurrent)
+        self._health_file = self._data_dir / "task_health.json"
+
+    # ── 任务健康监测 ──
+
+    def _load_health(self) -> dict:
+        if self._health_file.exists():
+            try:
+                return json.loads(self._health_file.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        return {}
+
+    def _save_health(self, data: dict) -> None:
+        try:
+            self._health_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def is_degraded(self, task_id: str) -> bool:
+        h = self._load_health()
+        return h.get(task_id, {}).get("degraded", False)
+
+    def _update_health(self, results: list[BenchmarkResult], tasks: list[BenchmarkTask]) -> None:
+        try:
+            from openakita.config import parse_bool, settings
+            if not parse_bool(getattr(settings, "benchmark_task_health_enabled", True), default=True):
+                return
+            degrade_threshold = getattr(settings, "task_degrade_threshold", 3)
+        except Exception:
+            return
+        h = self._load_health()
+        for task, result in zip(tasks, results, strict=True):
+            tid = task.id
+            info = h.get(tid, {"consecutive_fails": 0, "degraded": False})
+            if result.success:
+                info["consecutive_fails"] = 0
+                info["degraded"] = False
+            else:
+                info["consecutive_fails"] = info.get("consecutive_fails", 0) + 1
+                if info["consecutive_fails"] >= degrade_threshold:
+                    info["degraded"] = True
+                    logger.warning("[Benchmark] 任务 %s 已降级 (连续失败%d次)", tid, info["consecutive_fails"])
+            h[tid] = info
+        self._save_health(h)
+
+    def effective_metrics(self, report: BenchmarkReport, tasks: list[BenchmarkTask]) -> BenchmarkMetrics:
+        """计算净化后的指标 (排除 degraded 任务)"""
+        health = self._load_health()
+        degraded_ids = {t.id for t in tasks if health.get(t.id, {}).get("degraded", False)}
+        active_results = [r for r in report.results if r.task_id not in degraded_ids]
+        if not active_results:
+            return report.metrics
+        n = len(active_results)
+        success = sum(1 for r in active_results if r.success)
+        tokens = [r.tokens_used for r in active_results if r.tokens_used > 0]
+        times = [r.time_seconds for r in active_results if r.time_seconds > 0]
+        tools = [r.tool_calls for r in active_results]
+        sr = success / n if n > 0 else 0
+        return BenchmarkMetrics(
+            success_rate=round(sr, 3),
+            avg_tokens=round(sum(tokens) / len(tokens), 1) if tokens else 0,
+            avg_time=round(sum(times) / len(times), 3) if times else 0,
+            avg_tool_calls=round(sum(tools) / n, 1) if n else 0,
+            efficiency_score=round(sr * 100, 1),
+            category_scores=report.metrics.category_scores,
+        )
 
     def load_tasks(self) -> list[BenchmarkTask]:
         if self._tasks_file.exists():
@@ -268,6 +334,8 @@ class BenchmarkEngine:
                 result.tokens_used,
                 result.verification_passed,
             )
+
+        self._update_health(results, tasks)
 
         metrics = self._compute_metrics(results, tasks)
         report = BenchmarkReport(

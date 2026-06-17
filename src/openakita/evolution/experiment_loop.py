@@ -46,6 +46,7 @@ _DEFAULT_IMPROVEMENT_THRESHOLD = 0.02
 _DEFAULT_LLM_TIMEOUT = 600
 _BACKUP_MAX_AGE_DAYS = 7
 _FUZZY_MATCH_THRESHOLD = 0.85
+_MAX_REGRESSION_TOLERANCE = 0.10  # 成功率相对原始基线允许的最大退化
 
 
 @dataclass
@@ -59,13 +60,14 @@ class Hypothesis:
 
 @dataclass
 class ExperimentResult:
-    action: str  # "keep" / "discard" / "error"
+    action: str  # "keep" / "discard" / "error" / "reverted"
     hypothesis: Hypothesis | None = None
     baseline_metrics: dict[str, float] = field(default_factory=dict)
     new_metrics: dict[str, float] = field(default_factory=dict)
     delta: dict[str, float] = field(default_factory=dict)
     reason: str = ""
     quality_score: Any = None
+    original_content: str = ""  # 文件实验的原始内容, 用于回归回滚
 
 
 async def _get_memory_tuning_hint() -> str:
@@ -208,6 +210,8 @@ class ExperimentLoop:
             "avg_time": benchmark_report.metrics.avg_time,
             "efficiency_score": benchmark_report.metrics.efficiency_score,
         }
+        # 锚定基线: 本 cycle 的初始指标, 防止滚动漂移
+        anchor_metrics = dict(baseline_metrics)
 
         max_experiments = self._get_config("experiments_per_cycle", _DEFAULT_MAX_EXPERIMENTS)
         quality_weight = self._load_quality_weight()
@@ -229,6 +233,7 @@ class ExperimentLoop:
             result = await self._run_experiment(
                 hypothesis, engine, baseline_metrics,
                 quality_weight=quality_weight, quality_delta=quality_delta,
+                anchor_metrics=anchor_metrics,
             )
             results.append(result)
             if result.action == "keep":
@@ -250,6 +255,47 @@ class ExperimentLoop:
                 pass
 
         self._save_cycle(results)
+
+        # 全局回归围栏: 本轮有 keep 的实验后, 重新 benchmark 对比原始基线
+        kept = [r for r in results if r.action == "keep"]
+        if kept:
+            try:
+                from openakita.config import parse_bool, settings
+                if parse_bool(getattr(settings, "regression_guard_enabled", True), default=True):
+                    final_report = await engine.run_suite(self._agent)
+                    current_sr = final_report.metrics.success_rate
+                    anchor_sr = self._load_original_baseline_sr()
+                    tolerance = self._get_config("max_regression_tolerance", _MAX_REGRESSION_TOLERANCE)
+
+                    if anchor_sr is not None and current_sr < anchor_sr - tolerance:
+                        logger.warning(
+                            "[ExperimentLoop] 全局回归检测: current=%.3f < anchor=%.3f - %.2f, 回滚本轮实验",
+                            current_sr, anchor_sr, tolerance,
+                        )
+                        for r in kept:
+                            if not r.hypothesis:
+                                continue
+                            target = r.hypothesis.target
+                            if target.startswith("env:") and r.original_content:
+                                # env 实验: 用 EnvTuner 恢复原始值
+                                from .env_tuner import EnvTuner
+                                param = target[4:]
+                                tuner = EnvTuner(settings.project_root / ".env")
+                                tuner.apply(param, r.original_content)
+                                try:
+                                    settings.reload()
+                                except Exception:
+                                    pass
+                            elif r.original_content:
+                                # 文件实验: 写回原始内容
+                                p = self._project_root / target
+                                p.write_text(r.original_content, encoding="utf-8")
+                            r.action = "reverted"
+                            r.reason = f"全局回归: sr={current_sr:.3f} < anchor={anchor_sr:.3f}"
+                        self._save_cycle(results)
+            except Exception as e:
+                logger.debug("[ExperimentLoop] 回归围栏检查跳过: %s", e)
+
         return results
 
     async def _generate_hypothesis(
@@ -355,6 +401,8 @@ class ExperimentLoop:
         baseline_metrics: dict[str, float],
         quality_weight: float = 0.0,
         quality_delta: float = 0.0,
+        *,
+        anchor_metrics: dict[str, float] | None = None,
     ) -> ExperimentResult:
         if hypothesis.target not in self.MUTABLE_TARGETS:
             if not hypothesis.target.startswith("env:"):
@@ -364,6 +412,7 @@ class ExperimentLoop:
             return await self._run_env_experiment(
                 hypothesis, engine, baseline_metrics,
                 quality_weight=quality_weight, quality_delta=quality_delta,
+                anchor_metrics=anchor_metrics,
             )
 
         target_path = (self._project_root / hypothesis.target).resolve()
@@ -429,6 +478,7 @@ class ExperimentLoop:
             if self._is_improvement(
                 baseline_metrics, new_metrics, threshold,
                 quality_delta=quality_delta, quality_weight=quality_weight,
+                anchor_metrics=anchor_metrics,
             ):
                 logger.info("[ExperimentLoop] ✓ 保留改进: %s", hypothesis.description)
                 return ExperimentResult(
@@ -438,6 +488,7 @@ class ExperimentLoop:
                     new_metrics=new_metrics,
                     delta={k: new_metrics[k] - baseline_metrics[k] for k in baseline_metrics},
                     quality_score=quality_score,
+                    original_content=original_full,
                 )
             else:
                 target_path.write_text(original_full, encoding="utf-8")
@@ -464,6 +515,7 @@ class ExperimentLoop:
     async def _run_env_experiment(
         self, hypothesis: Hypothesis, engine: Any, baseline_metrics: dict[str, float],
         quality_weight: float = 0.0, quality_delta: float = 0.0,
+        *, anchor_metrics: dict[str, float] | None = None,
     ) -> ExperimentResult:
         """处理 env:PARAM 类型的目标 — 修改 .env 文件中的参数"""
         param = hypothesis.target[4:]
@@ -529,6 +581,7 @@ class ExperimentLoop:
             if self._is_improvement(
                 baseline_metrics, new_metrics, threshold,
                 quality_delta=quality_delta, quality_weight=quality_weight,
+                anchor_metrics=anchor_metrics,
             ):
                 logger.info("[EnvTuner] ✓ 保留 env:%s=%s", param, num_val)
                 if needs_restart:
@@ -542,6 +595,7 @@ class ExperimentLoop:
                     new_metrics=new_metrics,
                     delta={k: new_metrics[k] - baseline_metrics[k] for k in baseline_metrics},
                     quality_score=quality_score,
+                    original_content=hypothesis.original_content,  # 原始env值, 用于回归回滚
                 )
             else:
                 tuner.rollback(backup)
@@ -668,9 +722,17 @@ class ExperimentLoop:
         threshold: float = _DEFAULT_IMPROVEMENT_THRESHOLD,
         quality_delta: float = 0.0,
         quality_weight: float = 0.0,
+        *,
+        anchor_metrics: dict[str, float] | None = None,
     ) -> bool:
         sr_old = old.get("success_rate", 0)
         sr_new = new.get("success_rate", 0)
+
+        # 锚定检查: 不能比原始基线差太多 (防止滚动漂移)
+        if anchor_metrics is not None:
+            anchor_sr = anchor_metrics.get("success_rate", 0)
+            if sr_new < anchor_sr - _MAX_REGRESSION_TOLERANCE:
+                return False
 
         # 成功率天花板容错: 已接近满分时允许小幅波动
         # 避免因 100% 基线导致任何实验都无法被判定为"改善"
@@ -745,6 +807,17 @@ class ExperimentLoop:
             except Exception:
                 pass
 
+    def _load_original_baseline_sr(self) -> float | None:
+        try:
+            from openakita.config import settings
+            path = settings.data_dir / "evolution" / "benchmarks" / "original_baseline.json"
+            if path.exists():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                return float(data.get("metrics", {}).get("success_rate", 0))
+        except Exception:
+            pass
+        return None
+
     def _load_quality_weight(self) -> float:
         try:
             path = self._data_dir / "quality_weight.json"
@@ -755,7 +828,9 @@ class ExperimentLoop:
                     return float(w)
         except Exception:
             pass
-        return self._get_config("quality_weight_in_improvement", 0.10)
+        # 热启动: 初次运行时从合理值开始 (0.13 而非 0.10)
+        warm = self._get_config("quality_weight_in_improvement", 0.10)
+        return max(warm, 0.13) if warm <= 0.10 else warm
 
     def _save_quality_weight(self, weight: float) -> None:
         try:

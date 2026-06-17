@@ -99,6 +99,10 @@ class RuntimeMetricsCollector:
                 from openakita.config import parse_bool, settings
                 if parse_bool(getattr(settings, "runtime_metrics_incremental", True), default=True):
                     last_ts = self._load_last_ts()
+                # 增量时间戳过期检测: 超过 1 小时自动转全量
+                if last_ts > 0 and collect_start - last_ts > 3600:
+                    logger.info("[RuntimeMetrics] last_collect 过期(%.0fh), 自动全量扫描", (collect_start - last_ts) / 3600)
+                    last_ts = 0.0
             except Exception:
                 pass
 

@@ -1473,9 +1473,9 @@ class TaskExecutor:
             try:
                 from ..evolution.runtime_metrics import RuntimeMetricsCollector
                 collector = RuntimeMetricsCollector()
-                # 每 4 次采集做一次全量重扫，避免增量导致的指标归零
+                # 每 2 次采集做一次全量重扫，避免增量导致的指标归零
                 self._metrics_scan_count = getattr(self, "_metrics_scan_count", 0) + 1
-                full = self._metrics_scan_count % 4 == 0
+                full = self._metrics_scan_count % 2 == 0
                 snapshot = await asyncio.to_thread(collector.collect, full_rescan=full)
                 collector.save_snapshot(snapshot)
                 summary += f" | 指标: {snapshot.memory_total}条记忆, {len(snapshot.tool_frequencies)}种工具"
