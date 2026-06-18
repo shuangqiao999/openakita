@@ -419,7 +419,9 @@ class ResearchOrg:
                 if not tpl_ok:
                     return False, None
 
-            target.write_text(new_content, encoding="utf-8")
+            tmp = target.with_suffix(target.suffix + ".tmp")
+            tmp.write_text(new_content, encoding="utf-8")
+            tmp.replace(target)
             from .benchmark import BenchmarkEngine
 
             engine = BenchmarkEngine()
@@ -591,6 +593,7 @@ class ResearchOrg:
         )
 
         if not tool_stats or not failures:
+            collector = None
             try:
                 from .runtime_metrics import RuntimeMetricsCollector
 
@@ -612,6 +615,9 @@ class ResearchOrg:
                     metrics["success_rate"] = snapshot.conversation_success_rate
             except Exception:
                 pass
+            finally:
+                if collector is not None:
+                    collector.close()
 
         return {
             "metrics": metrics,

@@ -116,6 +116,8 @@ JSON:
             valid = 0
             for fb in data:
                 sid = fb.get("session_id", "")
+                if not sid:
+                    continue
                 candidates = list(self._data_dir.glob(f"*_{sid}.json"))
                 if not candidates:
                     continue

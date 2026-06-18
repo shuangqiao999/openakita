@@ -1523,6 +1523,7 @@ class TaskExecutor:
 
                     # 新增变体 → draft_tasks.json（待审批）
                     new_variants = [t for t in all_tasks if t.id not in original_ids]
+                    added = 0
                     if new_variants:
                         draft_path = engine._data_dir / "draft_tasks.json"
                         existing = (

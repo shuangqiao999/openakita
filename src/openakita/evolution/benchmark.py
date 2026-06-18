@@ -317,18 +317,44 @@ class BenchmarkEngine:
             if global_timeout > 0:
                 from dataclasses import replace as _replace
 
-                tasks = [_replace(t, timeout_seconds=min(t.timeout_seconds or global_timeout, global_timeout)) for t in tasks]
+                tasks = [
+                    _replace(
+                        t,
+                        timeout_seconds=min(
+                            t.timeout_seconds if t.timeout_seconds else global_timeout,
+                            global_timeout,
+                        ),
+                    )
+                    for t in tasks
+                ]
         except Exception:
             pass
         mc = max_concurrent or self._max_concurrent
         sem = asyncio.Semaphore(mc)
+
+        await self._warmup(agent)
 
         async def _guarded(task: BenchmarkTask) -> BenchmarkResult:
             async with sem:
                 return await self._run_single(agent, task)
 
         try:
+            tokens_before_suite = self._token_counter(agent)
             results = list(await asyncio.gather(*[_guarded(t) for t in tasks]))
+            tokens_after_suite = self._token_counter(agent)
+            suite_total = max(0, tokens_after_suite - tokens_before_suite)
+            if mc > 1 and suite_total > 0:
+                per_task_sum = sum(r.tokens_used for r in results)
+                if per_task_sum > 0:
+                    scale = suite_total / per_task_sum
+                    for r in results:
+                        r.tokens_used = int(r.tokens_used * scale)
+                else:
+                    n_success = sum(1 for r in results if r.success) or len(results)
+                    avg = suite_total // n_success
+                    for r in results:
+                        if r.success:
+                            r.tokens_used = avg
         finally:
             self._cleanup_temp_files()
 
@@ -452,6 +478,15 @@ class BenchmarkEngine:
             if num not in output:
                 return False, f"输出缺少数值: {num}"
 
+        if not quoted and not numbers:
+            expected_words = set(re.findall(r"\b\w{2,}\b", expected.lower()))
+            if expected_words:
+                output_words = set(re.findall(r"\b\w{2,}\b", output_lower))
+                matched = expected_words & output_words
+                ratio = len(matched) / len(expected_words)
+                if ratio < 0.6:
+                    return False, f"关键词匹配率过低: {ratio:.0%} (需≥60%)"
+
         return True, ""
 
     def _cleanup_temp_files(self) -> None:
@@ -532,20 +567,20 @@ class BenchmarkEngine:
             except Exception:
                 pass
         results = sorted(self._results_dir.glob("*.json"), reverse=True)
-        if not results:
-            return None
-        try:
-            data = json.loads(results[0].read_text(encoding="utf-8"))
-            m = data.get("metrics", {})
-            return BenchmarkMetrics(
-                success_rate=m.get("success_rate", 0),
-                avg_tokens=m.get("avg_tokens", 0),
-                avg_time=m.get("avg_time", 0),
-                avg_tool_calls=m.get("avg_tool_calls", 0),
-                efficiency_score=m.get("efficiency_score", 0),
-            )
-        except Exception:
-            return None
+        for result_file in results[:5]:
+            try:
+                data = json.loads(result_file.read_text(encoding="utf-8"))
+                m = data.get("metrics", {})
+                return BenchmarkMetrics(
+                    success_rate=m.get("success_rate", 0),
+                    avg_tokens=m.get("avg_tokens", 0),
+                    avg_time=m.get("avg_time", 0),
+                    avg_tool_calls=m.get("avg_tool_calls", 0),
+                    efficiency_score=m.get("efficiency_score", 0),
+                )
+            except Exception:
+                continue
+        return None
 
     def _save_report(self, report: BenchmarkReport) -> None:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")

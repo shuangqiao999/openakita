@@ -84,24 +84,27 @@ async def _get_memory_tuning_hint() -> str:
         except Exception:
             return ""
 
-        usage_rate = getattr(settings, "memory_usage_low_threshold", 0.3)
-        cooldown = getattr(settings, "memory_tuning_cooldown_hours", 24)
+        try:
+            usage_rate = getattr(settings, "memory_usage_low_threshold", 0.3)
+            cooldown = getattr(settings, "memory_tuning_cooldown_hours", 24)
 
-        last_tune = collector.get_last_tuning_time()
-        if time.time() - last_tune < cooldown * 3600:
-            return ""
+            last_tune = collector.get_last_tuning_time()
+            if time.time() - last_tune < cooldown * 3600:
+                return ""
 
-        snap = await asyncio.to_thread(collector.collect)
-        if snap.memory_usage_rate >= usage_rate:
-            return ""
+            snap = await asyncio.to_thread(collector.collect)
+            if snap.memory_usage_rate >= usage_rate:
+                return ""
 
-        collector.record_tuning_time()
-        return (
-            f"\n⚠ 记忆使用率: {snap.memory_usage_rate:.0%} (阈值 {usage_rate:.0%})\n"
-            "建议调整记忆检索参数以提升召回率:\n"
-            "- env:RETRIEVAL_TOP_K (1-20): 增大可召回更多记忆\n"
-            "- env:MEMORY_SIMILARITY_THRESHOLD (0.5-0.95): 降低可放宽匹配\n"
-        )
+            collector.record_tuning_time()
+            return (
+                f"\n⚠ 记忆使用率: {snap.memory_usage_rate:.0%} (阈值 {usage_rate:.0%})\n"
+                "建议调整记忆检索参数以提升召回率:\n"
+                "- env:RETRIEVAL_TOP_K (1-20): 增大可召回更多记忆\n"
+                "- env:MEMORY_SIMILARITY_THRESHOLD (0.5-0.95): 降低可放宽匹配\n"
+            )
+        finally:
+            collector.close()
     except Exception:
         return ""
 
@@ -471,10 +474,10 @@ class ExperimentLoop:
                 action="error", hypothesis=hypothesis, reason=f"语法验证失败: {syntax_err}"
             )
 
-        backup_path = self._backups_dir / f"backup_{target_path.name}_{int(time.time())}"
-        backup_path.write_text(original_full, encoding="utf-8")
+        backup_path = self._backups_dir / f"backup_{target_path.name}_{int(time.time() * 1e6)}"
 
         try:
+            backup_path.write_text(original_full, encoding="utf-8")
             target_path.write_text(new_content, encoding="utf-8")
 
             report = await engine.run_suite(self._agent)
@@ -567,20 +570,41 @@ class ExperimentLoop:
             )
 
         value_str = str(int(num_val)) if num_val == int(num_val) else str(num_val)
-        # 保存当前值作回滚参考 (从 settings 读取, 精确可靠)
-        orig_env_val = str(getattr(settings, param.lower(), EVOLVABLE_ENV_PARAMS[param][0]))
 
         from .env_tuner import EnvTuner
 
         tuner = EnvTuner(settings.project_root / ".env")
         tuner.cleanup_backups()
-        backup, ok = tuner.apply(param, value_str)
+
+        actual_env_val = tuner.read(param)
+        orig_env_val = actual_env_val if actual_env_val is not None else str(
+            getattr(settings, param.lower(), EVOLVABLE_ENV_PARAMS[param][0])
+        )
+        try:
+            backup, ok = tuner.apply(param, value_str)
+        except Exception as apply_err:
+            return ExperimentResult(
+                action="error", hypothesis=hypothesis, reason=f".env 写入失败: {apply_err}"
+            )
         if not ok:
             return ExperimentResult(action="error", hypothesis=hypothesis, reason=".env 写入失败")
 
         if not needs_restart:
             changed = settings.reload()
             logger.info("[EnvTuner] 热重载: %s (changed=%s)", param, changed)
+        else:
+            logger.info(
+                "[EnvTuner] env:%s=%s 需要重启才能生效, 跳过 benchmark", param, num_val
+            )
+            from openakita import config
+            config._restart_requested = True
+            return ExperimentResult(
+                action="pending_restart",
+                hypothesis=hypothesis,
+                baseline_metrics=baseline_metrics,
+                reason=f"env:{param}={num_val} 已写入, 需重启后 benchmark 验证",
+                original_content=orig_env_val,
+            )
 
         try:
             report = await engine.run_suite(self._agent)
@@ -602,10 +626,6 @@ class ExperimentLoop:
                 anchor_metrics=anchor_metrics,
             ):
                 logger.info("[EnvTuner] ✓ 保留 env:%s=%s", param, num_val)
-                if needs_restart:
-                    from openakita import config
-                    config._restart_requested = True
-                    logger.info("[EnvTuner] 已请求重启以应用 env:%s", param)
                 return ExperimentResult(
                     action="keep",
                     hypothesis=hypothesis,
@@ -613,12 +633,11 @@ class ExperimentLoop:
                     new_metrics=new_metrics,
                     delta={k: new_metrics[k] - baseline_metrics[k] for k in baseline_metrics},
                     quality_score=quality_score,
-                    original_content=orig_env_val,  # settings 读取的精确值, 用于回归回滚
+                    original_content=orig_env_val,
                 )
             else:
                 tuner.rollback(backup)
-                if not needs_restart:
-                    settings.reload()
+                settings.reload()
                 logger.info("[EnvTuner] ✗ 回滚 env:%s", param)
                 return ExperimentResult(
                     action="discard",
@@ -626,24 +645,24 @@ class ExperimentLoop:
                     baseline_metrics=baseline_metrics,
                     new_metrics=new_metrics,
                     delta={k: new_metrics[k] - baseline_metrics[k] for k in baseline_metrics},
-                    reason=f"指标未改善{' (需重启生效)' if needs_restart else ''}",
+                    reason="指标未改善",
                     quality_score=quality_score,
                 )
         except asyncio.CancelledError:
             tuner.rollback(backup)
-            if not needs_restart:
-                settings.reload()
+            settings.reload()
             raise
         except Exception as e:
             tuner.rollback(backup)
-            if not needs_restart:
-                settings.reload()
+            settings.reload()
             return ExperimentResult(action="error", hypothesis=hypothesis, reason=str(e))
 
     @staticmethod
     def _fuzzy_match_and_replace(
         original_full: str, fragment: str, replacement: str
     ) -> tuple[str | None, str]:
+        if not fragment:
+            return None, "原始片段为空"
         if fragment in original_full:
             if fragment.endswith("\n") and not replacement.endswith("\n"):
                 replacement += "\n"
@@ -752,10 +771,8 @@ class ExperimentLoop:
             if sr_new < anchor_sr - _MAX_REGRESSION_TOLERANCE:
                 return False
 
-        # 成功率天花板容错: 已接近满分时允许小幅波动
-        # 避免因 100% 基线导致任何实验都无法被判定为"改善"
         if sr_old >= 0.95:
-            if sr_new < 0.85:
+            if sr_new < sr_old - 0.05:
                 return False
         elif sr_new < sr_old:
             return False
@@ -846,9 +863,10 @@ class ExperimentLoop:
                     return float(w)
         except Exception:
             pass
-        # 热启动: 初次运行时从合理值开始 (0.13 而非 0.10)
         warm = self._get_config("quality_weight_in_improvement", 0.10)
-        return max(warm, 0.13) if warm <= 0.10 else warm
+        initial = max(warm, 0.13) if warm <= 0.10 else warm
+        self._save_quality_weight(initial)
+        return initial
 
     def _save_quality_weight(self, weight: float) -> None:
         try:

@@ -108,6 +108,10 @@ class AutoEvolver:
             stale = [k for k, v in list(self._recently_processed.items()) if now - v > _DEDUP_TTL_S]
             for k in stale:
                 del self._recently_processed[k]
+            if len(self._recently_processed) > 500:
+                oldest = sorted(self._recently_processed, key=self._recently_processed.get)
+                for k in oldest[:100]:
+                    del self._recently_processed[k]
 
     def _skill_exists(self, name: str) -> bool:
         if not self._skill_registry:
