@@ -47,6 +47,7 @@ _DEFAULT_LLM_TIMEOUT = 600
 _BACKUP_MAX_AGE_DAYS = 7
 _FUZZY_MATCH_THRESHOLD = 0.85
 _MAX_REGRESSION_TOLERANCE = 0.10  # 成功率相对原始基线允许的最大退化
+_REGRESSION_GUARD_RATIO = 0.80  # 全局回归围栏: 允许相对锚点降低 20%
 
 
 @dataclass
@@ -281,12 +282,12 @@ class ExperimentLoop:
                     final_report = await engine.run_suite(self._agent)
                     current_sr = final_report.metrics.success_rate
                     anchor_sr = self._load_original_baseline_sr()
-                    tolerance = self._get_config("max_regression_tolerance", _MAX_REGRESSION_TOLERANCE)
+                    floor = anchor_sr * _REGRESSION_GUARD_RATIO if anchor_sr else None
 
-                    if anchor_sr is not None and current_sr < anchor_sr - tolerance:
+                    if floor is not None and current_sr < floor:
                         logger.warning(
-                            "[ExperimentLoop] 全局回归检测: current=%.3f < anchor=%.3f - %.2f, 回滚本轮实验",
-                            current_sr, anchor_sr, tolerance,
+                            "[ExperimentLoop] 全局回归检测: current=%.3f < floor=%.3f (anchor=%.3f×%.0f%%), 回滚本轮实验",
+                            current_sr, floor, anchor_sr, _REGRESSION_GUARD_RATIO * 100,
                         )
                         # 跟踪每个目标只回滚一次 (取首个 kept 实验的原始内容)
                         rolled_back: set[str] = set()

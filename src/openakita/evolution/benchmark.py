@@ -593,15 +593,24 @@ class BenchmarkEngine:
 
     def save_as_baseline(self, report: BenchmarkReport) -> None:
         path = self._data_dir / "baseline.json"
-        path.write_text(
-            json.dumps(report.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        # 保存原始基线 (仅首次)
+        report_json = json.dumps(report.to_dict(), ensure_ascii=False, indent=2)
+        path.write_text(report_json, encoding="utf-8")
         orig = self._data_dir / "original_baseline.json"
         if not orig.exists():
-            orig.write_text(
-                json.dumps(report.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
-            )
+            orig.write_text(report_json, encoding="utf-8")
+        else:
+            try:
+                old_data = json.loads(orig.read_text(encoding="utf-8"))
+                old_sr = old_data.get("metrics", {}).get("success_rate", 0)
+                new_sr = report.metrics.success_rate
+                if new_sr > old_sr + 0.15:
+                    orig.write_text(report_json, encoding="utf-8")
+                    logger.info(
+                        "[Benchmark] 锚点基线更新: %.0f%% → %.0f%%",
+                        old_sr * 100, new_sr * 100,
+                    )
+            except Exception:
+                pass
 
     @staticmethod
     async def _warmup(agent: Any) -> None:
