@@ -480,48 +480,61 @@ class LLMClient:
     async def startup_health_check(self) -> dict[str, str]:
         """启动时对所有端点做轻量健康检查。
 
-        对每个端点发送极小请求（1 token），检测认证和网络问题。
+        对每个端点发送极小请求（5 token），检测认证和网络问题。
         认证失败的端点立即加入 _auth_failed_endpoints。
+        内容为空时自动重试一次（模型可能仍在加载中）。
 
         Returns:
             {endpoint_name: "ok" | "auth_failed" | "error: ..."}
         """
         results: dict[str, str] = {}
         for name, provider in self._providers.items():
-            try:
-                request = LLMRequest(
-                    messages=[Message(role="user", content="hi")],
-                    system="Respond with 'ok'",
-                    max_tokens=1,
-                )
-                response = await asyncio.wait_for(provider.chat(request), timeout=15.0)
-                has_visible = bool(response.content and response.content.strip())
-                has_reasoning = bool(
-                    getattr(response, "reasoning_content", None)
-                    and getattr(response, "reasoning_content", "").strip()
-                )
-                if response.usage.output_tokens > 0 and not has_visible and not has_reasoning:
-                    raise RuntimeError(
-                        "endpoint returned output tokens but no visible content"
+            for _attempt in range(2):
+                try:
+                    request = LLMRequest(
+                        messages=[Message(role="user", content="hi")],
+                        system="Respond with 'ok'",
+                        max_tokens=5,
                     )
-                results[name] = "ok"
-                logger.info(f"[HealthCheck] endpoint={name} status=ok")
-            except AuthenticationError as e:
-                LLMClient._auth_failed_endpoints.add(name)
-                if name not in LLMClient._auth_logged_endpoints:
-                    LLMClient._auth_logged_endpoints.add(name)
-                    logger.error(
-                        f"[HealthCheck] endpoint={name} auth_failed: {e}. "
-                        f"Permanently disabled until config reload."
+                    response = await asyncio.wait_for(provider.chat(request), timeout=15.0)
+                    has_visible = bool(response.content and response.content.strip())
+                    has_reasoning = bool(
+                        getattr(response, "reasoning_content", None)
+                        and getattr(response, "reasoning_content", "").strip()
                     )
-                results[name] = "auth_failed"
-            except TimeoutError:
-                results[name] = "error: timeout (15s)"
-                logger.warning(f"[HealthCheck] endpoint={name} timed out (15s)")
-            except Exception as e:
-                err_msg = str(e)[:200]
-                results[name] = f"error: {err_msg}"
-                logger.warning(f"[HealthCheck] endpoint={name} failed: {err_msg}")
+                    if response.usage.output_tokens > 0 and not has_visible and not has_reasoning:
+                        if _attempt == 0:
+                            logger.info(
+                                "[HealthCheck] endpoint=%s content empty (model loading?), retry in 3s...",
+                                name,
+                            )
+                            await asyncio.sleep(3)
+                            continue
+                        raise RuntimeError(
+                            "endpoint returned output tokens but no visible content"
+                        )
+                    results[name] = "ok"
+                    logger.info(f"[HealthCheck] endpoint={name} status=ok")
+                    break
+                except AuthenticationError as e:
+                    LLMClient._auth_failed_endpoints.add(name)
+                    if name not in LLMClient._auth_logged_endpoints:
+                        LLMClient._auth_logged_endpoints.add(name)
+                        logger.error(
+                            f"[HealthCheck] endpoint={name} auth_failed: {e}. "
+                            f"Permanently disabled until config reload."
+                        )
+                    results[name] = "auth_failed"
+                    break
+                except TimeoutError:
+                    results[name] = "error: timeout (15s)"
+                    logger.warning(f"[HealthCheck] endpoint={name} timed out (15s)")
+                    break
+                except Exception as e:
+                    err_msg = str(e)[:200]
+                    results[name] = f"error: {err_msg}"
+                    logger.warning(f"[HealthCheck] endpoint={name} failed: {err_msg}")
+                    break
         return results
 
     def _create_provider(self, config: EndpointConfig) -> LLMProvider | None:
