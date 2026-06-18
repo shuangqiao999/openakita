@@ -21,6 +21,22 @@ from .task import ScheduledTask
 
 logger = logging.getLogger(__name__)
 
+_benchmark_sem: asyncio.Semaphore | None = None
+_benchmark_sem_value: int = 0
+
+
+def _get_benchmark_sem() -> asyncio.Semaphore:
+    global _benchmark_sem, _benchmark_sem_value  # noqa: PLW0603
+    try:
+        from ..config import settings
+        val = max(1, settings.benchmark_max_concurrent)
+    except Exception:
+        val = 1
+    if _benchmark_sem is None or _benchmark_sem_value != val:
+        _benchmark_sem = asyncio.Semaphore(val)
+        _benchmark_sem_value = val
+    return _benchmark_sem
+
 
 class TaskExecutor:
     """
@@ -1448,6 +1464,10 @@ class TaskExecutor:
         """Benchmark 驱动的实验循环: 评测 + 假设 + 修改 + 验证 + 保留/回滚"""
         if not self.agent:
             return False, "Agent not available for benchmark"
+        async with _get_benchmark_sem():
+            return await self._system_benchmark_evolve_inner()
+
+    async def _system_benchmark_evolve_inner(self) -> tuple[bool, str]:
         try:
             from ..evolution.benchmark import BenchmarkEngine
             from ..evolution.experiment_loop import ExperimentLoop
@@ -1629,6 +1649,10 @@ class TaskExecutor:
         """Multi-Agent 研究周期: 分析→提案→审计→验证→采纳"""
         if not self.agent:
             return False, "Agent not available for research org"
+        async with _get_benchmark_sem():
+            return await self._system_research_org_inner()
+
+    async def _system_research_org_inner(self) -> tuple[bool, str]:
         try:
             from ..evolution.research_org import ResearchOrg
 
