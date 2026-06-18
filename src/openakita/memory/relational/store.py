@@ -208,10 +208,6 @@ class RelationalMemoryStore:
     # CJK-aware FTS5 tokenization
     # ------------------------------------------------------------------
 
-    _CJK_RANGE_RE = re.compile(
-        r"([\u4e00-\u9fff\u3400-\u4dbf\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]+)"
-    )
-
     @staticmethod
     def _tokenize_for_fts(text: str) -> str:
         """Pre-tokenize text for FTS5 indexing.

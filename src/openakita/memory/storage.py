@@ -1326,7 +1326,7 @@ class MemoryStorage:
         # Fallback: LIKE search for CJK text that FTS5 unicode61 can't tokenize
         try:
             from openakita.core.tokenizer import segment_text as _seg
-            keywords = _seg(query.strip()).split()
+            keywords = _seg(query.strip()).split()[:5]
             if not keywords:
                 return []
             like_conditions = " OR ".join(["content LIKE ?"] * len(keywords))

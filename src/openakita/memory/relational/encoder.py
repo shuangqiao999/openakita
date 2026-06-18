@@ -278,7 +278,11 @@ class MemoryEncoder:
         words_a = tokenize_words(a)
         words_b = tokenize_words(b)
         word_overlap = len(words_a & words_b)
-        return word_overlap >= 2
+        if word_overlap >= 2:
+            return True
+        if word_overlap >= 1 and (len(words_a) <= 3 or len(words_b) <= 3):
+            return True
+        return False
 
     @staticmethod
     def _find_best_matching_node(source: MemoryNode, candidates: list[MemoryNode]) -> MemoryNode:

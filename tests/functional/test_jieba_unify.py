@@ -237,7 +237,7 @@ def test_context_manager_entities():
     src = (
         _project_root / "src" / "openakita" / "core" / "context_manager.py"
     ).read_text(encoding="utf-8")
-    check("使用 tokenize_words", "tokenize_words" in src)
+    check("使用 segment_text 分词", "segment_text" in src)
 
 
 def test_tool_search_tokenize():

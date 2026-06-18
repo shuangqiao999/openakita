@@ -42,10 +42,6 @@ logger = logging.getLogger(__name__)
 # Module-level helpers (shared by LifecycleManager methods)
 # ---------------------------------------------------------------------------
 
-_jieba_mod: object | None = None
-_jieba_loaded = False
-
-
 def _tokenize_for_dedup(text: str) -> set[str]:
     """Tokenize *text* for word-overlap comparison.
 

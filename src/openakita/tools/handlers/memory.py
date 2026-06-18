@@ -25,6 +25,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_OVERLAP_STOP_WORDS = frozenset({"取消", "不要", "不再", "改用", "改成", "规则", "偏好"})
+
 
 class MemoryHandler:
     """
@@ -300,8 +302,7 @@ class MemoryHandler:
     @staticmethod
     def _has_meaningful_overlap(left: str, right: str) -> bool:
         from openakita.core.tokenizer import tokenize_words
-        _STOP = {"取消", "不要", "不再", "改用", "改成", "规则", "偏好"}
-        terms_left = tokenize_words(left or "") - _STOP
+        terms_left = tokenize_words(left or "") - _OVERLAP_STOP_WORDS
         terms_right = tokenize_words(right or "")
         if terms_left and terms_left & terms_right:
             return True

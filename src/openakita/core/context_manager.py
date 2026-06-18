@@ -1913,8 +1913,6 @@ class ContextManager:
         """
         import re
 
-        from openakita.core.tokenizer import tokenize_words
-
         lines: list[str] = []
         date_num_pattern = re.compile(
             r"[A-Z][a-z]+"
@@ -1934,7 +1932,17 @@ class ContextManager:
                 if 2 < len(t) < 50:
                     tool_names.add(t)
             snippet = content[:500]
-            entities = list(tokenize_words(snippet))[:8]
+            from openakita.core.tokenizer import segment_text
+            seg_tokens = segment_text(snippet).split()
+            seen_ent: set[str] = set()
+            entities: list[str] = []
+            for t in seg_tokens:
+                tl = t.lower()
+                if len(t) >= 2 and tl not in seen_ent:
+                    seen_ent.add(tl)
+                    entities.append(t)
+                if len(entities) >= 8:
+                    break
             entities.extend(date_num_pattern.findall(snippet))
             entity_str = "、".join(dict.fromkeys(entities).keys())[:60] if entities else ""
             if prefix == "用户" and entity_str:

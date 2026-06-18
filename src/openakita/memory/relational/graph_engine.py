@@ -163,14 +163,14 @@ class GraphEngine:
             "about", "with", "from", "that", "this", "have", "has",
             "什么时候", "有没有", "能不能", "是不是", "为什么", "怎么样",
             "什么", "怎么", "哪里", "关于", "所有", "如何",
+            "可以", "需要", "已经", "时候", "因为", "所以", "虽然", "但是",
+            "应该", "可能", "这个", "那个", "就是", "还是", "不是",
         }
-        cjk_particles = {"的", "了", "在", "是", "和", "与", "把", "被",
-                         "让", "给", "对", "从", "向", "往", "到", "过", "着"}
         all_tokens = tokenize_words(query)
         keywords: list[str] = []
         seen_kw: set[str] = set()
         for w in all_tokens:
-            if w in stop_words or w in cjk_particles:
+            if w in stop_words:
                 continue
             if w not in seen_kw and len(w) >= 2:
                 keywords.append(w)

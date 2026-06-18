@@ -62,9 +62,6 @@ class SearchBackend(Protocol):
 # FTS5 Backend (default)
 # =========================================================================
 
-_jieba_cutter = None
-_jieba_checked = False
-
 
 def segment_text(text: str) -> str:
     """jieba 中文分词，空格连接。未安装 jieba 则返回原文。

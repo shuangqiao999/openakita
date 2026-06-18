@@ -544,7 +544,6 @@ class RetrievalEngine:
         if not terms:
             from openakita.core.tokenizer import tokenize_words
             for token in tokenize_words(raw_query):
-                token = token.strip()
                 if _is_valid(token):
                     terms.append(token)
             terms = terms[:4]
@@ -771,7 +770,7 @@ class RetrievalEngine:
 
         from openakita.core.tokenizer import tokenize_words
         for token in tokenize_words(query):
-            if token and token.lower() not in _STOP and len(token) >= 2:
+            if token and token not in _STOP and len(token) >= 2:
                 keywords.append(token)
 
         seen: set[str] = set()
