@@ -500,6 +500,7 @@ class ExperimentLoop:
                 anchor_metrics=anchor_metrics,
             ):
                 logger.info("[ExperimentLoop] ✓ 保留改进: %s", hypothesis.description)
+                engine.save_as_baseline(report)
                 return ExperimentResult(
                     action="keep",
                     hypothesis=hypothesis,
@@ -626,6 +627,7 @@ class ExperimentLoop:
                 anchor_metrics=anchor_metrics,
             ):
                 logger.info("[EnvTuner] ✓ 保留 env:%s=%s", param, num_val)
+                engine.save_as_baseline(report)
                 return ExperimentResult(
                     action="keep",
                     hypothesis=hypothesis,

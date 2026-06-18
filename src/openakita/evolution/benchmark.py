@@ -131,7 +131,7 @@ _DEFAULT_BENCHMARK_TASKS: list[dict[str, Any]] = [
         "id": "code-fibonacci",
         "description": "编写 Python 函数计算第 N 个斐波那契数(迭代法)，写入文件并运行验证 fib(10)=55",
         "category": "coding",
-        "expected_outcome": "函数正确实现，fib(10) 输出 55",
+        "expected_outcome": "函数正确实现，输出结果为 '55'",
         "timeout_seconds": 60,
         "difficulty": "easy",
     },
@@ -142,7 +142,7 @@ _DEFAULT_BENCHMARK_TASKS: list[dict[str, Any]] = [
             "当 lst 为空时会除零。修复它并写测试验证"
         ),
         "category": "coding",
-        "expected_outcome": "函数处理空列表不报错，测试通过",
+        "expected_outcome": "正确处理'空列表'场景，'测试'验证通过",
         "timeout_seconds": 60,
         "difficulty": "medium",
     },
@@ -181,7 +181,7 @@ _DEFAULT_BENCHMARK_TASKS: list[dict[str, Any]] = [
             "改为列表推导式"
         ),
         "category": "coding",
-        "expected_outcome": "使用列表推导式",
+        "expected_outcome": "使用'列表推导式'重构代码",
         "timeout_seconds": 45,
         "difficulty": "easy",
     },

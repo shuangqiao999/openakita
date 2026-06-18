@@ -447,6 +447,7 @@ class ResearchOrg:
                 quality_weight=qw, quality_delta=qd,
             ):
                 logger.info("[ResearchOrg] ✓ Prompt 变更已采纳")
+                engine.save_as_baseline(report)
                 return True, new_metrics
 
             target.write_text(full, encoding="utf-8")
