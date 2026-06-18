@@ -1485,7 +1485,7 @@ class TaskExecutor:
             kept = [r for r in results if r.action == "keep"]
             summary += f" | 实验: {len(results)}次, 保留{len(kept)}项改进"
 
-            if not report.baseline_delta or kept:
+            if not report.baseline_delta and not kept:
                 engine.save_as_baseline(report)
 
             # 运行时指标采集
