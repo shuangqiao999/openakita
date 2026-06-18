@@ -1913,6 +1913,8 @@ class ContextManager:
         """
         import re
 
+        from openakita.core.tokenizer import segment_text
+
         lines: list[str] = []
         date_num_pattern = re.compile(
             r"[A-Z][a-z]+"
@@ -1932,7 +1934,6 @@ class ContextManager:
                 if 2 < len(t) < 50:
                     tool_names.add(t)
             snippet = content[:500]
-            from openakita.core.tokenizer import segment_text
             seg_tokens = segment_text(snippet).split()
             seen_ent: set[str] = set()
             entities: list[str] = []

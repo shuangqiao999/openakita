@@ -34,17 +34,17 @@ def _ensure_jieba() -> Any:
 def tokenize_words(text: str) -> set[str]:
     """将文本分词为词集合 (用于去重/匹配/Jaccard/关键词提取)。
 
-    使用 jieba cut_for_search 分词，回退到英文单词 + CJK 单字提取。
+    使用 jieba cut_for_search 分词，回退到英文单词 + CJK 双字提取。
     过滤长度 < 2 的 token。
     """
     if not text or not text.strip():
         return set()
     lowered = text.lower()
-    jieba = _ensure_jieba()
-    if jieba is not None:
-        return {w for w in jieba.cut_for_search(lowered) if len(w) >= 2}
+    _jb = _ensure_jieba()
+    if _jb is not None:
+        return {w for w in _jb.cut_for_search(lowered) if len(w) >= 2}
     en = set(re.findall(r"[a-zA-Z]\w+", lowered))
-    cjk = set(re.findall(r"[\u4e00-\u9fff]", lowered))
+    cjk = set(re.findall(r"[\u4e00-\u9fff]{2,}", lowered))
     return en | cjk
 
 
@@ -55,9 +55,9 @@ def segment_text(text: str) -> str:
     """
     if not text:
         return ""
-    jieba = _ensure_jieba()
-    if jieba is not None:
-        return " ".join(jieba.cut_for_search(text))
+    _jb = _ensure_jieba()
+    if _jb is not None:
+        return " ".join(_jb.cut_for_search(text))
     return text
 
 
