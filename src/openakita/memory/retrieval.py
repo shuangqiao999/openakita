@@ -341,7 +341,10 @@ class RetrievalEngine:
         query: str = "",
     ) -> list[RetrievalCandidate]:
         now = datetime.now()
-        query_tokens = set(query.lower().split()) if query else set()
+        query_tokens = set()
+        if query:
+            from openakita.core.tokenizer import tokenize_words
+            query_tokens = tokenize_words(query)
         candidates = []
         seen: set[str] = set()
         for scope, scope_owner, user_id, workspace_id in self._scope_pairs:
@@ -539,7 +542,8 @@ class RetrievalEngine:
                     terms.append(kw_clean)
 
         if not terms:
-            for token in re.split(r"[\s,，。、!！?？:：;；\"'()（）【】]+", raw_query):
+            from openakita.core.tokenizer import tokenize_words
+            for token in tokenize_words(raw_query):
                 token = token.strip()
                 if _is_valid(token):
                     terms.append(token)
@@ -765,8 +769,8 @@ class RetrievalEngine:
         ):
             keywords.append(m.group(0))
 
-        for token in re.split(r"[\s,，。、!！?？:：;；\"'()（）【】]+", query):
-            token = token.strip()
+        from openakita.core.tokenizer import tokenize_words
+        for token in tokenize_words(query):
             if token and token.lower() not in _STOP and len(token) >= 2:
                 keywords.append(token)
 
@@ -813,8 +817,8 @@ class RetrievalEngine:
             entities.append(m.group(0))
         for m in re.finditer(r"[\w-]+\.(?:py|js|ts|md|json|yaml|toml)\b", query):
             entities.append(m.group(0))
-        words = [w for w in query.split() if len(w) > 2]
-        entities.extend(words[:5])
+        from openakita.core.tokenizer import extract_keywords
+        entities.extend(extract_keywords(query, top_k=5))
         return entities
 
     # ==================================================================

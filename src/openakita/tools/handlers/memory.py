@@ -299,28 +299,13 @@ class MemoryHandler:
 
     @staticmethod
     def _has_meaningful_overlap(left: str, right: str) -> bool:
-        terms_left = {
-            t.lower()
-            for t in re.findall(r"[A-Za-z0-9_\-\u4e00-\u9fff]{2,}", left or "")
-            if t not in {"取消", "不要", "不再", "改用", "改成", "规则", "偏好"}
-        }
-        terms_right = {
-            t.lower()
-            for t in re.findall(r"[A-Za-z0-9_\-\u4e00-\u9fff]{2,}", right or "")
-        }
-        if terms_left and terms_left.intersection(terms_right):
+        from openakita.core.tokenizer import tokenize_words
+        _STOP = {"取消", "不要", "不再", "改用", "改成", "规则", "偏好"}
+        terms_left = tokenize_words(left or "") - _STOP
+        terms_right = tokenize_words(right or "")
+        if terms_left and terms_left & terms_right:
             return True
-
-        def cjk_bigrams(text: str) -> set[str]:
-            chars = "".join(re.findall(r"[\u4e00-\u9fff]", text or ""))
-            return {chars[i : i + 2] for i in range(max(0, len(chars) - 1))}
-
-        left_bigrams = cjk_bigrams(left)
-        right_bigrams = cjk_bigrams(right)
-        if not left_bigrams or not right_bigrams:
-            return False
-        overlap = len(left_bigrams & right_bigrams) / len(left_bigrams | right_bigrams)
-        return overlap >= 0.12
+        return False
 
     # Persistent marker file path: once created, the navigation guide will
     # never be shown again — for any session, any agent re-creation, any

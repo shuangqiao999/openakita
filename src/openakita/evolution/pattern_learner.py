@@ -299,8 +299,9 @@ class PatternLearner:
 
     @staticmethod
     def _jaccard_similarity(a: str, b: str) -> float:
-        words_a = set(a.lower().split())
-        words_b = set(b.lower().split())
+        from openakita.core.tokenizer import tokenize_words
+        words_a = tokenize_words(a)
+        words_b = tokenize_words(b)
         if not words_a or not words_b:
             return 0.0
         return len(words_a & words_b) / len(words_a | words_b)

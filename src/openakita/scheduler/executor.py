@@ -1533,9 +1533,10 @@ class TaskExecutor:
                         )
                         # SimHash 去重: 跳过已存在的 draft
                         import hashlib
-                        import re
+
+                        from openakita.core.tokenizer import segment_text as _seg_text
                         def _sh(desc):
-                            words = sorted(set(re.findall(r"\b\w+\b", str(desc).lower())))
+                            words = sorted(set(_seg_text(str(desc).lower()).split()))
                             return hashlib.md5(" ".join(words).encode()).hexdigest()
                         existing_hashes = {_sh(e.get("description","")) for e in existing}
                         existing_ids = {e.get("id", "") for e in existing}

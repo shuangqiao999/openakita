@@ -8,7 +8,6 @@ ToolSearch 工具处理器
 
 import json
 import logging
-import re
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -22,18 +21,10 @@ MAX_RESULTS = 5
 def _tokenize(text: str) -> set[str]:
     """Split text into lowercase tokens for matching.
 
-    Supports both Latin (a-z0-9_) and CJK characters.
-    CJK characters are treated as individual tokens (bigrams for short queries).
+    Supports both Latin and CJK via jieba segmentation.
     """
-    latin = set(re.findall(r"[a-z0-9_]+", text.lower()))
-    # Extract CJK characters as individual tokens
-    cjk = set(re.findall(r"[\u4e00-\u9fff\u3400-\u4dbf]+", text))
-    # Split CJK runs into individual characters for matching
-    cjk_chars = set()
-    for run in cjk:
-        for ch in run:
-            cjk_chars.add(ch)
-    return latin | cjk_chars
+    from openakita.core.tokenizer import tokenize_words
+    return tokenize_words(text)
 
 
 def _score_tool(query_tokens: set[str], hint: str) -> float:

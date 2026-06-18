@@ -156,67 +156,23 @@ class GraphEngine:
         if not cues["active_dimensions"]:
             cues["active_dimensions"] = [Dimension.ENTITY, Dimension.TEMPORAL]
 
-        # Extract potential entity names (CJK chunks and English words > 3 chars)
-        words = re.findall(r"[\u4e00-\u9fff]+|[a-zA-Z_]{3,}", query)
+        # Extract potential entity names via jieba segmentation
+        from openakita.core.tokenizer import tokenize_words
         stop_words = {
-            "what",
-            "when",
-            "where",
-            "why",
-            "how",
-            "the",
-            "and",
-            "for",
-            "about",
-            "with",
-            "from",
-            "that",
-            "this",
-            "have",
-            "has",
+            "what", "when", "where", "why", "how", "the", "and", "for",
+            "about", "with", "from", "that", "this", "have", "has",
+            "什么时候", "有没有", "能不能", "是不是", "为什么", "怎么样",
+            "什么", "怎么", "哪里", "关于", "所有", "如何",
         }
-        cjk_stop_prefixes = [
-            "什么时候",
-            "有没有",
-            "能不能",
-            "是不是",
-            "为什么",
-            "怎么样",
-            "什么",
-            "怎么",
-            "哪里",
-            "关于",
-            "所有",
-            "如何",
-        ]
-        cjk_particles = set("的了在是和与把被让给对从向往到过着")
+        cjk_particles = {"的", "了", "在", "是", "和", "与", "把", "被",
+                         "让", "给", "对", "从", "向", "往", "到", "过", "着"}
+        all_tokens = tokenize_words(query)
         keywords: list[str] = []
         seen_kw: set[str] = set()
-        for w in words:
-            if w.lower() in stop_words:
+        for w in all_tokens:
+            if w in stop_words or w in cjk_particles:
                 continue
-            # CJK: strip known stop-word prefixes, then generate bigrams from tail only
-            prefix_stripped = False
-            for sp in cjk_stop_prefixes:
-                if w.startswith(sp) and len(w) > len(sp) + 1:
-                    tail = w[len(sp) :]
-                    if tail not in seen_kw and len(tail) >= 2:
-                        keywords.append(tail)
-                        seen_kw.add(tail)
-                    prefix_stripped = True
-                    w = tail
-                    break
-            if prefix_stripped and len(w) < 4:
-                continue
-            # CJK long chunks: generate meaningful bigrams (skip particles)
-            if len(w) >= 4 and ord(w[0]) >= 0x4E00:
-                for i in range(len(w) - 1):
-                    bigram = w[i : i + 2]
-                    if bigram[0] not in cjk_particles and bigram[1] not in cjk_particles:
-                        if bigram not in seen_kw:
-                            keywords.append(bigram)
-                            seen_kw.add(bigram)
-            elif w not in seen_kw and len(w) >= 2:
+            if w not in seen_kw and len(w) >= 2:
                 keywords.append(w)
                 seen_kw.add(w)
 

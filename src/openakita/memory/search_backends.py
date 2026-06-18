@@ -72,21 +72,8 @@ def segment_text(text: str) -> str:
     共享函数：FTS5Backend 查询端 和 MemoryStorage 索引端 共用，
     保证查询词与索引词同一切分策略。
     """
-    global _jieba_cutter, _jieba_checked
-    if not text:
-        return ""
-    if not _jieba_checked:
-        try:
-            import jieba
-
-            jieba.setLogLevel(logging.WARNING)
-            _jieba_cutter = jieba
-        except ImportError:
-            pass
-        _jieba_checked = True
-    if _jieba_cutter is not None:
-        return " ".join(_jieba_cutter.cut_for_search(text))
-    return text
+    from openakita.core.tokenizer import segment_text as _seg
+    return _seg(text)
 
 
 class FTS5Backend:

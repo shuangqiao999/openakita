@@ -73,14 +73,8 @@ _load_embed_settings()
 
 def _segment_text(text: str) -> str:
     """jieba 中文分词，空格连接。用于 FTS5 索引和搜索。"""
-    try:
-        import logging as _logging
-
-        import jieba
-        jieba.setLogLevel(_logging.WARNING)
-        return " ".join(jieba.cut_for_search(text))
-    except Exception:
-        return text
+    from openakita.core.tokenizer import segment_text
+    return segment_text(text)
 
 
 class EmbeddingFailedError(RuntimeError):

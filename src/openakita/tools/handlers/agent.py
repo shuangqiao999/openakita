@@ -569,16 +569,9 @@ class AgentToolHandler:
 
     @staticmethod
     def _tokenize(text: str) -> set[str]:
-        """Tokenizer that handles both English words and Chinese characters/bigrams."""
-        tokens: set[str] = set()
-        for word in text.lower().split():
-            if word:
-                tokens.add(word)
-        cjk = [c for c in text if "\u4e00" <= c <= "\u9fff"]
-        tokens.update(cjk)
-        for i in range(len(cjk) - 1):
-            tokens.add(cjk[i] + cjk[i + 1])
-        return tokens
+        """Tokenizer that handles both English words and Chinese via jieba."""
+        from openakita.core.tokenizer import tokenize_words
+        return tokenize_words(text)
 
     @classmethod
     def _find_similar_profile(

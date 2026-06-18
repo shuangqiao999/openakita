@@ -2551,9 +2551,9 @@ def _build_pinned_rules_section(
 
 
 def _rule_terms(text: str) -> set[str]:
-    import re
+    from openakita.core.tokenizer import tokenize_words
 
-    return {t.lower() for t in re.findall(r"[A-Za-z0-9_\-\u4e00-\u9fff]{2,}", text or "")}
+    return tokenize_words(text or "")
 
 
 def _should_inject_rule(rule: object, query_terms: set[str]) -> tuple[bool, str]:

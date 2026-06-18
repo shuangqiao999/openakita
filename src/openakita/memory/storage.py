@@ -1325,7 +1325,8 @@ class MemoryStorage:
 
         # Fallback: LIKE search for CJK text that FTS5 unicode61 can't tokenize
         try:
-            keywords = query.strip().split()
+            from openakita.core.tokenizer import segment_text as _seg
+            keywords = _seg(query.strip()).split()
             if not keywords:
                 return []
             like_conditions = " OR ".join(["content LIKE ?"] * len(keywords))
@@ -1365,7 +1366,8 @@ class MemoryStorage:
         """Make user input safe for FTS5 MATCH."""
         special = set('"*(){}[]^~:')
         cleaned = "".join(c if c not in special else " " for c in query)
-        tokens = cleaned.split()
+        from openakita.core.tokenizer import segment_text
+        tokens = segment_text(cleaned).split()
         if not tokens:
             return ""
         quoted = [f'"{t}"' for t in tokens]

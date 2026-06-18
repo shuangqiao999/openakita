@@ -216,40 +216,13 @@ class RelationalMemoryStore:
     def _tokenize_for_fts(text: str) -> str:
         """Pre-tokenize text for FTS5 indexing.
 
-        CJK text is split into overlapping bigrams so that FTS5's unicode61
-        tokenizer can index and match them. Non-CJK text (English etc.) passes
-        through unchanged since unicode61 already handles space-delimited words.
-
-        Examples:
-            "记忆模块"       → "记忆 忆模 模块"
-            "hello world"   → "hello world"
-            "SQLite性能优化" → "SQLite 性能 能优 优化"
+        Uses jieba segmentation for CJK text, falling back to overlapping
+        bigrams if jieba is unavailable.
         """
         if not text:
             return ""
-        result: list[str] = []
-        for seg in RelationalMemoryStore._CJK_RANGE_RE.split(text):
-            if not seg:
-                continue
-            first = ord(seg[0])
-            is_cjk = (
-                0x4E00 <= first <= 0x9FFF
-                or 0x3400 <= first <= 0x4DBF
-                or 0x3040 <= first <= 0x309F
-                or 0x30A0 <= first <= 0x30FF
-                or 0xAC00 <= first <= 0xD7AF
-            )
-            if is_cjk:
-                if len(seg) == 1:
-                    result.append(seg)
-                else:
-                    for i in range(len(seg) - 1):
-                        result.append(seg[i : i + 2])
-            else:
-                stripped = seg.strip()
-                if stripped:
-                    result.append(stripped)
-        return " ".join(result)
+        from openakita.core.tokenizer import segment_text
+        return segment_text(text)
 
     def _sync_fts(self, node_id: str, content: str, action_verb: str) -> None:
         """Sync a single node's entry in the FTS5 index."""

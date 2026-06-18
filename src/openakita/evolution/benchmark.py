@@ -39,26 +39,7 @@ _BENCHMARK_TEMP_PATTERNS = [
     "data/bench_test.py",
 ]
 
-_jieba_mod: Any = None
-_jieba_checked = False
-
-
-def _tokenize(text: str) -> set[str]:
-    global _jieba_mod, _jieba_checked  # noqa: PLW0603
-    if not _jieba_checked:
-        try:
-            import jieba
-            jieba.setLogLevel(logging.WARNING)
-            _jieba_mod = jieba
-        except ImportError:
-            pass
-        _jieba_checked = True
-    lowered = text.lower()
-    if _jieba_mod is not None:
-        return {w for w in _jieba_mod.cut_for_search(lowered) if len(w) >= 2}
-    en = set(re.findall(r"[a-zA-Z]\w+", lowered))
-    cjk = set(re.findall(r"[\u4e00-\u9fff]", lowered))
-    return en | cjk
+from openakita.core.tokenizer import tokenize_words as _tokenize
 
 
 @dataclass

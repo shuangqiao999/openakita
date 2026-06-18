@@ -1555,7 +1555,8 @@ class OrgToolHandler:
                 continue
             score = 0.0
             text = f"{n.role_title} {n.role_goal} {' '.join(n.skills)}".lower()
-            for word in need.split():
+            from openakita.core.tokenizer import tokenize_words
+            for word in tokenize_words(need):
                 if word in text:
                     score += 0.3
             if prefer_dept and n.department.lower() == prefer_dept:

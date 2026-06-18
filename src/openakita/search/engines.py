@@ -631,8 +631,8 @@ def score_search_relevance(
         f"{result.get('source', '')} {result.get('abstract', '')}"
     ).lower()
 
-    words = [w.strip().strip('"\'""''，。！？、；：""''「」') for w in query_lower.split()]
-    words = [w for w in words if len(w) >= 2]
+    from openakita.core.tokenizer import tokenize_words
+    words = [w for w in tokenize_words(query_lower) if len(w) >= 2]
     if not words:
         return 0.3, []
 

@@ -1867,7 +1867,8 @@ class MemoryManager:
         )
 
     def _keyword_search(self, query: str, limit: int = 5) -> list[Memory]:
-        keywords = [kw for kw in query.lower().split() if len(kw) > 2]
+        from openakita.core.tokenizer import tokenize_words
+        keywords = [kw for kw in tokenize_words(query) if len(kw) > 1]
         if not keywords:
             return []
         results = []

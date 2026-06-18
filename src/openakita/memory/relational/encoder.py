@@ -273,36 +273,24 @@ class MemoryEncoder:
 
     @staticmethod
     def _text_similarity(a: str, b: str) -> bool:
-        """Check if two texts are similar enough for causal linking.
-        Handles both space-delimited (English) and non-delimited (Chinese) text.
-        """
-        words_a = set(a.split())
-        words_b = set(b.split())
+        """Check if two texts are similar enough for causal linking."""
+        from openakita.core.tokenizer import tokenize_words
+        words_a = tokenize_words(a)
+        words_b = tokenize_words(b)
         word_overlap = len(words_a & words_b)
-        if word_overlap >= 2:
-            return True
-        chars_a = set(a)
-        chars_b = set(b)
-        char_overlap = len(chars_a & chars_b)
-        min_len = min(len(chars_a), len(chars_b))
-        return min_len >= 3 and char_overlap >= max(3, min_len // 2)
+        return word_overlap >= 2
 
     @staticmethod
     def _find_best_matching_node(source: MemoryNode, candidates: list[MemoryNode]) -> MemoryNode:
-        """Find the candidate node with highest overlap to source.
-        Uses both word-level (English) and character-level (CJK) matching.
-        """
+        """Find the candidate node with highest word overlap to source."""
         if len(candidates) == 1:
             return candidates[0]
-        src = source.content.lower()
-        src_words = set(src.split())
-        src_chars = set(src)
+        from openakita.core.tokenizer import tokenize_words
+        src_tokens = tokenize_words(source.content)
         best, best_score = candidates[0], 0.0
         for c in candidates:
-            ct = c.content.lower()
-            word_overlap = len(src_words & set(ct.split()))
-            char_overlap = len(src_chars & set(ct))
-            score = word_overlap * 2.0 + char_overlap * 0.1
+            c_tokens = tokenize_words(c.content)
+            score = len(src_tokens & c_tokens)
             if score > best_score:
                 best, best_score = c, score
         return best

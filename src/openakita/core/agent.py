@@ -4806,11 +4806,9 @@ class Agent:
         """
         if not message:
             return []
-        import re
+        from openakita.core.tokenizer import extract_keywords
 
-        words = re.findall(r"[\u4e00-\u9fff]{2,}|[a-zA-Z]{3,}", message)
-        words.sort(key=len, reverse=True)
-        return words[:3]
+        return extract_keywords(message, top_k=3)
 
     async def _resolve_pending_confirmation(
         self,

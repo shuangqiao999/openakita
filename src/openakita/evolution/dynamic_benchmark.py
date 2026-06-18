@@ -64,8 +64,9 @@ class DynamicBenchmarkGenerator:
 
     @staticmethod
     def _simhash(text: str) -> str:
-        words = re.findall(r"\b\w+\b", text.lower())
-        return hashlib.md5(" ".join(sorted(set(words))).encode()).hexdigest()
+        from openakita.core.tokenizer import segment_text
+        words = sorted(set(segment_text(text.lower()).split()))
+        return hashlib.md5(" ".join(words).encode()).hexdigest()
 
     def _is_duplicate(self, new_desc: str, existing: list[Any]) -> bool:
         new_hash = self._simhash(new_desc)

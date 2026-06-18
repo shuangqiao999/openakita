@@ -1912,29 +1912,31 @@ class ContextManager:
         生成简短的纯文本摘要。
         """
         import re
+
+        from openakita.core.tokenizer import tokenize_words
+
         lines: list[str] = []
-        entity_pattern = re.compile(
-            r"[" "\u4e00-\u9fff" r"]{2,}"  # 中文词语
-            r"|[A-Z][a-z]+"  # 英文大写开头词
-            r"|\d{4}年|\d+月|\d+日"  # 日期
-            r"|\d+\.\d+|\d+%"  # 数字
+        date_num_pattern = re.compile(
+            r"[A-Z][a-z]+"
+            r"|\d{4}年|\d+月|\d+日"
+            r"|\d+\.\d+|\d+%"
         )
         tool_pattern = re.compile(r"__(.+?)__|`([^`]+)`")
         tool_names: set[str] = set()
-        for msg in messages[:30]:  # 最多处理前30条
+        for msg in messages[:30]:
             content = msg.get("content", "")
             if not isinstance(content, str) or len(content) < 10:
                 continue
             role = msg.get("role", "")
             prefix = "用户" if role == "user" else ("助手" if role == "assistant" else role)
-            # 提取工具名
             for m in tool_pattern.finditer(content):
                 t = m.group(1) or m.group(2) or ""
                 if 2 < len(t) < 50:
                     tool_names.add(t)
-            # 提取关键实体
-            entities = entity_pattern.findall(content[:500])
-            entity_str = "、".join(entities[:6]) if entities else ""
+            snippet = content[:500]
+            entities = list(tokenize_words(snippet))[:8]
+            entities.extend(date_num_pattern.findall(snippet))
+            entity_str = "、".join(dict.fromkeys(entities).keys())[:60] if entities else ""
             if prefix == "用户" and entity_str:
                 lines.append(f"{prefix}关注: {entity_str}")
             elif prefix == "助手" and tool_names:

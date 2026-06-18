@@ -53,23 +53,9 @@ def _tokenize_for_dedup(text: str) -> set[str]:
     falls back to whitespace split when jieba is unavailable.
     Tokens shorter than 2 chars are discarded to reduce noise.
     """
-    global _jieba_mod, _jieba_loaded  # noqa: PLW0603
-    if not _jieba_loaded:
-        try:
-            import jieba
+    from openakita.core.tokenizer import tokenize_words
 
-            jieba.setLogLevel(logging.WARNING)
-            _jieba_mod = jieba
-        except ImportError:
-            pass
-        _jieba_loaded = True
-
-    lowered = text.lower()
-    if _jieba_mod is not None:
-        tokens = set(_jieba_mod.cut_for_search(lowered))
-    else:
-        tokens = set(lowered.split())
-    return {t for t in tokens if len(t) >= 2}
+    return tokenize_words(text)
 
 
 def _fast_content_dedup(new: str, existing: str) -> str:
@@ -835,7 +821,8 @@ class LifecycleManager:
         # Step 2: within each key group, find content-similar pairs using Jaccard
         # (capped to avoid O(n²) explosion on large groups)
         def _tokenize(content: str) -> set[str]:
-            return set(content.lower().split())
+            from openakita.core.tokenizer import tokenize_words
+            return tokenize_words(content)
 
         jaccard_groups_processed = 0
         all_ordered: list[str] = []
