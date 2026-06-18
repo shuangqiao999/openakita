@@ -48,16 +48,7 @@ def test_semaphore_setup():
     check("返回 asyncio.Semaphore", isinstance(sem, asyncio.Semaphore))
 
     sem2 = _get_benchmark_sem()
-    check("多次调用返回同一实例", sem is sem2)
-
-    from openakita.scheduler.executor import _benchmark_sem_value
-
-    try:
-        from openakita.config import settings
-        expected = max(1, settings.benchmark_max_concurrent)
-    except Exception:
-        expected = 1
-    check(f"信号量值 = {expected}", _benchmark_sem_value == expected)
+    check("多次调用返回同一实例 (不热替换)", sem is sem2)
 
 
 def test_benchmark_evolve_uses_sem():

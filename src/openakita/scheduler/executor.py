@@ -22,19 +22,17 @@ from .task import ScheduledTask
 logger = logging.getLogger(__name__)
 
 _benchmark_sem: asyncio.Semaphore | None = None
-_benchmark_sem_value: int = 0
 
 
 def _get_benchmark_sem() -> asyncio.Semaphore:
-    global _benchmark_sem, _benchmark_sem_value  # noqa: PLW0603
-    try:
-        from ..config import settings
-        val = max(1, settings.benchmark_max_concurrent)
-    except Exception:
-        val = 1
-    if _benchmark_sem is None or _benchmark_sem_value != val:
+    global _benchmark_sem  # noqa: PLW0603
+    if _benchmark_sem is None:
+        try:
+            from ..config import settings
+            val = max(1, settings.benchmark_max_concurrent)
+        except Exception:
+            val = 1
         _benchmark_sem = asyncio.Semaphore(val)
-        _benchmark_sem_value = val
     return _benchmark_sem
 
 
