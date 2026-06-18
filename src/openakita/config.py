@@ -1525,6 +1525,8 @@ def _create_settings_safe() -> Settings:
 
             field_match = re.search(r'field "(\w+)"', err_msg)
             if not field_match:
+                field_match = re.search(r'for Settings\n(\w+)\n', err_msg)
+            if not field_match:
                 break
 
             bad_field = field_match.group(1).upper()
