@@ -39,6 +39,27 @@ _BENCHMARK_TEMP_PATTERNS = [
     "data/bench_test.py",
 ]
 
+_jieba_mod: Any = None
+_jieba_checked = False
+
+
+def _tokenize(text: str) -> set[str]:
+    global _jieba_mod, _jieba_checked  # noqa: PLW0603
+    if not _jieba_checked:
+        try:
+            import jieba
+            jieba.setLogLevel(logging.WARNING)
+            _jieba_mod = jieba
+        except ImportError:
+            pass
+        _jieba_checked = True
+    lowered = text.lower()
+    if _jieba_mod is not None:
+        return {w for w in _jieba_mod.cut_for_search(lowered) if len(w) >= 2}
+    en = set(re.findall(r"[a-zA-Z]\w+", lowered))
+    cjk = set(re.findall(r"[\u4e00-\u9fff]", lowered))
+    return en | cjk
+
 
 @dataclass
 class BenchmarkTask:
@@ -479,11 +500,11 @@ class BenchmarkEngine:
                 return False, f"输出缺少数值: {num}"
 
         if not quoted and not numbers:
-            expected_words = set(re.findall(r"\b\w{2,}\b", expected.lower()))
-            if expected_words:
-                output_words = set(re.findall(r"\b\w{2,}\b", output_lower))
-                matched = expected_words & output_words
-                ratio = len(matched) / len(expected_words)
+            expected_tokens = _tokenize(expected)
+            if expected_tokens:
+                output_tokens = _tokenize(output)
+                matched = expected_tokens & output_tokens
+                ratio = len(matched) / len(expected_tokens)
                 if ratio < 0.6:
                     return False, f"关键词匹配率过低: {ratio:.0%} (需≥60%)"
 
