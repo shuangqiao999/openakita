@@ -1508,11 +1508,20 @@ class TaskExecutor:
                     except Exception:
                         pass
 
-            # 动态任务池维护
+            # 动态任务池维护 (仅成功率 100% 且无降级任务时生成变体)
+            _health = engine._load_health()
+            _has_degraded = any(v.get("degraded") for v in _health.values())
+            _all_pass = report.metrics.success_rate >= 1.0
+            if not _all_pass or _has_degraded:
+                logger.info(
+                    "[BenchmarkEvolve] 跳过变体生成 (sr=%.0f%%, degraded=%s)",
+                    report.metrics.success_rate * 100, _has_degraded,
+                )
             try:
                 from ..config import parse_bool, settings
 
-                if parse_bool(getattr(settings, "dynamic_benchmark_enabled", True), default=True):
+                if (parse_bool(getattr(settings, "dynamic_benchmark_enabled", True), default=True)
+                        and _all_pass and not _has_degraded):
                     import json as _json
 
                     from ..evolution.dynamic_benchmark import (
@@ -1588,7 +1597,8 @@ class TaskExecutor:
             try:
                 from ..config import parse_bool, settings
 
-                if parse_bool(getattr(settings, "benchmark_generate_from_traces", False), default=False):
+                if (parse_bool(getattr(settings, "benchmark_generate_from_traces", False), default=False)
+                        and _all_pass and not _has_degraded):
                     from ..evolution.dynamic_benchmark import DynamicBenchmarkGenerator
 
                     gen = DynamicBenchmarkGenerator(self.agent)
