@@ -82,7 +82,7 @@ def _http_post(url: str, payload: dict, timeout: int = LMSTUDIO_TIMEOUT) -> dict
 
 def lmstudio_chat(prompt: str, max_tokens: int = 512) -> str:
     payload = {
-        "model": "auto",
+        "model": "qwen/qwen3.5-9b",
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.3,
         "max_tokens": max_tokens,

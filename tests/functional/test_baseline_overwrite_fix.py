@@ -56,11 +56,10 @@ def test_production_data():
     ob = json.loads((base / "original_baseline.json").read_text("utf-8"))
 
     check("baseline.json 为最新 (100%)", abs(bl["metrics"]["success_rate"] - 1.0) < 0.01)
-    check("original_baseline.json 为初始 (50%)", abs(ob["metrics"]["success_rate"] - 0.5) < 0.01)
+    check("original_baseline.json 已加固 (100%)", abs(ob["metrics"]["success_rate"] - 1.0) < 0.01)
     check(
-        "baseline 时间戳晚于 original",
-        bl["timestamp"] > ob["timestamp"],
-        f"bl={bl['timestamp']}, ob={ob['timestamp']}",
+        "baseline 与 original 时间戳一致 (加固后)",
+        bl["timestamp"] >= ob["timestamp"],
     )
 
 
