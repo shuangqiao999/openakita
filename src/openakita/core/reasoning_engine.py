@@ -6680,8 +6680,12 @@ class ReasoningEngine:
                     yield {"type": "decision", "decision": data}
                     break
         finally:
-            hb_task.cancel()
-            cancel_task.cancel()
+            for _t in (hb_task, cancel_task):
+                _t.cancel()
+                try:
+                    await _t
+                except (asyncio.CancelledError, Exception):
+                    pass
             if not reason_task.done():
                 reason_task.cancel()
                 try:

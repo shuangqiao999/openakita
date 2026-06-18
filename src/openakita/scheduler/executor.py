@@ -1473,7 +1473,6 @@ class TaskExecutor:
             agent = self.agent
             engine = BenchmarkEngine()
             # 工具预热: 仅 cycle 首次 benchmark 前预热一次, 避免 tool handler 未初始化
-            await BenchmarkEngine._warmup(agent)
             report = await engine.run_suite(agent)
             summary = (
                 f"Benchmark: 成功率={report.metrics.success_rate:.0%}, "
