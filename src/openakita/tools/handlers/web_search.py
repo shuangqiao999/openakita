@@ -191,10 +191,24 @@ class WebSearchHandler:
             asyncio.create_task(_tier2_ddg()),
             asyncio.create_task(_tier3_bing()),
         ]
-        done, pending = await asyncio.wait(tier_tasks, return_when=asyncio.FIRST_COMPLETED,
-                                            timeout=overall_timeout if overall_timeout > 0 else 60.0)
-        for t in pending:
-            t.cancel()
+        try:
+            done, pending = await asyncio.wait(tier_tasks, return_when=asyncio.FIRST_COMPLETED,
+                                                timeout=overall_timeout if overall_timeout > 0 else 60.0)
+            for t in pending:
+                t.cancel()
+                try:
+                    await t
+                except (asyncio.CancelledError, Exception):
+                    pass
+        except BaseException:
+            for t in tier_tasks:
+                if not t.done():
+                    t.cancel()
+                    try:
+                        await t
+                    except (asyncio.CancelledError, Exception):
+                        pass
+            raise
         for t in done:
             try:
                 result = t.result()

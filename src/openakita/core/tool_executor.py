@@ -1233,7 +1233,7 @@ class ToolExecutor:
                 tool_error = classify_error(e, tool_name=tool_name)
                 result_str = tool_error.to_tool_result()
                 result_content = result_str
-                logger.error(f"Tool batch execution error: {tool_name}: {e}")
+                logger.error(f"Tool batch execution error: {tool_name}: {e!r}")
                 logger.info(f"[Tool] {tool_name} ❌ 错误: {result_str}")
 
             elapsed = time.time() - t0
