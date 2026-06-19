@@ -1932,17 +1932,27 @@ class Agent:
                 cancel_waiter = asyncio.create_task(_tool_cancel_event.wait())
                 skip_waiter = asyncio.create_task(_tool_skip_event.wait())
 
-                done_set, pending_set = await asyncio.wait(
-                    {tool_task, cancel_waiter, skip_waiter},
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
+                try:
+                    done_set, pending_set = await asyncio.wait(
+                        {tool_task, cancel_waiter, skip_waiter},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
 
-                for t in pending_set:
-                    t.cancel()
-                    try:
-                        await t
-                    except (asyncio.CancelledError, Exception):
-                        pass
+                    for t in pending_set:
+                        t.cancel()
+                        try:
+                            await t
+                        except (asyncio.CancelledError, Exception):
+                            pass
+                except BaseException:
+                    for t in (tool_task, cancel_waiter, skip_waiter):
+                        if not t.done():
+                            t.cancel()
+                            try:
+                                await t
+                            except (asyncio.CancelledError, Exception):
+                                pass
+                    raise
 
                 if cancel_waiter in done_set and tool_task not in done_set:
                     # cancel_event 先触发，工具被中断（终止整个任务）
@@ -4218,16 +4228,26 @@ class Agent:
         task = asyncio.create_task(coro) if not isinstance(coro, asyncio.Task) else coro
         cancel_waiter = asyncio.create_task(cancel_event.wait())
 
-        done, pending = await asyncio.wait(
-            {task, cancel_waiter},
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        for t in pending:
-            t.cancel()
-            try:
-                await t
-            except (asyncio.CancelledError, Exception):
-                pass
+        try:
+            done, pending = await asyncio.wait(
+                {task, cancel_waiter},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in pending:
+                t.cancel()
+                try:
+                    await t
+                except (asyncio.CancelledError, Exception):
+                    pass
+        except BaseException:
+            for t in (task, cancel_waiter):
+                if not t.done():
+                    t.cancel()
+                    try:
+                        await t
+                    except (asyncio.CancelledError, Exception):
+                        pass
+            raise
 
         if task in done:
             return task.result()

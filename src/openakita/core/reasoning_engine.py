@@ -5029,23 +5029,33 @@ class ReasoningEngine:
                             cancel_waiter = asyncio.create_task(cancel_event.wait())
                             skip_waiter = asyncio.create_task(skip_event.wait())
 
-                            pending_set = {tool_exec_task, cancel_waiter, skip_waiter}
-                            done_set: set[asyncio.Task] = set()
-                            while not done_set:
-                                done_set, pending_set = await asyncio.wait(
-                                    pending_set,
-                                    timeout=self._HEARTBEAT_INTERVAL,
-                                    return_when=asyncio.FIRST_COMPLETED,
-                                )
-                                if not done_set:
-                                    yield {"type": "heartbeat"}
+                            try:
+                                pending_set = {tool_exec_task, cancel_waiter, skip_waiter}
+                                done_set: set[asyncio.Task] = set()
+                                while not done_set:
+                                    done_set, pending_set = await asyncio.wait(
+                                        pending_set,
+                                        timeout=self._HEARTBEAT_INTERVAL,
+                                        return_when=asyncio.FIRST_COMPLETED,
+                                    )
+                                    if not done_set:
+                                        yield {"type": "heartbeat"}
 
-                            for t in pending_set:
-                                t.cancel()
-                                try:
-                                    await t
-                                except (asyncio.CancelledError, Exception):
-                                    pass
+                                for t in pending_set:
+                                    t.cancel()
+                                    try:
+                                        await t
+                                    except (asyncio.CancelledError, Exception):
+                                        pass
+                            except BaseException:
+                                for t in (tool_exec_task, cancel_waiter, skip_waiter):
+                                    if not t.done():
+                                        t.cancel()
+                                        try:
+                                            await t
+                                        except (asyncio.CancelledError, Exception):
+                                            pass
+                                raise
 
                             if cancel_waiter in done_set and tool_exec_task not in done_set:
                                 result_text = f"[工具 {tool_name} 被用户中断]"

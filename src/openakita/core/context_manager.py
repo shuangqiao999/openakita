@@ -95,16 +95,26 @@ class ContextManager:
             return await coro
         task = asyncio.create_task(coro)
         cancel_waiter = asyncio.create_task(self._cancel_event.wait())
-        done, pending = await asyncio.wait(
-            {task, cancel_waiter},
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        for t in pending:
-            t.cancel()
-            try:
-                await t
-            except (asyncio.CancelledError, Exception):
-                pass
+        try:
+            done, pending = await asyncio.wait(
+                {task, cancel_waiter},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in pending:
+                t.cancel()
+                try:
+                    await t
+                except (asyncio.CancelledError, Exception):
+                    pass
+        except BaseException:
+            for t in (task, cancel_waiter):
+                if not t.done():
+                    t.cancel()
+                    try:
+                        await t
+                    except (asyncio.CancelledError, Exception):
+                        pass
+            raise
         if task in done:
             logger.debug("[ContextManager] _cancellable_llm LLM 调用完成")
             return task.result()
