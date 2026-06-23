@@ -25,11 +25,31 @@ logger = logging.getLogger(__name__)
 class RelationalMemoryStore:
     """Manages mdrm_* tables inside the shared MemoryStorage database."""
 
-    def __init__(self, conn: sqlite3.Connection) -> None:
-        self._conn = conn
+    def __init__(self, conn_or_storage) -> None:
+        # Accept the shared MemoryStorage (preferred) so we reuse ITS reentrant
+        # write-lock and ALWAYS resolve the *current* connection. This fixes two
+        # real bugs: (S1) relational writes bypassing the core write-lock and
+        # interleaving with core writes on the shared connection, and (S3) using
+        # a stale connection after the storage layer reconnects. A raw
+        # sqlite3.Connection is still accepted (tests / legacy) with a private lock.
+        if hasattr(conn_or_storage, "_write_lock") and hasattr(conn_or_storage, "_conn"):
+            self._storage = conn_or_storage
+            self._raw_conn = None
+            self._lock = conn_or_storage._write_lock
+        else:
+            self._storage = None
+            self._raw_conn = conn_or_storage
+            self._lock = threading.RLock()
         self._closed = False
         self._close_lock = threading.Lock()
         self._ensure_tables()
+
+    @property
+    def _conn(self):
+        """Always resolve the live connection (storage may have reconnected)."""
+        if self._storage is not None:
+            return self._storage._conn
+        return self._raw_conn
 
     @staticmethod
     def _active_node_where(alias: str = "") -> tuple[str, list[str]]:
@@ -48,7 +68,7 @@ class RelationalMemoryStore:
             if self._closed:
                 return
             self._closed = True
-            self._conn = None
+            self._raw_conn = None
 
     # ------------------------------------------------------------------
     # Schema
@@ -283,64 +303,7 @@ class RelationalMemoryStore:
             [{"name": e.name, "type": e.type, "role": e.role} for e in node.entities],
             ensure_ascii=False,
         )
-        self._conn.execute(
-            """INSERT OR REPLACE INTO mdrm_nodes
-               (id, content, node_type, occurred_at, valid_from, valid_until,
-                entities, action_verb, action_category, session_id, project, goal,
-                importance, confidence, access_count, embedding, created_at, updated_at,
-                agent_id, user_id, workspace_id)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                node.id,
-                node.content,
-                node.node_type.value,
-                node.occurred_at.isoformat(),
-                (node.valid_from or node.occurred_at).isoformat(),
-                node.valid_until.isoformat() if node.valid_until else None,
-                entities_json,
-                node.action_verb,
-                node.action_category,
-                node.session_id,
-                node.project,
-                node.goal,
-                node.importance,
-                node.confidence,
-                node.access_count,
-                node.embedding,
-                node.created_at.isoformat() if node.created_at else now,
-                now,
-                node.agent_id,
-                node.user_id,
-                node.workspace_id,
-            ),
-        )
-
-        # Update entity index
-        self._conn.execute("DELETE FROM mdrm_entity_index WHERE node_id = ?", (node.id,))
-        for ent in node.entities:
-            try:
-                self._conn.execute(
-                    """INSERT OR IGNORE INTO mdrm_entity_index
-                       (entity_name, entity_type, node_id, role)
-                       VALUES (?, ?, ?, ?)""",
-                    (ent.name.lower(), ent.type, node.id, ent.role),
-                )
-            except sqlite3.IntegrityError:
-                pass
-
-        self._sync_fts(node.id, node.content, node.action_verb)
-        self._conn.commit()
-
-    def save_nodes_batch(self, nodes: list[MemoryNode]) -> None:
-        self._check_open()
-        if not nodes:
-            return
-        now = datetime.now().isoformat()
-        for node in nodes:
-            entities_json = json.dumps(
-                [{"name": e.name, "type": e.type, "role": e.role} for e in node.entities],
-                ensure_ascii=False,
-            )
+        with self._lock:
             self._conn.execute(
                 """INSERT OR REPLACE INTO mdrm_nodes
                    (id, content, node_type, occurred_at, valid_from, valid_until,
@@ -372,18 +335,77 @@ class RelationalMemoryStore:
                     node.workspace_id,
                 ),
             )
+
+            # Update entity index
             self._conn.execute("DELETE FROM mdrm_entity_index WHERE node_id = ?", (node.id,))
             for ent in node.entities:
                 try:
                     self._conn.execute(
                         """INSERT OR IGNORE INTO mdrm_entity_index
-                           (entity_name, entity_type, node_id, role) VALUES (?, ?, ?, ?)""",
+                           (entity_name, entity_type, node_id, role)
+                           VALUES (?, ?, ?, ?)""",
                         (ent.name.lower(), ent.type, node.id, ent.role),
                     )
                 except sqlite3.IntegrityError:
                     pass
+
             self._sync_fts(node.id, node.content, node.action_verb)
-        self._conn.commit()
+            self._conn.commit()
+
+    def save_nodes_batch(self, nodes: list[MemoryNode]) -> None:
+        self._check_open()
+        if not nodes:
+            return
+        now = datetime.now().isoformat()
+        with self._lock:
+            for node in nodes:
+                entities_json = json.dumps(
+                    [{"name": e.name, "type": e.type, "role": e.role} for e in node.entities],
+                    ensure_ascii=False,
+                )
+                self._conn.execute(
+                    """INSERT OR REPLACE INTO mdrm_nodes
+                       (id, content, node_type, occurred_at, valid_from, valid_until,
+                        entities, action_verb, action_category, session_id, project, goal,
+                        importance, confidence, access_count, embedding, created_at, updated_at,
+                        agent_id, user_id, workspace_id)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        node.id,
+                        node.content,
+                        node.node_type.value,
+                        node.occurred_at.isoformat(),
+                        (node.valid_from or node.occurred_at).isoformat(),
+                        node.valid_until.isoformat() if node.valid_until else None,
+                        entities_json,
+                        node.action_verb,
+                        node.action_category,
+                        node.session_id,
+                        node.project,
+                        node.goal,
+                        node.importance,
+                        node.confidence,
+                        node.access_count,
+                        node.embedding,
+                        node.created_at.isoformat() if node.created_at else now,
+                        now,
+                        node.agent_id,
+                        node.user_id,
+                        node.workspace_id,
+                    ),
+                )
+                self._conn.execute("DELETE FROM mdrm_entity_index WHERE node_id = ?", (node.id,))
+                for ent in node.entities:
+                    try:
+                        self._conn.execute(
+                            """INSERT OR IGNORE INTO mdrm_entity_index
+                               (entity_name, entity_type, node_id, role) VALUES (?, ?, ?, ?)""",
+                            (ent.name.lower(), ent.type, node.id, ent.role),
+                        )
+                    except sqlite3.IntegrityError:
+                        pass
+                self._sync_fts(node.id, node.content, node.action_verb)
+            self._conn.commit()
 
     def get_node(self, node_id: str) -> MemoryNode | None:
         self._check_open()
@@ -395,17 +417,18 @@ class RelationalMemoryStore:
 
     def delete_node(self, node_id: str) -> bool:
         self._check_open()
-        self._conn.execute(
-            "DELETE FROM mdrm_edges WHERE source_id=? OR target_id=?", (node_id, node_id)
-        )
-        self._conn.execute("DELETE FROM mdrm_entity_index WHERE node_id=?", (node_id,))
-        self._conn.execute(
-            "DELETE FROM mdrm_reachable WHERE source_id=? OR target_id=?", (node_id, node_id)
-        )
-        self._delete_fts(node_id)
-        cur = self._conn.execute("DELETE FROM mdrm_nodes WHERE id=?", (node_id,))
-        self._conn.commit()
-        return cur.rowcount > 0
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM mdrm_edges WHERE source_id=? OR target_id=?", (node_id, node_id)
+            )
+            self._conn.execute("DELETE FROM mdrm_entity_index WHERE node_id=?", (node_id,))
+            self._conn.execute(
+                "DELETE FROM mdrm_reachable WHERE source_id=? OR target_id=?", (node_id, node_id)
+            )
+            self._delete_fts(node_id)
+            cur = self._conn.execute("DELETE FROM mdrm_nodes WHERE id=?", (node_id,))
+            self._conn.commit()
+            return cur.rowcount > 0
 
     def count_nodes(self) -> int:
         self._check_open()

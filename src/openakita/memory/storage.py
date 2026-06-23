@@ -496,21 +496,23 @@ class MemoryStorage:
         except sqlite3.OperationalError as e:
             logger.warning(f"[MemoryStorage] FTS5 creation skipped: {e}")
 
-        # FTS5 sync triggers
+        # FTS5 sync triggers — index the jieba-segmented content_fts column
+        # (NOT raw content), identical to the Phase-3 / v3→v4 definitions, so a
+        # fresh install gets working CJK FTS instead of un-tokenizable raw text.
         for trigger_sql in [
             """CREATE TRIGGER IF NOT EXISTS memories_fts_ai AFTER INSERT ON memories BEGIN
                 INSERT INTO memories_fts(rowid, content, subject, predicate, tags)
-                VALUES (new.rowid, new.content, new.subject, new.predicate, new.tags);
+                VALUES (new.rowid, COALESCE(new.content_fts, new.content), new.subject, new.predicate, new.tags);
             END""",
             """CREATE TRIGGER IF NOT EXISTS memories_fts_ad AFTER DELETE ON memories BEGIN
                 INSERT INTO memories_fts(memories_fts, rowid, content, subject, predicate, tags)
-                VALUES ('delete', old.rowid, old.content, old.subject, old.predicate, old.tags);
+                VALUES ('delete', old.rowid, COALESCE(old.content_fts, old.content), old.subject, old.predicate, old.tags);
             END""",
             """CREATE TRIGGER IF NOT EXISTS memories_fts_au AFTER UPDATE ON memories BEGIN
                 INSERT INTO memories_fts(memories_fts, rowid, content, subject, predicate, tags)
-                VALUES ('delete', old.rowid, old.content, old.subject, old.predicate, old.tags);
+                VALUES ('delete', old.rowid, COALESCE(old.content_fts, old.content), old.subject, old.predicate, old.tags);
                 INSERT INTO memories_fts(rowid, content, subject, predicate, tags)
-                VALUES (new.rowid, new.content, new.subject, new.predicate, new.tags);
+                VALUES (new.rowid, COALESCE(new.content_fts, new.content), new.subject, new.predicate, new.tags);
             END""",
         ]:
             try:
@@ -809,9 +811,9 @@ class MemoryStorage:
     # Semantic Memory CRUD
     # ======================================================================
 
-    def save_memory(self, memory: dict) -> None:
+    def save_memory(self, memory: dict) -> bool:
         if not self._ensure_conn():
-            return
+            return False
         now = datetime.now().isoformat()
         with self._lock:
             try:
@@ -854,10 +856,12 @@ class MemoryStorage:
                     ),
                 )
                 self._conn.commit()
+                return True
             except Exception as e:
                 if _is_db_locked(e):
                     raise
                 logger.error(f"Failed to save memory to SQLite: {e}")
+                return False
 
     def save_memories_batch(self, memories: list[dict]) -> None:
         if not self._ensure_conn() or not memories:
@@ -1399,7 +1403,16 @@ class MemoryStorage:
             return
         with self._lock:
             try:
-                self._conn.execute("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")
+                # external-content FTS5 whose indexed text is the jieba-segmented
+                # content_fts column (kept in sync by the triggers). 'rebuild'
+                # would re-read raw memories.content and clobber the segmented
+                # index → broken CJK search. Clear + repopulate from content_fts.
+                self._conn.execute("INSERT INTO memories_fts(memories_fts) VALUES('delete-all')")
+                self._conn.execute(
+                    "INSERT INTO memories_fts(rowid, content, subject, predicate, tags) "
+                    "SELECT rowid, COALESCE(content_fts, content), subject, predicate, tags "
+                    "FROM memories"
+                )
                 self._conn.commit()
                 logger.info("[MemoryStorage] memories_fts index rebuilt")
             except Exception as e:
@@ -2153,9 +2166,14 @@ class MemoryStorage:
             return []
         with self._lock:
             try:
-                # 先恢复卡住的 processing 项
+                # 先恢复卡住的 processing 项（独立事务，内部 commit）
                 self._recover_stuck_extractions()
 
+                # Atomic claim: BEGIN IMMEDIATE grabs the write lock so a
+                # concurrent process cannot SELECT-then-UPDATE the same pending
+                # rows (which previously caused the same items to be extracted
+                # twice). busy_timeout handles the wait if another writer holds it.
+                self._conn.execute("BEGIN IMMEDIATE")
                 cur = self._conn.execute(
                     "SELECT * FROM extraction_queue WHERE status = 'pending' "
                     "AND retry_count < max_retries "
@@ -2172,9 +2190,13 @@ class MemoryStorage:
                         f"WHERE id IN ({placeholders})",
                         [datetime.now().isoformat()] + ids,
                     )
-                    self._conn.commit()
+                self._conn.commit()
                 return rows
             except Exception as e:
+                try:
+                    self._conn.rollback()
+                except Exception:
+                    pass
                 if _is_db_locked(e):
                     raise
                 logger.error(f"Failed to dequeue extraction: {e}")

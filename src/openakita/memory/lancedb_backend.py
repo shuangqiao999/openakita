@@ -510,6 +510,14 @@ class LanceDBBackend:
             pa.field("vector", pa.list_(pa.float32(), embedding_dim)),
             pa.field("content", pa.string()),
             pa.field("metadata", pa.string()),
+            # Scope/owner columns enable native .where() pre-filtering so the
+            # vector search budget is spent on in-scope rows (recall) instead of
+            # relying solely on the post-hoc SQLite re-check.
+            pa.field("mtype", pa.string()),
+            pa.field("scope", pa.string()),
+            pa.field("scope_owner", pa.string()),
+            pa.field("user_id", pa.string()),
+            pa.field("workspace_id", pa.string()),
         ])
         self._table = self._db.create_table(
             self._table_name(), schema=schema, mode="overwrite",
@@ -521,6 +529,42 @@ class LanceDBBackend:
             embedding_dim,
             self._persist_dir,
         )
+
+    def _table_has_scope_columns(self) -> bool:
+        """True when the open table has the scope/owner columns. Old tables
+        created before this schema change won't, so add()/search() degrade
+        gracefully (4-field rows, no .where()) on them."""
+        try:
+            names = set(self._table.schema.names)
+            return {"mtype", "scope", "user_id", "workspace_id"}.issubset(names)
+        except Exception:
+            return False
+
+    @staticmethod
+    def _build_scope_where(
+        scope: str | None,
+        scope_owner: str | None,
+        user_id: str | None,
+        workspace_id: str | None,
+        filter_type: str | None,
+    ) -> str:
+        """Build a LanceDB SQL-style WHERE for tenant/type pre-filtering.
+        Values are single-quote escaped; empty result means 'no filter'."""
+        def esc(v: str) -> str:
+            return str(v).replace("'", "''")
+
+        conds: list[str] = []
+        if user_id is not None:
+            conds.append(f"user_id = '{esc(user_id)}'")
+        if workspace_id is not None:
+            conds.append(f"workspace_id = '{esc(workspace_id)}'")
+        if scope is not None:
+            conds.append(f"scope = '{esc(scope)}'")
+        if scope_owner is not None:
+            conds.append(f"scope_owner = '{esc(scope_owner)}'")
+        if filter_type is not None:
+            conds.append(f"mtype = '{esc(filter_type)}'")
+        return " AND ".join(conds)
 
     def _rebuild_for_dimension(self, new_dim: int) -> None:
         """维度变更时删除旧表并重建"""
@@ -727,17 +771,27 @@ class LanceDBBackend:
         if not query_vec:
             return []
 
+        # Native scope/type pre-filter when the table has the columns (old
+        # tables without them degrade to no pre-filter + SQLite re-check).
+        where_str = ""
+        if self._table_has_scope_columns():
+            where_str = self._build_scope_where(
+                scope, scope_owner, user_id, workspace_id, filter_type
+            )
+
         try:
             if hybrid and self._has_fts_index():
                 with self._lock:
-                    results = (
+                    q = (
                         self._table.search(query_type="hybrid")
                         .text(query)
                         .vector(query_vec)
                         .metric(self._METRIC)
                         .limit(min(limit, 50))
-                        .to_list()
                     )
+                    if where_str:
+                        q = q.where(where_str)
+                    results = q.to_list()
                 scored: list[tuple[str, float]] = []
                 for row in results:
                     doc_id = row.get("id", "")
@@ -749,12 +803,14 @@ class LanceDBBackend:
                 return scored
             else:
                 with self._lock:
-                    results = (
+                    q = (
                         self._table.search(query_vec)
                         .metric(self._METRIC)
                         .limit(min(limit, 50))
-                        .to_list()
                     )
+                    if where_str:
+                        q = q.where(where_str)
+                    results = q.to_list()
                 if not results:
                     return []
                 scored: list[tuple[str, float]] = []
@@ -821,14 +877,23 @@ class LanceDBBackend:
                 return False
 
             try:
-                meta_str = json.dumps(metadata or {}, ensure_ascii=False)
-                row = [{
+                meta = metadata or {}
+                meta_str = json.dumps(meta, ensure_ascii=False)
+                row_obj = {
                     "id": memory_id,
                     "vector": vec,
                     "content": content,
                     "metadata": meta_str,
-                }]
-                self._retry_on_conflict("add", self._table.add, row)
+                }
+                if self._table_has_scope_columns():
+                    row_obj["mtype"] = str(meta.get("type", "") or "")
+                    row_obj["scope"] = str(meta.get("scope", "") or "")
+                    row_obj["scope_owner"] = str(meta.get("scope_owner", "") or "")
+                    row_obj["user_id"] = str(meta.get("user_id", "default") or "default")
+                    row_obj["workspace_id"] = str(
+                        meta.get("workspace_id", "default") or "default"
+                    )
+                self._retry_on_conflict("add", self._table.add, [row_obj])
                 self._flush_table()
                 self._create_index_async()
                 self._create_fts_index_async()
@@ -901,19 +966,28 @@ class LanceDBBackend:
                 return 0
 
             try:
+                _has_scope = self._table_has_scope_columns()
                 rows = []
                 for i, it in enumerate(items):
                     doc_id = it.get("id", "")
                     if not doc_id:
                         continue
-                    rows.append({
+                    meta = it.get("metadata") or {}
+                    row_obj = {
                         "id": doc_id,
                         "vector": vecs[i],
                         "content": it.get("content", ""),
-                        "metadata": json.dumps(
-                            it.get("metadata") or {}, ensure_ascii=False
-                        ),
-                    })
+                        "metadata": json.dumps(meta, ensure_ascii=False),
+                    }
+                    if _has_scope:
+                        row_obj["mtype"] = str(meta.get("type", "") or "")
+                        row_obj["scope"] = str(meta.get("scope", "") or "")
+                        row_obj["scope_owner"] = str(meta.get("scope_owner", "") or "")
+                        row_obj["user_id"] = str(meta.get("user_id", "default") or "default")
+                        row_obj["workspace_id"] = str(
+                            meta.get("workspace_id", "default") or "default"
+                        )
+                    rows.append(row_obj)
                 if rows:
                     self._retry_on_conflict("batch_add", self._table.add, rows)
                     self._flush_table()

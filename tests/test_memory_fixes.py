@@ -258,3 +258,103 @@ def test_subject_predicate_sweep_is_content_aware():
     assert store.deleted == ["dup"]
     survivors = {m.id for m in store._mems}
     assert survivors == {"p1", "p2"}, f"distinct preferences lost: {survivors}"
+
+
+# --------------------------------------------------------------------------- #
+# #4 DATA-LOSS: save_memory surfaces success/failure as a bool
+# --------------------------------------------------------------------------- #
+def test_save_memory_returns_bool(tmp_path):
+    st = _mk_storage(tmp_path)
+    ok = st.save_memory(
+        {"id": "x", "content": "hi", "type": "fact",
+         "scope": "global", "user_id": "default", "workspace_id": "default"}
+    )
+    assert ok is True
+    st.close()
+
+
+# --------------------------------------------------------------------------- #
+# #2 CONCURRENCY: dequeue_extraction atomically claims rows (no double-claim)
+# --------------------------------------------------------------------------- #
+def test_dequeue_extraction_atomic_claim(tmp_path):
+    st = _mk_storage(tmp_path)
+    for i in range(3):
+        st.enqueue_extraction("s1", i, f"turn {i}")
+    first = st.dequeue_extraction(batch_size=2)
+    assert len(first) == 2
+    first_ids = {r["id"] for r in first}
+    # Already-claimed rows are marked 'processing' inside the BEGIN IMMEDIATE txn,
+    # so a second dequeue must return the *remaining* row, never the same ones.
+    second = st.dequeue_extraction(batch_size=2)
+    second_ids = {r["id"] for r in second}
+    assert first_ids.isdisjoint(second_ids), "same queue items claimed twice"
+    assert len(second) == 1
+    st.close()
+
+
+# --------------------------------------------------------------------------- #
+# #3 CONCURRENCY: consolidate_daily single-flight guard
+# --------------------------------------------------------------------------- #
+async def test_consolidation_single_flight():
+    import asyncio
+
+    from openakita.memory.lifecycle import LifecycleManager
+
+    called = {"impl": 0}
+
+    async def fake_impl(**kwargs):
+        called["impl"] += 1
+        return {"ok": True}
+
+    lock = asyncio.Lock()
+    await lock.acquire()  # simulate a consolidation already in flight
+    stub = types.SimpleNamespace(
+        _consolidation_lock=lock, _consolidate_daily_impl=fake_impl
+    )
+    res = await LifecycleManager.consolidate_daily(stub)
+    assert res.get("skipped") is True
+    assert called["impl"] == 0, "overlapping run must not execute the impl"
+    lock.release()
+
+
+# --------------------------------------------------------------------------- #
+# #5 CONSISTENCY: fresh-install FTS indexes jieba-segmented content (CJK works)
+# --------------------------------------------------------------------------- #
+def test_cjk_fts_indexes_segmented_content(tmp_path):
+    st = _mk_storage(tmp_path)
+    _save_mem(st, "zh", content="用户喜欢深色主题界面")
+    # Direct FTS MATCH on a jieba word succeeds only if the (fresh-install)
+    # trigger indexed the segmented content_fts, not the raw unicode61 whole-run
+    # token. This is the #5 fix.
+    cur = st._conn.execute(
+        "SELECT rowid FROM memories_fts WHERE memories_fts MATCH ?", ("深色",)
+    )
+    assert len(cur.fetchall()) >= 1, "CJK FTS did not index segmented tokens"
+    st.close()
+
+
+# --------------------------------------------------------------------------- #
+# #1 CONCURRENCY: relational store shares the storage lock + uses a live conn
+# --------------------------------------------------------------------------- #
+def test_relational_shared_storage_and_live_conn(tmp_path):
+    from openakita.memory.relational.store import RelationalMemoryStore
+    from openakita.memory.relational.types import EntityRef, MemoryNode
+
+    st = _mk_storage(tmp_path)
+    rs = RelationalMemoryStore(st)  # pass the MemoryStorage, not a raw conn
+    assert rs._lock is st._write_lock, "relational store must share the storage write-lock"
+
+    n = MemoryNode(content="live conn node", user_id="u1", entities=[EntityRef(name="x")])
+    rs.save_node(n)
+    assert rs.get_node(n.id) is not None
+
+    # Storage reconnects (new connection object). The relational store must
+    # resolve the *live* connection, not the stale cached one (S3 fix).
+    old_conn = st._conn
+    st._reconnect()
+    assert st._conn is not old_conn
+    assert rs._conn is st._conn, "relational store kept a stale connection"
+    assert rs.get_node(n.id) is not None, "relational store broke after reconnect"
+    rs.close()
+    st.close()
+

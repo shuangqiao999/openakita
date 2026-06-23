@@ -1116,7 +1116,7 @@ class MemoryManager:
             except Exception:
                 ui_lang = "zh"
 
-            self.relational_store = RelationalMemoryStore(conn)
+            self.relational_store = RelationalMemoryStore(self.store.db)
             self.relational_encoder = MemoryEncoder(
                 brain=self.brain,
                 session_id=self._current_session_id or "",

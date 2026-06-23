@@ -133,6 +133,39 @@ class LifecycleManager:
         time_budget_seconds: int | None = None,
         review_max_batches: int | None = None,
     ) -> dict:
+        """Single-flight wrapper around the consolidation run.
+
+        Overlapping cron / onboarding runs would otherwise race the file-backed
+        checkpoint and operate on the same memories (stale-snapshot deletes that
+        drop data a live session just re-cited). If a run is already in flight we
+        skip the overlapping one instead of corrupting its checkpoint.
+        """
+        lock = getattr(self, "_consolidation_lock", None)
+        if lock is None:
+            import asyncio as _aio
+
+            lock = self._consolidation_lock = _aio.Lock()
+        if lock.locked():
+            logger.warning(
+                "[Lifecycle] consolidate_daily already running; skipping overlapping run"
+            )
+            return {"skipped": True, "reason": "already_running"}
+        async with lock:
+            return await self._consolidate_daily_impl(
+                checkpoint=checkpoint,
+                checkpoint_callback=checkpoint_callback,
+                time_budget_seconds=time_budget_seconds,
+                review_max_batches=review_max_batches,
+            )
+
+    async def _consolidate_daily_impl(
+        self,
+        *,
+        checkpoint: dict | None = None,
+        checkpoint_callback: Callable[[dict], None] | None = None,
+        time_budget_seconds: int | None = None,
+        review_max_batches: int | None = None,
+    ) -> dict:
         """
         凌晨归纳主流程, 返回统计报告
         """

@@ -153,6 +153,10 @@ class UnifiedStore:
                             "priority": mem.get("priority", "short_term"),
                             "importance": mem.get("importance_score", 0.5),
                             "tags": mem.get("tags", []),
+                            "scope": mem.get("scope", "global"),
+                            "scope_owner": mem.get("scope_owner", ""),
+                            "user_id": mem.get("user_id", "default"),
+                            "workspace_id": mem.get("workspace_id", "default"),
                         },
                     }
                 )
@@ -372,7 +376,16 @@ class UnifiedStore:
                 pass
 
         d = memory.to_dict()
-        self.db.save_memory(d)
+        if not self.db.save_memory(d):
+            # Authoritative SQLite write failed (e.g. disk full / corruption).
+            # Surface it loudly and do NOT index into the vector store — an
+            # un-persisted memory must not silently appear searchable.
+            logger.error(
+                "[UnifiedStore] CRITICAL: SQLite save_memory failed for %s — "
+                "memory NOT persisted, skipping vector index",
+                memory.id[:8],
+            )
+            return memory.id
         try:
             ok = self.search.add(
                 memory.id,
@@ -382,6 +395,10 @@ class UnifiedStore:
                     "priority": memory.priority.value,
                     "importance": memory.importance_score,
                     "tags": memory.tags,
+                    "scope": memory.scope,
+                    "scope_owner": memory.scope_owner,
+                    "user_id": memory.user_id,
+                    "workspace_id": memory.workspace_id,
                 },
             )
             if not ok:
@@ -459,6 +476,10 @@ class UnifiedStore:
                         "priority": mem.get("priority", "short_term"),
                         "importance": mem.get("importance_score", 0.5),
                         "tags": mem.get("tags", []),
+                        "scope": mem.get("scope", "global"),
+                        "scope_owner": mem.get("scope_owner", ""),
+                        "user_id": mem.get("user_id", "default"),
+                        "workspace_id": mem.get("workspace_id", "default"),
                     },
                 )
         return ok
