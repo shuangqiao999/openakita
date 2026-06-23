@@ -162,14 +162,24 @@ class MemoryStorage:
             return False
 
     def _get_schema_version(self) -> int:
+        # Distinguish "no version row yet" (fresh DB → 0) from a read failure.
+        # Returning 0 on *any* error would make a populated DB look brand-new
+        # and replay every migration on top of newer data (corruption). On a
+        # genuine read error we let the exception propagate so __init__ aborts
+        # loudly instead of silently mis-migrating.
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS _schema_meta (key TEXT PRIMARY KEY, value TEXT)"
+        )
+        cur = self._conn.execute("SELECT value FROM _schema_meta WHERE key = 'version'")
+        row = cur.fetchone()
+        if not row:
+            return 0
         try:
-            self._conn.execute(
-                "CREATE TABLE IF NOT EXISTS _schema_meta (key TEXT PRIMARY KEY, value TEXT)"
+            return int(row[0])
+        except (TypeError, ValueError):
+            logger.warning(
+                "[MemoryStorage] Corrupt schema version value %r, treating as 0", row[0]
             )
-            cur = self._conn.execute("SELECT value FROM _schema_meta WHERE key = 'version'")
-            row = cur.fetchone()
-            return int(row[0]) if row else 0
-        except Exception:
             return 0
 
     def _set_schema_version(self, version: int) -> None:
@@ -959,28 +969,30 @@ class MemoryStorage:
     def get_memory(self, memory_id: str) -> dict | None:
         if not self._ensure_conn():
             return None
-        try:
-            cursor = self._conn.execute("SELECT * FROM memories WHERE id = ?", (memory_id,))
-            rows = self._rows_to_dicts(cursor)
-            return rows[0] if rows else None
-        except Exception as e:
-            logger.error(f"Failed to get memory {memory_id}: {e}")
-            return None
+        with self._lock:
+            try:
+                cursor = self._conn.execute("SELECT * FROM memories WHERE id = ?", (memory_id,))
+                rows = self._rows_to_dicts(cursor)
+                return rows[0] if rows else None
+            except Exception as e:
+                logger.error(f"Failed to get memory {memory_id}: {e}")
+                return None
 
     def get_memories_batch(self, memory_ids: list[str]) -> dict[str, dict]:
         if not self._ensure_conn() or not memory_ids:
             return {}
-        try:
-            placeholders = ", ".join(["?"] * len(memory_ids))
-            cursor = self._conn.execute(
-                f"SELECT * FROM memories WHERE id IN ({placeholders})",
-                memory_ids,
-            )
-            rows = self._rows_to_dicts(cursor)
-            return {r["id"]: r for r in rows}
-        except Exception as e:
-            logger.error(f"Failed to batch-get memories ({len(memory_ids)} ids): {e}")
-            return {}
+        with self._lock:
+            try:
+                placeholders = ", ".join(["?"] * len(memory_ids))
+                cursor = self._conn.execute(
+                    f"SELECT * FROM memories WHERE id IN ({placeholders})",
+                    memory_ids,
+                )
+                rows = self._rows_to_dicts(cursor)
+                return {r["id"]: r for r in rows}
+            except Exception as e:
+                logger.error(f"Failed to batch-get memories ({len(memory_ids)} ids): {e}")
+                return {}
 
     def delete_memory(self, memory_id: str) -> bool:
         if not self._ensure_conn():
@@ -1063,6 +1075,7 @@ class MemoryStorage:
         limit: int = 50,
         offset: int = 0,
         active_only: bool = True,
+        updated_after: str | None = None,
     ) -> list[dict]:
         if not self._ensure_conn():
             return []
@@ -1103,21 +1116,28 @@ class MemoryStorage:
             conditions.append("(expires_at IS NULL OR expires_at >= ?)")
             params.append(datetime.now().isoformat())
             conditions.append("(superseded_by IS NULL OR superseded_by = '')")
+        if updated_after:
+            # Time-window for "recent" queries: bound by recency so genuinely
+            # recent (even low-importance) memories are eligible, instead of
+            # always returning the all-time most-important rows.
+            conditions.append("COALESCE(updated_at, created_at) >= ?")
+            params.append(updated_after)
 
         where = " AND ".join(conditions) if conditions else "1=1"
         params.extend([limit, offset])
 
-        try:
-            cursor = self._conn.execute(
-                f"SELECT * FROM memories WHERE {where} "
-                f"ORDER BY importance_score DESC, created_at DESC "
-                f"LIMIT ? OFFSET ?",
-                params,
-            )
-            return self._rows_to_dicts(cursor)
-        except Exception as e:
-            logger.error(f"Failed to query memories: {e}")
-            return []
+        with self._lock:
+            try:
+                cursor = self._conn.execute(
+                    f"SELECT * FROM memories WHERE {where} "
+                    f"ORDER BY importance_score DESC, created_at DESC "
+                    f"LIMIT ? OFFSET ?",
+                    params,
+                )
+                return self._rows_to_dicts(cursor)
+            except Exception as e:
+                logger.error(f"Failed to query memories: {e}")
+                return []
 
     def count(
         self,
@@ -1404,6 +1424,21 @@ class MemoryStorage:
             return
         with self._lock:
             try:
+                # Dedup guard: a consolidation interrupted between save_episode
+                # and mark_turns_extracted re-runs and would otherwise INSERT a
+                # brand-new id for the same turns, accumulating duplicate
+                # episodes. If an episode already exists for the same
+                # (session_id, started_at), reuse its id so this is an in-place
+                # update rather than a duplicate insert.
+                sid = episode.get("session_id", "")
+                started = episode.get("started_at", "")
+                if sid and started:
+                    existing = self._conn.execute(
+                        "SELECT id FROM episodes WHERE session_id = ? AND started_at = ? LIMIT 1",
+                        (sid, started),
+                    ).fetchone()
+                    if existing and existing[0] and existing[0] != episode.get("id"):
+                        episode = {**episode, "id": existing[0]}
                 self._conn.execute(
                     """
                     INSERT OR REPLACE INTO episodes
@@ -2405,8 +2440,15 @@ class MemoryStorage:
         now = datetime.now().isoformat()
         with self._lock:
             try:
+                # Data-loss guard: never hard-delete memories that are still
+                # valuable just because their TTL elapsed. Skip cited
+                # (access_count>=3, matching the decay-path protection),
+                # important (importance_score>=0.8) and permanent rows.
                 cursor = self._conn.execute(
-                    "DELETE FROM memories WHERE expires_at IS NOT NULL AND expires_at < ?",
+                    "DELETE FROM memories WHERE expires_at IS NOT NULL AND expires_at < ? "
+                    "AND COALESCE(access_count, 0) < 3 "
+                    "AND COALESCE(importance_score, 0) < 0.8 "
+                    "AND COALESCE(priority, '') != 'permanent'",
                     (now,),
                 )
                 self._conn.commit()
@@ -2425,8 +2467,14 @@ class MemoryStorage:
             return []
         now = datetime.now().isoformat()
         try:
+            # Same protection predicate as cleanup_expired() so the caller only
+            # removes vectors for memories that were actually deleted from
+            # SQLite (keeps the SQLite↔vector index consistent).
             cursor = self._conn.execute(
-                "SELECT id FROM memories WHERE expires_at IS NOT NULL AND expires_at < ?",
+                "SELECT id FROM memories WHERE expires_at IS NOT NULL AND expires_at < ? "
+                "AND COALESCE(access_count, 0) < 3 "
+                "AND COALESCE(importance_score, 0) < 0.8 "
+                "AND COALESCE(priority, '') != 'permanent'",
                 (now,),
             )
             return [row["id"] for row in self._rows_to_dicts(cursor)]

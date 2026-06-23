@@ -469,8 +469,14 @@ class UnifiedStore:
         return ok
 
     def cleanup_expired(self) -> int:
+        # Capture the ids that WILL be deleted FIRST (get_expired_memory_ids
+        # uses the same protection predicate as cleanup_expired), then delete
+        # from SQLite, then mirror into the search backend. Protected
+        # (cited / important / permanent) memories are never listed here, so
+        # their vectors stay in sync with the authoritative SQLite store.
+        expired_ids = list(self.db.get_expired_memory_ids())
         count = self.db.cleanup_expired()  # lock + condition re-check
-        for memory_id in list(self.db.get_expired_memory_ids()):
+        for memory_id in expired_ids:
             self.search.delete(memory_id)
         return count
 
@@ -605,6 +611,19 @@ class UnifiedStore:
 
         if not merged:
             return []
+
+        # Normalize heterogeneous backend scores to a common [0,1] scale within
+        # this result set. LanceDB hybrid returns raw RRF (~0.02), pure-vector
+        # returns cosine-derived [0,1], FTS5 returns bm25-derived values — feeding
+        # those unnormalized into the downstream rerank `relevance` weight would
+        # erase semantic relevance whenever hybrid/RRF is active. Min-max here
+        # makes the best hit ~1.0 and spreads the rest comparably.
+        _vals = list(merged.values())
+        _lo, _hi = min(_vals), max(_vals)
+        if _hi > _lo:
+            merged = {mid: (s - _lo) / (_hi - _lo) for mid, s in merged.items()}
+        else:
+            merged = dict.fromkeys(merged, 1.0)
 
         ordered = sorted(merged.items(), key=lambda kv: kv[1], reverse=True)
 

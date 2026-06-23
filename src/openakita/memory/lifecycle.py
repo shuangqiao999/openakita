@@ -933,8 +933,21 @@ class LifecycleManager:
                 * (1 + (getattr(m, "access_count", 0) or 0) / 10),
                 reverse=True,
             )
-            # Keep the best, delete the rest
+            # Keep the best, then delete others ONLY when their content is an
+            # actual near-duplicate of a kept representative. Sharing the same
+            # (subject, predicate) is NOT sufficient: the extractor emits coarse
+            # keys (e.g. subject="用户", predicate="偏好"), so deleting on the key
+            # alone collapses distinct facts into one — silent data loss.
+            kept_reps = [group[0]]
             for m in group[1:]:
+                m_content = getattr(m, "content", "") or ""
+                is_dup = any(
+                    _fast_content_dedup(m_content, getattr(k, "content", "") or "") == "exact"
+                    for k in kept_reps
+                )
+                if not is_dup:
+                    kept_reps.append(m)
+                    continue
                 try:
                     self.store.delete_semantic(m.id)
                     deleted += 1
@@ -1204,10 +1217,26 @@ class LifecycleManager:
                         elif action == "merge":
                             target_id = dec.get("merged_with")
                             new_content = dec.get("new_content")
-                            if target_id and new_content:
-                                await asyncio.to_thread(self.store.update_semantic, target_id, {"content": new_content})
-                                await asyncio.to_thread(self.store.delete_semantic, mem.id)
-                                report["merged"] += 1
+                            # Only delete the source if the merge target really
+                            # exists, is not the source itself, and the content
+                            # update succeeded. Otherwise a hallucinated /
+                            # already-deleted / self-referential target would
+                            # silently drop the source content.
+                            target_exists = (
+                                bool(target_id)
+                                and target_id != mem.id
+                                and await asyncio.to_thread(self.store.db.get_memory, target_id)
+                                is not None
+                            )
+                            if target_exists and new_content:
+                                updated = await asyncio.to_thread(
+                                    self.store.update_semantic, target_id, {"content": new_content}
+                                )
+                                if updated:
+                                    await asyncio.to_thread(self.store.delete_semantic, mem.id)
+                                    report["merged"] += 1
+                                else:
+                                    report["kept"] += 1
                             else:
                                 report["kept"] += 1
 

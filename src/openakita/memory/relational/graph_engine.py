@@ -51,6 +51,9 @@ class GraphEngine:
         max_hops: int = 2,
         limit: int = 10,
         token_budget: int = 1500,
+        *,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
     ) -> list[RetrievalResult]:
         """Query the memory graph across multiple dimensions.
 
@@ -58,12 +61,21 @@ class GraphEngine:
         2. Find seed nodes via FTS / entity / time search
         3. Traverse along each dimension's edges
         4. Score by multi-dimensional relevance
+
+        ``user_id``/``workspace_id`` enforce tenant isolation on the seed search
+        so one user's graph nodes are never returned to another.
         """
         cues = self._parse_query_cues(query)
         active_dims = dimensions or cues.get("active_dimensions", list(Dimension))
 
         # Find seed nodes
-        seeds = self._find_seeds(query, cues, limit=max(limit * 2, 30))
+        seeds = self._find_seeds(
+            query,
+            cues,
+            limit=max(limit * 2, 30),
+            user_id=user_id,
+            workspace_id=workspace_id,
+        )
         if not seeds:
             return []
 
@@ -180,12 +192,22 @@ class GraphEngine:
         cues["keywords"] = keywords
         return cues
 
-    def _find_seeds(self, query: str, cues: dict, limit: int = 30) -> list[MemoryNode]:
+    def _find_seeds(
+        self,
+        query: str,
+        cues: dict,
+        limit: int = 30,
+        *,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> list[MemoryNode]:
         seeds: list[MemoryNode] = []
         seen: set[str] = set()
 
         # FTS / LIKE search (full query)
-        fts_results = self.store.search_fts(query, limit=limit)
+        fts_results = self.store.search_fts(
+            query, limit=limit, user_id=user_id, workspace_id=workspace_id
+        )
         for n in fts_results:
             if n.id not in seen:
                 seen.add(n.id)
@@ -195,11 +217,15 @@ class GraphEngine:
         for kw in cues.get("keywords", []):
             if len(seeds) >= limit:
                 break
-            for n in self.store.search_by_entity(kw, limit=10):
+            for n in self.store.search_by_entity(
+                kw, limit=10, user_id=user_id, workspace_id=workspace_id
+            ):
                 if n.id not in seen:
                     seen.add(n.id)
                     seeds.append(n)
-            for n in self.store.search_like(kw, limit=10):
+            for n in self.store.search_like(
+                kw, limit=10, user_id=user_id, workspace_id=workspace_id
+            ):
                 if n.id not in seen:
                     seen.add(n.id)
                     seeds.append(n)
@@ -208,7 +234,9 @@ class GraphEngine:
         if cues.get("has_temporal"):
             now = datetime.now()
             start = now - timedelta(days=7)
-            for n in self.store.search_by_time_range(start, now, limit=20):
+            for n in self.store.search_by_time_range(
+                start, now, limit=20, user_id=user_id, workspace_id=workspace_id
+            ):
                 if n.id not in seen:
                     seen.add(n.id)
                     seeds.append(n)

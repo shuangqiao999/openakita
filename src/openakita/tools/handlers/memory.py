@@ -1275,10 +1275,14 @@ class MemoryHandler:
             return "⚠️ 关系型记忆（Mode 2）未启用。请在配置中设置 memory_mode 为 mode2 或 auto。"
 
         try:
+            # Pass the current tenant so the graph search is isolated to this
+            # user/workspace (the relational read paths now enforce it).
             results = await mm.relational_graph.query(
                 query,
                 limit=max_results,
                 token_budget=2000,
+                user_id=getattr(mm, "_current_user_id", "default"),
+                workspace_id=getattr(mm, "_current_workspace_id", "default"),
             )
         except Exception as e:
             return f"❌ 图搜索失败: {e}"

@@ -257,12 +257,13 @@ class RetrievalEngine:
 
 
     def _bump_ranked(self, ranked: list) -> None:
-        try:
-            mids = [c.memory_id for c in ranked if c.memory_id]
-            if mids:
-                self.store.bump_access(mids)
-        except Exception:
-            pass
+        # Intentionally a no-op. Previously this bumped access_count for EVERY
+        # retrieved candidate on every retrieval, creating a self-reinforcing
+        # popularity loop (retrieved → access_frequency_score↑ → ranks higher →
+        # retrieved again) unrelated to actual usefulness, and contradicting
+        # bump_access's "confirmed useful by LLM" contract. access_count is now
+        # bumped only when the LLM actually cites/uses a memory.
+        return
 
     def _search_semantic(self, query: str, limit: int = 15) -> list[RetrievalCandidate]:
         now = datetime.now()
@@ -341,6 +342,9 @@ class RetrievalEngine:
         query: str = "",
     ) -> list[RetrievalCandidate]:
         now = datetime.now()
+        from datetime import timedelta
+
+        since = (now - timedelta(days=max(1, days))).isoformat()
         query_tokens = set()
         if query:
             from openakita.core.tokenizer import tokenize_words
@@ -349,7 +353,8 @@ class RetrievalEngine:
         seen: set[str] = set()
         for scope, scope_owner, user_id, workspace_id in self._scope_pairs:
             memories = self.store.query_semantic(
-                min_importance=0.6,
+                min_importance=0.0,
+                updated_after=since,
                 scope=scope,
                 scope_owner=scope_owner,
                 user_id=user_id,
@@ -1196,7 +1201,7 @@ class RetrievalEngine:
             if len(user_msgs) > 1:
                 lines.append(f"  后续: {user_msgs[1][:60]}")
 
-        total_chars = sum(len(l) for l in lines)
+        total_chars = sum(len(ln) for ln in lines)
         if total_chars > 3000:
             lines.append("\n[更多内容可通过 search_conversation_traces 查找]")
         return "\n".join(lines)
@@ -1287,11 +1292,7 @@ def _parse_chinese_or_int(val: str) -> int:
         n = _CN_NUM_FULL.get(ch)
         if n is None:
             continue
-        if n >= 100:
-            segment = (segment or 1) * n
-            total += segment
-            segment = 0
-        elif n == 10:
+        if n >= 100 or n == 10:
             segment = (segment or 1) * n
             total += segment
             segment = 0

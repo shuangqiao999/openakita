@@ -488,7 +488,36 @@ class RelationalMemoryStore:
     # Search
     # ------------------------------------------------------------------
 
-    def search_fts(self, query: str, limit: int = 20) -> list[MemoryNode]:
+    def _owner_where(
+        self,
+        user_id: str | None,
+        workspace_id: str | None,
+        prefix: str = "",
+    ) -> tuple[str, list[object]]:
+        """Build a tenant-isolation WHERE fragment. Returns ('', []) when no
+        owner is given (backward compatible). Used by every relational read
+        path so graph nodes of one user/workspace are never returned to
+        another (the columns were written but never enforced on read)."""
+        p = f"{prefix}." if prefix else ""
+        conds: list[str] = []
+        params: list[object] = []
+        if user_id is not None:
+            conds.append(f"COALESCE({p}user_id, 'default') = ?")
+            params.append(user_id)
+        if workspace_id is not None:
+            conds.append(f"COALESCE({p}workspace_id, 'default') = ?")
+            params.append(workspace_id)
+        sql = (" AND " + " AND ".join(conds)) if conds else ""
+        return sql, params
+
+    def search_fts(
+        self,
+        query: str,
+        limit: int = 20,
+        *,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> list[MemoryNode]:
         self._check_open()
         """Full-text search with CJK bigram tokenization and BM25 ranking."""
         if not query or len(query.strip()) < 2:
@@ -496,10 +525,10 @@ class RelationalMemoryStore:
         tokenized = self._tokenize_for_fts(query)
         safe_q = re.sub(r'[":*^~()\-+]', " ", tokenized).strip()
         if not safe_q:
-            return self.search_like(query, limit)
+            return self.search_like(query, limit, user_id=user_id, workspace_id=workspace_id)
         terms = [t for t in safe_q.split() if len(t) >= 2]
         if not terms:
-            return self.search_like(query, limit)
+            return self.search_like(query, limit, user_id=user_id, workspace_id=workspace_id)
         fts_query = " OR ".join(terms)
         try:
             cur = self._conn.execute(
@@ -509,12 +538,14 @@ class RelationalMemoryStore:
             )
             ranked_ids = [r[0] for r in cur.fetchall()]
             if not ranked_ids:
-                return self.search_like(query, limit)
+                return self.search_like(query, limit, user_id=user_id, workspace_id=workspace_id)
             placeholders = ",".join("?" for _ in ranked_ids)
             active_where, active_params = self._active_node_where()
+            own_sql, own_params = self._owner_where(user_id, workspace_id)
             cur2 = self._conn.execute(
-                f"SELECT * FROM mdrm_nodes WHERE id IN ({placeholders}) AND {active_where}",
-                ranked_ids + active_params,
+                f"SELECT * FROM mdrm_nodes WHERE id IN ({placeholders}) "
+                f"AND {active_where}{own_sql}",
+                ranked_ids + active_params + own_params,
             )
             desc = cur2.description
             nodes_by_id: dict[str, MemoryNode] = {}
@@ -523,28 +554,44 @@ class RelationalMemoryStore:
                 nodes_by_id[n.id] = n
             return [nodes_by_id[nid] for nid in ranked_ids if nid in nodes_by_id]
         except sqlite3.OperationalError:
-            return self.search_like(query, limit)
+            return self.search_like(query, limit, user_id=user_id, workspace_id=workspace_id)
 
-    def search_like(self, query: str, limit: int = 20) -> list[MemoryNode]:
+    def search_like(
+        self,
+        query: str,
+        limit: int = 20,
+        *,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> list[MemoryNode]:
         self._check_open()
         if not query or len(query.strip()) < 2:
             return []
         escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         pattern = f"%{escaped}%"
         active_where, active_params = self._active_node_where()
+        own_sql, own_params = self._owner_where(user_id, workspace_id)
         cur = self._conn.execute(
             """SELECT * FROM mdrm_nodes
                WHERE (content LIKE ? ESCAPE '\\' OR action_verb LIKE ? ESCAPE '\\'
                OR project LIKE ? ESCAPE '\\')
                AND """
             + active_where
+            + own_sql
             + """
                ORDER BY importance DESC LIMIT ?""",
-            (pattern, pattern, pattern, *active_params, limit),
+            (pattern, pattern, pattern, *active_params, *own_params, limit),
         )
         return [self._row_to_node(cur.description, r) for r in cur.fetchall()]
 
-    def search_by_entity(self, entity_name: str, limit: int = 20) -> list[MemoryNode]:
+    def search_by_entity(
+        self,
+        entity_name: str,
+        limit: int = 20,
+        *,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> list[MemoryNode]:
         self._check_open()
         name_lower = entity_name.lower()
         # Check alias table first
@@ -555,28 +602,38 @@ class RelationalMemoryStore:
         canonical = row[0] if row else name_lower
 
         active_where, active_params = self._active_node_where("n")
+        own_sql, own_params = self._owner_where(user_id, workspace_id, prefix="n")
         cur = self._conn.execute(
             """SELECT n.* FROM mdrm_nodes n
                JOIN mdrm_entity_index ei ON n.id = ei.node_id
                WHERE ei.entity_name = ? AND """
             + active_where
+            + own_sql
             + """
                ORDER BY n.importance DESC LIMIT ?""",
-            (canonical, *active_params, limit),
+            (canonical, *active_params, *own_params, limit),
         )
         return [self._row_to_node(cur.description, r) for r in cur.fetchall()]
 
     def search_by_time_range(
-        self, start: datetime, end: datetime, limit: int = 50
+        self,
+        start: datetime,
+        end: datetime,
+        limit: int = 50,
+        *,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
     ) -> list[MemoryNode]:
         active_where, active_params = self._active_node_where()
+        own_sql, own_params = self._owner_where(user_id, workspace_id)
         cur = self._conn.execute(
             """SELECT * FROM mdrm_nodes
                WHERE occurred_at >= ? AND occurred_at <= ? AND """
             + active_where
+            + own_sql
             + """
                ORDER BY occurred_at DESC LIMIT ?""",
-            (start.isoformat(), end.isoformat(), *active_params, limit),
+            (start.isoformat(), end.isoformat(), *active_params, *own_params, limit),
         )
         return [self._row_to_node(cur.description, r) for r in cur.fetchall()]
 
