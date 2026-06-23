@@ -77,9 +77,18 @@ class RetrievalEngine:
         self._decompose_cache: dict[str, dict] = {}
         self._external_sources: list = []
         self._plugin_hooks = None
+        # 查询拆解默认走规则(零延迟)。LLM 拆解(think_lightweight)是一次串行的
+        # 额外 LLM 往返，实测在本地模型上给每个中/长查询的"注入记忆前"阶段加上
+        # ~950ms，直接推迟首字(TTFT)——而语义召回用的是查询向量、并不依赖这些
+        # 关键词，收益极低。需要时可用 set_llm_decompose(True) 显式开启。
+        self._llm_decompose_enabled = False
         self._scope_pairs: list[tuple[str, str, str, str]] = [
             ("user", "", "default", "default")
         ]
+
+    def set_llm_decompose(self, enabled: bool) -> None:
+        """开启/关闭检索时的 LLM 查询拆解（默认关，以保证交互低延迟）。"""
+        self._llm_decompose_enabled = bool(enabled)
 
     def set_scope_context(self, scope_pairs: list[tuple] | None = None) -> None:
         """Set the visible memory scopes for this retrieval engine."""
@@ -588,7 +597,7 @@ class RetrievalEngine:
             self._decompose_cache[cache_key] = result
             return result
 
-        if self.brain:
+        if self.brain and self._llm_decompose_enabled:
             result = self._decompose_with_llm(query, recent_messages)
             if result:
                 self._decompose_cache[cache_key] = result
