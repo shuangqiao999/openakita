@@ -526,7 +526,14 @@ class AgentInstancePool:
         except RuntimeError:
             return
         try:
-            loop.create_task(agent.shutdown())
+            task = loop.create_task(agent.shutdown())
+            task.add_done_callback(lambda t: logger.debug(
+                "Reaper: agent %s shutdown task completed", getattr(agent, "name", "?")
+            ) if not t.exception() else logger.warning(
+                "Reaper: agent %s shutdown task failed: %s",
+                getattr(agent, "name", "?"),
+                t.exception()
+            ))
         except Exception:
             pass
 

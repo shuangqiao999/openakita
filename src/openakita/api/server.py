@@ -579,7 +579,7 @@ def create_app(
                 logger.warning(f"OrgRuntime startup error (non-fatal): {e}")
 
         # 健康检查改为后台任务，不阻塞 HTTP 就绪
-        asyncio.create_task(_startup_health_checks(app))
+        app.state._health_checks_task = asyncio.create_task(_startup_health_checks(app))
 
     @app.on_event("shutdown")
     async def _shutdown_org_runtime():
@@ -676,6 +676,8 @@ async def start_api_server(
             try:
                 loop = api_loop_holder[0] if api_loop_holder else None
                 if loop and not loop.is_closed():
+                    from openakita.utils.async_utils import drain_loop_tasks
+                    drain_loop_tasks(loop, timeout=3.0)
                     loop.close()
             except Exception:
                 pass

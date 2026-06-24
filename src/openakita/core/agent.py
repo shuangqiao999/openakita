@@ -1468,6 +1468,9 @@ class Agent:
         # 状态
         self._initialized = False
         self._running = False
+        from openakita.utils.async_utils import BgTaskSet
+
+        self._bg_tasks = BgTaskSet()
 
         self._last_finalized_trace: list[dict] = []
 
@@ -2163,7 +2166,7 @@ class Agent:
         # === Stage 4-12: Defer heavy prewarm to background ===
         # Skills/MCP/Plugins already loaded above. Only prewarm (vector store,
         # catalogs, sticker engine) is deferred to avoid blocking HTTP bind.
-        asyncio.create_task(self._background_prewarm_and_stickers())
+        self._bg_tasks.create_task(self._background_prewarm_and_stickers())
 
         # === 从记忆系统加载 PERSONA_TRAIT ===
         try:
@@ -6287,7 +6290,7 @@ class Agent:
         # 2. TaskMonitor complete + retrospect
         metrics = task_monitor.complete(success=True, response=response_text)
         if metrics.retrospect_needed:
-            asyncio.create_task(self._do_task_retrospect_background(task_monitor, session_id))
+            self._bg_tasks.create_task(self._do_task_retrospect_background(task_monitor, session_id))
             logger.info(f"[Session:{session_id}] Task retrospect scheduled (background)")
 
         # 3. Memory: 记录 assistant 响应（含工具调用数据）
@@ -8217,7 +8220,7 @@ class Agent:
             f"cancel_reason={cancel_reason!r}, model={current_model}"
         )
 
-        asyncio.create_task(
+        self._bg_tasks.create_task(
             self._background_cancel_farewell(
                 list(working_messages), system_prompt, current_model, cancel_reason
             )
@@ -9561,7 +9564,7 @@ class Agent:
         # === 后台复盘分析（如果任务耗时过长，不阻塞响应） ===
         if metrics.retrospect_needed:
             # 创建后台任务执行复盘，不等待结果
-            asyncio.create_task(
+            self._bg_tasks.create_task(
                 self._do_task_retrospect_background(task_monitor, task.session_id or task.id)
             )
             logger.info(f"[Task:{task.id}] Retrospect scheduled (background)")
@@ -9579,7 +9582,7 @@ class Agent:
             if _channel in ("cli", "desktop"):
                 from .desktop_notify import notify_task_completed_async
 
-                asyncio.ensure_future(
+                self._bg_tasks.create_task(
                     notify_task_completed_async(
                         task.description[:80],
                         success=True,
@@ -9841,6 +9844,10 @@ class Agent:
             logger.debug(f"[TodoStore] Shutdown flush failed: {e}")
 
         self._running = False
+        try:
+            await self._bg_tasks.cancel_all(timeout=3.0)
+        except Exception:
+            pass
         logger.info("Agent shutdown complete")
 
     async def consolidate_memories(self) -> dict:

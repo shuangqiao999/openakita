@@ -119,6 +119,14 @@ fn restart_marker_path() -> PathBuf {
 /// 再次崩溃则不再 spawn，让用户感知到崩溃并人工介入。
 const SELF_HEAL_COOLDOWN_MS: u64 = 30_000;
 
+/// 连续崩溃阈值：超过此次数后自动进入安全模式（Safe Mode），
+/// 以最小 GPU 负载启动，减少 WebView2 再次崩溃的可能。
+const CRASH_COUNT_SAFE_MODE_THRESHOLD: u64 = 3;
+
+/// 崩溃计数回看窗口（秒）。只有在此窗口内的连续崩溃才会计入 crash_count。
+/// 超过此窗口未崩溃，计数器重置为 1。
+const CRASH_COUNT_WINDOW_SECS: u64 = 300;
+
 fn try_self_heal_relaunch(panic_msg: &str) {
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -128,11 +136,15 @@ fn try_self_heal_relaunch(panic_msg: &str) {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let last_ws = read_state_file().current_workspace_id.unwrap_or_default();
-    // 命令行恢复时间：若上一份 marker 距今 < 冷却窗，不再二次自愈，
-    // 避免无限崩溃-重启循环把 CPU 烧穿。
-    if let Ok(prev) = fs::read_to_string(restart_marker_path()) {
-        if let Ok(prev_json) = serde_json::from_str::<serde_json::Value>(&prev) {
+
+    // 读取上次崩溃信息以计算 crash_count 和决定是否进入 safe mode
+    let mut prev_crash_count: u64 = 0;
+    let mut prev_crash_ts: u64 = 0;
+    let mut reset_count = true;
+    if let Ok(prev_content) = fs::read_to_string(restart_marker_path()) {
+        if let Ok(prev_json) = serde_json::from_str::<serde_json::Value>(&prev_content) {
             if let Some(prev_ts) = prev_json.get("ts").and_then(|v| v.as_u64()) {
+                // 冷却检查：短时间内重复崩溃则不再自愈
                 if ts.saturating_sub(prev_ts) < SELF_HEAL_COOLDOWN_MS / 1000 {
                     log_to_file(&format!(
                         "[self-heal] skip relaunch: last self-heal {}s ago < cooldown",
@@ -140,14 +152,35 @@ fn try_self_heal_relaunch(panic_msg: &str) {
                     ));
                     return;
                 }
+                // 在 CRASH_COUNT_WINDOW_SECS 窗口内的崩溃累计计数
+                if ts.saturating_sub(prev_ts) < CRASH_COUNT_WINDOW_SECS {
+                    prev_crash_ts = prev_ts;
+                    prev_crash_count = prev_json
+                        .get("crash_count")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(1);
+                    reset_count = false;
+                }
             }
         }
     }
+    let crash_count = if reset_count { 1 } else { prev_crash_count.saturating_add(1) };
+    let safe_mode = crash_count >= CRASH_COUNT_SAFE_MODE_THRESHOLD;
+    if safe_mode {
+        log_to_file(&format!(
+            "[self-heal] entering SAFE MODE after {} crashes in {}s window",
+            crash_count,
+            ts.saturating_sub(prev_crash_ts)
+        ));
+    }
+
     let marker = serde_json::json!({
         "ts": ts,
         "panic_brief": panic_msg.chars().take(200).collect::<String>(),
         "last_workspace_id": last_ws,
         "reason": "tao_destroyed_panic",
+        "crash_count": crash_count,
+        "safe_mode": safe_mode,
     });
     let _ = fs::write(
         restart_marker_path(),
@@ -3813,15 +3846,23 @@ fn main() {
             // 由 panic hook 在命中 tao#1180 特征时写入；这里读出后立刻删除
             // 避免重复触发，并向前端 emit 事件，前端可据此恢复上次工作区/视图
             // 或弹温和提示告诉用户"刚刚已自动恢复"。
+            // 若 crash_count >= 3 (safe_mode=true)，向前端传递安全模式标识，
+            // 前端应强制启用 perf-mode="low" 并显示恢复提示。
             let marker_path = restart_marker_path();
+            let is_auto_restarted = std::env::args().any(|a| a == "--auto-restarted");
+            let is_safe_mode = std::env::args().any(|a| a == "--safe-mode");
             if marker_path.exists() {
                 if let Ok(content) = fs::read_to_string(&marker_path) {
                     log_to_file(&format!(
                         "[self-heal] restart.marker recovered: {}",
                         content.lines().next().unwrap_or("")
                     ));
-                    let payload: serde_json::Value =
+                    let mut payload: serde_json::Value =
                         serde_json::from_str(&content).unwrap_or(serde_json::json!({}));
+                    if let Some(obj) = payload.as_object_mut() {
+                        obj.insert("is_auto_restarted".into(), serde_json::json!(is_auto_restarted));
+                        obj.insert("is_safe_mode".into(), serde_json::json!(is_safe_mode));
+                    }
                     app.emit("app-restarted-from-crash", payload).ok();
                 }
                 let _ = fs::remove_file(&marker_path);

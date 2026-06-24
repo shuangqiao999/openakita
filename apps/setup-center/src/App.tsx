@@ -604,6 +604,35 @@ function MainApp() {
         obLoadEnvCheck();
       }
     });
+    const unlistenCrash = listen<{
+      panic_brief?: string;
+      last_workspace_id?: string;
+      crash_count?: number;
+      safe_mode?: boolean;
+      is_auto_restarted?: boolean;
+      is_safe_mode?: boolean;
+    }>("app-restarted-from-crash", (e) => {
+      const p = e.payload;
+      logger.warn("App", "Restarted from crash", {
+        crash_count: p.crash_count,
+        safe_mode: p.safe_mode,
+        panic_brief: p.panic_brief?.slice(0, 100),
+      });
+      const inSafeMode = p.safe_mode || p.is_safe_mode;
+      if (inSafeMode) {
+        localStorage.setItem("openakita_perf_mode", "low");
+        document.documentElement.dataset.perfMode = "low";
+      }
+      const count = p.crash_count ?? 0;
+      if (inSafeMode || count >= 3) {
+        toast.warning(
+          count >= 3
+            ? t("app.toast.safeMode", "Safe Mode active — GPU effects disabled to prevent further crashes")
+            : t("app.toast.crashRecovered", "Application recovered from an unexpected shutdown"),
+          { duration: 15000 },
+        );
+      }
+    });
     // ── DEV: Ctrl+Shift+O 强制进入 onboarding 测试模式 ──
     const devKeyHandler = (ev: KeyboardEvent) => {
       if (ev.ctrlKey && ev.shiftKey && ev.key === "O") {
@@ -619,6 +648,7 @@ function MainApp() {
     window.addEventListener("keydown", devKeyHandler);
     return () => {
       unlisten.then((u) => u());
+      unlistenCrash.then((u) => u());
       window.removeEventListener("keydown", devKeyHandler);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

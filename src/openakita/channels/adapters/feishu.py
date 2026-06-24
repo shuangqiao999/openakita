@@ -40,35 +40,7 @@ from ..types import (
 logger = logging.getLogger(__name__)
 
 
-def _drain_loop_tasks(loop: asyncio.AbstractEventLoop, timeout: float = 3.0) -> None:
-    """Cancel all pending tasks on *loop* and run them to completion.
-
-    Lark SDK spawns internal asyncio tasks (ExpiringCache cron, ping loop,
-    receive loop) that are never explicitly cancelled.  If we just close the
-    loop, Python emits "Task was destroyed but it is pending!" for each one,
-    and — more importantly — the thread may hang waiting for those tasks,
-    blocking process shutdown.
-
-    A *timeout* guard prevents indefinite blocking in case any task swallows
-    ``CancelledError`` and keeps running (as some third-party SDKs do).
-    """
-    try:
-        pending = asyncio.all_tasks(loop)
-    except RuntimeError:
-        return
-    if not pending:
-        return
-    for task in pending:
-        task.cancel()
-    try:
-        loop.run_until_complete(
-            asyncio.wait_for(
-                asyncio.gather(*pending, return_exceptions=True),
-                timeout=timeout,
-            )
-        )
-    except Exception:
-        pass
+from openakita.utils.async_utils import drain_loop_tasks as _drain_loop_tasks
 
 
 def _feishu_ws_loop_exception_handler(

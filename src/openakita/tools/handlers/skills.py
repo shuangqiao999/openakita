@@ -640,7 +640,13 @@ class SkillsHandler:
                             argument_hint=getattr(meta, "argument_hint", "") or "",
                         )
                         try:
-                            asyncio.get_running_loop().create_task(coro)
+                            task = asyncio.get_running_loop().create_task(coro)
+                            task.add_done_callback(
+                                lambda t: logger.exception(
+                                    "auto_translate_skill failed",
+                                    exc_info=t.exception(),
+                                ) if t.exception() else None
+                            )
                         except RuntimeError:
                             coro.close()
                 except Exception as te:  # pragma: no cover - 仅日志

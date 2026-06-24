@@ -4932,15 +4932,26 @@ button.btnApplyRestart:hover {
 
 /* ── Global performance mode ──
    Activated via: document.documentElement.dataset.perfMode = "low"
-   Removes backdrop-filter, heavy animations, and shadows to cut GPU load.
+   Removes backdrop-filter, box-shadow, animations, transitions,
+   background patterns, filter effects, and reduces text rendering
+   quality to drastically cut GPU load on WebView2.
 */
 [data-perf-mode="low"] *,
 [data-perf-mode="low"] *::before,
 [data-perf-mode="low"] *::after {
   animation-duration: 0.01ms !important;
   animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
+  box-shadow: none !important;
+  filter: none !important;
+  -webkit-filter: none !important;
+  will-change: auto !important;
+  -webkit-font-smoothing: subpixel-antialiased !important;
+}
+[data-perf-mode="low"] body {
+  background-image: none !important;
 }
 [data-perf-mode="low"] .agentOrbitRunning,
 [data-perf-mode="low"] .agentOrbitPulse {
@@ -4953,6 +4964,17 @@ button.btnApplyRestart:hover {
 [data-perf-mode="low"] .chainPanel {
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
+}
+/* Allow essential shadows: focus rings must remain visible for a11y */
+[data-perf-mode="low"] input:focus,
+[data-perf-mode="low"] textarea:focus,
+[data-perf-mode="low"] select:focus,
+[data-perf-mode="low"] button:focus-visible {
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.35) !important;
+}
+/* Allow text-selection styling to remain */
+[data-perf-mode="low"] ::selection {
+  box-shadow: none !important;
 }
 
 /* ── CAPTCHA popup: force above Radix Dialog (z-50, modal pointer-events:none) ── */

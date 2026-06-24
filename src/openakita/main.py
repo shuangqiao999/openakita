@@ -1272,6 +1272,7 @@ async def run_interactive():
     shutdown_event = asyncio.Event()
     init_done = asyncio.Event()
     early_input_queue: list[str] = []
+    _im_task_holder: list[asyncio.Task] = []
 
     agent = get_agent()
 
@@ -1326,7 +1327,8 @@ async def run_interactive():
             except Exception as e:
                 logger.warning(f"IM channel start failed: {e}")
 
-        asyncio.create_task(_start_im_bg())
+        _im_bg_task = asyncio.create_task(_start_im_bg())
+        _im_task_holder.append(_im_bg_task)
         init_done.set()
 
     import uuid as _uuid
@@ -1615,6 +1617,11 @@ async def run_interactive():
             _init_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await _init_task
+        for t in _im_task_holder:
+            if not t.done():
+                t.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.gather(*_im_task_holder, return_exceptions=True)
         with console.status("[bold yellow]正在停止服务...", spinner="dots"):
             await stop_im_channels(graceful=True, drain_timeout=30.0)
             try:
@@ -2047,6 +2054,9 @@ def _install_windows_asyncio_pipe_filter() -> None:
             exc = context.get("exception")
             logger.debug("Ignored Windows asyncio pipe close callback noise: %r", exc)
             return
+        if "Task was destroyed but it is pending" in message:
+            logger.debug("Ignored asyncio destroyed task: %r", context.get("task"))
+            return
         if previous_handler is not None:
             previous_handler(loop, context)
         else:
@@ -2451,6 +2461,13 @@ def serve(
                 except Exception as e:
                     # 忽略停止过程中的异常（常见于 Windows asyncio）
                     logger.debug(f"Exception during shutdown (ignored): {e}")
+
+                # 释放所有残留的后台任务，防止 "Task was destroyed but it is pending!" 警告
+                try:
+                    from openakita.utils.async_utils import drain_running_loop_tasks
+                    await drain_running_loop_tasks(timeout=3.0)
+                except Exception:
+                    pass
 
                 if is_restart:
                     console.print("[cyan]✓[/cyan] 服务已停止，准备重启...")
