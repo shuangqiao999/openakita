@@ -985,7 +985,7 @@ class TaskExecutor:
             logger.debug("Knowledge base maintenance skipped: %s", e)
 
         try:
-            # Memory LanceDB: 每 30 分钟 nudge 写入 + 每次对话 episode，但从未 compact
+            # Memory LanceDB: 每 30 分钟 nudge 写入 + 每次对话 episode，compact + 索引重调优
             mm = getattr(self, "memory_manager", None)
             if mm and hasattr(mm, "store") and mm.store and hasattr(mm.store, "search"):
                 backend = mm.store.search
@@ -999,7 +999,10 @@ class TaskExecutor:
                                 logger.info("[Maintenance] Embedding breaker '%s' recovered", bname)
                             except Exception:
                                 breaker.mark_failure("maintenance_probe")
-                for tbl_attr in ("_table", "_episodes_table"):
+                for tbl_attr, idx_inited_attr, index_create_method in (
+                    ("_table", "_index_created", "_create_index_sync"),
+                    ("_episodes_table", "_episodes_index_created", "_maybe_create_episodes_index"),
+                ):
                     table = getattr(backend, tbl_attr, None)
                     if table is None:
                         continue
@@ -1029,6 +1032,35 @@ class TaskExecutor:
                                 method_name,
                                 e,
                             )
+                    # IVF_PQ 索引重调优：表从初始 200 行增长到数万行后，需要重新创建索引
+                    # 以匹配当前行数的最优分区数，防止召回率/延迟退化。
+                    try:
+                        row_count = table.count_rows()
+                        min_rows = getattr(backend, "_MIN_ROWS_FOR_INDEX", 200)
+                        if row_count <= min_rows * 2:
+                            continue
+                        if tbl_attr == "_table":
+                            if not getattr(backend, "_index_created", False):
+                                continue
+                            create_fn = getattr(backend, "_create_index_sync", None)
+                            if create_fn is not None:
+                                logger.info("[Maintenance] Re-tuning %s index (rows=%d)", tbl_attr, row_count)
+                                import threading
+                                t = threading.Thread(target=create_fn, daemon=True)
+                                t.start()
+                        else:
+                            # episodes: 检查是否已有索引后再 force 重建
+                            existing = list(table.list_indices()) if hasattr(table, "list_indices") else []
+                            if not existing:
+                                continue
+                            create_fn = getattr(backend, "_maybe_create_episodes_index", None)
+                            if create_fn is not None:
+                                logger.info("[Maintenance] Re-tuning %s index (rows=%d)", tbl_attr, row_count)
+                                import threading
+                                t = threading.Thread(target=lambda: create_fn(force=True), daemon=True)
+                                t.start()
+                    except Exception as e:
+                        logger.debug("[Maintenance] Index re-tune %s skipped: %s", tbl_attr, e)
         except Exception as e:
             logger.debug("Memory LanceDB maintenance skipped: %s", e)
 

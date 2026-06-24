@@ -205,6 +205,8 @@ class LanceDBBackend:
         self._query_embed_cache: OrderedDict[str, list[float]] = OrderedDict()
         self._episodes_table: object | None = None
         self._episodes_enabled = False
+        self._flush_counter: int = 0
+        self._FLUSH_BATCH_INTERVAL: int = 50
 
         try:
             import lancedb as _mod
@@ -395,6 +397,7 @@ class LanceDBBackend:
             logger.info("[LanceDBBackend] Index creation completed")
         except Exception as e:
             logger.warning("[LanceDBBackend] Index creation failed: %s", e)
+            self._index_created = False
         finally:
             self._creating_index = False
 
@@ -458,16 +461,20 @@ class LanceDBBackend:
 
     _EPISODE_INDEX_MIN_ROWS = 100
 
-    def _maybe_create_episodes_index(self) -> None:
-        """自动为 episodes 表创建 IVF_PQ 向量索引（与主表相同策略）。"""
+    _EPISODE_INDEX_MIN_ROWS = 100
+
+    def _maybe_create_episodes_index(self, force: bool = False) -> None:
+        """自动为 episodes 表创建 IVF_PQ 向量索引（与主表相同策略）。
+        force=True 时即使已存在索引也会重建（用于定期重调优）。"""
         if self._episodes_table is None:
             return
         try:
             existing = list(self._episodes_table.list_indices())
-            if existing:
+            if existing and not force:
                 return  # already indexed
         except Exception:
-            return
+            if not force:
+                return
         try:
             row_count = self._episodes_table.count_rows()
             if row_count < self._EPISODE_INDEX_MIN_ROWS:
@@ -1064,12 +1071,19 @@ class LanceDBBackend:
         finally:
             if stale:
                 try:
-                    self._flush_table()
+                    self._force_flush()
                 except Exception:
                     pass
 
     def _flush_table(self) -> None:
-        """每次 add 后调用，立即清理旧版本确保数据持久化到磁盘。"""
+        """批量模式下仅在达到间隔时执行 optimize，减少热写路径 I/O。
+        调用 _force_flush() 可强制立即执行（close / delete_not_in 等场景）。"""
+        self._flush_counter += 1
+        if self._flush_counter % self._FLUSH_BATCH_INTERVAL != 0:
+            return
+        self._force_flush()
+
+    def _force_flush(self) -> None:
         table = self._table
         if table is None:
             return
@@ -1077,7 +1091,6 @@ class LanceDBBackend:
             from datetime import timedelta
             table.optimize(cleanup_older_than=timedelta(hours=1))
         except TypeError:
-            # 旧版 LanceDB 不支持 optimize keyword args，回退到 cleanup_old_versions
             try:
                 table.cleanup_old_versions()
             except Exception as e:

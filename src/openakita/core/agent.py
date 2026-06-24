@@ -4806,6 +4806,8 @@ class Agent:
                 ok = await asyncio.to_thread(search_backend.warmup)
                 if ok:
                     logger.info("[Prewarm] LanceDB embedding warmed in background")
+                    # warmup 完成后重置 latch，允许重新检查是否需要回填
+                    self.memory_manager.store._backfill_started = False
                     self.memory_manager.store._backfill_semantic_if_empty()
                 else:
                     logger.debug("[Prewarm] LanceDB warmup deferred — embedding model not ready")

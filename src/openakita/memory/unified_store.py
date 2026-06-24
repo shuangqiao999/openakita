@@ -97,6 +97,8 @@ class UnifiedStore:
         batch_add() 内部调用 _run_embedding_sync 桥接到异步嵌入事件循环。
 
         支持断点续传：通过 get_all_ids() 跳过已存在的记录，避免维度重建中断后重复工作。
+        needs_full 模式（从 _backfill_semantic_if_needed 设置）用于增量 gap 回填：
+        existing>0 时不跳过，而是用 skip_ids 做 delta 补量。
         """
         try:
             count_fn = getattr(self.search, "count", None)
@@ -184,10 +186,21 @@ class UnifiedStore:
             len(all_mems),
         )
         self._needs_full_backfill = False
+        # 成功后写入 tag 文件，防止部分失败后 24h 无法重试
+        tag_file = getattr(self, "_tag_file_to_write", None)
+        if tag_file is not None:
+            import time as _time_module
+            try:
+                tag_file.write_text(str(int(_time_module.time())))
+                logger.debug("[UnifiedStore] Backfill tag written")
+            except OSError:
+                pass
+            self._tag_file_to_write = None
 
     def _backfill_semantic_if_needed(self) -> None:
         """比例检查：LanceDB/SQLite memories < 95% 时触发增量回填。
-        24h 防抖：避免每次重启都因少量缺失而全量重写体积膨胀。"""
+        24h 防抖：避免每次重启都因少量缺失而全量重写体积膨胀。
+        tag 文件在回填成功后写入，避免部分失败后 24h 内无法重试。"""
         if self.search.backend_type == "fts5":
             return
         if not self.search.available:
@@ -201,7 +214,7 @@ class UnifiedStore:
             return
         if lance_count >= sqlite_count * 0.95:
             return
-        # 24h 防抖：用标记文件记录上次回填时间，避免频繁重写
+        # 24h 防抖：用标记文件记录上次回填时间
         import time as _time_module
 
         now = _time_module.time()
@@ -218,10 +231,11 @@ class UnifiedStore:
                     return
             except (ValueError, OSError):
                 pass
-        try:
-            tag_file.write_text(str(int(now)))
-        except OSError:
-            pass
+        # 设置全量回填标记，让 worker 跳过 existing>0 的提前返回，
+        # 转而使用 skip_ids 进行增量 delta 回填。
+        self._needs_full_backfill = True
+        self._backfill_started = False  # 允许重新触发
+        self._tag_file_to_write = tag_file
         self._backfill_semantic_if_empty()  # 复用现有 worker
 
     # ======================================================================
@@ -270,17 +284,18 @@ class UnifiedStore:
 
         thread = threading.Thread(
             target=self._backfill_episodes_worker,
+            args=(tag_file,),
             daemon=True,
             name="episodes-backfill",
         )
         thread.start()
         logger.info("[UnifiedStore] Episodes backfill thread started (daemon)")
 
-    def _backfill_episodes_worker(self) -> None:
+    def _backfill_episodes_worker(self, tag_file: Path | None = None) -> None:
         """后台回填工作函数：从 SQLite 读取 episodes 并逐条写入 LanceDB。
 
         异常不中断流程，单条失败跳过继续。
-        """
+        tag_file 在成功完成后写入，避免部分失败后 24h 无法重试。"""
         try:
             episodes = self.get_recent_episodes(days=9999, limit=50000)
         except Exception as e:
@@ -323,6 +338,13 @@ class UnifiedStore:
             total_skipped,
             len(episodes),
         )
+        # 成功后写入 tag，防止部分失败后 24h 无法重试
+        if tag_file is not None:
+            import time as _time_module
+            try:
+                tag_file.write_text(str(int(_time_module.time())))
+            except OSError:
+                pass
 
     @staticmethod
     def _is_active_dict(memory: dict) -> bool:
