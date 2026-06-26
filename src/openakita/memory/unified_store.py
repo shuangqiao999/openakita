@@ -275,10 +275,6 @@ class UnifiedStore:
                     return
             except (ValueError, OSError):
                 pass
-        try:
-            tag_file.write_text(str(int(now)))
-        except OSError:
-            pass
 
         import threading
 
