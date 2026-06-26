@@ -119,6 +119,22 @@ class DeductionOrchestrator:
         )
         self.session.agent_count = len(agents)
         self._agents = agents
+        self._pre_goals = pre_goals
+
+        # 将预目标写入 LanceDB 动态事件表 (immutable_goal, priority=0.9)
+        # 确保长期推演中智能体"不忘初心"
+        pp = getattr(self, "_preprocessor", None)
+        if pp and pre_goals:
+            for goal in pre_goals:
+                try:
+                    pp.add_event_memory(
+                        content=goal, agent_id="system_user",
+                        round_number=1, event_type="immutable_goal",
+                        priority=0.9,
+                    )
+                except Exception:
+                    pass
+            self._log("agents", f"已注入 {len(pre_goals)} 个不可变目标到 LanceDB")
 
         self._log("agents", f"智能体工厂完成: {len(agents)} 个智能体生成")
         self.store.update(self.session.id, agent_count=len(agents),
@@ -136,6 +152,7 @@ class DeductionOrchestrator:
             total_rounds=total_rounds,
             log_fn=self._log,
             preprocessor=getattr(self, "_preprocessor", None),
+            pre_goals=getattr(self, "_pre_goals", []),
         )
 
         rounds: list[SimulationRound] = []

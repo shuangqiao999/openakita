@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 
 _CANDIDATE_PROMPT = """You are a strategic advisor. Generate {candidate_count} distinct action strategies for {agent_name}.
 
+## Immutable Goals (highest priority — persist throughout entire simulation)
+{immutable_goals}
+
 ## Override Directive (highest priority — must influence every candidate)
 {user_intervention}
 
@@ -58,10 +61,11 @@ class StrategicReasoner:
       3. Select best candidate or fall back to LLM tiebreak
     """
 
-    def __init__(self, candidate_count: int = 3, preprocessor: DeductionPreprocessor | None = None, chat_fn: Any = None):
+    def __init__(self, candidate_count: int = 3, preprocessor: DeductionPreprocessor | None = None, chat_fn: Any = None, immutable_goals: list[str] | None = None):
         self.candidate_count = candidate_count
         self._preprocessor = preprocessor
         self._chat_fn = chat_fn
+        self._immutable_goals: list[str] = list(immutable_goals or [])
         self._trust_matrix: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
 
     def record_interaction(
@@ -123,6 +127,7 @@ class StrategicReasoner:
         messages = [{"role": "user", "content": _CANDIDATE_PROMPT.format(
             candidate_count=self.candidate_count,
             agent_name=agent.name,
+            immutable_goals="\n".join(f"- {g}" for g in self._immutable_goals) if self._immutable_goals else "No immutable goals — act freely based on your profile.",
             user_intervention=user_cmd,
             persona=agent.persona,
             background=agent.background,

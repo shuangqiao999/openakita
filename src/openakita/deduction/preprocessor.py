@@ -162,19 +162,24 @@ class DeductionPreprocessor:
             }])
 
     def retrieve_latest_intervention(self) -> dict | None:
-        """检索最近的用户干预指令（priority=1.0, event_type='user_intervention'）。"""
+        """检索最近的用户干预或不可变目标指令。"""
         if self._event_table is None:
             return None
         try:
             raw = self._event_table.to_arrow().to_pydict()
-            if "priority" not in raw:
-                return None  # old table without priority column
-            interventions = [
-                {"content": raw["content"][i], "round_number": raw["round_number"][i],
-                 "priority": raw["priority"][i]}
-                for i in range(len(raw["event_id"]))
-                if raw.get("priority", [0])[i] >= 0.9
-            ]
+            has_priority = "priority" in raw
+            has_etype = "event_type" in raw
+            interventions = []
+            for i in range(len(raw["event_id"])):
+                p = raw.get("priority", [0])[i] if has_priority else 0
+                et = raw.get("event_type", [""])[i] if has_etype else ""
+                # Match: priority >= 0.9 OR event_type is intervention/goal
+                if p >= 0.9 or et in ("user_intervention", "immutable_goal"):
+                    interventions.append({
+                        "content": raw["content"][i],
+                        "round_number": raw["round_number"][i],
+                        "priority": p,
+                    })
             if interventions:
                 interventions.sort(key=lambda x: (-x["priority"], -x.get("round_number", 0)))
                 return interventions[0]

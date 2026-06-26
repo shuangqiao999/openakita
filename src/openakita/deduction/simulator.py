@@ -90,6 +90,7 @@ class SimulationEngine:
         log_fn: Callable[[str, str], None] | None = None,
         preprocessor: DeductionPreprocessor | None = None,
         chat_fn: Any = None,
+        pre_goals: list[str] | None = None,
     ) -> None:
         self.agents = agents
         self.graph = graph
@@ -99,12 +100,14 @@ class SimulationEngine:
         self._max_concurrent = 10
         self._preprocessor = preprocessor
         self._chat_fn = chat_fn
+        self._immutable_goals: list[str] = list(pre_goals or [])
         from .strategic_reasoner import StrategicReasoner
         from openakita.config import settings
         self.reasoner = StrategicReasoner(
             candidate_count=settings.deduction_candidate_count,
             preprocessor=preprocessor,
             chat_fn=chat_fn,
+            immutable_goals=self._immutable_goals,
         )
 
     async def run_round(self, round_number: int) -> SimulationRound:
