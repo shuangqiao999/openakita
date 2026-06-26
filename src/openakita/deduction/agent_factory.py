@@ -1,6 +1,7 @@
 """Phase 3: Agent Factory — deep persona generation from graph + LanceDB retrieval."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -147,7 +148,7 @@ async def create_agents_from_graph(
 
         try:
             if chat_fn is not None:
-                content = chat_fn(messages, system, 0.7)
+                content = await asyncio.to_thread(chat_fn, messages, system, 0.7)
             else:
                 response = await client.chat(messages, system=system, temperature=0.7)
                 content = _extract_text(response)

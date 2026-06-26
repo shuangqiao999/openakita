@@ -43,6 +43,7 @@ class DeductionPreprocessor:
         self._result: PreprocessResult | None = None
 
         self._embed_url = self._resolve_embed_url()
+        self._embed_model = self._resolve_embed_model()
         self._http = requests.Session()
         self._http.headers["Content-Type"] = "application/json"
 
@@ -56,7 +57,16 @@ class DeductionPreprocessor:
                 return base.rstrip("/") + "/embeddings"
         except Exception:
             pass
-        return "http://127.0.0.1:1234/v1/embeddings"
+        logger.warning("[Preprocessor] No embedding_api_base configured — "
+                       "LanceDB indexing will be skipped")
+        return ""
+
+    def _resolve_embed_model(self) -> str:
+        try:
+            from openakita.config import settings
+            return getattr(settings, "embedding_model_name", "") or getattr(settings, "embedding_api_model", "") or ""
+        except Exception:
+            return ""
 
     def _init_lancedb(self) -> None:
         import lancedb
@@ -108,7 +118,7 @@ class DeductionPreprocessor:
     def _sync_embed_single(self, text: str) -> list[float]:
         r = self._http.post(self._embed_url, json={
             "input": text[:self._INDEX_PREFIX_LEN],
-            "model": "",
+            "model": self._embed_model,
         }, timeout=60)
         r.raise_for_status()
         return r.json()["data"][0]["embedding"]
@@ -116,7 +126,7 @@ class DeductionPreprocessor:
     def _sync_embed_batch(self, texts: list[str]) -> list[list[float]]:
         r = self._http.post(self._embed_url, json={
             "input": [t[:self._INDEX_PREFIX_LEN] for t in texts],
-            "model": "",
+            "model": self._embed_model,
         }, timeout=120)
         r.raise_for_status()
         return [d["embedding"] for d in r.json()["data"]]
@@ -314,3 +324,16 @@ class DeductionPreprocessor:
         self._http.close()
         self._table = None
         self._db = None
+
+    def drop_tables(self) -> None:
+        """物理删除当前会话的 LanceDB 表，回收磁盘空间。"""
+        if self._db is None:
+            return
+        patterns = (f"deduction_chunks_{self.session_id}", f"deduction_events_{self.session_id}")
+        for name in self._db.table_names():
+            if name in patterns:
+                try:
+                    self._db.drop_table(name)
+                    logger.info("[Preprocessor] Dropped table: %s", name)
+                except Exception as e:
+                    logger.warning("[Preprocessor] Failed to drop %s: %s", name, e)

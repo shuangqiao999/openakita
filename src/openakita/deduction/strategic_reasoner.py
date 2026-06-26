@@ -140,7 +140,7 @@ class StrategicReasoner:
         candidates: list[dict[str, Any]] = []
         try:
             if self._chat_fn is not None:
-                content = self._chat_fn(messages, system, 0.7)
+                content = await asyncio.to_thread(self._chat_fn, messages, system, 0.7)
             else:
                 response = await client.chat(messages, system=system, temperature=0.7)
                 content = _extract_text(response)

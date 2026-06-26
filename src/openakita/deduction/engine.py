@@ -60,6 +60,19 @@ class DeductionEngine:
     def delete_session(self, session_id: str) -> None:
         self.close_graph()
         self.session_store.delete(session_id)
+        # 清理 LanceDB 向量表 (物理回收磁盘空间)
+        try:
+            from .preprocessor import DeductionPreprocessor
+            pp = DeductionPreprocessor(self._data_dir.parent.parent, session_id)
+            pp.drop_tables()
+        except Exception as e:
+            logger.warning("[Engine] Failed to clean LanceDB for %s: %s", session_id, e)
+        # 清理 Kuzu 物理文件夹
+        import shutil
+        kuzu_path = self._data_dir / "graphs" / session_id
+        if kuzu_path.exists():
+            shutil.rmtree(kuzu_path, ignore_errors=True)
+            logger.info("[Engine] Removed Kuzu graph dir: %s", kuzu_path)
 
     def log(self, session_id: str, phase: str, message: str) -> None:
         self.session_store.append_log(session_id, phase, message)
