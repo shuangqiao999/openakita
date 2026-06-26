@@ -58,10 +58,10 @@ class StrategicReasoner:
       3. Select best candidate or fall back to LLM tiebreak
     """
 
-    def __init__(self, candidate_count: int = 3, preprocessor: DeductionPreprocessor | None = None):
+    def __init__(self, candidate_count: int = 3, preprocessor: DeductionPreprocessor | None = None, chat_fn: Any = None):
         self.candidate_count = candidate_count
         self._preprocessor = preprocessor
-        # trust_matrix[agent_a][agent_b] = cumulative score
+        self._chat_fn = chat_fn
         self._trust_matrix: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
 
     def record_interaction(
@@ -134,9 +134,12 @@ class StrategicReasoner:
 
         candidates: list[dict[str, Any]] = []
         try:
-            response = await client.chat(messages, system=system, temperature=0.7)
-            raw = _extract_text(response)
-            candidates = _parse_candidates(raw)
+            if self._chat_fn is not None:
+                content = self._chat_fn(messages, system, 0.7)
+            else:
+                response = await client.chat(messages, system=system, temperature=0.7)
+                content = _extract_text(response)
+            candidates = _parse_candidates(content)
         except Exception as e:
             logger.debug("[Reasoner] LLM candidate generation failed: %s", e)
 

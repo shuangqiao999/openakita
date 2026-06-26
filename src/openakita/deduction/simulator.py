@@ -104,6 +104,7 @@ class SimulationEngine:
         self.reasoner = StrategicReasoner(
             candidate_count=settings.deduction_candidate_count,
             preprocessor=preprocessor,
+            chat_fn=chat_fn,
         )
 
     async def run_round(self, round_number: int) -> SimulationRound:
