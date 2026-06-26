@@ -424,9 +424,17 @@ class OpenAIProvider(LLMProvider):
                 return await self._chat_via_stream(request)
 
         # 统一判断：非流式未能产出内容 → 尝试流式回退
+        _response_has_content = (
+            isinstance(response, dict)
+            and response.get("choices")
+            and response["choices"][0].get("message", {}).get("content")
+        ) or (
+            hasattr(response, "content")
+            and response.content
+        )
         _should_fallback = (
             (non_stream_error is not None and _is_empty_response_error(str(non_stream_error)))
-            or (response is not None and not response.content
+            or (hasattr(response, "content") and not response.content
                 and response.usage.output_tokens > 0)
         )
 
