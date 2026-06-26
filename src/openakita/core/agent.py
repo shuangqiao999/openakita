@@ -1343,6 +1343,19 @@ class Agent:
         self.kb_manager = KnowledgeBaseManager(settings.project_root)
         logger.info("KnowledgeBaseManager initialized")
 
+        # 推演引擎（独立于知识库，基于 Kuzu 图数据库）
+        self.deduction_engine = None
+        if getattr(settings, "deduction_enabled", True):
+            try:
+                from ..deduction.engine import DeductionEngine
+                import kuzu as _kuzu_check
+                self.deduction_engine = DeductionEngine(settings.project_root)
+                logger.info("DeductionEngine initialized")
+            except ImportError:
+                logger.debug("DeductionEngine not available (kuzu not installed)")
+            except Exception as e:
+                logger.debug(f"DeductionEngine init skipped: {e}")
+
         # ==================== 人格系统 + 活人感 + 表情包 ====================
         from ..tools.sticker import StickerEngine
         from .persona import PersonaManager

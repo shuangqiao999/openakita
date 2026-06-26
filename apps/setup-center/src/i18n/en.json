@@ -32,7 +32,8 @@
     "plugins": "Plugins",
     "pixelOffice": "Pixel Office",
     "knowledgeBase": "Knowledge Base",
-    "evolution": "Evolution"
+    "evolution": "Evolution",
+    "deduction": "Deduction"
   },
   "topbar": {
     "workspace": "Workspace",

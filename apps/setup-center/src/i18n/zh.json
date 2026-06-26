@@ -32,7 +32,8 @@
     "plugins": "插件",
     "pixelOffice": "像素办公室",
     "knowledgeBase": "知识库",
-    "evolution": "自进化"
+    "evolution": "自进化",
+    "deduction": "推演引擎"
   },
   "topbar": {
     "workspace": "工作区",

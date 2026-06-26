@@ -5,6 +5,8 @@ Brain 是 LLMClient 的薄包装，提供向后兼容的接口。
 所有实际的 LLM 调用、能力分流、故障切换都由 LLMClient 处理。
 """
 
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
@@ -22,7 +24,6 @@ from anthropic.types import ToolUseBlock as AnthropicToolUseBlock
 from anthropic.types import Usage as AnthropicUsage
 
 from ..config import settings
-from ..llm.client import LLMClient
 from ..llm.config import get_default_config_path, load_endpoints_config
 from ..llm.types import (
     AudioBlock,
@@ -102,13 +103,14 @@ class Brain:
         self.max_tokens = max_tokens if max_tokens is not None else settings.max_tokens
 
         # 创建 LLMClient（统一入口）
+        from ..llm.client import LLMClient as _LLMClient
         config_path = get_default_config_path()
         if config_path.exists():
-            self._llm_client = LLMClient(config_path=config_path)
+            self._llm_client = _LLMClient(config_path=config_path)
             logger.info(f"Brain using LLMClient with config from {config_path}")
         else:
             # 如果没有配置文件，创建空客户端
-            self._llm_client = LLMClient()
+            self._llm_client = _LLMClient()
             logger.warning("No llm_endpoints.json found, LLMClient may not work")
 
         # Prompt Compiler 专用 LLMClient（独立于主模型，使用快速小模型）
@@ -173,9 +175,10 @@ class Brain:
     def _init_compiler_client(self) -> None:
         """从配置加载 Prompt Compiler 专属 LLMClient"""
         try:
+            from ..llm.client import LLMClient as _LLMClient
             _, compiler_eps, _, _ = load_endpoints_config()
             if compiler_eps:
-                self._compiler_client = LLMClient(endpoints=compiler_eps)
+                self._compiler_client = _LLMClient(endpoints=compiler_eps)
                 names = [ep.name for ep in compiler_eps]
                 logger.info(f"Compiler LLMClient initialized with endpoints: {names}")
             else:
@@ -264,9 +267,10 @@ class Brain:
             True 表示成功重载，False 表示无变化或失败。
         """
         try:
+            from ..llm.client import LLMClient as _LLMClient
             _, compiler_eps, _, _ = load_endpoints_config()
             if compiler_eps:
-                self._compiler_client = LLMClient(endpoints=compiler_eps)
+                self._compiler_client = _LLMClient(endpoints=compiler_eps)
                 names = [ep.name for ep in compiler_eps]
                 logger.info(f"Compiler LLMClient reloaded with endpoints: {names}")
             else:

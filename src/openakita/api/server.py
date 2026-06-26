@@ -35,6 +35,7 @@ from .routes import (
     chat,
     chat_models,
     config,
+    deduction,
     embedding,
     evolution,
     feishu_onboard,
@@ -387,6 +388,7 @@ def create_app(
     app.include_router(hub.router, tags=["Hub"])
     app.include_router(identity.router, tags=["身份"])
     app.include_router(knowledge.router, tags=["知识库"])
+    app.include_router(deduction.router, tags=["推演引擎"])
     app.include_router(orgs.router, tags=["组织编排"])
     app.include_router(orgs.inbox_router, tags=["组织消息中心"])
     if plugins_routes is not None:

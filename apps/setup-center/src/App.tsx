@@ -28,6 +28,7 @@ const AgentStoreView = lazy(() => import("./views/AgentStoreView").then(m => ({ 
 const SkillStoreView = lazy(() => import("./views/SkillStoreView").then(m => ({ default: m.SkillStoreView })));
 const SecurityView = lazy(() => import("./views/SecurityView"));
 const PetView = lazy(() => import("./views/PetView").then(m => ({ default: m.PetView })));
+const DeductionView = lazy(() => import("./views/DeductionView").then(m => ({ default: m.DeductionView })));
 
 import { FeedbackModal } from "./views/FeedbackModal";
 import { IMConfigView } from "./views/IMConfigView";
@@ -139,6 +140,7 @@ const _HASH_TO_VIEW: Record<string, ViewId> = {
   "skill-store": "skill_store", "wizard": "wizard", "docs": "docs",
   "security": "security", "plugins": "plugins", "my_feedback": "my_feedback",
   "knowledge-base": "knowledge_base", "evolution": "evolution",
+  "deduction": "deduction",
 };
 
 const _VIEW_TO_HASH: Record<string, string> = Object.fromEntries(
@@ -5582,6 +5584,15 @@ function MainApp() {
         <ErrorBoundary>
           <Suspense fallback={<div className="spinner" />}>
             <EvolutionView serviceRunning={serviceStatus?.running ?? false} apiBaseUrl={apiBaseUrl} />
+          </Suspense>
+        </ErrorBoundary>
+      );
+    }
+    if (view === "deduction") {
+      return (
+        <ErrorBoundary>
+          <Suspense fallback={<div className="spinner" />}>
+            <DeductionView serviceRunning={serviceStatus?.running ?? false} apiBaseUrl={apiBaseUrl} />
           </Suspense>
         </ErrorBoundary>
       );

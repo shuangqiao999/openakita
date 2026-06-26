@@ -78,6 +78,10 @@ dependencies = [
     # Vector database (LanceDB — default embedding backend for memory search)
     # 基于 Lance 列式格式 + pyarrow, 支持零拷贝检索
     "lancedb==0.33.0",
+
+    # Deduction engine — graph database + algorithms
+    "kuzu>=0.11.0",             # 嵌入式图数据库 (Cypher 查询, 0.11.3 tested)
+    "networkx>=3.0",             # 图算法 (中心性/社区发现/传播模拟)
 ]
 
 [project.optional-dependencies]

@@ -184,7 +184,7 @@ export function Sidebar({
   }, [httpApiBase, serviceRunning]);
 
   const capViews: ViewId[] = ["skills", "mcp", "plugins", "knowledge_base", "memory", "scheduler"];
-  const monViews: ViewId[] = ["token_stats", "security", "evolution"];
+  const monViews: ViewId[] = ["token_stats", "security", "evolution", "deduction"];
   const maViews: ViewId[] = ["dashboard", "org_editor", "pixel_office", "agent_manager"];
   const stViews: ViewId[] = ["agent_store", "skill_store"];
 
@@ -317,6 +317,9 @@ export function Sidebar({
             </div>
             <div className={`navItem ${view === "evolution" ? "navItemActive" : ""}`} onClick={() => onViewChange("evolution")} role="button" tabIndex={0} title={t("sidebar.evolution")}>
               <IconRadar size={16} /> {!collapsed && <span>{t("sidebar.evolution")}</span>}
+            </div>
+            <div className={`navItem ${view === "deduction" ? "navItemActive" : ""}`} onClick={() => onViewChange("deduction")} role="button" tabIndex={0} title={t("sidebar.deduction")}>
+              <IconRadar size={16} /> {!collapsed && <span>{t("sidebar.deduction")}</span>}
             </div>
           </div>
         )}
