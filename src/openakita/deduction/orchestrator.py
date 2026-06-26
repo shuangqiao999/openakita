@@ -66,12 +66,25 @@ class DeductionOrchestrator:
     async def _phase2_graph(self) -> None:
         self._log("graph", "阶段2: GraphRAG 知识图谱构建开始")
 
+        # 预处理: 语义分块 + 实体提取 + LanceDB 索引
+        self._log("graph", "  预处理: 语义分块 + 实体提取 + LanceDB 索引")
+        from .preprocessor import DeductionPreprocessor
+        from openakita.config import settings
+
+        preprocessor = DeductionPreprocessor(
+            workspace_root=settings.project_root,
+            session_id=self.session.id,
+        )
+        preprocessor.preprocess(self.session.source_material)
+        self._preprocessor = preprocessor
+
         from .graph_builder import build_graph
         await build_graph(
             source=self.session.source_material,
             graph=self.graph,
             ontology=self.session.ontology,
             log_fn=self._log,
+            preprocessor=preprocessor,
         )
 
         e_count = self.graph.count_entities()
@@ -92,6 +105,7 @@ class DeductionOrchestrator:
             graph=self.graph,
             source_material=self.session.source_material,
             log_fn=self._log,
+            preprocessor=getattr(self, "_preprocessor", None),
         )
         self.session.agent_count = len(agents)
         self._agents = agents
@@ -111,6 +125,7 @@ class DeductionOrchestrator:
             graph=self.graph,
             total_rounds=total_rounds,
             log_fn=self._log,
+            preprocessor=getattr(self, "_preprocessor", None),
         )
 
         rounds: list[SimulationRound] = []

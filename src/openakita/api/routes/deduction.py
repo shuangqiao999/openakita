@@ -4,14 +4,59 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import tempfile
+from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/deduction", tags=["deduction"])
+
+_DEDUCTION_MAX_UPLOAD = 20 * 1024 * 1024
+_ALLOWED_EXT = {
+    ".txt", ".md", ".markdown", ".json", ".yaml", ".yml",
+    ".py", ".js", ".ts", ".jsx", ".tsx", ".rs", ".go", ".java", ".c", ".cpp", ".h",
+    ".pdf", ".docx", ".csv", ".log", ".rst", ".html", ".htm",
+}
+
+
+def _extract_text(file_path: str, suffix: str) -> str:
+    """Extract text from uploaded file. Returns max 100KB of text."""
+    path = Path(file_path)
+    text_exts = {
+        ".txt", ".md", ".markdown", ".json", ".yaml", ".yml",
+        ".py", ".js", ".ts", ".jsx", ".tsx", ".rs", ".go", ".java", ".c", ".cpp",
+        ".h", ".csv", ".log", ".rst", ".html", ".htm",
+    }
+    if suffix in text_exts:
+        try:
+            return path.read_text(encoding="utf-8", errors="replace")[:100_000]
+        except Exception:
+            return path.read_text(encoding="gbk", errors="replace")[:100_000]
+
+    if suffix == ".pdf":
+        try:
+            from PyPDF2 import PdfReader
+            reader = PdfReader(file_path)
+            text = "\n".join(p.extract_text() or "" for p in reader.pages)
+            return text[:100_000]
+        except ImportError:
+            raise HTTPException(501, "PDF parsing requires PyPDF2 (pip install PyPDF2)")
+
+    if suffix == ".docx":
+        try:
+            from docx import Document
+            doc = Document(file_path)
+            text = "\n".join(p.text for p in doc.paragraphs)
+            return text[:100_000]
+        except ImportError:
+            raise HTTPException(501, "DOCX parsing requires python-docx (pip install python-docx)")
+
+    raise HTTPException(400, f"Unsupported file type: {suffix}")
 
 
 class CreateSessionRequest(BaseModel):
@@ -22,6 +67,50 @@ class CreateSessionRequest(BaseModel):
 
 class InjectEventRequest(BaseModel):
     event_description: str = Field(default="", description="要注入的事件描述")
+
+
+# ── File upload ──
+
+@router.post("/upload")
+async def upload_source_file(file: UploadFile = File(...)):
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in _ALLOWED_EXT:
+        raise HTTPException(400, f"不支持的文件类型: {suffix}")
+    if not file.filename:
+        raise HTTPException(400, "文件名为空")
+
+    fd, tmp_path = tempfile.mkstemp(suffix=suffix)
+    try:
+        total = 0
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > _DEDUCTION_MAX_UPLOAD:
+                raise HTTPException(400, f"文件超过 20MB 限制")
+            os.write(fd, chunk)
+    finally:
+        os.close(fd)
+
+    try:
+        text = _extract_text(tmp_path, suffix)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"文本提取失败: {e}")
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+    return {
+        "status": "ok",
+        "filename": file.filename,
+        "size": total,
+        "text_content": text,
+    }
 
 
 # ── Session CRUD ──

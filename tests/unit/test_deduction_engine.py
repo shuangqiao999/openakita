@@ -188,9 +188,10 @@ class TestOntologyModule:
 class TestGraphBuilder:
 
     def test_chunk_text(self):
-        from openakita.deduction.graph_builder import _chunk_text
+        from openakita.knowledge.chunker import TextChunker
+        chunker = TextChunker(strategy="paragraph", max_chunk_size=1536)
         text = "段落1内容\n\n段落2内容\n\n段落3内容"
-        chunks = _chunk_text(text, 50)
+        chunks = chunker.chunk(text)
         assert len(chunks) >= 1
 
     def test_parse_extraction(self):

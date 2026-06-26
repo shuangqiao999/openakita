@@ -1,0 +1,277 @@
+"""Deduction Engine Preprocessor — semantic chunking + LanceDB indexing + hybrid retrieval.
+
+All embedding calls use synchronous HTTP (requests) — no asyncio dependency.
+This avoids RuntimeError in pytest-asyncio or nested event loops.
+"""
+from __future__ import annotations
+
+import logging
+import uuid
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import requests
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class PreprocessResult:
+    session_id: str
+    chunks: list[Any]
+    high_freq_entities: dict[str, set[str]]
+    low_freq_entities: dict[str, set[str]]
+    total_chunks: int = 0
+    total_entities: int = 0
+
+
+class DeductionPreprocessor:
+    _INDEX_PREFIX_LEN = 600
+
+    def __init__(self, workspace_root: str | Path, session_id: str) -> None:
+        ws = Path(workspace_root)
+        self.workspace_root = ws
+        self.session_id = session_id
+        self.table_name = f"deduction_chunks_{session_id}"
+
+        self._db: Any = None
+        self._table: Any = None
+        self._event_table: Any = None
+        self._event_table_name: str = ""
+        self._dim: int = 0
+        self._result: PreprocessResult | None = None
+
+        self._embed_url = self._resolve_embed_url()
+        self._http = requests.Session()
+        self._http.headers["Content-Type"] = "application/json"
+
+        self._init_lancedb()
+
+    def _resolve_embed_url(self) -> str:
+        try:
+            from openakita.config import settings
+            base = getattr(settings, "embedding_api_base", "") or ""
+            if base:
+                return base.rstrip("/") + "/embeddings"
+        except Exception:
+            pass
+        return "http://127.0.0.1:1234/v1/embeddings"
+
+    def _init_lancedb(self) -> None:
+        import lancedb
+        lance_dir = str(self.workspace_root / "data" / "lancedb")
+        Path(lance_dir).mkdir(parents=True, exist_ok=True)
+        self._db = lancedb.connect(lance_dir)
+
+    def _ensure_table(self, dim: int) -> None:
+        if self._table is not None:
+            return
+        import pyarrow as pa
+        schema = pa.schema([
+            pa.field("id", pa.string()),
+            pa.field("vector", pa.list_(pa.float32(), dim)),
+            pa.field("content", pa.string()),
+            pa.field("session_id", pa.string()),
+        ])
+        if self.table_name in self._db.table_names():
+            self._table = self._db.open_table(self.table_name)
+        else:
+            self._table = self._db.create_table(self.table_name, schema=schema, mode="create")
+            logger.info("[Preprocessor] Created LanceDB table: %s (dim=%d)", self.table_name, dim)
+
+    def _ensure_event_table(self, dim: int) -> None:
+        if self._event_table is not None:
+            return
+        import pyarrow as pa
+        schema = pa.schema([
+            pa.field("event_id", pa.string()),
+            pa.field("vector", pa.list_(pa.float32(), dim)),
+            pa.field("content", pa.string()),
+            pa.field("agent_id", pa.string()),
+            pa.field("round_number", pa.int32()),
+            pa.field("session_id", pa.string()),
+        ])
+        self._event_table_name = f"deduction_events_{self.session_id}"
+        if self._event_table_name in self._db.table_names():
+            self._event_table = self._db.open_table(self._event_table_name)
+        else:
+            self._event_table = self._db.create_table(
+                self._event_table_name, schema=schema, mode="create")
+            logger.info("[Preprocessor] Created event table: %s (dim=%d)",
+                       self._event_table_name, dim)
+
+    # ── Sync Embedding (no asyncio) ──
+
+    def _sync_embed_single(self, text: str) -> list[float]:
+        r = self._http.post(self._embed_url, json={
+            "input": text[:self._INDEX_PREFIX_LEN],
+            "model": "",
+        }, timeout=60)
+        r.raise_for_status()
+        return r.json()["data"][0]["embedding"]
+
+    def _sync_embed_batch(self, texts: list[str]) -> list[list[float]]:
+        r = self._http.post(self._embed_url, json={
+            "input": [t[:self._INDEX_PREFIX_LEN] for t in texts],
+            "model": "",
+        }, timeout=120)
+        r.raise_for_status()
+        return [d["embedding"] for d in r.json()["data"]]
+
+    def _auto_detect_dim(self) -> int:
+        try:
+            vec = self._sync_embed_single("dimension auto-detect probe")
+            if vec and len(vec) > 0:
+                logger.info("[Preprocessor] Auto-detected embedding dimension: %d", len(vec))
+                return len(vec)
+        except Exception as e:
+            logger.warning("[Preprocessor] Dimension probe failed: %s", e)
+        return 0
+
+    # ── Dynamic event memory ──
+
+    def add_event_memory(self, content: str, agent_id: str,
+                         round_number: int, event_type: str = "") -> None:
+        if self._event_table is None or self._dim <= 0:
+            return
+        embed_text = f"[R{round_number}] {event_type}: {content}"[:self._INDEX_PREFIX_LEN]
+        try:
+            vec = self._sync_embed_single(embed_text)
+        except Exception as e:
+            logger.debug("[Preprocessor] add_event_memory embed failed: %s", e)
+            return
+        self._event_table.add([{
+            "event_id": str(uuid.uuid4()),
+            "vector": vec, "content": content,
+            "agent_id": agent_id, "round_number": round_number,
+            "session_id": self.session_id,
+        }])
+
+    def retrieve_dynamic_events(
+        self, query_text: str, top_k: int = 3, min_similarity: float = 0.4,
+    ) -> list[str]:
+        if self._event_table is None or self._dim <= 0:
+            return []
+        try:
+            query_vec = self._sync_embed_single(query_text)
+        except Exception:
+            return []
+        fetch_k = top_k * 3
+        try:
+            raw = (self._event_table.search(query_vec).metric("cosine")
+                   .limit(fetch_k).to_list())
+        except Exception:
+            return []
+        if not raw:
+            return []
+        min_distance = 1.0 - min_similarity
+        results: list[str] = []
+        for r in raw:
+            if r.get("_distance", 10.0) >= min_distance:
+                continue
+            content = r.get("content", "")
+            if content and content not in results:
+                results.append(content[:300])
+            if len(results) >= top_k:
+                break
+        return results
+
+    # ── Static chunk retrieval ──
+
+    def retrieve_for_entity(
+        self, entity_name: str, top_k: int = 5,
+        must_contain: set[str] | None = None,
+    ) -> list[str]:
+        if self._table is None or self._dim <= 0:
+            return []
+        try:
+            query_vec = self._sync_embed_single(entity_name)
+        except Exception:
+            return []
+        raw = (self._table.search(query_vec).metric("cosine")
+               .limit(top_k * 3).to_list())
+        results: list[str] = []
+        for r in raw:
+            content = r.get("content", "")
+            if not content:
+                continue
+            if must_contain and not any(kw in content for kw in must_contain):
+                continue
+            if content not in results:
+                results.append(content)
+            if len(results) >= top_k:
+                break
+        return results
+
+    # ── Main preprocessing pipeline ──
+
+    @property
+    def result(self) -> PreprocessResult | None:
+        return self._result
+
+    def preprocess(self, source: str) -> PreprocessResult:
+        from openakita.knowledge.chunker import TextChunker
+        from openakita.core.tokenizer import extract_named_entities
+
+        # 1. semantic chunking
+        chunker = TextChunker(strategy="paragraph", max_chunk_size=1536)
+        chunks = chunker.chunk(source, file_type=".txt")
+        logger.info("[Preprocessor] Chunked into %d semantic chunks", len(chunks))
+
+        # 2. Jieba POS entity extraction
+        all_entities = extract_named_entities(source, top_k=100, min_freq=2)
+        high_freq: dict[str, set[str]] = {}
+        low_freq: dict[str, set[str]] = {}
+        import re
+        for std_name, aliases in all_entities.items():
+            count = len(re.findall(re.escape(std_name), source))
+            if count >= 3:
+                high_freq[std_name] = aliases
+            else:
+                low_freq[std_name] = aliases
+        logger.info("[Preprocessor] Entities: %d total, %d high-freq, %d low-freq",
+                    len(all_entities), len(high_freq), len(low_freq))
+
+        # 3. LanceDB vector indexing
+        dim = self._auto_detect_dim()
+        self._dim = dim
+        if dim <= 0:
+            logger.warning("[Preprocessor] Dimension is 0, skipping LanceDB indexing")
+            self._result = PreprocessResult(
+                session_id=self.session_id, chunks=list(chunks),
+                high_freq_entities=high_freq, low_freq_entities=low_freq,
+                total_chunks=len(chunks), total_entities=len(all_entities))
+            return self._result
+
+        self._ensure_table(dim)
+        self._ensure_event_table(dim)
+
+        chunk_ids = [f"chunk-{uuid.uuid4().hex[:8]}" for _ in chunks]
+        chunk_prefixes = [c.content[:self._INDEX_PREFIX_LEN] for c in chunks]
+        try:
+            vecs = self._sync_embed_batch(chunk_prefixes)
+        except Exception as e:
+            logger.warning("[Preprocessor] Batch embed failed: %s", e)
+            self._result = PreprocessResult(
+                session_id=self.session_id, chunks=list(chunks),
+                high_freq_entities=high_freq, low_freq_entities=low_freq,
+                total_chunks=len(chunks), total_entities=len(all_entities))
+            return self._result
+
+        rows = [{"id": chunk_ids[i], "vector": vecs[i],
+                 "content": chunks[i].content, "session_id": self.session_id}
+                for i in range(len(chunks))]
+        self._table.add(rows)
+        logger.info("[Preprocessor] LanceDB indexed %d chunks (dim=%d)", len(rows), dim)
+
+        self._result = PreprocessResult(
+            session_id=self.session_id, chunks=list(chunks),
+            high_freq_entities=high_freq, low_freq_entities=low_freq,
+            total_chunks=len(chunks), total_entities=len(all_entities))
+        return self._result
+
+    def close(self) -> None:
+        self._http.close()
+        self._table = None
+        self._db = None

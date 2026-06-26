@@ -133,12 +133,18 @@ class DeductionGraphStore:
 
     def add_event(self, event_id: str, description: str, event_type: str,
                   timestamp: str, agent_id: str = "") -> None:
+        safe = {
+            "id": event_id.replace("'", "\\'"),
+            "desc": description.replace("'", "\\'")[:500],
+            "type": event_type.replace("'", "\\'"),
+            "ts": timestamp.replace("'", "\\'"),
+            "aid": agent_id.replace("'", "\\'"),
+        }
         with self._lock:
             self._conn.execute(
-                f"CREATE (ev:{self.EVENT_TABLE} {{id: $id, description: $desc, "
-                "event_type: $type, timestamp: $ts, agent_id: $aid}})",
-                {"id": event_id, "desc": description, "type": event_type,
-                 "ts": timestamp, "aid": agent_id},
+                f"CREATE (ev:{self.EVENT_TABLE} {{id: '{safe['id']}', "
+                f"description: '{safe['desc']}', event_type: '{safe['type']}', "
+                f"timestamp: '{safe['ts']}', agent_id: '{safe['aid']}'}})"
             )
 
     def add_acted(self, agent_id: str, event_id: str, action: str, timestamp: str = "") -> None:

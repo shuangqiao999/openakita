@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import ForceGraph3D from "react-force-graph-3d";
 import { toast } from "sonner";
+import { Upload, Loader2 } from "lucide-react";
 
 interface Props {
   serviceRunning: boolean;
@@ -27,6 +29,7 @@ interface GraphData {
 }
 
 export function DeductionView({ serviceRunning, apiBaseUrl }: Props) {
+  const { t } = useTranslation();
   const [sessions, setSessions] = useState<SessionItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [title, setTitle] = useState("");
@@ -35,7 +38,9 @@ export function DeductionView({ serviceRunning, apiBaseUrl }: Props) {
   const [logs, setLogs] = useState<Array<{ phase: string; message: string; timestamp: string }>>([]);
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const logsRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const fetchSessions = useCallback(async () => {
     try {
@@ -79,11 +84,39 @@ export function DeductionView({ serviceRunning, apiBaseUrl }: Props) {
         const data = await r.json();
         setSelectedId(data.id);
         setSessions(prev => [{ id: data.id, title: data.title, status: data.status, phase: "", entity_count: 0, relation_count: 0, agent_count: 0, current_round: 0, total_rounds: 10, created_at: data.created_at }, ...prev]);
-        toast.success("推演会话已创建");
+        toast.success(t("deductionEngine.sessionCreated"));
       }
     } catch { /* ignore */ }
     setCreating(false);
-  }, [title, sourceMaterial, apiBaseUrl]);
+  }, [title, sourceMaterial, apiBaseUrl, t]);
+
+  const handleFileUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const ext = file.name.split(".").pop()?.toLowerCase();
+    const allowed = ["txt","md","json","pdf","docx","py","js","ts","rs","go","java","c","cpp","h","csv","log","yaml","yml"];
+    if (!ext || !allowed.includes(ext)) {
+      toast.error(t("deductionEngine.fileTypeUnsupported", { type: `.${ext}` }));
+      e.target.value = "";
+      return;
+    }
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const r = await fetch(`${apiBaseUrl}/api/deduction/upload`, { method: "POST", body: fd });
+      if (!r.ok) { const err = await r.text(); throw new Error(err); }
+      const data = await r.json();
+      setSourceMaterial(data.text_content);
+      const titleHint = file.name.replace(/\.[^.]+$/, "").slice(0, 40);
+      if (!title.trim()) setTitle(titleHint);
+      toast.success(t("deductionEngine.fileParsed", { name: file.name, count: data.text_content.length }));
+    } catch (err: any) {
+      toast.error(t("deductionEngine.fileUploadFailed", { message: err.message }));
+    }
+    setUploading(false);
+    e.target.value = "";
+  }, [apiBaseUrl, title, t]);
 
   const handleStart = useCallback(async () => {
     if (!selectedId) return;
@@ -92,15 +125,15 @@ export function DeductionView({ serviceRunning, apiBaseUrl }: Props) {
     try {
       const r = await fetch(`${apiBaseUrl}/api/deduction/session/${selectedId}/start`, { method: "POST" });
       if (!r.ok) throw new Error(await r.text());
-      toast.success("推演启动成功");
+      toast.success(t("deductionEngine.deductionStarted"));
       await fetchSessions();
       await fetchGraph(selectedId);
       await fetchLogs(selectedId);
     } catch (e: any) {
-      toast.error(`推演失败: ${e.message}`);
+      toast.error(t("deductionEngine.deductionFailed", { message: e.message }));
     }
     setLoading(false);
-  }, [selectedId, apiBaseUrl, fetchSessions, fetchGraph, fetchLogs]);
+  }, [selectedId, apiBaseUrl, fetchSessions, fetchGraph, fetchLogs, t]);
 
   const handleDelete = useCallback(async (id: string) => {
     await fetch(`${apiBaseUrl}/api/deduction/session/${id}`, { method: "DELETE" });
@@ -112,9 +145,15 @@ export function DeductionView({ serviceRunning, apiBaseUrl }: Props) {
 
   const phaseLabel = (s: SessionItem) => {
     const map: Record<string, string> = {
-      created: "已创建", ontology_running: "本体生成中", graph_running: "图谱构建中",
-      agents_running: "智能体生成中", simulating: "模拟中", reporting: "报告生成中",
-      complete: "已完成", failed: "失败", paused: "已暂停",
+      created: t("deductionEngine.statusCreated"),
+      ontology_running: t("deductionEngine.statusOntologyRunning"),
+      graph_running: t("deductionEngine.statusGraphRunning"),
+      agents_running: t("deductionEngine.statusAgentsRunning"),
+      simulating: t("deductionEngine.statusSimulating"),
+      reporting: t("deductionEngine.statusReporting"),
+      complete: t("deductionEngine.statusComplete"),
+      failed: t("deductionEngine.statusFailed"),
+      paused: t("deductionEngine.statusPaused"),
     };
     return map[s.status] || s.status;
   };
@@ -123,32 +162,49 @@ export function DeductionView({ serviceRunning, apiBaseUrl }: Props) {
     <div style={{ display: "grid", gridTemplateColumns: "320px 1fr", height: "100%", overflow: "hidden" }}>
       {/* ── Left Panel: Sessions ── */}
       <div style={{ borderRight: "1px solid var(--line)", overflow: "auto", padding: 12 }}>
-        <h3 style={{ margin: "0 0 8px", fontSize: 15 }}>推演引擎</h3>
+        <h3 style={{ margin: "0 0 8px", fontSize: 15 }}>{t("deductionEngine.title")}</h3>
 
         <div className="card" style={{ marginBottom: 10 }}>
           <input
             style={{ height: 32, marginBottom: 6 }}
-            placeholder="会话标题"
+            placeholder={t("deductionEngine.sessionTitle")}
             value={title}
             onChange={e => setTitle(e.target.value)}
           />
           <textarea
             style={{ height: 100, fontSize: 12, marginBottom: 6 }}
-            placeholder="粘贴种子材料（新闻、报告、小说片段等）..."
+            placeholder={t("deductionEngine.pasteSourceMaterial")}
             value={sourceMaterial}
             onChange={e => setSourceMaterial(e.target.value)}
           />
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".txt,.md,.json,.pdf,.docx,.py,.js,.ts,.rs,.go,.java,.c,.cpp,.csv,.log,.yaml,.yml"
+            onChange={handleFileUpload}
+            style={{ display: "none" }}
+          />
+          <button
+            style={{ width: "100%", height: 28, fontSize: 12, marginBottom: 6,
+              background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 6, cursor: "pointer",
+              display: "flex", alignItems: "center", justifyContent: "center", gap: 6, color: "var(--muted)" }}
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploading || !serviceRunning}
+          >
+            {uploading ? <Loader2 size={14} className="spinIcon" /> : <Upload size={14} />}
+            {uploading ? t("deductionEngine.parsing") : t("deductionEngine.uploadDocument")}
+          </button>
           <button
             className="btnPrimary"
             style={{ width: "100%", height: 32, fontSize: 13 }}
             onClick={handleCreate}
             disabled={creating || !serviceRunning}
           >
-            {creating ? "创建中..." : "创建推演会话"}
+            {creating ? t("deductionEngine.creating") : t("deductionEngine.createSession")}
           </button>
         </div>
 
-        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>会话列表</div>
+        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>{t("deductionEngine.sessionList")}</div>
         {sessions.map(s => (
           <div
             key={s.id}
@@ -161,25 +217,25 @@ export function DeductionView({ serviceRunning, apiBaseUrl }: Props) {
             </div>
             <div style={{ color: "var(--muted)", fontSize: 11 }}>
               {phaseLabel(s)}
-              {s.agent_count > 0 && ` · ${s.agent_count} 智能体`}
+              {s.agent_count > 0 && ` \u00b7 ${s.agent_count} ${t("deductionEngine.agents")}`}
             </div>
             <div style={{ marginTop: 2, display: "flex", justifyContent: "space-between" }}>
               <span style={{ color: "var(--muted2)", fontSize: 10 }}>
-                {s.current_round}/{s.total_rounds} 轮
+                {s.current_round}/{s.total_rounds} {t("deductionEngine.round")}
               </span>
               <button
                 className="btnSmall btnSmallDanger"
                 style={{ padding: "1px 6px", fontSize: 10 }}
                 onClick={e => { e.stopPropagation(); handleDelete(s.id); }}
               >
-                删除
+                {t("deductionEngine.delete")}
               </button>
             </div>
           </div>
         ))}
         {sessions.length === 0 && (
           <div style={{ color: "var(--muted)", fontSize: 12, textAlign: "center", padding: 20 }}>
-            暂无推演会话
+            {t("deductionEngine.noSessions")}
           </div>
         )}
       </div>
@@ -192,8 +248,8 @@ export function DeductionView({ serviceRunning, apiBaseUrl }: Props) {
               <div className="topbarStatusRow">
                 <span className="topbarWs">{selected.title || selected.id.slice(0, 8)}</span>
                 <span className="pill">{phaseLabel(selected)}</span>
-                {selected.agent_count > 0 && <span className="pill">{selected.agent_count} 智能体</span>}
-                {selected.current_round > 0 && <span className="pill">{selected.current_round}/{selected.total_rounds} 轮</span>}
+                {selected.agent_count > 0 && <span className="pill">{selected.agent_count} {t("deductionEngine.agents")}</span>}
+                {selected.current_round > 0 && <span className="pill">{selected.current_round}/{selected.total_rounds} {t("deductionEngine.round")}</span>}
               </div>
               <div>
                 <button
@@ -202,7 +258,9 @@ export function DeductionView({ serviceRunning, apiBaseUrl }: Props) {
                   onClick={handleStart}
                   disabled={loading || selected.status === "simulating"}
                 >
-                  {selected.status === "complete" ? "重新推演" : loading ? "运行中..." : "启动推演"}
+                  {selected.status === "complete"
+                    ? t("deductionEngine.restartDeduction")
+                    : loading ? t("deductionEngine.running") : t("deductionEngine.startDeduction")}
                 </button>
               </div>
             </div>
@@ -229,7 +287,9 @@ export function DeductionView({ serviceRunning, apiBaseUrl }: Props) {
                 />
               ) : (
                 <div style={{ color: "#64748b", textAlign: "center", paddingTop: 200, fontSize: 14 }}>
-                  {selected.status === "created" ? "启动推演后可查看动态知识图谱" : "图谱生成中..."}
+                  {selected.status === "created"
+                    ? t("deductionEngine.graphEmpty")
+                    : t("deductionEngine.graphGenerating")}
                 </div>
               )}
             </div>
@@ -237,7 +297,7 @@ export function DeductionView({ serviceRunning, apiBaseUrl }: Props) {
             {/* Logs */}
             <div ref={logsRef} style={{ maxHeight: 160, overflow: "auto", borderTop: "1px solid var(--line)", padding: 8, fontSize: 11 }}>
               {logs.length === 0 && (
-                <div style={{ color: "var(--muted)", textAlign: "center", padding: 10 }}>暂无日志</div>
+                <div style={{ color: "var(--muted)", textAlign: "center", padding: 10 }}>{t("deductionEngine.noLogs")}</div>
               )}
               {logs.map((l, i) => (
                 <div key={i} style={{ padding: "1px 0", color: "var(--muted)", fontFamily: "monospace" }}>
@@ -249,7 +309,7 @@ export function DeductionView({ serviceRunning, apiBaseUrl }: Props) {
           </>
         ) : (
           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "var(--muted)", fontSize: 14 }}>
-            选择或创建一个推演会话以开始
+            {t("deductionEngine.selectHint")}
           </div>
         )}
       </div>
