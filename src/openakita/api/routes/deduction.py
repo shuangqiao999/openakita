@@ -69,6 +69,16 @@ class InjectEventRequest(BaseModel):
     event_description: str = Field(default="", description="要注入的事件描述")
 
 
+class InterventionRequest(BaseModel):
+    content: str = Field(default="", description="用户干预内容")
+    scope: str = Field(default="during", description="pre(推演前) 或 during(推演中)")
+    round_number: int | None = Field(None, description="指定生效轮次")
+
+
+class PreGoalRequest(BaseModel):
+    content: str = Field(default="", description="推演前的愿景/目标")
+
+
 # ── File upload ──
 
 @router.post("/upload")
@@ -189,8 +199,77 @@ async def inject_event(session_id: str, req: InjectEventRequest, request: Reques
     session = engine.get_session(session_id)
     if session is None:
         raise HTTPException(404, "Session not found")
-    engine.log(session_id, "inject", f"事件注入: {req.event_description}")
+    graph = engine.get_graph(session_id)
+    if graph is not None:
+        try:
+            preprocessor = getattr(request.app.state, f"_pp_{session_id}", None)
+            if preprocessor is None:
+                from openakita.deduction.preprocessor import DeductionPreprocessor
+                from openakita.config import settings
+                preprocessor = DeductionPreprocessor(settings.project_root, session_id)
+                setattr(request.app.state, f"_pp_{session_id}", preprocessor)
+            preprocessor.add_event_memory(
+                content=req.event_description, agent_id="system_user",
+                round_number=session.current_round + 1,
+                event_type="user_inject", priority=1.0,
+            )
+            engine.log(session_id, "inject", f"用户注入事件(priority=1.0): {req.event_description}")
+        except Exception as e:
+            logger.warning("[Deduction] Inject to LanceDB failed: %s", e)
+            engine.log(session_id, "inject", f"事件注入: {req.event_description}")
     return {"session_id": session_id, "injected": True}
+
+
+@router.post("/session/{session_id}/intervene")
+async def intervene_session(session_id: str, req: InterventionRequest, request: Request):
+    engine = _get_engine(request)
+    session = engine.get_session(session_id)
+    if session is None:
+        raise HTTPException(404, "Session not found")
+    round_num = req.round_number or (session.current_round + 1)
+    try:
+        from openakita.deduction.preprocessor import DeductionPreprocessor
+        from openakita.config import settings
+        preprocessor = getattr(request.app.state, f"_pp_{session_id}", None)
+        if preprocessor is None:
+            preprocessor = DeductionPreprocessor(settings.project_root, session_id)
+            setattr(request.app.state, f"_pp_{session_id}", preprocessor)
+        preprocessor.add_event_memory(
+            content=req.content, agent_id="system_user",
+            round_number=round_num,
+            event_type="user_intervention", priority=1.0,
+        )
+        engine.log(session_id, "intervene", f"用户干预 (scope={req.scope}, priority=1.0): {req.content[:100]}")
+        return {"session_id": session_id, "injected": True, "round_number": round_num}
+    except Exception as e:
+        raise HTTPException(500, f"干预注入失败: {e}")
+
+
+@router.post("/session/{session_id}/pre-goal")
+async def set_pre_goal(session_id: str, req: PreGoalRequest, request: Request):
+    engine = _get_engine(request)
+    session = engine.get_session(session_id)
+    if session is None:
+        raise HTTPException(404, "Session not found")
+    import json as _json
+    config = session_store_data(session_id, engine) or {}
+    pre_goals = config.get("pre_goals", [])
+    pre_goals.append(req.content)
+    config["pre_goals"] = pre_goals
+    engine.session_store.update(session_id, config_json=_json.dumps(config, ensure_ascii=False))
+    engine.log(session_id, "pre-goal", f"推演前目标: {req.content[:100]}")
+    return {"session_id": session_id, "pre_goals": pre_goals}
+
+
+def session_store_data(session_id: str, engine) -> dict | None:
+    data = engine.session_store.get(session_id)
+    if data is None:
+        return None
+    cfg = data.get("config_json", {}) or {}
+    if isinstance(cfg, str):
+        import json as _json
+        cfg = _json.loads(cfg)
+    return cfg
 
 
 # ── Data export ──

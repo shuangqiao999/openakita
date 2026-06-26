@@ -3473,7 +3473,14 @@
     "deductionFailed": "推演失败: {{message}}",
     "fileParsed": "已解析: {{name}} ({{count}} 字符)",
     "fileTypeUnsupported": "不支持的文件类型: {{type}}",
-    "fileUploadFailed": "上传失败: {{message}}"
+    "fileUploadFailed": "上传失败: {{message}}",
+    "preGoalSet": "推演目标已设定",
+    "interveneInjected": "干预指令已注入",
+    "interveneFailed": "干预失败: {{message}}",
+    "preGoalPlaceholder": "推演目标或期望结局（可选，如：希望探春最终掌家）",
+    "intervenePlaceholder": "输入干预指令（如：皇帝突然下旨抄家）...",
+    "sendIntervene": "注入",
+    "sendingIntervene": "发送中"
   }
 }
 

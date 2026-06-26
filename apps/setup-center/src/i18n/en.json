@@ -3473,7 +3473,14 @@
     "deductionFailed": "Deduction failed: {{message}}",
     "fileParsed": "Parsed: {{name}} ({{count}} chars)",
     "fileTypeUnsupported": "Unsupported file type: {{type}}",
-    "fileUploadFailed": "Upload failed: {{message}}"
+    "fileUploadFailed": "Upload failed: {{message}}",
+    "preGoalSet": "Deduction goal set",
+    "interveneInjected": "Intervention injected",
+    "interveneFailed": "Intervention failed: {{message}}",
+    "preGoalPlaceholder": "Deduction goal or desired outcome (optional)",
+    "intervenePlaceholder": "Enter intervention command (e.g.: Emperor orders investigation)...",
+    "sendIntervene": "Inject",
+    "sendingIntervene": "Sending..."
   }
 }
 

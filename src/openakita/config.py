@@ -212,6 +212,7 @@ class Settings(BaseSettings):
     deduction_enabled: bool = Field(default=True, description="是否启用推演引擎")
     deduction_max_agents: int = Field(default=200, ge=1, description="最大推演智能体数量")
     deduction_default_rounds: int = Field(default=10, ge=1, description="默认推演轮数")
+    deduction_candidate_count: int = Field(default=3, ge=2, le=5, description="每轮候选策略数")
     deduction_llm_temperature: float = Field(default=0.3, ge=0.0, le=2.0)
     deduction_graph_max_depth: int = Field(default=3, ge=1, description="图谱查询最大深度")
     deduction_data_dir: str = Field(default="data/deduction", description="推演数据目录")

@@ -101,11 +101,21 @@ class DeductionOrchestrator:
         self._log("agents", "阶段3: 智能体工厂开始")
 
         from .agent_factory import create_agents_from_graph
+        # Load pre-goals from session config
+        import json as _json
+        cfg_data = self.store.get(self.session.id)
+        pre_goals: list[str] = []
+        if cfg_data:
+            cfg = cfg_data.get("config_json", {}) or {}
+            if isinstance(cfg, str):
+                cfg = _json.loads(cfg)
+            pre_goals = cfg.get("pre_goals", [])
         agents = await create_agents_from_graph(
             graph=self.graph,
             source_material=self.session.source_material,
             log_fn=self._log,
             preprocessor=getattr(self, "_preprocessor", None),
+            pre_interventions=pre_goals if pre_goals else None,
         )
         self.session.agent_count = len(agents)
         self._agents = agents

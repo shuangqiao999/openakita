@@ -99,6 +99,12 @@ class SimulationEngine:
         self._max_concurrent = 10
         self._preprocessor = preprocessor
         self._chat_fn = chat_fn
+        from .strategic_reasoner import StrategicReasoner
+        from openakita.config import settings
+        self.reasoner = StrategicReasoner(
+            candidate_count=settings.deduction_candidate_count,
+            preprocessor=preprocessor,
+        )
 
     async def run_round(self, round_number: int) -> SimulationRound:
         from openakita.llm.client import LLMClient
@@ -204,30 +210,40 @@ class SimulationEngine:
             except Exception as e:
                 logger.debug("[Simulator] Dynamic recall failed for %s: %s", agent.name, e)
 
-        system = "你是推演模拟中的角色，根据角色设定和历史事件做出合理的下一步行动。只输出 JSON。"
-        messages = [{"role": "user", "content": _ACTION_PROMPT.format(
-            persona=agent.persona,
-            background=agent.background,
-            goals=", ".join(agent.goals) if agent.goals else "参与互动",
-            round_number=round_number,
-            recent_events=recent_text,
-            static_knowledge=static_text,
-            dynamic_memory=dynamic_text,
-        )}]
-
+        # ── Strategic Reasoning (primary path) ──
+        world = {"recent_events": recent_text, "static_knowledge": static_text,
+                  "dynamic_memory": dynamic_text}
         try:
-            if self._chat_fn is not None:
-                response = await asyncio.to_thread(
-                    self._chat_fn, messages, system, 0.7,
-                )
-                content = response
-            else:
-                response = await client.chat(messages, system=system, temperature=0.7)
-                content = _extract_text(response)
-            action_data = _parse_action_json(content)
+            decision = await self.reasoner.reason(agent, world, round_number)
+            sel = decision.get("selected", {})
+            action_data = {"action": sel.get("action", "observe"),
+                           "target": sel.get("target", ""),
+                           "content": sel.get("content", f"{agent.name}观察着周围环境")}
+            # Update trust matrix from selected action
+            if sel.get("target"):
+                self.reasoner.record_interaction(
+                    agent.entity_id, sel["target"], action_data["action"], action_data["content"])
         except Exception as e:
-            logger.debug("[Deduction] Agent %s decision failed: %s", agent.name, e)
-            return None
+            logger.debug("[Simulator] Reasoner failed for %s, using inline prompt: %s", agent.name, e)
+            # ── Fallback: inline prompt ──
+            system = "你是推演模拟中的角色，根据角色设定和历史事件做出合理的下一步行动。只输出 JSON。"
+            messages = [{"role": "user", "content": _ACTION_PROMPT.format(
+                persona=agent.persona, background=agent.background,
+                goals=", ".join(agent.goals) if agent.goals else "参与互动",
+                round_number=round_number, recent_events=recent_text,
+                static_knowledge=static_text, dynamic_memory=dynamic_text,
+            )}]
+            try:
+                if self._chat_fn is not None:
+                    response = await asyncio.to_thread(self._chat_fn, messages, system, 0.7)
+                    content = response
+                else:
+                    response = await client.chat(messages, system=system, temperature=0.7)
+                    content = _extract_text(response)
+                action_data = _parse_action_json(content)
+            except Exception as e2:
+                logger.debug("[Deduction] Agent %s decision failed: %s", agent.name, e2)
+                return None
 
         from datetime import datetime
         return SimulationAction(

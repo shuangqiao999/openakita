@@ -39,6 +39,9 @@ export function DeductionView({ serviceRunning, apiBaseUrl }: Props) {
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [preGoal, setPreGoal] = useState("");
+  const [interventionText, setInterventionText] = useState("");
+  const [sending, setSending] = useState(false);
   const logsRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -141,6 +144,53 @@ export function DeductionView({ serviceRunning, apiBaseUrl }: Props) {
     fetchSessions();
   }, [apiBaseUrl, selectedId, fetchSessions]);
 
+  const sendPreGoal = useCallback(async () => {
+    if (!selectedId || !preGoal.trim()) return;
+    try {
+      await fetch(`${apiBaseUrl}/api/deduction/session/${selectedId}/pre-goal`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: preGoal }),
+      });
+      toast.success(t("deductionEngine.preGoalSet"));
+      setPreGoal("");
+    } catch { /* ignore */ }
+  }, [apiBaseUrl, selectedId, preGoal]);
+
+  const sendIntervention = useCallback(async () => {
+    if (!selectedId || !interventionText.trim()) return;
+    setSending(true);
+    try {
+      await fetch(`${apiBaseUrl}/api/deduction/session/${selectedId}/intervene`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: interventionText, scope: "during" }),
+      });
+      toast.success(t("deductionEngine.interveneInjected"));
+      setInterventionText("");
+      await fetchLogs(selectedId);
+    } catch (err: any) {
+      toast.error(t("deductionEngine.interveneFailed", { message: err.message }));
+    }
+    setSending(false);
+  }, [apiBaseUrl, selectedId, interventionText, fetchLogs]);
+
+  // SSE auto-refresh logs during simulation
+  useEffect(() => {
+    if (!selectedId || !serviceRunning) return;
+    const selected = sessions.find(s => s.id === selectedId);
+    if (!selected || selected.status !== "simulating") return;
+    const es = new EventSource(`${apiBaseUrl}/api/deduction/session/${selectedId}/stream`);
+    es.onmessage = (ev) => {
+      if (ev.data === "[DONE]") { es.close(); fetchSessions(); fetchGraph(selectedId); return; }
+      try {
+        const d = JSON.parse(ev.data);
+        setLogs(prev => [...prev.slice(-200), { phase: d.phase || d.type || "", message: d.message || "", timestamp: d.timestamp || "" }]);
+        if (logsRef.current) logsRef.current.scrollTop = logsRef.current.scrollHeight;
+      } catch { /* ignore */ }
+    };
+    es.onerror = () => { es.close(); };
+    return () => es.close();
+  }, [selectedId, serviceRunning, sessions, apiBaseUrl, fetchSessions, fetchGraph]);
+
   const selected = sessions.find(s => s.id === selectedId);
 
   const phaseLabel = (s: SessionItem) => {
@@ -176,6 +226,12 @@ export function DeductionView({ serviceRunning, apiBaseUrl }: Props) {
             placeholder={t("deductionEngine.pasteSourceMaterial")}
             value={sourceMaterial}
             onChange={e => setSourceMaterial(e.target.value)}
+          />
+          <textarea
+            style={{ height: 48, fontSize: 12, marginBottom: 6 }}
+            placeholder={t("deductionEngine.preGoalPlaceholder")}
+            value={preGoal}
+            onChange={e => setPreGoal(e.target.value)}
           />
           <input
             ref={fileInputRef}
@@ -293,6 +349,27 @@ export function DeductionView({ serviceRunning, apiBaseUrl }: Props) {
                 </div>
               )}
             </div>
+
+            {/* Intervention input (only during simulation) */}
+            {selected.status === "simulating" && (
+              <div style={{ display: "flex", gap: 6, padding: "6px 12px", borderTop: "1px solid var(--line)", background: "var(--bg-subtle)" }}>
+                <input
+                  style={{ flex: 1, height: 28, fontSize: 12 }}
+                  placeholder={t("deductionEngine.intervenePlaceholder")}
+                  value={interventionText}
+                  onChange={e => setInterventionText(e.target.value)}
+                  onKeyDown={e => { if (e.key === "Enter") sendIntervention(); }}
+                />
+                <button
+                  className="btnSmall btnSmallPrimary"
+                  style={{ height: 28, fontSize: 11 }}
+                  onClick={sendIntervention}
+                  disabled={sending || !interventionText.trim()}
+                >
+                  {sending ? t("deductionEngine.sendingIntervene") : t("deductionEngine.sendIntervene")}
+                </button>
+              </div>
+            )}
 
             {/* Logs */}
             <div ref={logsRef} style={{ maxHeight: 160, overflow: "auto", borderTop: "1px solid var(--line)", padding: 8, fontSize: 11 }}>

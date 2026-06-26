@@ -91,6 +91,8 @@ class DeductionPreprocessor:
             pa.field("agent_id", pa.string()),
             pa.field("round_number", pa.int32()),
             pa.field("session_id", pa.string()),
+            pa.field("priority", pa.float32()),
+            pa.field("event_type", pa.string()),
         ])
         self._event_table_name = f"deduction_events_{self.session_id}"
         if self._event_table_name in self._db.table_names():
@@ -132,7 +134,8 @@ class DeductionPreprocessor:
     # ── Dynamic event memory ──
 
     def add_event_memory(self, content: str, agent_id: str,
-                         round_number: int, event_type: str = "") -> None:
+                         round_number: int, event_type: str = "",
+                         priority: float = 0.5) -> None:
         if self._event_table is None or self._dim <= 0:
             return
         embed_text = f"[R{round_number}] {event_type}: {content}"[:self._INDEX_PREFIX_LEN]
@@ -141,12 +144,43 @@ class DeductionPreprocessor:
         except Exception as e:
             logger.debug("[Preprocessor] add_event_memory embed failed: %s", e)
             return
-        self._event_table.add([{
-            "event_id": str(uuid.uuid4()),
-            "vector": vec, "content": content,
-            "agent_id": agent_id, "round_number": round_number,
-            "session_id": self.session_id,
-        }])
+        try:
+            self._event_table.add([{
+                "event_id": str(uuid.uuid4()),
+                "vector": vec, "content": content,
+                "agent_id": agent_id, "round_number": round_number,
+                "session_id": self.session_id,
+                "priority": priority, "event_type": event_type,
+            }])
+        except Exception:
+            # Fallback for old tables without priority/event_type columns
+            self._event_table.add([{
+                "event_id": str(uuid.uuid4()),
+                "vector": vec, "content": content,
+                "agent_id": agent_id, "round_number": round_number,
+                "session_id": self.session_id,
+            }])
+
+    def retrieve_latest_intervention(self) -> dict | None:
+        """检索最近的用户干预指令（priority=1.0, event_type='user_intervention'）。"""
+        if self._event_table is None:
+            return None
+        try:
+            raw = self._event_table.to_arrow().to_pydict()
+            if "priority" not in raw:
+                return None  # old table without priority column
+            interventions = [
+                {"content": raw["content"][i], "round_number": raw["round_number"][i],
+                 "priority": raw["priority"][i]}
+                for i in range(len(raw["event_id"]))
+                if raw.get("priority", [0])[i] >= 0.9
+            ]
+            if interventions:
+                interventions.sort(key=lambda x: (-x["priority"], -x.get("round_number", 0)))
+                return interventions[0]
+        except Exception:
+            pass
+        return None
 
     def retrieve_dynamic_events(
         self, query_text: str, top_k: int = 3, min_similarity: float = 0.4,
