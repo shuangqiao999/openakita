@@ -4,28 +4,14 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
+from ._utils import extract_text
 from .models import DeductionReport, DeductionSession, SimulationRound
 from .store import DeductionGraphStore
 
 logger = logging.getLogger(__name__)
-
-
-def _extract_text(response) -> str:
-    if hasattr(response, "text"):
-        return response.text
-    if hasattr(response, "content"):
-        c = response.content
-        if isinstance(c, list):
-            from openakita.llm.types import TextBlock
-            return "".join(b.text for b in c if isinstance(b, TextBlock))
-        return str(c)
-    if isinstance(response, dict):
-        if "choices" in response:
-            return response["choices"][0]["message"]["content"]
-        return str(response)
-    return str(response)
 
 _REPORT_PROMPT = """你是一个推演分析专家。基于以下推演数据，生成一份结构化的推演报告。返回 JSON。
 
@@ -66,6 +52,7 @@ async def generate_report(
     log_fn: Callable[[str, str], None],
 ) -> DeductionReport:
     from openakita.llm.client import LLMClient
+    from openakita.llm.types import Message
 
     # Collect key events
     key_events: list[str] = []
@@ -85,7 +72,7 @@ async def generate_report(
 
     client = LLMClient()
     system = "你是推演分析专家，生成结构化推演报告。只输出 JSON。"
-    messages = [{"role": "user", "content": _REPORT_PROMPT.format(
+    messages = [Message(role="user", content=_REPORT_PROMPT.format(
         title=session.title or "推演会话",
         agent_count=session.agent_count,
         round_count=session.current_round,
@@ -93,7 +80,7 @@ async def generate_report(
         relation_count=session.relation_count,
         key_events="\n".join(key_events[-20:]),
         source_snippet=session.source_material[:1000],
-    )}]
+    ))]
 
     default_report = DeductionReport(
         session_id=session.id,
@@ -105,7 +92,7 @@ async def generate_report(
 
     try:
         response = await client.chat(messages, system=system, temperature=0.3)
-        content = _extract_text(response)
+        content = extract_text(response)
         report_data = _parse_report_json(content)
     except Exception as e:
         logger.warning("[Deduction] Report LLM failed, using defaults: %s", e)

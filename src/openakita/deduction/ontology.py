@@ -5,25 +5,10 @@ import json
 import logging
 import re
 
+from ._utils import extract_text
 from .models import EntityTypeDef, Ontology, RelationTypeDef
 
 logger = logging.getLogger(__name__)
-
-
-def _extract_text(response) -> str:
-    if hasattr(response, "text"):
-        return response.text
-    if hasattr(response, "content"):
-        c = response.content
-        if isinstance(c, list):
-            from openakita.llm.types import TextBlock
-            return "".join(b.text for b in c if isinstance(b, TextBlock))
-        return str(c)
-    if isinstance(response, dict):
-        if "choices" in response:
-            return response["choices"][0]["message"]["content"]
-        return str(response)
-    return str(response)
 
 _PROMPT = """你是一个知识本体专家。请分析以下文本，定义其中涉及的实体类型和关系类型。
 
@@ -50,14 +35,15 @@ _PROMPT = """你是一个知识本体专家。请分析以下文本，定义其�
 
 async def generate_ontology(text: str) -> Ontology:
     from openakita.llm.client import LLMClient
+    from openakita.llm.types import Message
 
     client = LLMClient()
-    messages = [{"role": "user", "content": _PROMPT.format(text=text[:8000])}]
+    messages = [Message(role="user", content=_PROMPT.format(text=text[:8000]))]
     system = "你是知识本体分析专家，只输出 JSON。"
 
     try:
         response = await client.chat(messages, system=system, temperature=0.1)
-        content = _extract_text(response)
+        content = extract_text(response)
         return _parse_ontology(content)
     except Exception as e:
         logger.warning("[Deduction] Ontology LLM failed, using defaults: %s", e)

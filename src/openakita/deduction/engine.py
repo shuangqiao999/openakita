@@ -12,9 +12,9 @@ from typing import Any
 from openakita.config import settings
 
 from .models import DeductionSession, SessionStatus
+from .orchestrator import DeductionOrchestrator
 from .session_store import SessionStore
 from .store import DeductionGraphStore
-from .orchestrator import DeductionOrchestrator
 
 logger = logging.getLogger(__name__)
 

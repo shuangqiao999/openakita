@@ -12,29 +12,15 @@ import logging
 import random
 import re
 import uuid
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
+from ._utils import extract_text
 from .models import DeductionAgentProfile, SimulationAction, SimulationRound
-from .store import DeductionGraphStore
 from .preprocessor import DeductionPreprocessor
+from .store import DeductionGraphStore
 
 logger = logging.getLogger(__name__)
-
-
-def _extract_text(response) -> str:
-    if hasattr(response, "text"):
-        return response.text
-    if hasattr(response, "content"):
-        c = response.content
-        if isinstance(c, list):
-            from openakita.llm.types import TextBlock
-            return "".join(b.text for b in c if isinstance(b, TextBlock))
-        return str(c)
-    if isinstance(response, dict):
-        if "choices" in response:
-            return response["choices"][0]["message"]["content"]
-        return str(response)
-    return str(response)
 
 
 _ACTION_PROMPT = """你是一个推演模拟中的智能体。根据你的角色设定和当前世界状态，决定你的下一步行动。
@@ -101,8 +87,9 @@ class SimulationEngine:
         self._preprocessor = preprocessor
         self._chat_fn = chat_fn
         self._immutable_goals: list[str] = list(pre_goals or [])
-        from .strategic_reasoner import StrategicReasoner
         from openakita.config import settings
+
+        from .strategic_reasoner import StrategicReasoner
         self.reasoner = StrategicReasoner(
             candidate_count=settings.deduction_candidate_count,
             preprocessor=preprocessor,
@@ -165,7 +152,7 @@ class SimulationEngine:
                         event_type=action.action_type,
                     )
                 except Exception as e:
-                    logger.debug("[Simulator] Event memory write failed for %s: %s",
+                    logger.warning("[Simulator] Event memory write failed for %s: %s",
                                  action.agent_id, e)
 
         return sim_round
@@ -193,7 +180,7 @@ class SimulationEngine:
                 if static_frags:
                     static_text = "\n---\n".join(f[:300] for f in static_frags)
             except Exception as e:
-                logger.debug("[Simulator] Static recall failed for %s: %s", agent.name, e)
+                logger.warning("[Simulator] Static recall failed for %s: %s", agent.name, e)
 
         # ── Path B: 动态模拟事件检索 ★ ──
         dynamic_text = "无近期模拟事件"
@@ -212,13 +199,13 @@ class SimulationEngine:
                 if dynamic_frags:
                     dynamic_text = "\n---\n".join(dynamic_frags)
             except Exception as e:
-                logger.debug("[Simulator] Dynamic recall failed for %s: %s", agent.name, e)
+                logger.warning("[Simulator] Dynamic recall failed for %s: %s", agent.name, e)
 
         # ── Strategic Reasoning (primary path) ──
         world = {"recent_events": recent_text, "static_knowledge": static_text,
                   "dynamic_memory": dynamic_text}
         try:
-            decision = await self.reasoner.reason(agent, world, round_number)
+            decision = await self.reasoner.reason(agent, world, round_number, client=client)
             sel = decision.get("selected", {})
             action_data = {"action": sel.get("action", "observe"),
                            "target": sel.get("target", ""),
@@ -228,25 +215,26 @@ class SimulationEngine:
                 self.reasoner.record_interaction(
                     agent.entity_id, sel["target"], action_data["action"], action_data["content"])
         except Exception as e:
-            logger.debug("[Simulator] Reasoner failed for %s, using inline prompt: %s", agent.name, e)
+            logger.warning("[Simulator] Reasoner failed for %s, using inline prompt: %s", agent.name, e)
             # ── Fallback: inline prompt ──
+            from openakita.llm.types import Message
             system = "你是推演模拟中的角色，根据角色设定和历史事件做出合理的下一步行动。只输出 JSON。"
-            messages = [{"role": "user", "content": _ACTION_PROMPT.format(
+            messages = [Message(role="user", content=_ACTION_PROMPT.format(
                 persona=agent.persona, background=agent.background,
                 goals=", ".join(agent.goals) if agent.goals else "参与互动",
                 round_number=round_number, recent_events=recent_text,
                 static_knowledge=static_text, dynamic_memory=dynamic_text,
-            )}]
+            ))]
             try:
                 if self._chat_fn is not None:
                     response = await asyncio.to_thread(self._chat_fn, messages, system, 0.7)
                     content = response
                 else:
                     response = await client.chat(messages, system=system, temperature=0.7)
-                    content = _extract_text(response)
+                    content = extract_text(response)
                 action_data = _parse_action_json(content)
             except Exception as e2:
-                logger.debug("[Deduction] Agent %s decision failed: %s", agent.name, e2)
+                logger.warning("[Deduction] Agent %s decision failed: %s", agent.name, e2)
                 return None
 
         from datetime import datetime

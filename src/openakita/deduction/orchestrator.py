@@ -1,15 +1,17 @@
 """Deduction Orchestrator — five-stage pipeline coordinator."""
 from __future__ import annotations
 
-import asyncio
 import logging
-from typing import Any, Callable
+from collections.abc import Callable
 
 from .models import (
-    DeductionPhase, DeductionReport, DeductionSession, SessionStatus, SimulationRound,
+    DeductionPhase,
+    DeductionSession,
+    SessionStatus,
+    SimulationRound,
 )
-from .store import DeductionGraphStore
 from .session_store import SessionStore
+from .store import DeductionGraphStore
 
 logger = logging.getLogger(__name__)
 
@@ -68,8 +70,9 @@ class DeductionOrchestrator:
 
         # 预处理: 语义分块 + 实体提取 + LanceDB 索引
         self._log("graph", "  预处理: 语义分块 + 实体提取 + LanceDB 索引")
-        from .preprocessor import DeductionPreprocessor
         from openakita.config import settings
+
+        from .preprocessor import DeductionPreprocessor
 
         preprocessor = DeductionPreprocessor(
             workspace_root=settings.project_root,
@@ -100,9 +103,10 @@ class DeductionOrchestrator:
     async def _phase3_agents(self) -> None:
         self._log("agents", "阶段3: 智能体工厂开始")
 
-        from .agent_factory import create_agents_from_graph
         # Load pre-goals from session config
         import json as _json
+
+        from .agent_factory import create_agents_from_graph
         cfg_data = self.store.get(self.session.id)
         pre_goals: list[str] = []
         if cfg_data:

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -42,30 +42,53 @@ class DeductionPreprocessor:
         self._dim: int = 0
         self._result: PreprocessResult | None = None
 
+        self._embed_config = self._resolve_embed_config()
         self._embed_url = self._resolve_embed_url()
         self._embed_model = self._resolve_embed_model()
         self._http = requests.Session()
         self._http.headers["Content-Type"] = "application/json"
+        api_key = self._embed_config.get("api_key", "") or ""
+        if api_key:
+            self._http.headers["Authorization"] = f"Bearer {api_key}"
 
         self._init_lancedb()
 
-    def _resolve_embed_url(self) -> str:
+    def _resolve_embed_config(self) -> dict:
         try:
-            from openakita.config import settings
-            base = getattr(settings, "embedding_api_base", "") or ""
-            if base:
-                return base.rstrip("/") + "/embeddings"
-        except Exception:
-            pass
+            from openakita.llm.embeddings import _build_embedding_config
+            config = _build_embedding_config()
+            if config.get("api_base") or config.get("model_name"):
+                return config
+        except Exception as e:
+            logger.warning("[Preprocessor] Failed to read embedding config: %s", e)
+        return {}
+
+    def _resolve_embed_url(self) -> str:
+        config = self._embed_config
+        base = config.get("api_base", "") or ""
+        if not base:
+            try:
+                from openakita.config import settings
+                base = getattr(settings, "embedding_api_base", "") or ""
+            except Exception as e:
+                logger.warning("[Preprocessor] settings read failed: %s", e)
+        if base:
+            return base.rstrip("/") + "/embeddings"
         logger.warning("[Preprocessor] No embedding_api_base configured — "
                        "LanceDB indexing will be skipped")
         return ""
 
     def _resolve_embed_model(self) -> str:
+        config = self._embed_config
+        model = config.get("model_name", "") or ""
+        if model:
+            return model
         try:
             from openakita.config import settings
-            return getattr(settings, "embedding_model_name", "") or getattr(settings, "embedding_api_model", "") or ""
+            return (getattr(settings, "embedding_model_name", "") or
+                    getattr(settings, "embedding_api_model", "") or "")
         except Exception:
+            logger.warning("[Preprocessor] Failed to resolve embed model from settings")
             return ""
 
     def _init_lancedb(self) -> None:
@@ -260,8 +283,8 @@ class DeductionPreprocessor:
         return self._result
 
     def preprocess(self, source: str) -> PreprocessResult:
-        from openakita.knowledge.chunker import TextChunker
         from openakita.core.tokenizer import extract_named_entities
+        from openakita.knowledge.chunker import TextChunker
 
         # 1. semantic chunking
         chunker = TextChunker(strategy="paragraph", max_chunk_size=1536)

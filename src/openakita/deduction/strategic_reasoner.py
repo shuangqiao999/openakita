@@ -12,6 +12,7 @@ import re
 from collections import defaultdict
 from typing import Any
 
+from ._utils import extract_text
 from .models import DeductionAgentProfile
 from .preprocessor import DeductionPreprocessor
 
@@ -105,8 +106,10 @@ class StrategicReasoner:
 
     async def reason(
         self, agent: DeductionAgentProfile, world_state: dict, round_number: int,
+        client: Any = None,
     ) -> dict[str, Any]:
         from openakita.llm.client import LLMClient
+        from openakita.llm.types import Message
 
         # 1. Check for user intervention
         user_cmd = "No external directive — act autonomously based on your profile."
@@ -123,8 +126,8 @@ class StrategicReasoner:
         # 3. Generate candidates via LLM
         recent = world_state.get("recent_events", "None")
         system = "You are a JSON-only strategic advisor. Output ONLY a valid JSON array."
-        client = LLMClient()
-        messages = [{"role": "user", "content": _CANDIDATE_PROMPT.format(
+        llm = client if client is not None else LLMClient()
+        messages = [Message(role="user", content=_CANDIDATE_PROMPT.format(
             candidate_count=self.candidate_count,
             agent_name=agent.name,
             immutable_goals="\n".join(f"- {g}" for g in self._immutable_goals) if self._immutable_goals else "No immutable goals — act freely based on your profile.",
@@ -135,18 +138,18 @@ class StrategicReasoner:
             round_number=round_number,
             recent_events=str(recent)[:500],
             trust_summary=trust,
-        )}]
+        ))]
 
         candidates: list[dict[str, Any]] = []
         try:
             if self._chat_fn is not None:
                 content = await asyncio.to_thread(self._chat_fn, messages, system, 0.7)
             else:
-                response = await client.chat(messages, system=system, temperature=0.7)
-                content = _extract_text(response)
+                response = await llm.chat(messages, system=system, temperature=0.7)
+                content = extract_text(response)
             candidates = _parse_candidates(content)
         except Exception as e:
-            logger.debug("[Reasoner] LLM candidate generation failed: %s", e)
+            logger.warning("[Reasoner] LLM candidate generation failed: %s", e)
 
         # 4. Fallback if no candidates
         if not candidates:
@@ -191,22 +194,6 @@ class StrategicReasoner:
             "candidates": candidates,
             "trust_used": any(abs(v) > 0.5 for v in self._trust_matrix.get(agent.entity_id, {}).values()),
         }
-
-
-def _extract_text(response) -> str:
-    if hasattr(response, "text"):
-        return response.text
-    if hasattr(response, "content"):
-        c = response.content
-        if isinstance(c, list):
-            from openakita.llm.types import TextBlock
-            return "".join(b.text for b in c if isinstance(b, TextBlock))
-        return str(c)
-    if isinstance(response, dict):
-        if "choices" in response:
-            return response["choices"][0]["message"]["content"]
-        return str(response)
-    return str(response)
 
 
 def _parse_candidates(raw: str) -> list[dict[str, Any]]:

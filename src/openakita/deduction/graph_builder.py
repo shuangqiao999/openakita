@@ -10,11 +10,12 @@ import json
 import logging
 import re
 import uuid
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from .models import Ontology
-from .store import DeductionGraphStore
 from .preprocessor import DeductionPreprocessor
+from .store import DeductionGraphStore
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,7 @@ async def build_graph(
     preprocessor: DeductionPreprocessor | None = None,
 ) -> None:
     from openakita.llm.client import LLMClient
+    from openakita.llm.types import Message
 
     client = LLMClient()
 
@@ -119,20 +121,20 @@ async def build_graph(
                 keywords = compress_to_keywords(fused, top_k=10)
                 keyword_tag = f"\n\n## 关键词标签\n{', '.join(keywords)}" if keywords else ""
 
-                messages = [{"role": "user", "content": _EXTRACT_PROMPT.format(
+                messages = [Message(role="user", content=_EXTRACT_PROMPT.format(
                     text=fused[:6000] + keyword_tag,
                     entity_types=", ".join(entity_type_names),
                     relation_types=", ".join(relation_type_names),
                     candidate_entities=", ".join(candidate_names[:80]),
                     alias_map=alias_map_str,
-                )}]
+                ))]
 
                 try:
                     response = await client.chat(messages, system=system, temperature=0.1)
                     content = _extract_text(response)
                     entities, relations = _parse_extraction(content)
                 except Exception as e:
-                    logger.debug("[Graph] Entity-driven extract '%s' failed: %s", std_name, e)
+                    logger.warning("[Graph] Entity-driven extract '%s' failed: %s", std_name, e)
                     continue
 
                 # 归一化 + 写入 Kuzu
@@ -183,25 +185,26 @@ async def _extract_from_chunks(
     entity_types, relation_types,
     total_entities: int = 0, total_relations: int = 0,
 ) -> None:
+    from openakita.llm.types import Message
     system = "你是知识图谱构建专家，从文本中精确抽取实体和关系三元组。只输出 JSON。"
 
     for i, chunk in enumerate(chunks):
         text = chunk if isinstance(chunk, str) else chunk.content
 
-        messages = [{"role": "user", "content": _EXTRACT_PROMPT.format(
+        messages = [Message(role="user", content=_EXTRACT_PROMPT.format(
             text=text[:5000],
             entity_types=", ".join(entity_types),
             relation_types=", ".join(relation_types),
             candidate_entities="(无限制)",
             alias_map="{}",
-        )}]
+        ))]
 
         try:
             response = await client.chat(messages, system=system, temperature=0.1)
             content = _extract_text(response)
             entities, relations = _parse_extraction(content)
         except Exception as e:
-            logger.debug("[Graph] Chunk %d extract failed: %s", i, e)
+            logger.warning("[Graph] Chunk %d extract failed: %s", i, e)
             continue
 
         for ent in entities:
@@ -293,5 +296,5 @@ def try_extract_json(raw: str):
 
 def _make_id(name: str, etype: str) -> str:
     import hashlib
-    raw = f"{name}:{etype}".encode("utf-8")
+    raw = f"{name}:{etype}".encode()
     return hashlib.md5(raw).hexdigest()[:12]

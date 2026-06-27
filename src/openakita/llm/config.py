@@ -238,10 +238,12 @@ def get_default_config_path() -> Path:
         return Path(env_path)
 
     # 2) settings.project_root — 运行时唯一权威路径
-    #    无条件返回（不做 exists() 探测），因为单工作区下文件就应该在这里
+    #    如果文件存在于项目根目录则直接返回，否则继续向下搜索
     try:
         from openakita.config import settings
-        return Path(settings.project_root) / "data" / "llm_endpoints.json"
+        path = Path(settings.project_root) / "data" / "llm_endpoints.json"
+        if path.exists():
+            return path
     except Exception:
         pass
 

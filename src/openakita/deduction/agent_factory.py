@@ -4,30 +4,17 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import uuid
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
+from ._utils import extract_text
 from .models import DeductionAgentProfile
-from .store import DeductionGraphStore
 from .preprocessor import DeductionPreprocessor
+from .store import DeductionGraphStore
 
 logger = logging.getLogger(__name__)
-
-
-def _extract_text(response) -> str:
-    if hasattr(response, "text"):
-        return response.text
-    if hasattr(response, "content"):
-        c = response.content
-        if isinstance(c, list):
-            from openakita.llm.types import TextBlock
-            return "".join(b.text for b in c if isinstance(b, TextBlock))
-        return str(c)
-    if isinstance(response, dict):
-        if "choices" in response:
-            return response["choices"][0]["message"]["content"]
-        return str(response)
-    return str(response)
 
 
 _PERSONA_PROMPT = """基于以下实体信息和原文背景，为该人物生成一个独立人格档案。返回 JSON。
@@ -86,8 +73,9 @@ async def create_agents_from_graph(
     pre_interventions: list[str] | None = None,
     chat_fn: Any = None,
 ) -> list[DeductionAgentProfile]:
-    from openakita.llm.client import LLMClient
     from openakita.config import settings
+    from openakita.llm.client import LLMClient
+    from openakita.llm.types import Message
 
     persons = graph.get_entities_by_type("Person")
     if not persons:
@@ -144,14 +132,14 @@ async def create_agents_from_graph(
             )
 
         system = "You are a JSON-only character profile generator. Output ONLY a valid JSON object. NO markdown, NO explanations."
-        messages = [{"role": "user", "content": prompt}]
+        messages = [Message(role="user", content=prompt)]
 
         try:
             if chat_fn is not None:
                 content = await asyncio.to_thread(chat_fn, messages, system, 0.7)
             else:
                 response = await client.chat(messages, system=system, temperature=0.7)
-                content = _extract_text(response)
+                content = extract_text(response)
             profile_data = _parse_persona_json(content)
             # Fallback if JSON parsing failed
             if not isinstance(profile_data, dict) or not expected_keys.intersection(profile_data):
@@ -183,10 +171,6 @@ async def create_agents_from_graph(
             agent_profile.persona, agent_profile.background,
             json.dumps(agent_profile.goals, ensure_ascii=False),
         )
-        peers_str = ", ".join(
-            a.get("name", "?") for a in persons[:max_agents]
-            if a.get("name") != person_name
-        )[:80]
         graph._conn.execute(
             f"MATCH (e:{graph.NODE_TABLE} {{id: $eid}}), "
             f"(a:{graph.AGENT_TABLE} {{id: $aid}}) "
@@ -200,7 +184,6 @@ async def create_agents_from_graph(
 
 
 def _parse_persona_json(raw: str) -> dict[str, Any]:
-    import re as _re
     data = _try_extract_json(raw)
     if not isinstance(data, dict):
         # LLM returned array — take first element
